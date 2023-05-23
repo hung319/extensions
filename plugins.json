@@ -1,0 +1,26 @@
+[
+    {
+        "iconUrl": "https://torrentio.strem.fun/images/logo_v1.png",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/hung319/extensions",
+        "fileSize": 191148,
+        "status": 1,
+        "language": "en",
+        "authors": [
+            "Phisher98",
+            "SIX"
+        ],
+        "tvTypes": [
+            "Movie",
+            "Torrent",
+            "AsianDrama",
+            "TvSeries",
+            "Anime"
+        ],
+        "version": 3,
+        "internalName": "TorraStream",
+        "description": "",
+        "url": "https://raw.githubusercontent.com/hung319/extensions/builds/TorraStream.cs3",
+        "name": "TorraStream"
+    }
+]
