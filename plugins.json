@@ -1,0 +1,23 @@
+[
+    {
+        "iconUrl": "https://www.google.com/s2/favicons?domain=http://example.com&sz=256",
+        "fileHash": "sha256-6e6c8a84aad00c3fa81d8e668f1b9968b6890ca306725d06571051030de556ec",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/hung319/extensions",
+        "fileSize": 32729,
+        "status": 1,
+        "language": "vi",
+        "authors": [
+            "SIX"
+        ],
+        "tvTypes": [
+            "AnimeMovie",
+            "Anime",
+            "OVA"
+        ],
+        "version": -1,
+        "internalName": "Test",
+        "url": "https://raw.githubusercontent.com/hung319/extensions/builds/Test.cs3",
+        "name": "Test"
+    }
+]
