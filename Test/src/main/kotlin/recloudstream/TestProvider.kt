@@ -197,53 +197,60 @@ class VietSubTvProvider : MainAPI() {
 
         val episodes = mutableListOf<Episode>()
         val episodeContainer = watchPageDocument.selectFirst("div.intl-play-right div.MainContainer section.SeasonBx ul.AZList#episodes")
-        // Log.d("VietSubTvProvider", "Watch Page URL for episodes: $watchPageLink") // Tạm comment
-        // Log.d("VietSubTvProvider", "Episode Container HTML: ${episodeContainer?.outerHtml()}") // Tạm comment
 
         if (episodeContainer != null) {
-            var currentSeasonNumberForEpisodes = 1
-            var lastGroupName = "" // Để theo dõi tên nhóm và tăng season khi tên nhóm thay đổi
+            var currentSeasonNumberForEpisodes = 0 // Bắt đầu từ 0, sẽ tăng lên 1 cho nhóm đầu tiên
+            var lastGroupNameProcessed = "" // Để theo dõi tên nhóm đã xử lý
 
             episodeContainer.children().forEach { child ->
                 if (child.tagName() == "div" && child.hasClass("w-full")) {
-                    val groupName = child.selectFirst("h3")?.text()?.trim() ?: "Nhóm $currentSeasonNumberForEpisodes"
-                    if (episodes.isNotEmpty() && groupName != lastGroupName) { // Chỉ tăng season nếu đây là nhóm mới thực sự và không phải nhóm đầu tiên
-                         currentSeasonNumberForEpisodes++
+                    val groupName = child.selectFirst("h3")?.text()?.trim()
+                    // Chỉ tăng season number nếu tên nhóm mới khác tên nhóm trước đó
+                    // Và phải đảm bảo đã có ít nhất 1 tập được thêm vào season trước (nếu không phải lần đầu)
+                    if (groupName != null && groupName != lastGroupNameProcessed) {
+                        currentSeasonNumberForEpisodes++ // Tăng season cho nhóm mới
+                        lastGroupNameProcessed = groupName
                     }
-                    lastGroupName = groupName
                 } else if (child.tagName() == "li") {
                     val epElement = child.selectFirst("a")
                     if (epElement != null) {
-                        val originalEpName = epElement.attr("title")?.ifBlank { null } ?: epElement.text().trim()
+                        val epTitleAttribute = epElement.attr("title")?.trim() // Ví dụ: "Tập 1", "Full"
+                        val epTextContent = epElement.text().trim()      // Ví dụ: "1", "Full"
+
+                        // Ưu tiên title attribute làm tên hiển thị
+                        var episodeDisplayName = epTitleAttribute
+                        if (episodeDisplayName.isNullOrBlank()) { // Nếu title rỗng
+                            episodeDisplayName = epTextContent // Thì dùng text bên trong a
+                        }
+
+                        // Trích xuất số tập cho trường 'episode'
+                        val numberRegex = Regex("""\d+""")
+                        val episodeNumber = numberRegex.find(epTextContent)?.value?.toIntOrNull() // Ưu tiên số từ text content (vd: "1")
+                            ?: numberRegex.find(epTitleAttribute ?: "")?.value?.toIntOrNull() // Hoặc từ title (vd: "Tập 1")
+
                         var epUrl = epElement.attr("href")
                         if (epUrl.isNotBlank() && !epUrl.startsWith("http")) {
                             epUrl = "$mainUrl$epUrl"
                         }
-                        val episodeNumber = epElement.text().toIntOrNull()
 
-                        val finalEpName = if (lastGroupName.isNotBlank() && lastGroupName != "Mặc định" && !lastGroupName.startsWith("Server ") && !originalEpName.contains(lastGroupName, ignoreCase = true)) {
-                            "$lastGroupName: $originalEpName"
-                        } else {
-                            originalEpName
-                        }
+                        // Nếu currentSeasonNumberForEpisodes vẫn là 0 (chưa gặp div.w-full nào), đặt là 1
+                        val seasonForEpisode = if(currentSeasonNumberForEpisodes == 0) 1 else currentSeasonNumberForEpisodes
 
                         episodes.add(
                             Episode(
                                 data = epUrl,
-                                name = finalEpName,
-                                episode = episodeNumber,
-                                season = currentSeasonNumberForEpisodes,
+                                name = episodeDisplayName, // Sẽ là "Tập X" hoặc "Full"
+                                episode = episodeNumber,   // Số của tập, hoặc null
+                                season = seasonForEpisode,  // Phân nhóm theo server/loại
                                 posterUrl = posterUrl,
                                 rating = rating
-                                // Bỏ seasonName vì không phải tham số chuẩn
                             )
                         )
                     }
                 }
             }
-        } else {
-            // Log.d("VietSubTvProvider", "Không tìm thấy container chứa tập phim trên trang: $watchPageLink") // Tạm comment
         }
+
 
         val isTvSeries = episodes.isNotEmpty()
         val tvType = if (isTvSeries) TvType.TvSeries else TvType.Movie
@@ -274,5 +281,5 @@ class VietSubTvProvider : MainAPI() {
                 this.recommendations = recommendations
             }
         }
-    } // Đảm bảo dấu } này đóng hàm load
+    }
 } // Đảm bảo dấu } này đóng class VietSubTvProvider
