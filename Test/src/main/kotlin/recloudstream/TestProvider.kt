@@ -115,36 +115,55 @@ class VietSubTvProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url, interceptor = CloudflareKiller()).document
+        // Bước 1: Truy cập trang thông tin phim ban đầu (url)
+        val initialDocument = app.get(url, interceptor = CloudflareKiller()).document
 
-        val title = document.selectFirst("div.info-detail h3.title span.intl-album-title-word-wrap")?.text()?.trim()
-            ?: document.selectFirst("div.banner-content__title h1")?.text()?.trim()
-            ?: document.selectFirst("meta[property=\"og:title\"]")?.attr("content")
+        // Bước 2: Tìm nút "Xem Phim" và lấy href của nó
+        val watchPageLink = initialDocument.selectFirst("a.btn-item.btn-s[href*=tap-]")?.attr("href")?.let {
+            if (it.startsWith("/")) mainUrl + it else it
+        } ?: url // Nếu không tìm thấy nút "Xem Phim", vẫn dùng URL gốc làm fallback (cho phim lẻ hoặc cấu trúc khác)
+
+        // Bước 3: Truy cập URL trang xem phim (watchPageLink)
+        // Thông tin phim chính vẫn có thể lấy từ initialDocument hoặc watchPageDocument tùy thuộc vào độ tin cậy
+        val watchPageDocument = app.get(watchPageLink, interceptor = CloudflareKiller()).document
+
+        // Ưu tiên lấy thông tin từ trang xem phim nếu nó đầy đủ hơn, hoặc từ trang ban đầu
+        val title = watchPageDocument.selectFirst("div.info-detail h3.title span.intl-album-title-word-wrap")?.text()?.trim()
+            ?: initialDocument.selectFirst("div.banner-content__title h1")?.text()?.trim()
+            ?: watchPageDocument.selectFirst("meta[property=\"og:title\"]")?.attr("content")
+                ?.replace("Xem phim ", "")?.replace(" VietSub Full HD", "")
+                ?.replace(" Tập Full", "")?.substringBefore(" - ")
+            ?: initialDocument.selectFirst("meta[property=\"og:title\"]")?.attr("content")
                 ?.replace("Xem phim ", "")?.replace(" VietSub Full HD", "")
                 ?.replace(" Tập Full", "")?.substringBefore(" - ")
             ?: return null
 
-        var posterUrl = document.selectFirst("div.col__right div.wrap-banner-img img")?.attr("src")
-            ?: document.selectFirst("meta[property=\"og:image\"]")?.attr("content")
+        var posterUrl = watchPageDocument.selectFirst("meta[property=\"og:image\"]")?.attr("content") // Ưu tiên OG image từ trang xem
+            ?: initialDocument.selectFirst("div.col__right div.wrap-banner-img img")?.attr("src")
+            ?: initialDocument.selectFirst("meta[property=\"og:image\"]")?.attr("content")
 
         if (posterUrl?.startsWith("/") == true) {
             posterUrl = "$mainUrl$posterUrl"
         }
+        // Gộp plot từ cả 2 trang nếu cần, hoặc ưu tiên 1 trang
+        val plot = watchPageDocument.selectFirst("div.banner-content__desc")?.textNodes()?.joinToString("") { it.text().trim() }?.replace("Miêu tả:", "")?.trim()
+            ?: initialDocument.selectFirst("div.banner-content__desc")?.textNodes()?.joinToString("") { it.text().trim() }?.replace("Miêu tả:", "")?.trim()
+            ?: watchPageDocument.selectFirst("meta[name=\"description\"]")?.attr("content")?.trim()
+            ?: initialDocument.selectFirst("meta[name=\"description\"]")?.attr("content")?.trim()
 
-        val plot = document.selectFirst("div.banner-content__desc")?.textNodes()?.joinToString("") { it.text().trim() }?.replace("Miêu tả:", "")?.trim()
-            ?: document.selectFirst("meta[name=\"description\"]")?.attr("content")?.trim()
-
-        val yearText = document.selectFirst("div.banner-content__infor div.year")?.text()?.trim()
-            ?: document.select("div.intl-play-time span").find { it.text().matches(Regex("\\d{4}")) }?.text()
+        val yearText = watchPageDocument.select("div.intl-play-time span").find { it.text().matches(Regex("\\d{4}")) }?.text()
+            ?: initialDocument.selectFirst("div.banner-content__infor div.year")?.text()?.trim()
         val year = yearText?.toIntOrNull()
 
-        val ratingText = document.selectFirst("div.banner-content__infor div.rate")?.text()?.trim()
+        val ratingText = watchPageDocument.selectFirst("div.intl-play-time span.focus-item-label-original:contains(Điểm)")?.nextElementSibling()?.text()?.trim() // Ví dụ nếu rating ở trang xem
+            ?: initialDocument.selectFirst("div.banner-content__infor div.rate")?.text()?.trim()
         val rating = ratingText?.filter { it.isDigit() || it == '.' }?.toFloatOrNull()?.times(10)?.toInt()
 
-        val tags = (document.select("div.intl-play-item-tags a span") + document.select("div.focus-info-tag.type a span.type-style"))
+        val tags = (watchPageDocument.select("div.intl-play-item-tags a span") + initialDocument.select("div.focus-info-tag.type a span.type-style"))
             .mapNotNull { it.text()?.trim() }.distinct().filterNot { it.equals("Vietsub", true) || it.equals("Thuyết Minh", true) || it.contains("Năm") }
 
-        val actors = document.select("div.firm-desc:contains(Diễn viên) span.desc-content span.tt-at a, div.focus-info-tag:contains(Diễn viên) span a")
+        // Lấy actors và directors từ trang nào có vẻ đầy đủ hơn (ví dụ initialDocument từ info.txt)
+        val actors = initialDocument.select("div.focus-info-tag:contains(Diễn viên) span a, div.firm-desc:contains(Diễn viên) span.desc-content span.tt-at a")
             .mapNotNull { element ->
                 val name = element.text().trim()
                 val image = element.selectFirst("img")?.attr("src")?.let { if (it.startsWith("/")) mainUrl + it else it }
@@ -155,7 +174,7 @@ class VietSubTvProvider : MainAPI() {
                 }
             }
 
-        val directors = document.select("div.firm-desc:contains(Đạo diễn) span.desc-content span.tt-at a, div.focus-info-tag:contains(Đạo diễn) span a")
+        val directors = initialDocument.select("div.focus-info-tag:contains(Đạo diễn) span a, div.firm-desc:contains(Đạo diễn) span.desc-content span.tt-at a")
             .mapNotNull { element ->
                 val name = element.text().trim()
                 if (name.isNotBlank()) {
@@ -166,7 +185,9 @@ class VietSubTvProvider : MainAPI() {
             }
 
         val recommendations = mutableListOf<SearchResponse>()
-        document.select("div.firm-propose li.splide__slide").forEach { recElement ->
+        // Ưu tiên lấy recommendations từ watchPageDocument nếu có, nếu không thì từ initialDocument
+        (watchPageDocument.select("div.firm-propose li.splide__slide").ifEmpty { initialDocument.select("div.firm-propose li.splide__slide") })
+            .forEach { recElement ->
             val recTitle = recElement.selectFirst("div.splide__item-title")?.text()?.trim()
             var recLink = recElement.selectFirst("a")?.attr("href")
             var recPoster = recElement.selectFirst("div.splide__img-wrap img")?.attr("src")
@@ -181,32 +202,25 @@ class VietSubTvProvider : MainAPI() {
             }
         }
 
+        // Bước 4: Lấy danh sách tập từ watchPageDocument
         val episodes = mutableListOf<Episode>()
-        // Mục tiêu: Lấy tất cả các thẻ <li> bên trong <ul class="AZList" id="episodes">
-        // và xác định tên nhóm (server/loại) cho từng cụm tập.
+        val episodeContainer = watchPageDocument.selectFirst("div.intl-play-right div.MainContainer section.SeasonBx ul.AZList#episodes")
+        // Log.d("VietSubTvProvider", "Watch Page URL for episodes: $watchPageLink")
+        // Log.d("VietSubTvProvider", "Episode Container HTML: ${episodeContainer?.outerHtml()}")
 
-        val episodeContainer = document.selectFirst("ul.AZList#episodes")
         if (episodeContainer != null) {
-            var currentGroupName = "Mặc định" // Tên nhóm mặc định
-            var currentSeasonNumber = 1     // Số mùa/nhóm
+            var currentSeasonNumberForEpisodes = 1 // Biến đếm season/group riêng cho việc parse tập
+            var lastGroupName = ""
 
-            // Lặp qua tất cả các con trực tiếp của episodeContainer
             episodeContainer.children().forEach { child ->
                 if (child.tagName() == "div" && child.hasClass("w-full")) {
-                    // Nếu là div chứa tên nhóm (ví dụ: <h3>Vietsub #1</h3>)
-                    currentGroupName = child.selectFirst("h3")?.text()?.trim() ?: "Nhóm $currentSeasonNumber"
-                    // Nếu có thẻ h3 mới, có thể coi đây là một "season" mới (hoặc server mới)
-                    // Nếu logic season của bạn phức tạp hơn, bạn cần điều chỉnh ở đây
-                    // Ví dụ: nếu tên nhóm thay đổi, tăng currentSeasonNumber
-                    // Tuy nhiên, để đơn giản, chúng ta có thể dùng một seasonNumber cố định cho tất cả các tập
-                    // hoặc tăng seasonNumber mỗi khi gặp một div.w-full mới.
-                    // Hiện tại, tôi sẽ thử logic tăng seasonNumber cho mỗi div.w-full mới.
-                    // Nếu đây là lần đầu gặp h3 hoặc h3 khác với h3 trước đó, thì tăng season.
-                    // Điều này cần một biến để lưu tên nhóm trước đó.
-                    // Để đơn giản hơn, chúng ta sẽ gán season dựa trên một biến đếm `seasonCountForEpisodes`
-                    // và sẽ tăng biến này mỗi khi gặp `div.w-full`.
+                    val groupName = child.selectFirst("h3")?.text()?.trim() ?: "Nhóm $currentSeasonNumberForEpisodes"
+                    // Chỉ tăng season nếu tên nhóm thay đổi thực sự, hoặc nếu đây là h3 đầu tiên
+                    if (groupName != lastGroupName || episodes.isEmpty()) { // Điều kiện này có thể cần tinh chỉnh
+                        if (episodes.isNotEmpty() && groupName != lastGroupName) currentSeasonNumberForEpisodes++ // Tăng season cho nhóm mới thực sự
+                    }
+                    lastGroupName = groupName
                 } else if (child.tagName() == "li") {
-                    // Nếu là thẻ <li> chứa tập phim
                     val epElement = child.selectFirst("a")
                     if (epElement != null) {
                         val originalEpName = epElement.attr("title")?.ifBlank { null } ?: epElement.text().trim()
@@ -216,9 +230,9 @@ class VietSubTvProvider : MainAPI() {
                         }
                         val episodeNumber = epElement.text().toIntOrNull()
 
-                        // Kết hợp tên nhóm vào tên tập để dễ phân biệt
-                        val finalEpName = if (currentGroupName != "Mặc định" && !originalEpName.contains(currentGroupName, ignoreCase = true)) {
-                            "$currentGroupName: $originalEpName"
+                        // Dùng lastGroupName (tên nhóm/server đã được cập nhật ở trên)
+                        val finalEpName = if (lastGroupName.isNotBlank() && lastGroupName != "Mặc định" && !originalEpName.contains(lastGroupName, ignoreCase = true)) {
+                            "$lastGroupName: $originalEpName"
                         } else {
                             originalEpName
                         }
@@ -228,18 +242,16 @@ class VietSubTvProvider : MainAPI() {
                                 data = epUrl,
                                 name = finalEpName,
                                 episode = episodeNumber,
-                                season = currentSeasonNumber, // Sử dụng số season hiện tại cho nhóm này
+                                season = currentSeasonNumberForEpisodes,
                                 posterUrl = posterUrl,
                                 rating = rating
                             )
                         )
                     }
                 }
-                // Nếu gặp div.w-full, nghĩa là bắt đầu một nhóm mới, tăng season number cho nhóm tiếp theo
-                if (child.tagName() == "div" && child.hasClass("w-full")) {
-                    currentSeasonNumber++
-                }
             }
+        } else {
+            Log.d("VietSubTvProvider", "Không tìm thấy container chứa tập phim trên trang: $watchPageLink")
         }
 
 
@@ -247,7 +259,7 @@ class VietSubTvProvider : MainAPI() {
         val tvType = if (isTvSeries) TvType.TvSeries else TvType.Movie
 
         return if (tvType == TvType.TvSeries) {
-            newTvSeriesLoadResponse(title, url, tvType, episodes.distinctBy { it.data }) { // Đảm bảo episode data là unique
+            newTvSeriesLoadResponse(title, url, tvType, episodes.distinctBy { it.data }) {
                 this.posterUrl = posterUrl
                 this.year = year
                 this.plot = plot
@@ -257,12 +269,13 @@ class VietSubTvProvider : MainAPI() {
                 this.recommendations = recommendations
             }
         } else {
+            // Phim lẻ: data là link xem phim luôn (watchPageLink)
             val movieEpisode = Episode(
-                data = url,
+                data = watchPageLink, // Sử dụng watchPageLink vì đây là link thực tế để loadLinks
                 name = title,
                 posterUrl = posterUrl
             )
-            newMovieLoadResponse(title, url, tvType, movieEpisode) {
+            newMovieLoadResponse(title, url, tvType, movieEpisode) { // url vẫn là url gốc của trang info
                 this.posterUrl = posterUrl
                 this.year = year
                 this.plot = plot
@@ -273,4 +286,3 @@ class VietSubTvProvider : MainAPI() {
             }
         }
     }
-}
