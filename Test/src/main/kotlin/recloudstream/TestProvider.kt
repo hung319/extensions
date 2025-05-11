@@ -288,11 +288,10 @@ class VietSubTvProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Log.d("VietSubTvProvider", "loadLinks called with data: $data") // Để debug
+        // Log.d("VietSubTvProvider", "loadLinks called with data: $data")
         val document = app.get(data, interceptor = CloudflareKiller()).document
         var foundLinks = false
 
-        // Tìm tất cả các thẻ <a> là server stream
         document.select("div.flex-row a.streaming-server").forEach { serverElement ->
             try {
                 val serverName = serverElement.text()?.trim() ?: "Server"
@@ -306,12 +305,12 @@ class VietSubTvProvider : MainAPI() {
                         "m3u8" -> {
                             callback(
                                 ExtractorLink(
-                                    source = this.name, // Hoặc serverName
-                                    name = "$name - $serverName", // Tên hiển thị cho link này
+                                    source = this.name,
+                                    name = "$name - $serverName",
                                     url = streamLink,
-                                    referer = data, // Referer là trang chứa link này
-                                    quality = Qualities.Unknown.value, // Hoặc thử parse từ tên server nếu có
-                                    isM3u8 = true
+                                    referer = data,
+                                    quality = Qualities.Unknown.value,
+                                    type = ExtractorLinkType.M3U8 // Sử dụng ExtractorLinkType.M3U8
                                 )
                             )
                             foundLinks = true
@@ -324,23 +323,19 @@ class VietSubTvProvider : MainAPI() {
                                     url = streamLink,
                                     referer = data,
                                     quality = Qualities.Unknown.value,
-                                    isM3u8 = false // MP4 không phải m3u8
+                                    type = ExtractorLinkType.MP4 // Sử dụng ExtractorLinkType.MP4
                                 )
                             )
                             foundLinks = true
                         }
                         "embed" -> {
-                            // CloudStream3 có hàm loadExtractor để xử lý các link embed phổ biến
-                            // Bạn cần đảm bảo các extractor tương ứng được kích hoạt trong CloudStream3
-                            // Hoặc nếu là embed của một trang cụ thể (ví dụ: streamc.xyz), bạn có thể cần logic riêng
-                            // để lấy link trực tiếp từ embed đó nếu loadExtractor không xử lý được.
-                            // Đây là một ví dụ chung:
+                            // CloudStream3 sẽ cố gắng dùng các extractor nội bộ
+                            // loadExtractor sẽ trả về true nếu nó tìm thấy link và gọi callback
                             foundLinks = loadExtractor(streamLink, data, subtitleCallback, callback) || foundLinks
                         }
                         else -> {
-                            // Nếu không xác định được type, có thể thử load như một link embed
-                            // hoặc thử đoán type dựa trên phần mở rộng của link (.m3u8, .mp4)
-                            if (streamLink.contains(".m3u8")) {
+                            // Nếu không xác định được type, có thể thử đoán
+                            if (streamLink.contains(".m3u8", ignoreCase = true)) {
                                 callback(
                                     ExtractorLink(
                                         source = this.name,
@@ -348,11 +343,11 @@ class VietSubTvProvider : MainAPI() {
                                         url = streamLink,
                                         referer = data,
                                         quality = Qualities.Unknown.value,
-                                        isM3u8 = true
+                                        type = ExtractorLinkType.M3U8
                                     )
                                 )
                                 foundLinks = true
-                            } else if (streamLink.contains(".mp4")) {
+                            } else if (streamLink.contains(".mp4", ignoreCase = true)) {
                                 callback(
                                     ExtractorLink(
                                         source = this.name,
@@ -360,19 +355,20 @@ class VietSubTvProvider : MainAPI() {
                                         url = streamLink,
                                         referer = data,
                                         quality = Qualities.Unknown.value,
-                                        isM3u8 = false
+                                        type = ExtractorLinkType.MP4
                                     )
                                 )
                                 foundLinks = true
                             } else {
-                                // Thử load như embed nếu không rõ
+                                // Mặc định thử load như một link embed nếu không rõ
+                                // Một số trang embed có thể không có `data-type="embed"` rõ ràng
                                 foundLinks = loadExtractor(streamLink, data, subtitleCallback, callback) || foundLinks
                             }
                         }
                     }
                 }
             } catch (e: Exception) {
-                // Log.e("VietSubTvProvider", "Error loading link: ${e.localizedMessage}")
+                // Log.e("VietSubTvProvider", "Error loading link from server $serverName: ${e.localizedMessage}")
             }
         }
         return foundLinks
