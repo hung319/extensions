@@ -30,35 +30,52 @@ class VietSubTvProvider : MainAPI() {
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
-    ): HomePageResponse {
+    ): HomePageResponse { // Không còn là HomePageResponse? nữa vì newHomePageResponse không nullable
         val url = if (request.data.startsWith("http")) request.data else "$mainUrl${request.data}"
+        // Thêm header nếu cần, ví dụ:
+        // val headers = mapOf("Referer" to mainUrl)
+        // val document = app.get(url, interceptor = CloudflareKiller(), headers = headers).document
         val document = app.get(url, interceptor = CloudflareKiller()).document
-        val homePageList = mutableListOf<HomePageList>() // <= Dòng 82 gốc là return HomePageResponse(homePageList)
+        
         val items = mutableListOf<SearchResponse>()
 
-        document.select("div.slider__column li.splide__slide, ul.video-listing li.video-item, div.item-wrap")
+        // Selector này cần bao quát các cấu trúc item trên các trang danh sách của bạn
+        // Ví dụ: trang "Phim Mới", "Phim Hàn Quốc", etc.
+        // Dựa trên home.txt và các cấu trúc danh sách chung
+        document.select("div.slider__column li.splide__slide, ul.video-listing li.video-item, div.item-wrap, li.film-item, div.movie-item") 
             .forEach { element ->
-                val titleElement = element.selectFirst("div.splide__item-title, div.video-item-name, div.item-title")
-                val title = titleElement?.text()?.trim() ?: ""
+                // Thử nhiều selector cho tiêu đề
+                val title = element.selectFirst("div.splide__item-title, div.video-item-name, div.item-title, h3.film-title a, .movie-title a, .name a, .name")?.text()?.trim() ?: ""
 
-                val linkElement = element.selectFirst("a")
-                var link = linkElement?.attr("href") ?: ""
-                if (link.isNotBlank() && !link.startsWith("http")) {
-                    link = "$mainUrl$link"
+                // Thử nhiều selector cho link
+                var link = element.selectFirst("a")?.attr("href") 
+                    ?: element.selectFirst("h3.film-title a")?.attr("href")
+                    ?: element.selectFirst(".movie-title a")?.attr("href")
+
+                if (link.isNullOrBlank()) { // Nếu thẻ a chính không có href, thử tìm trong các thẻ con
+                     link = element.select("a[href]").firstOrNull()?.attr("href")
                 }
 
-                var posterUrl = element.selectFirst("div.splide__img-wrap img, div.video-item-img img, div.item-img img")?.let { img ->
+
+                if (link?.isNotBlank() == true && !link.startsWith("http")) {
+                    link = "$mainUrl$link"
+                }
+                
+                // Thử nhiều selector cho poster, ưu tiên data-src
+                var posterUrl = element.selectFirst("div.splide__img-wrap img, div.video-item-img img, div.item-img img, .film-poster-img, .movie-poster img")?.let { img ->
                     img.attr("data-src").ifBlank { img.attr("src") }
                 }
                 if (posterUrl?.startsWith("/") == true) {
                     posterUrl = "$mainUrl$posterUrl"
                 }
 
-                val quality = element.selectFirst("div.episodes, div.update-info-mask")?.text()?.trim()
+                // Thử nhiều selector cho chất lượng/tập
+                val quality = element.selectFirst("div.episodes, div.update-info-mask, span.episode-status, .trangthai, .episode_status")?.text()?.trim()
 
-                if (title.isNotBlank() && link.isNotBlank()) {
+
+                if (title.isNotBlank() && link?.isNotBlank() == true) {
                     items.add(
-                        newMovieSearchResponse(title, link) {
+                        newMovieSearchResponse(name = title, url = link) { // Sử dụng name = và url = cho rõ ràng
                             this.posterUrl = posterUrl
                             if (quality != null) {
                                this.quality = getQualityFromString(quality)
@@ -67,16 +84,17 @@ class VietSubTvProvider : MainAPI() {
                     )
                 }
             }
-        if (items.isNotEmpty()) {
-            homePageList.add(HomePageList(request.name, items))
-        }
         
-        if (homePageList.isEmpty() && page == 1 && mainPage.any { it.data == request.data }) {
-            // Consider throwing ErrorLoadingException if a main page category is expected to always have content
-            // For now, allowing empty list to pass for flexibility
-        }
-        // Sử dụng constructor cũ nếu newHomePageResponse yêu cầu cấu trúc khác
-        return HomePageResponse(homePageList, homePageList.any { it.list.isNotEmpty() && items.size >= 20 }) // Giả sử hasNext nếu có item và item >= 20 (cần logic phân trang đúng)
+        // Tạo một HomePageList duy nhất cho request hiện tại
+        val homePageListForCurrentRequest = HomePageList(request.name, items, isHorizontal = true) // isHorizontal có thể tùy chỉnh
+
+        // Logic phân trang cơ bản: Giả sử trang web có tối đa 5 trang cho mỗi mục
+        // Bạn cần logic chính xác hơn nếu trang web có cách phân trang khác (ví dụ: nút "Next")
+        val hasNext = items.isNotEmpty() && page < 5 // Ví dụ đơn giản
+
+        // Trả về newHomePageResponse chứa chỉ mục hiện tại
+        // Tên của newHomePageResponse có thể là tên của mục, hoặc để trống nếu CloudStream tự xử lý
+        return newHomePageResponse(request.name, listOf(homePageListForCurrentRequest), hasNextPage = hasNext)
     }
 
 
