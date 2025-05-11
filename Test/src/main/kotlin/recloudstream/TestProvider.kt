@@ -323,7 +323,7 @@ class VietSubTvProvider : MainAPI() {
                                     url = streamLink,
                                     referer = data,
                                     quality = Qualities.Unknown.value,
-                                    type = ExtractorLinkType.MP4 // Sử dụng ExtractorLinkType.MP4
+                                    type = ExtractorLinkType.VIDEO // Sử dụng ExtractorLinkType.MP4
                                 )
                             )
                             foundLinks = true
@@ -355,7 +355,7 @@ class VietSubTvProvider : MainAPI() {
                                         url = streamLink,
                                         referer = data,
                                         quality = Qualities.Unknown.value,
-                                        type = ExtractorLinkType.MP4
+                                        type = ExtractorLinkType.VIDEO
                                     )
                                 )
                                 foundLinks = true
