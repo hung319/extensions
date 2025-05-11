@@ -30,13 +30,12 @@ class VietSubTvProvider : MainAPI() {
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
-    ): HomePageResponse { // Không còn là HomePageResponse? nữa
+    ): HomePageResponse {
         val url = if (request.data.startsWith("http")) request.data else "$mainUrl${request.data}"
         val document = app.get(url, interceptor = CloudflareKiller()).document
         
         val items = mutableListOf<SearchResponse>()
 
-        // ... (logic parse items của bạn giữ nguyên) ...
         document.select("div.slider__column li.splide__slide, ul.video-listing li.video-item, div.item-wrap, li.film-item, div.movie-item") 
             .forEach { element ->
                 val title = element.selectFirst("div.splide__item-title, div.video-item-name, div.item-title, h3.film-title a, .movie-title a, .name a, .name")?.text()?.trim() ?: ""
@@ -73,28 +72,27 @@ class VietSubTvProvider : MainAPI() {
                     )
                 }
             }
-
+        
         // Tạo một HomePageList duy nhất cho request hiện tại
-        val currentHomePageList = HomePageList(request.name, items) // Bỏ isHorizontal
+        val currentHomePageList = HomePageList(request.name, items) // Không có isHorizontal
 
         var hasNext = false
         val pagination = document.select("ul.pagination li.next a, a.next.page-numbers, nav.wp-pagenavi a.nextpostslink, ul.pagination li.active + li a")
         if (pagination.isNotEmpty()) {
-             // Kiểm tra xem href của nút next có hợp lệ không (không phải javascript:void(0) hoặc #)
             val nextPageLink = pagination.attr("href")
             if (nextPageLink.isNotBlank() && !nextPageLink.contains("javascript:void(0)") && nextPageLink != "#") {
                  hasNext = true
             }
-        } else if (items.size >= 20 && page < 5) { // Fallback nếu không tìm thấy selector phân trang rõ ràng
+        } else if (items.size >= 20 && page < 5) { 
              hasNext = true
         }
-         if (page >= 5) { // Giới hạn cứng
+         if (page >= 5) { 
              hasNext = false
          }
 
-
-        // Sử dụng overload: newHomePageResponse(list: HomePageList, hasNext: Boolean? = ...)
-        return newHomePageResponse(currentHomePageList, hasNextPage = hasNext) // Dòng 101 (số dòng có thể thay đổi)
+        // SỬ DỤNG ỨNG CỬ VIÊN SỐ 4: newHomePageResponse(list: List<HomePageList>, hasNext: Boolean? = ...)
+        // Truyền một danh sách chỉ chứa một HomePageList
+        return newHomePageResponse(listOf(currentHomePageList), hasNextPage = hasNext) // Dòng 97 (số dòng có thể thay đổi)
     }
 
 
