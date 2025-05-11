@@ -73,26 +73,44 @@ class VietSubTvProvider : MainAPI() {
                 }
             }
         
-        // Tạo một HomePageList duy nhất cho request hiện tại
-        val currentHomePageList = HomePageList(request.name, items) // Không có isHorizontal
+        // Tạo một HomePageList duy nhất cho request (mục) hiện tại
+        val currentHomePageList = HomePageList(name = request.name, list = items)
 
-        var hasNext = false
-        val pagination = document.select("ul.pagination li.next a, a.next.page-numbers, nav.wp-pagenavi a.nextpostslink, ul.pagination li.active + li a")
-        if (pagination.isNotEmpty()) {
-            val nextPageLink = pagination.attr("href")
-            if (nextPageLink.isNotBlank() && !nextPageLink.contains("javascript:void(0)") && nextPageLink != "#") {
-                 hasNext = true
+        // Logic phân trang (cần được điều chỉnh cho chính xác)
+        var hasNext: Boolean? = null // Để kiểu nullable để khớp với hàm
+        val paginationSelectors = listOf(
+            "ul.pagination li.next a", 
+            "a.next.page-numbers",     
+            "nav.wp-pagenavi a.nextpostslink", 
+            "ul.pagination li.active + li a" 
+        )
+        for (selector in paginationSelectors) {
+            val nextPageElement = document.selectFirst(selector)
+            if (nextPageElement != null) {
+                val nextPageLink = nextPageElement.attr("href")
+                if (nextPageLink.isNotBlank() && !nextPageLink.startsWith("javascript", ignoreCase = true) && nextPageLink != "#") {
+                    hasNext = true
+                    break 
+                }
             }
-        } else if (items.size >= 20 && page < 5) { 
+        }
+        
+        if (hasNext == null && items.size >= 20 && page < 5) { 
              hasNext = true
         }
          if (page >= 5) { 
              hasNext = false
          }
+        // Nếu sau tất cả logic, hasNext vẫn là null, và hàm yêu cầu Boolean? thì để là null. 
+        // Hoặc bạn có thể đặt một giá trị mặc định nếu logic của bạn rõ ràng hơn.
+        // Ví dụ: nếu không có dấu hiệu phân trang và item < 20 -> chắc chắn không có next.
+        if (hasNext == null && items.size < 20) {
+            hasNext = false
+        }
 
-        // SỬ DỤNG ỨNG CỬ VIÊN SỐ 4: newHomePageResponse(list: List<HomePageList>, hasNext: Boolean? = ...)
-        // Truyền một danh sách chỉ chứa một HomePageList
-        return newHomePageResponse(listOf(currentHomePageList), hasNextPage = hasNext) // Dòng 97 (số dòng có thể thay đổi)
+
+        // Sử dụng ứng cử viên số 3: newHomePageResponse(list: HomePageList, hasNext: Boolean? = ...)
+        return newHomePageResponse(list = currentHomePageList, hasNext = hasNext) // Dòng 95 (số dòng có thể thay đổi)
     }
 
 
