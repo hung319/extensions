@@ -124,7 +124,6 @@ class VietSubTvProvider : MainAPI() {
                 ?.replace(" Tập Full", "")?.substringBefore(" - ")
             ?: return null
 
-
         var posterUrl = document.selectFirst("div.col__right div.wrap-banner-img img")?.attr("src")
             ?: document.selectFirst("meta[property=\"og:image\"]")?.attr("content")
 
@@ -150,8 +149,7 @@ class VietSubTvProvider : MainAPI() {
                 val name = element.text().trim()
                 val image = element.selectFirst("img")?.attr("src")?.let { if (it.startsWith("/")) mainUrl + it else it }
                 if (name.isNotBlank()) {
-                     // Sửa ở đây: Tạo Actor rồi truyền vào ActorData
-                    ActorData(actor = Actor(name, image))
+                    ActorData(Actor(name, image))
                 } else {
                     null
                 }
@@ -161,12 +159,11 @@ class VietSubTvProvider : MainAPI() {
             .mapNotNull { element ->
                 val name = element.text().trim()
                 if (name.isNotBlank()) {
-                    ActorData(Actor(name)) // Sửa ở đây
+                    ActorData(Actor(name))
                 } else {
                     null
                 }
             }
-
 
         val recommendations = mutableListOf<SearchResponse>()
         document.select("div.firm-propose li.splide__slide").forEach { recElement ->
@@ -185,44 +182,48 @@ class VietSubTvProvider : MainAPI() {
         }
 
         val episodes = mutableListOf<Episode>()
-        val episodeSection = document.selectFirst("ul.AZList#episodes") // Chỉ lấy section chính chứa tập
+        // Xử lý các nhóm tập (server/loại Vietsub, Thuyết Minh)
+        // Mỗi "ul.AZList#episodes" có thể đại diện cho một server hoặc một nhóm các tập thuộc một loại.
+        // Cần tìm cách lấy tên cho từng nhóm này.
+        var seasonCount = 0
+        document.select("section.SeasonBx").forEach { seasonBox -> // Lặp qua mỗi section chứa danh sách tập
+            val listElements = seasonBox.select("ul.AZList#episodes")
+            listElements.forEach { listElement ->
+                seasonCount++
+                // Cố gắng lấy tên server/nhóm từ thẻ h3 ngay trước ul đó hoặc trong cấu trúc cha gần nhất
+                val serverNameElement = listElement.parent()?.selectFirst("div.w-full h3") ?: listElement.previousElementSibling()
+                val serverName = if (serverNameElement?.tagName() == "h3") serverNameElement.text().trim() else "Server $seasonCount"
 
-        var currentSeasonInternal = 1 // Đổi tên để tránh trùng với biến bên ngoài nếu có
+                listElement.select("li a").forEach { epElement ->
+                    val originalEpName = epElement.attr("title")?.ifBlank { null } ?: epElement.text().trim()
+                    var epUrl = epElement.attr("href")
+                    if (epUrl.isNotBlank() && !epUrl.startsWith("http")) {
+                        epUrl = "$mainUrl$epUrl"
+                    }
+                    val episodeNumber = epElement.text().toIntOrNull()
 
-        // Lấy tên season từ thẻ h3 ngay trước ul#episodes nếu có
-        val seasonNameFromH3 = episodeSection?.parent()?.select("div.w-full h3")
-            ?.joinToString(" - ") { it.text().trim() } ?: "Mặc định"
+                    val finalEpName = if (serverName.isNotBlank() && !serverName.startsWith("Server ") && !originalEpName.contains(serverName, ignoreCase = true)) {
+                         "$serverName: $originalEpName"
+                    } else {
+                        originalEpName
+                    }
 
-
-        episodeSection?.select("li a")?.forEach { epElement ->
-            val originalEpName = epElement.attr("title")?.ifBlank { null } ?: epElement.text().trim()
-            var epUrl = epElement.attr("href")
-            if (epUrl.isNotBlank() && !epUrl.startsWith("http")) {
-                epUrl = "$mainUrl$epUrl"
+                    episodes.add(
+                        Episode(
+                            data = epUrl,
+                            name = finalEpName,
+                            episode = episodeNumber,
+                            season = seasonCount, // Gán season dựa trên thứ tự của nhóm
+                            posterUrl = posterUrl,
+                            rating = rating
+                        )
+                    )
+                }
             }
-            val episodeNumber = epElement.text().toIntOrNull()
-
-            // Sử dụng seasonNameFromH3 cho tất cả các tập trong #episodes này
-            // Hoặc bạn có thể đặt tên season cụ thể hơn nếu cấu trúc HTML cho phép
-            val currentEpisodeSeasonName = seasonNameFromH3
-
-            episodes.add(
-                Episode(
-                    data = epUrl,
-                    name = originalEpName, // Giữ tên tập gốc
-                    episode = episodeNumber,
-                    season = currentSeasonInternal, // Sử dụng season đã xác định
-                    seasonName = currentEpisodeSeasonName, // Thêm tên season
-                    posterUrl = posterUrl,
-                    rating = rating
-                )
-            )
         }
-        // Nếu không có thẻ h3 nào cho group, có thể không cần tăng currentSeasonInternal dựa trên group nữa,
-        // mà dựa trên logic khác nếu phim có nhiều mùa thực sự (hiện tại đang coi mỗi ul là 1 season)
 
 
-        val isTvSeries = episodes.isNotEmpty() || document.select("ul.AZList li a[title*='Tập']").isNotEmpty()
+        val isTvSeries = episodes.isNotEmpty() || document.select("ul.AZList#episodes li a[title*='Tập']").firstOrNull() != null
         val tvType = if (isTvSeries) TvType.TvSeries else TvType.Movie
 
         return if (tvType == TvType.TvSeries) {
@@ -232,25 +233,24 @@ class VietSubTvProvider : MainAPI() {
                 this.plot = plot
                 this.tags = tags
                 this.rating = rating
-                this.actors = actors // Gán danh sách diễn viên đã parse
-                // Gán đạo diễn nếu LoadResponse hỗ trợ (một số phiên bản có thể không có trường này trực tiếp)
-                // this.recommendations = recommendations
+                this.actors = actors
+                this.recommendations = recommendations // CloudStream có thể tự xử lý hiển thị recommendations nếu cấu trúc này đúng
             }
         } else {
             val movieEpisode = Episode(
                 data = url,
-                name = title, // Sử dụng title của phim cho phim lẻ
+                name = title,
                 posterUrl = posterUrl
-                // Không cần year, plot, rating ở đây cho Episode của phim lẻ
+                // Không cần year, plot, rating cho Episode của phim lẻ ở đây
             )
             newMovieLoadResponse(title, url, tvType, movieEpisode) {
                 this.posterUrl = posterUrl
-                this.year = year // Gán year ở đây
-                this.plot = plot // Gán plot ở đây
+                this.year = year
+                this.plot = plot
                 this.tags = tags
                 this.rating = rating
-                this.actors = actors // Gán danh sách diễn viên đã parse
-                // this.recommendations = recommendations
+                this.actors = actors
+                this.recommendations = recommendations
             }
         }
     }
