@@ -263,16 +263,20 @@ class VietSubTvProvider : MainAPI() {
                         val seasonForEpisode = if(currentSeasonNumberForEpisodes == 0) 1 else currentSeasonNumberForEpisodes
 
                         // Sử dụng constructor cũ của Episode nếu newEpisode yêu cầu runTime mà bạn không có
-                        episodes.add( 
-                            Episode( // <= Dòng 240 gốc
-                                data = epUrl,
-                                name = episodeDisplayName,
-                                episode = episodeNumber,
-                                season = seasonForEpisode,
-                                posterUrl = posterUrl, // Poster của cả series/phim
-                                rating = rating // Rating của cả series/phim
-                            )
-                        )
+                        episodes.add(
+    newEpisode(
+        data = epUrl // Link của tập
+    ) {
+        this.name = episodeDisplayName // Tên tập, ví dụ "Tập 1"
+        this.episode = episodeNumber   // Số tập (Int?)
+        this.season = seasonForEpisode // Số season
+        // Các thuộc tính khác bạn có thể gán nếu có thông tin:
+        this.posterUrl = posterUrl // Có thể dùng poster của cả series
+        this.rating = rating     // Rating của cả series (ít quan trọng cho từng tập)
+        // this.runtime = THOI_LUONG_CUA_TAP_NEU_PARSED_DUOC_TU_HTML // Long?, ví dụ: 45 * 60 * 1000L cho 45 phút
+        // this.description = MO_TA_NGAN_CUA_TAP_NEU_CO
+    }
+)
                     }
                 }
             }
@@ -293,11 +297,13 @@ class VietSubTvProvider : MainAPI() {
                 this.recommendations = recommendations
             }
         } else {
-            val movieEpisode = Episode( // <= Dòng 269 gốc
-                data = watchPageLink,
-                name = title,
-                posterUrl = posterUrl
-            )
+            val movieEpisode = newEpisode(
+    data = watchPageLink // Link xem phim lẻ
+) {
+    this.name = title // Tên phim
+    this.posterUrl = posterUrl
+    // this.runtime = THOI_LUONG_CUA_PHIM_LE_NEU_PARSED_DUOC // Long?
+}
             newMovieLoadResponse(title, url, tvType, movieEpisode) {
                 this.posterUrl = posterUrl
                 this.year = year
