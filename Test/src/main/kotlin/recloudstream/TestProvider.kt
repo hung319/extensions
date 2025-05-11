@@ -5,7 +5,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.network.CloudflareKiller
-// import android.util.Log // Tạm thời comment out nếu gây lỗi build
+// import android.util.Log // Đã comment out
 
 class VietSubTvProvider : MainAPI() {
     override var mainUrl = "https://vietsubtv.us"
@@ -33,7 +33,7 @@ class VietSubTvProvider : MainAPI() {
     ): HomePageResponse {
         val url = if (request.data.startsWith("http")) request.data else "$mainUrl${request.data}"
         val document = app.get(url, interceptor = CloudflareKiller()).document
-        val homePageList = mutableListOf<HomePageList>()
+        val homePageList = mutableListOf<HomePageList>() // <= Dòng 82 gốc là return HomePageResponse(homePageList)
         val items = mutableListOf<SearchResponse>()
 
         document.select("div.slider__column li.splide__slide, ul.video-listing li.video-item, div.item-wrap")
@@ -71,15 +71,12 @@ class VietSubTvProvider : MainAPI() {
             homePageList.add(HomePageList(request.name, items))
         }
         
-        // Logic kiểm tra HomePageList trống đã được điều chỉnh ở phiên bản trước
         if (homePageList.isEmpty() && page == 1 && mainPage.any { it.data == request.data }) {
-             // Allow empty for subsequent pages or dynamic pages not in mainPage
-             // Hoặc throw lỗi nếu bạn chắc chắn mục này phải có dữ liệu
-             // throw ErrorLoadingException("Không tải được dữ liệu cho mục: ${request.name}")
+            // Consider throwing ErrorLoadingException if a main page category is expected to always have content
+            // For now, allowing empty list to pass for flexibility
         }
-
-
-        return HomePageResponse(homePageList)
+        // Sử dụng constructor cũ nếu newHomePageResponse yêu cầu cấu trúc khác
+        return HomePageResponse(homePageList, homePageList.any { it.list.isNotEmpty() && items.size >= 20 }) // Giả sử hasNext nếu có item và item >= 20 (cần logic phân trang đúng)
     }
 
 
@@ -199,51 +196,47 @@ class VietSubTvProvider : MainAPI() {
         val episodeContainer = watchPageDocument.selectFirst("div.intl-play-right div.MainContainer section.SeasonBx ul.AZList#episodes")
 
         if (episodeContainer != null) {
-            var currentSeasonNumberForEpisodes = 0 // Bắt đầu từ 0, sẽ tăng lên 1 cho nhóm đầu tiên
-            var lastGroupNameProcessed = "" // Để theo dõi tên nhóm đã xử lý
+            var currentSeasonNumberForEpisodes = 0
+            var lastGroupNameProcessed = ""
 
             episodeContainer.children().forEach { child ->
                 if (child.tagName() == "div" && child.hasClass("w-full")) {
                     val groupName = child.selectFirst("h3")?.text()?.trim()
-                    // Chỉ tăng season number nếu tên nhóm mới khác tên nhóm trước đó
-                    // Và phải đảm bảo đã có ít nhất 1 tập được thêm vào season trước (nếu không phải lần đầu)
                     if (groupName != null && groupName != lastGroupNameProcessed) {
-                        currentSeasonNumberForEpisodes++ // Tăng season cho nhóm mới
+                        currentSeasonNumberForEpisodes++
                         lastGroupNameProcessed = groupName
                     }
                 } else if (child.tagName() == "li") {
                     val epElement = child.selectFirst("a")
                     if (epElement != null) {
-                        val epTitleAttribute = epElement.attr("title")?.trim() // Ví dụ: "Tập 1", "Full"
-                        val epTextContent = epElement.text().trim()      // Ví dụ: "1", "Full"
+                        val epTitleAttribute = epElement.attr("title")?.trim()
+                        val epTextContent = epElement.text().trim()
 
-                        // Ưu tiên title attribute làm tên hiển thị
                         var episodeDisplayName = epTitleAttribute
-                        if (episodeDisplayName.isNullOrBlank()) { // Nếu title rỗng
-                            episodeDisplayName = epTextContent // Thì dùng text bên trong a
+                        if (episodeDisplayName.isNullOrBlank()) {
+                            episodeDisplayName = epTextContent
                         }
 
-                        // Trích xuất số tập cho trường 'episode'
                         val numberRegex = Regex("""\d+""")
-                        val episodeNumber = numberRegex.find(epTextContent)?.value?.toIntOrNull() // Ưu tiên số từ text content (vd: "1")
-                            ?: numberRegex.find(epTitleAttribute ?: "")?.value?.toIntOrNull() // Hoặc từ title (vd: "Tập 1")
+                        val episodeNumber = numberRegex.find(epTextContent)?.value?.toIntOrNull()
+                            ?: numberRegex.find(epTitleAttribute ?: "")?.value?.toIntOrNull()
 
                         var epUrl = epElement.attr("href")
                         if (epUrl.isNotBlank() && !epUrl.startsWith("http")) {
                             epUrl = "$mainUrl$epUrl"
                         }
-
-                        // Nếu currentSeasonNumberForEpisodes vẫn là 0 (chưa gặp div.w-full nào), đặt là 1
+                        
                         val seasonForEpisode = if(currentSeasonNumberForEpisodes == 0) 1 else currentSeasonNumberForEpisodes
 
-                        episodes.add(
-                            Episode(
+                        // Sử dụng constructor cũ của Episode nếu newEpisode yêu cầu runTime mà bạn không có
+                        episodes.add( 
+                            Episode( // <= Dòng 240 gốc
                                 data = epUrl,
-                                name = episodeDisplayName, // Sẽ là "Tập X" hoặc "Full"
-                                episode = episodeNumber,   // Số của tập, hoặc null
-                                season = seasonForEpisode,  // Phân nhóm theo server/loại
-                                posterUrl = posterUrl,
-                                rating = rating
+                                name = episodeDisplayName,
+                                episode = episodeNumber,
+                                season = seasonForEpisode,
+                                posterUrl = posterUrl, // Poster của cả series/phim
+                                rating = rating // Rating của cả series/phim
                             )
                         )
                     }
@@ -266,7 +259,7 @@ class VietSubTvProvider : MainAPI() {
                 this.recommendations = recommendations
             }
         } else {
-            val movieEpisode = Episode(
+            val movieEpisode = Episode( // <= Dòng 269 gốc
                 data = watchPageLink,
                 name = title,
                 posterUrl = posterUrl
@@ -281,14 +274,14 @@ class VietSubTvProvider : MainAPI() {
                 this.recommendations = recommendations
             }
         }
-    }
+    } // Đóng hàm load
+
     override suspend fun loadLinks(
-        data: String, // URL trang xem phim của tập (epUrl)
+        data: String, 
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Log.d("VietSubTvProvider", "loadLinks called with data: $data")
         val document = app.get(data, interceptor = CloudflareKiller()).document
         var foundLinks = false
 
@@ -297,8 +290,6 @@ class VietSubTvProvider : MainAPI() {
                 val serverName = serverElement.text()?.trim() ?: "Server"
                 val streamLink = serverElement.attr("data-link")
                 val dataType = serverElement.attr("data-type")?.lowercase() ?: ""
-
-                // Log.d("VietSubTvProvider", "Found server: $serverName, Link: $streamLink, Type: $dataType")
 
                 if (streamLink.isNotBlank()) {
                     when (dataType) {
@@ -310,7 +301,7 @@ class VietSubTvProvider : MainAPI() {
                                     url = streamLink,
                                     referer = data,
                                     quality = Qualities.Unknown.value,
-                                    type = ExtractorLinkType.M3U8 // Sử dụng ExtractorLinkType.M3U8
+                                    type = ExtractorLinkType.M3U8
                                 )
                             )
                             foundLinks = true
@@ -323,18 +314,12 @@ class VietSubTvProvider : MainAPI() {
                                     url = streamLink,
                                     referer = data,
                                     quality = Qualities.Unknown.value,
-                                    type = ExtractorLinkType.VIDEO // Sử dụng ExtractorLinkType.MP4
+                                    type = ExtractorLinkType.MP4
                                 )
                             )
                             foundLinks = true
                         }
-                        "embed" -> {
-                            // CloudStream3 sẽ cố gắng dùng các extractor nội bộ
-                            // loadExtractor sẽ trả về true nếu nó tìm thấy link và gọi callback
-                            foundLinks = loadExtractor(streamLink, data, subtitleCallback, callback) || foundLinks
-                        }
                         else -> {
-                            // Nếu không xác định được type, có thể thử đoán
                             if (streamLink.contains(".m3u8", ignoreCase = true)) {
                                 callback(
                                     ExtractorLink(
@@ -355,22 +340,18 @@ class VietSubTvProvider : MainAPI() {
                                         url = streamLink,
                                         referer = data,
                                         quality = Qualities.Unknown.value,
-                                        type = ExtractorLinkType.VIDEO
+                                        type = ExtractorLinkType.MP4
                                     )
                                 )
                                 foundLinks = true
-                            } else {
-                                // Mặc định thử load như một link embed nếu không rõ
-                                // Một số trang embed có thể không có `data-type="embed"` rõ ràng
-                                foundLinks = loadExtractor(streamLink, data, subtitleCallback, callback) || foundLinks
                             }
                         }
                     }
                 }
             } catch (e: Exception) {
-                // Log.e("VietSubTvProvider", "Error loading link from server $serverName: ${e.localizedMessage}")
+                // Xử lý lỗi nếu cần
             }
         }
         return foundLinks
     }
-} // Đảm bảo dấu } này đóng class VietSubTvProvider
+} // Đóng class VietSubTvProvider
