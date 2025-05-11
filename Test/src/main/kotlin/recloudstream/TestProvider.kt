@@ -317,12 +317,11 @@ class VietSubTvProvider : MainAPI() {
     } // Đóng hàm load
 
     override suspend fun loadLinks(
-        data: String, // URL trang xem phim của tập (epUrl)
+        data: String, 
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Log.d("VietSubTvProvider", "loadLinks called with data: $data")
         val document = app.get(data, interceptor = CloudflareKiller()).document
         var foundLinks = false
 
@@ -331,8 +330,6 @@ class VietSubTvProvider : MainAPI() {
                 val serverName = serverElement.text()?.trim() ?: "Server"
                 val streamLink = serverElement.attr("data-link")
                 val dataType = serverElement.attr("data-type")?.lowercase() ?: ""
-
-                // Log.d("VietSubTvProvider", "Found server: $serverName, Link: $streamLink, Type: $dataType")
 
                 if (streamLink.isNotBlank()) {
                     when (dataType) {
@@ -357,13 +354,11 @@ class VietSubTvProvider : MainAPI() {
                                     url = streamLink,
                                     referer = data,
                                     quality = Qualities.Unknown.value,
-                                    type = ExtractorLinkType.VIDEO
+                                    type = ExtractorLinkType.MP4
                                 )
                             )
                             foundLinks = true
                         }
-                        // Trường hợp "embed" sẽ không được xử lý ở đây nữa
-                        // Chỉ xử lý các type khác mà có thể là link trực tiếp
                         else -> {
                             if (streamLink.contains(".m3u8", ignoreCase = true)) {
                                 callback(
@@ -385,19 +380,18 @@ class VietSubTvProvider : MainAPI() {
                                         url = streamLink,
                                         referer = data,
                                         quality = Qualities.Unknown.value,
-                                        type = ExtractorLinkType.VIDEO
+                                        type = ExtractorLinkType.MP4
                                     )
                                 )
                                 foundLinks = true
                             }
-                            // Không gọi loadExtractor cho các trường hợp khác nếu bạn muốn bỏ qua embed hoàn toàn
                         }
                     }
                 }
             } catch (e: Exception) {
-                // Log.e("VietSubTvProvider", "Error loading link from server $serverName: ${e.localizedMessage}")
+                // Xử lý lỗi nếu cần
             }
         }
         return foundLinks
     }
-} // Đóng class VietSubTvProvider
+}
