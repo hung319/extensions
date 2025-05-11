@@ -30,38 +30,29 @@ class VietSubTvProvider : MainAPI() {
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
-    ): HomePageResponse { // Không còn là HomePageResponse? nữa vì newHomePageResponse không nullable
+    ): HomePageResponse {
         val url = if (request.data.startsWith("http")) request.data else "$mainUrl${request.data}"
-        // Thêm header nếu cần, ví dụ:
-        // val headers = mapOf("Referer" to mainUrl)
-        // val document = app.get(url, interceptor = CloudflareKiller(), headers = headers).document
         val document = app.get(url, interceptor = CloudflareKiller()).document
         
         val items = mutableListOf<SearchResponse>()
 
-        // Selector này cần bao quát các cấu trúc item trên các trang danh sách của bạn
-        // Ví dụ: trang "Phim Mới", "Phim Hàn Quốc", etc.
-        // Dựa trên home.txt và các cấu trúc danh sách chung
+        // Selector chung cho các item phim trên các trang danh sách
         document.select("div.slider__column li.splide__slide, ul.video-listing li.video-item, div.item-wrap, li.film-item, div.movie-item") 
             .forEach { element ->
-                // Thử nhiều selector cho tiêu đề
                 val title = element.selectFirst("div.splide__item-title, div.video-item-name, div.item-title, h3.film-title a, .movie-title a, .name a, .name")?.text()?.trim() ?: ""
-
-                // Thử nhiều selector cho link
+                
                 var link = element.selectFirst("a")?.attr("href") 
                     ?: element.selectFirst("h3.film-title a")?.attr("href")
                     ?: element.selectFirst(".movie-title a")?.attr("href")
 
-                if (link.isNullOrBlank()) { // Nếu thẻ a chính không có href, thử tìm trong các thẻ con
+                if (link.isNullOrBlank()) {
                      link = element.select("a[href]").firstOrNull()?.attr("href")
                 }
-
 
                 if (link?.isNotBlank() == true && !link.startsWith("http")) {
                     link = "$mainUrl$link"
                 }
                 
-                // Thử nhiều selector cho poster, ưu tiên data-src
                 var posterUrl = element.selectFirst("div.splide__img-wrap img, div.video-item-img img, div.item-img img, .film-poster-img, .movie-poster img")?.let { img ->
                     img.attr("data-src").ifBlank { img.attr("src") }
                 }
@@ -69,13 +60,11 @@ class VietSubTvProvider : MainAPI() {
                     posterUrl = "$mainUrl$posterUrl"
                 }
 
-                // Thử nhiều selector cho chất lượng/tập
                 val quality = element.selectFirst("div.episodes, div.update-info-mask, span.episode-status, .trangthai, .episode_status")?.text()?.trim()
-
 
                 if (title.isNotBlank() && link?.isNotBlank() == true) {
                     items.add(
-                        newMovieSearchResponse(name = title, url = link) { // Sử dụng name = và url = cho rõ ràng
+                        newMovieSearchResponse(name = title, url = link) {
                             this.posterUrl = posterUrl
                             if (quality != null) {
                                this.quality = getQualityFromString(quality)
@@ -86,15 +75,30 @@ class VietSubTvProvider : MainAPI() {
             }
         
         // Tạo một HomePageList duy nhất cho request hiện tại
-        val homePageListForCurrentRequest = HomePageList(request.name, items, isHorizontal = true) // isHorizontal có thể tùy chỉnh
+        // Loại bỏ isHorizontal vì constructor chuẩn không có
+        val currentHomePageList = HomePageList(request.name, items) 
 
         // Logic phân trang cơ bản: Giả sử trang web có tối đa 5 trang cho mỗi mục
-        // Bạn cần logic chính xác hơn nếu trang web có cách phân trang khác (ví dụ: nút "Next")
-        val hasNext = items.isNotEmpty() && page < 5 // Ví dụ đơn giản
+        // Bạn cần logic chính xác hơn nếu trang web có cách phân trang khác (ví dụ: nút "Next" hoặc số lượng item thực tế)
+        // Ví dụ: kiểm tra xem có nút "Next" không hoặc số item trả về có bằng một giới hạn nào đó không
+        var hasNext = false
+        val pagination = document.select("ul.pagination li.next a, a.next.page-numbers, nav.wp-pagenavi a.nextpostslink") // Thêm các selector phân trang phổ biến
+        if (pagination.isNotEmpty()) {
+            hasNext = true
+        } else if (items.size >= 20) { // Hoặc nếu số lượng item đạt một ngưỡng nào đó, có thể còn trang sau
+            hasNext = true
+        }
+        // Nếu page đã lớn hơn một giới hạn nào đó, thì không còn trang sau nữa
+        if (page >= 5) { // Giới hạn cứng 5 trang làm ví dụ
+             hasNext = false
+        }
 
-        // Trả về newHomePageResponse chứa chỉ mục hiện tại
-        // Tên của newHomePageResponse có thể là tên của mục, hoặc để trống nếu CloudStream tự xử lý
-        return newHomePageResponse(request.name, listOf(homePageListForCurrentRequest), hasNextPage = hasNext)
+
+        // Trả về newHomePageResponse chứa chỉ mục hiện tại (dưới dạng list một phần tử)
+        // Tên của newHomePageResponse có thể là request.name hoặc một tên chung cho "trang chủ" nếu bạn gộp tất cả logic vào đây
+        // Cách làm này (trả về list chứa 1 HomePageList) là để tương thích với cách mainPageOf hoạt động
+        // và cách hàm newHomePageResponse(name: String, list: List<HomePageList>, ...) được định nghĩa.
+        return newHomePageResponse(request.name, listOf(currentHomePageList), hasNextPage = hasNext)
     }
 
 
