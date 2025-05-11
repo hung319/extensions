@@ -182,66 +182,85 @@ class VietSubTvProvider : MainAPI() {
         }
 
         val episodes = mutableListOf<Episode>()
-        // Xử lý các nhóm tập (server/loại Vietsub, Thuyết Minh)
-        // Mỗi "ul.AZList#episodes" có thể đại diện cho một server hoặc một nhóm các tập thuộc một loại.
-        // Cần tìm cách lấy tên cho từng nhóm này.
-        var seasonCount = 0
-        document.select("section.SeasonBx").forEach { seasonBox -> // Lặp qua mỗi section chứa danh sách tập
-            val listElements = seasonBox.select("ul.AZList#episodes")
-            listElements.forEach { listElement ->
-                seasonCount++
-                // Cố gắng lấy tên server/nhóm từ thẻ h3 ngay trước ul đó hoặc trong cấu trúc cha gần nhất
-                val serverNameElement = listElement.parent()?.selectFirst("div.w-full h3") ?: listElement.previousElementSibling()
-                val serverName = if (serverNameElement?.tagName() == "h3") serverNameElement.text().trim() else "Server $seasonCount"
+        // Mục tiêu: Lấy tất cả các thẻ <li> bên trong <ul class="AZList" id="episodes">
+        // và xác định tên nhóm (server/loại) cho từng cụm tập.
 
-                listElement.select("li a").forEach { epElement ->
-                    val originalEpName = epElement.attr("title")?.ifBlank { null } ?: epElement.text().trim()
-                    var epUrl = epElement.attr("href")
-                    if (epUrl.isNotBlank() && !epUrl.startsWith("http")) {
-                        epUrl = "$mainUrl$epUrl"
-                    }
-                    val episodeNumber = epElement.text().toIntOrNull()
+        val episodeContainer = document.selectFirst("ul.AZList#episodes")
+        if (episodeContainer != null) {
+            var currentGroupName = "Mặc định" // Tên nhóm mặc định
+            var currentSeasonNumber = 1     // Số mùa/nhóm
 
-                    val finalEpName = if (serverName.isNotBlank() && !serverName.startsWith("Server ") && !originalEpName.contains(serverName, ignoreCase = true)) {
-                         "$serverName: $originalEpName"
-                    } else {
-                        originalEpName
-                    }
+            // Lặp qua tất cả các con trực tiếp của episodeContainer
+            episodeContainer.children().forEach { child ->
+                if (child.tagName() == "div" && child.hasClass("w-full")) {
+                    // Nếu là div chứa tên nhóm (ví dụ: <h3>Vietsub #1</h3>)
+                    currentGroupName = child.selectFirst("h3")?.text()?.trim() ?: "Nhóm $currentSeasonNumber"
+                    // Nếu có thẻ h3 mới, có thể coi đây là một "season" mới (hoặc server mới)
+                    // Nếu logic season của bạn phức tạp hơn, bạn cần điều chỉnh ở đây
+                    // Ví dụ: nếu tên nhóm thay đổi, tăng currentSeasonNumber
+                    // Tuy nhiên, để đơn giản, chúng ta có thể dùng một seasonNumber cố định cho tất cả các tập
+                    // hoặc tăng seasonNumber mỗi khi gặp một div.w-full mới.
+                    // Hiện tại, tôi sẽ thử logic tăng seasonNumber cho mỗi div.w-full mới.
+                    // Nếu đây là lần đầu gặp h3 hoặc h3 khác với h3 trước đó, thì tăng season.
+                    // Điều này cần một biến để lưu tên nhóm trước đó.
+                    // Để đơn giản hơn, chúng ta sẽ gán season dựa trên một biến đếm `seasonCountForEpisodes`
+                    // và sẽ tăng biến này mỗi khi gặp `div.w-full`.
+                } else if (child.tagName() == "li") {
+                    // Nếu là thẻ <li> chứa tập phim
+                    val epElement = child.selectFirst("a")
+                    if (epElement != null) {
+                        val originalEpName = epElement.attr("title")?.ifBlank { null } ?: epElement.text().trim()
+                        var epUrl = epElement.attr("href")
+                        if (epUrl.isNotBlank() && !epUrl.startsWith("http")) {
+                            epUrl = "$mainUrl$epUrl"
+                        }
+                        val episodeNumber = epElement.text().toIntOrNull()
 
-                    episodes.add(
-                        Episode(
-                            data = epUrl,
-                            name = finalEpName,
-                            episode = episodeNumber,
-                            season = seasonCount, // Gán season dựa trên thứ tự của nhóm
-                            posterUrl = posterUrl,
-                            rating = rating
+                        // Kết hợp tên nhóm vào tên tập để dễ phân biệt
+                        val finalEpName = if (currentGroupName != "Mặc định" && !originalEpName.contains(currentGroupName, ignoreCase = true)) {
+                            "$currentGroupName: $originalEpName"
+                        } else {
+                            originalEpName
+                        }
+
+                        episodes.add(
+                            Episode(
+                                data = epUrl,
+                                name = finalEpName,
+                                episode = episodeNumber,
+                                season = currentSeasonNumber, // Sử dụng số season hiện tại cho nhóm này
+                                posterUrl = posterUrl,
+                                rating = rating
+                            )
                         )
-                    )
+                    }
+                }
+                // Nếu gặp div.w-full, nghĩa là bắt đầu một nhóm mới, tăng season number cho nhóm tiếp theo
+                if (child.tagName() == "div" && child.hasClass("w-full")) {
+                    currentSeasonNumber++
                 }
             }
         }
 
 
-        val isTvSeries = episodes.isNotEmpty() || document.select("ul.AZList#episodes li a[title*='Tập']").firstOrNull() != null
+        val isTvSeries = episodes.isNotEmpty()
         val tvType = if (isTvSeries) TvType.TvSeries else TvType.Movie
 
         return if (tvType == TvType.TvSeries) {
-            newTvSeriesLoadResponse(title, url, tvType, episodes.distinctBy { it.data }) {
+            newTvSeriesLoadResponse(title, url, tvType, episodes.distinctBy { it.data }) { // Đảm bảo episode data là unique
                 this.posterUrl = posterUrl
                 this.year = year
                 this.plot = plot
                 this.tags = tags
                 this.rating = rating
                 this.actors = actors
-                this.recommendations = recommendations // CloudStream có thể tự xử lý hiển thị recommendations nếu cấu trúc này đúng
+                this.recommendations = recommendations
             }
         } else {
             val movieEpisode = Episode(
                 data = url,
                 name = title,
                 posterUrl = posterUrl
-                // Không cần year, plot, rating cho Episode của phim lẻ ở đây
             )
             newMovieLoadResponse(title, url, tvType, movieEpisode) {
                 this.posterUrl = posterUrl
