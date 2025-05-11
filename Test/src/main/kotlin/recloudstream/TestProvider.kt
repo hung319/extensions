@@ -1,121 +1,225 @@
-package com.example.vietsubtvprovider // <-- THAY THẾ BẰNG PACKAGE CỦA BẠN
+package com.example.vietsubtvprovider // Thay thế bằng package name của bạn
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.Qualities
-import org.jsoup.nodes.Element
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson // Để parse JSON từ data-wrap_data
+import com.lagradost.cloudstream3.utils.ExtractorLink // Sẽ dùng trong loadLinks
+import com.lagradost.cloudstream3.utils.Qualities // Sẽ dùng trong loadLinks
+import org.jsoup.nodes.Element // Để làm việc với các phần tử HTML
 
-class VietsubTVProvider : MainAPI() {
-    override var mainUrl = "https://vietsubtv.run"
-    override var name = "VietsubTV"
-    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
-    override var lang = "vi"
-    override val hasMainPage = true
+// Data class để parse JSON từ thuộc tính data-wrap_data trên trang chủ
+data class SplideItemData(
+    val rate: String?,
+    val type: String?,
+    val year: String?,
+    val desc: String?,
+    val img_url: String?,
+    val title: String?,
+    val linkF: String?, // Link của phim
+    val firm_cate: String? // Thể loại chính
+)
 
-    private fun getQualityFromString(str: String?): String {
-        return str?.trim() ?: "Không rõ"
-    }
+class VietSubTvProvider : MainAPI() {
+    override var name = "VietSubTV"
+    override var mainUrl = "https://vietsubtv.us" // URL chính của trang web
+    override var lang = "vi" // Ngôn ngữ chính của provider
 
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        val document = 안전하게 { app.get(mainUrl).document } ?: return null
-        val homePageList = ArrayList<HomePageList>()
+    override val hasMainPage = true // Provider này có trang chủ
+    override val hasDownloadSupport = true // Giả sử có thể lấy link trực tiếp để tải
 
-        // --- Lấy Phim từ Slider chính (Phim Đề Cử) ---
-        try {
-            val sliderSection = document.selectFirst("section#slider ul.splide__list")
-            val sliderItems = sliderSection?.select("li.splide__slide")?.mapNotNull { element ->
-                val titleNullable = element.selectFirst(".crs-content__title h2")?.text()?.trim()
-                val linkNullable = element.selectFirst("a")?.attr("href")
-                val imageNullable = element.selectFirst("img")?.attr("src")
-                val episodeText = element.selectFirst(".update-set")?.text() ?: ""
-                val tvType = if (episodeText.contains("Tập") || episodeText.contains("/")) TvType.TvSeries else TvType.Movie
+    // Các loại nội dung được hỗ trợ
+    override val supportedTypes = setOf(
+        TvType.Movie,
+        TvType.TvSeries,
+        TvType.Anime // Dựa trên các danh mục đã thấy
+    )
 
-                if (titleNullable.isNullOrBlank() || linkNullable.isNullOrBlank() || imageNullable.isNullOrBlank()) return@mapNotNull null
-
-                val title: String = titleNullable
-                val link: String = linkNullable
-                val image: String = imageNullable
-
-                newMovieSearchResponse(title, link, tvType) {
-                    this.posterUrl = image
-                }
-            } ?: emptyList()
-
-            if (sliderItems.isNotEmpty()) {
-                homePageList.add(HomePageList("Phim Đề Cử", sliderItems))
-            }
-        } catch (e: Exception) { e.printStackTrace() }
-
-        // --- Lấy Phim từ các Slider Danh mục/Quốc gia ---
-        try {
-            document.select("section.firm-by-category").forEach { section ->
-                val sectionTitle = section.selectFirst(".myui-block-header h2.title-category")?.text()?.trim() ?: "Danh mục khác"
-                val categoryItems = section.selectFirst("ul.splide__list")?.select("li.splide__slide")?.mapNotNull { item ->
-                    val linkNullable = item.selectFirst("a")?.attr("href")
-                    val imageNullable = item.selectFirst("img.splide__img")?.attr("src")
-                    val titleNullable = item.selectFirst(".splide__item-title")?.text()?.trim()
-                    val episodeText = item.selectFirst(".episodes")?.text()?.trim()
-
-                    if (titleNullable.isNullOrBlank() || linkNullable.isNullOrBlank() || imageNullable.isNullOrBlank()) return@mapNotNull null
-
-                    val title: String = titleNullable
-                    val link: String = linkNullable
-                    val image: String = imageNullable
-
-                    val tvType = if (episodeText?.contains("Tập", ignoreCase = true) == true || episodeText?.contains("/") == true) TvType.TvSeries else TvType.Movie
-
-                    newMovieSearchResponse(title, link, tvType) {
-                        this.posterUrl = image
-                    }
-                } ?: emptyList()
-
-                if (categoryItems.isNotEmpty()) {
-                    homePageList.add(HomePageList(sectionTitle, categoryItems))
-                }
-            }
-        } catch (e: Exception) { e.printStackTrace() }
-
-        if (homePageList.isEmpty()) {
-            throw RuntimeException("Không thể tải dữ liệu từ trang chủ ${mainUrl}")
+    // Hàm tiện ích để sửa các URL tương đối thành URL tuyệt đối
+    private fun fixUrl(url: String?): String? {
+        if (url.isNullOrBlank()) return null
+        return when {
+            url.startsWith("http") -> url
+            url.startsWith("//") -> "https:$url"
+            url.startsWith("/") -> "$mainUrl$url"
+            else -> "$mainUrl/$url"
         }
-        return HomePageResponse(homePageList)
     }
 
-    override suspend fun search(query: String): List<SearchResponse> {
-         val searchUrl = "$mainUrl/?search=$query"
-        val document = app.get(searchUrl).document
-        val results = document.select("section.list-item div.item-wrap")
+    // Hàm lấy dữ liệu cho trang chủ
+    override suspend fun getMainPage(
+        page: Int, // Số trang, thường là 1 cho trang chủ
+        request: MainPageRequest // Chứa tên và url của section nếu là một danh sách cụ thể trên trang chủ
+    ): HomePageResponse? {
+        val document = app.get(mainUrl).document // Tải HTML của trang chủ
 
-        return results.mapNotNull { element ->
+        val homePageLists = mutableListOf<HomePageList>()
+
+        // 1. Slider chính (Phim nổi bật/mới)
+        // Tham khảo: home.txt, source 2073-2325
+        try {
+            val mainSliderItems = document.select("section#slider div#splide01 ul.splide__list li.splide__slide")
+                .mapNotNull { slide ->
+                    val titleElement = slide.selectFirst("div.crs-content__title h2")
+                    val title = titleElement?.text()?.trim() ?: return@mapNotNull null
+                    val href = fixUrl(slide.selectFirst("a")?.attr("href")) ?: return@mapNotNull null
+                    var posterUrl = fixUrl(slide.selectFirst("a img")?.attr("src"))
+                    if (posterUrl == null || posterUrl.endsWith("Slider")) { // Đôi khi ảnh slider không phải poster
+                         posterUrl = fixUrl(slide.selectFirst("div.crs-content a img")?.attr("src")) // Thử lấy ảnh khác nếu có
+                    }
+
+
+                    val episodeNumberText = slide.selectFirst("div.episode_number")?.text()?.trim()
+                    val updateSetText = slide.selectFirst("span.update-set")?.text()?.trim()
+                    val isTvSeries = episodeNumberText?.contains("Phim bộ", ignoreCase = true) == true ||
+                                     updateSetText?.contains("Tập", ignoreCase = true) == true
+
+                    val year = slide.selectFirst("div.year.after-item")?.text()?.trim()?.toIntOrNull()
+
+                    if (isTvSeries) {
+                        TvSeriesSearchResponse(
+                            name = title,
+                            url = href,
+                            apiName = this.name,
+                            type = TvType.TvSeries,
+                            posterUrl = posterUrl,
+                            year = year,
+                            quality = if (!updateSetText.isNullOrBlank()) SearchQuality.Custom(updateSetText) else null
+                        )
+                    } else {
+                        MovieSearchResponse(
+                            name = title,
+                            url = href,
+                            apiName = this.name,
+                            type = TvType.Movie,
+                            posterUrl = posterUrl,
+                            year = year,
+                            quality = if (!updateSetText.isNullOrBlank()) SearchQuality.Custom(updateSetText) else null
+                        )
+                    }
+                }
+            if (mainSliderItems.isNotEmpty()) {
+                homePageLists.add(HomePageList("Phim Đề Cử (Slider)", mainSliderItems))
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+
+        // 2. Các section phim theo danh mục/quốc gia
+        // Tham khảo: home.txt, source 2326-3184
+        val sections = document.select("section.firm-by-category")
+        sections.forEach { section ->
+            try {
+                val sectionTitle = section.selectFirst("h2.title-category")?.text()?.trim() ?: "Phim Mới"
+                val itemsInSection = section.select("div.splide__item").mapNotNull { item ->
+                    try {
+                        val dataWrap = item.attr("data-wrap_data").trim()
+                        if (dataWrap.isBlank()) return@mapNotNull null
+
+                        // Đôi khi JSON trong data-wrap_data có thể không chuẩn, cần xử lý
+                        val correctedJson = dataWrap
+                            .replace(Regex("""(\w+)\s*:\s*"""), "\"$1\":") // Thêm dấu ngoặc kép cho key
+                            .replace(Regex(""",\s*}"""), "}") // Xóa dấu phẩy thừa cuối JSON object
+                            .replace(Regex(""",\s*]"""), "]") // Xóa dấu phẩy thừa cuối JSON array
+
+                        val splideData = parseJson<SplideItemData>(correctedJson)
+
+                        val title = splideData.title ?: return@mapNotNull null
+                        val href = fixUrl(splideData.linkF) ?: return@mapNotNull null
+                        val posterUrl = fixUrl(splideData.img_url ?: item.selectFirst("img.splide__img")?.attr("src"))
+
+                        val episodeText = item.selectFirst("div.episodes")?.text()?.trim()
+                        val year = splideData.year?.filter { it.isDigit() }?.toIntOrNull() // Lọc chỉ lấy số cho năm
+
+
+                        val isTvSeries = splideData.type?.contains("Phim Bộ", ignoreCase = true) == true ||
+                                         episodeText?.contains("Tập", ignoreCase = true) == true ||
+                                         splideData.type?.contains("series", ignoreCase = true) == true
+
+                        if (isTvSeries) {
+                            TvSeriesSearchResponse(
+                                name = title,
+                                url = href,
+                                apiName = this.name,
+                                type = TvType.TvSeries,
+                                posterUrl = posterUrl,
+                                year = year,
+                                quality = if (!episodeText.isNullOrBlank()) SearchQuality.Custom(episodeText) else null
+                            )
+                        } else {
+                            MovieSearchResponse(
+                                name = title,
+                                url = href,
+                                apiName = this.name,
+                                type = TvType.Movie,
+                                posterUrl = posterUrl,
+                                year = year,
+                                quality = if (!episodeText.isNullOrBlank()) SearchQuality.Custom(episodeText) else null
+                            )
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace() // In lỗi ra logcat để debug
+                        null
+                    }
+                }
+                if (itemsInSection.isNotEmpty()) {
+                    homePageLists.add(HomePageList(sectionTitle, itemsInSection))
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        if (homePageLists.isEmpty()) return null
+        return HomePageResponse(homePageLists)
+    }
+
+    // Hàm tìm kiếm phim
+    override suspend fun search(query: String): List<SearchResponse>? {
+        // Tham khảo: search.txt
+        // URL tìm kiếm: $mainUrl/?search={query} (source 1356 từ search.txt)
+        val searchUrl = "$mainUrl/?search=$query"
+        val document = app.get(searchUrl).document
+
+        // Kết quả nằm trong các thẻ div.item-wrap (source 1626, 1631, 1635 từ search.txt)
+        return document.select("div.item-wrap").mapNotNull { element ->
             try {
                 val linkElement = element.selectFirst("a.item-link")
-                val hrefNullable = linkElement?.attr("href")
-                if (hrefNullable.isNullOrBlank()) return@mapNotNull null
-
-                var titleNullable = element.selectFirst(".item-title")?.text()?.trim()
-                if (titleNullable.isNullOrBlank()) {
-                     titleNullable = linkElement?.attr("title")
-                                ?.substringAfter("Phim ")?.substringBefore(" - ")?.trim()
+                val href = fixUrl(linkElement?.attr("href")) ?: return@mapNotNull null
+                var title = linkElement.selectFirst("div.item-title")?.text()?.trim()
+                if (title.isNullOrBlank()) { // Fallback nếu không có div.item-title
+                    title = element.selectFirst("img.desc-img")?.attr("alt")?.trim()
                 }
-                 if (titleNullable.isNullOrBlank()) return@mapNotNull null
+                if (title.isNullOrBlank()) return@mapNotNull null
 
-                val image = element.selectFirst("img.desc-img")?.attr("src")
-                val qualityStatusText = element.selectFirst(".update-info-mask")?.text()?.trim()
 
-                val tvType = if (qualityStatusText?.contains("Tập", ignoreCase = true) == true || qualityStatusText?.contains("/") == true) {
-                    TvType.TvSeries
+                val posterUrl = fixUrl(element.selectFirst("img.desc-img")?.attr("src"))
+                val qualityEpisodeText = element.selectFirst("div.update-info-mask")?.text()?.trim()
+
+                // Xác định TvType dựa vào qualityEpisodeText hoặc title
+                val isTvSeries = qualityEpisodeText?.contains("Tập", ignoreCase = true) == true ||
+                                 qualityEpisodeText?.matches(Regex("""Full \d+/\d+.*""", RegexOption.IGNORE_CASE)) == true ||
+                                 title.contains(Regex("""(Phần|Season)\s*\d+""", RegexOption.IGNORE_CASE)) ||
+                                 (qualityEpisodeText != null && Regex("""\d+\s*/\s*\d+\s*(Tập|VietSub|Thuyết Minh)""").containsMatchIn(qualityEpisodeText))
+
+
+                if (isTvSeries) {
+                    TvSeriesSearchResponse(
+                        name = title,
+                        url = href,
+                        apiName = this.name,
+                        type = TvType.TvSeries,
+                        posterUrl = posterUrl,
+                        quality = if (!qualityEpisodeText.isNullOrBlank()) SearchQuality.Custom(qualityEpisodeText) else null
+                    )
                 } else {
-                    TvType.Movie
+                    MovieSearchResponse(
+                        name = title,
+                        url = href,
+                        apiName = this.name,
+                        type = TvType.Movie,
+                        posterUrl = posterUrl,
+                        quality = if (!qualityEpisodeText.isNullOrBlank()) SearchQuality.Custom(qualityEpisodeText) else null
+                    )
                 }
-
-                val title: String = titleNullable
-                val href: String = hrefNullable
-
-                newMovieSearchResponse(title, href, tvType) {
-                     this.posterUrl = image
-                }
-
             } catch (e: Exception) {
                 e.printStackTrace()
                 null
@@ -123,150 +227,180 @@ class VietsubTVProvider : MainAPI() {
         }
     }
 
-     override suspend fun load(url: String): LoadResponse? {
+    // Hàm tải thông tin chi tiết phim/series và danh sách tập
+    override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
-        val title = document.selectFirst(".banner-content__title h1")?.text()?.trim()
-            ?: document.selectFirst("meta[property=og:title]")?.attr("content")?.substringAfter("Phim ")?.substringBefore(" VietSub")?.trim()
+        // Tham khảo: info.txt
+
+        // Tiêu đề phim (source 959)
+        val title = document.selectFirst("div.banner-content__title h1")?.text()?.trim()
+            ?: document.selectFirst("meta[property=\"og:title\"]")?.attr("content")?.substringBefore(" - ") // Lấy phần trước dấu " - "
             ?: return null
 
-        val poster = document.selectFirst(".wrap-banner-img img.banner-img")?.attr("src")
-            ?: document.selectFirst("meta[property=og:image]")?.attr("content")
-        val year = document.selectFirst(".year.after-item")?.text()?.trim()?.toIntOrNull()
+        // Poster (source 981-982 hoặc meta tag)
+        val posterUrl = fixUrl(
+            document.selectFirst("div.col__right img.banner-img")?.attr("src")
+                ?: document.selectFirst("meta[property=\"og:image\"]")?.attr("content")
+        )
 
-        var plot = document.selectFirst("meta[name=description]")?.attr("content")?.trim()
-        document.selectFirst(".banner-content__desc")?.let { descElement ->
-            val fullText = descElement.ownText().trim()
-            if (!fullText.isNullOrBlank() && (plot.isNullOrBlank() || fullText.length > plot.length)) {
-                plot = fullText
+        // Năm sản xuất (source 963)
+        val year = document.selectFirst("div.banner-content__infor div.year")?.text()?.trim()?.toIntOrNull()
+
+        // Mô tả (source 974-976)
+        val plot = document.selectFirst("div.banner-content__desc")?.ownText()?.trim()
+            ?: document.selectFirst("meta[name=description]")?.attr("content") // Fallback
+            ?: document.selectFirst("meta[property=\"og:description\"]")?.attr("content") // Fallback
+
+        // Thể loại (source 966-967)
+        val tags = document.select("div.focus-info-tag.type a span.type-style")
+            .mapNotNull { it.text()?.trim() }
+            .filter { it.lowercase() != "vietsub" && it.lowercase() != "thuyết minh" } // Loại bỏ các tag không phải thể loại
+
+        // Diễn viên (source 970-971)
+        val actors = document.select("div.focus-info-tag:contains(Diễn viên) span a").mapNotNull {
+            ActorData(Actor(it.text().trim()))
+        }
+        
+        // Đạo diễn (source 967-969)
+         val directorsElements = document.select("div.focus-info-tag:contains(Đạo diễn) span a")
+         val directors = directorsElements.map { it.text().trim() }
+
+
+        // Phim đề xuất (source 993-1076)
+        val recommendations = document.select("div#pills-propose div.video-item").mapNotNull { recElement ->
+            try {
+                val recTitle = recElement.selectFirst("div.video-item-name")?.text()?.trim() ?: return@mapNotNull null
+                val recHref = fixUrl(recElement.attr("href")) ?: return@mapNotNull null
+                val recPoster = fixUrl(recElement.selectFirst("img.desc-img")?.attr("src"))
+                // Cố gắng xác định TvType cho recommendations nếu có thể
+                val recEpisodeText = recElement.selectFirst("div.update-info-mask")?.text()?.trim()
+                val recIsTvSeries = recEpisodeText?.contains("Tập", ignoreCase = true) == true ||
+                                    recEpisodeText?.matches(Regex("""Full \d+/\d+.*""", RegexOption.IGNORE_CASE)) == true ||
+                                    recTitle.contains(Regex("""(Phần|Season)\s*\d+""", RegexOption.IGNORE_CASE))
+
+                if (recIsTvSeries) {
+                    TvSeriesSearchResponse(recTitle, recHref, this.name, TvType.TvSeries, recPoster)
+                } else {
+                    MovieSearchResponse(recTitle, recHref, this.name, TvType.Movie, recPoster)
+                }
+            } catch (e: Exception) {
+                null
             }
         }
-         if (plot.isNullOrBlank()) {
-              plot = document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
-         }
 
-        val tags = document.select(".focus-info-tag.type a span.type-style")
-            .mapNotNull { it.text()?.trim() }
-            .filter { it != "Vietsub" && it != "Lồng Tiếng" }
+        // Xác định là phim bộ hay phim lẻ (source 965, 989-992, 365-369)
+        val isTvSeries = document.selectFirst("div.episode_number:contains(Phim bộ)") != null ||
+                         document.select("ul#pills-tab li.nav-item button[id^=pills-firm-tab]").isNotEmpty() ||
+                         (document.selectFirst("ul.AZList")?.select("li a")?.size ?: 0) > 1 && !url.contains("/tap-") // Kiểm tra có nhiều hơn 1 tập và không phải đang ở trang xem tập
 
-        val rating = document.selectFirst(".rate")?.text()?.trim()?.replace(" ", "")?.toIntOrNull()
 
-        val durationText = document.selectFirst("meta[property=video:duration]")?.attr("content")
-        var durationMinutes: Int? = null
-         if (durationText != null) {
-            try {
-                var totalMinutes = 0
-                val hours = Regex("""(\d+)h""").find(durationText)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                val minutes = Regex("""(\d+)m""").find(durationText)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                val seconds = Regex("""(\d+)s""").find(durationText)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                totalMinutes = hours * 60 + minutes + if (seconds >= 30) 1 else 0
-                if (totalMinutes > 0) durationMinutes = totalMinutes
-            } catch (_: Exception) { }
-        }
+        if (isTvSeries) {
+            val episodesList = mutableListOf<Episode>()
+            // Lấy danh sách server từ các tab (source 987-992)
+            val serverTabs = document.select("ul#pills-tab li.nav-item button[id^=pills-firm-tab]")
 
-        // Bỏ qua actors
-        // val actors = ...
+            if (serverTabs.isNotEmpty()) {
+                serverTabs.forEachIndexed { serverIndex, serverButton ->
+                    val serverName = serverButton.selectFirst("span")?.text()?.trim() ?: "Server ${serverIndex + 1}"
+                    val tabPaneId = serverButton.attr("data-bs-target") // Ví dụ: "#pills-firm-1"
+                    // Danh sách tập trong mỗi server (source 1077-1091)
+                    val episodeElements = document.select("$tabPaneId div.video-list-wrapper a.video-item, $tabPaneId ul.AZList li a")
 
-        val isMovie = tags.contains("Phim lẻ") || document.selectFirst(".episode_number.after-item")?.text()?.contains("Phim lẻ") == true || document.selectFirst("#pills-firm-1 a[href*=tap-full]") != null
-        val tvType = if (isMovie) TvType.Movie else TvType.TvSeries
 
-        val episodes = ArrayList<Episode>()
-         val episodeTabs = document.select("div#pills-tabContent div.tab-pane[id^=pills-firm-]")
-        if (episodeTabs.isNotEmpty()) {
-            episodeTabs.forEachIndexed { tabIndex, tab ->
-                 val serverName = document.selectFirst("#pills-firm-tab-${tabIndex + 1} span")?.text()?.trim()?.replace("Danh sách tập","")?.trim() ?: "Server #${tabIndex + 1}"
-                tab.select("a.video-item").forEach { epElement ->
-                    val epHref = epElement.attr("href")
-                    val epNameFromElement = epElement.selectFirst(".video-item-name")?.text()?.trim()
-                    val epName = epNameFromElement?.replace("$title - ", "") ?: "Tập ${episodes.size + 1}"
-                    val episodeNumberRegex = Regex("""\b(?:Tập|Tap)\s*(\d+)\b""", RegexOption.IGNORE_CASE)
-                    val episodeNumber = episodeNumberRegex.find(epName)?.groupValues?.get(1)?.toIntOrNull()
-                    val epPoster = epElement.selectFirst("img.desc-img")?.attr("src") ?: poster
+                    episodeElements.forEach { epElement ->
+                        val epHref = fixUrl(epElement.attr("href")) ?: return@forEach
+                        val epNameOriginal = epElement.text().trim().ifBlank {
+                            epElement.selectFirst("div.video-item-name")?.text()?.trim() ?: "Tập ${episodesList.size + 1}"
+                        }
+                        // Cố gắng chuẩn hóa tên tập: "Phim - Tập X" -> "Tập X"
+                        val epName = epNameOriginal.substringAfterLast("-").trim().ifBlank { epNameOriginal }
 
-                    if (epHref.isNotBlank()) {
-                        episodes.add(
+
+                        episodesList.add(
                             Episode(
-                                data = epHref,
-                                name = epName.ifBlank { null },
-                                season = 1,
-                                episode = episodeNumber,
-                                posterUrl = epPoster,
+                                data = epHref, // URL này sẽ được truyền cho loadLinks
+                                name = epName,
+                                posterUrl = fixUrl(epElement.selectFirst("img.desc-img")?.attr("src")) ?: posterUrl, // Ảnh của tập hoặc poster phim
+                                // season = -1, // Không có thông tin season rõ ràng
+                                // episode = // Có thể thử parse từ epName
                             )
                         )
                     }
                 }
+            } else {
+                // Trường hợp chỉ có 1 server, danh sách tập nằm trực tiếp trong ul.AZList
+                // (source 365-369 từ watch.txt, nhưng logic tương tự cho info.txt nếu chỉ có 1 server)
+                 document.select("ul.AZList#episodes li a, div#pills-firm-1 ul.AZList li a").forEach { epElement ->
+                     val epHref = fixUrl(epElement.attr("href")) ?: return@forEach
+                     val epName = epElement.text().trim().ifBlank { "Tập ${episodesList.size + 1}" }
+                     val episodePoster = fixUrl(epElement.selectFirst("img")?.attr("src")) ?: posterUrl
+                     episodesList.add(
+                         Episode(
+                             data = epHref,
+                             name = epName,
+                             posterUrl = episodePoster
+                         )
+                     )
+                 }
             }
-        } else {
-            val mainPlayButtonLink = document.selectFirst(".group-btn a.btn-s[href*=tap-]")?.attr("href")
-            if (!mainPlayButtonLink.isNullOrBlank()) {
-                 episodes.add(Episode(data = mainPlayButtonLink, name = "Xem phim"))
-            }
-        }
-
-        // *Fix*: Không tạo recommendations nữa để tránh lỗi biên dịch
-        val recommendations = emptyList<SearchResponse>() // Tạo danh sách rỗng
 
 
-        return if (tvType == TvType.TvSeries) {
-            TvSeriesLoadResponse(
-                name = title, url = url, apiName = this.name, type = tvType, episodes = episodes,
-                posterUrl = poster, year = year, plot = plot, tags = tags, rating = rating,
-                recommendations = recommendations, // Truyền danh sách rỗng
-                actors = null, duration = durationMinutes
+            return TvSeriesLoadResponse(
+                name = title,
+                url = url,
+                apiName = this.name,
+                type = TvType.TvSeries,
+                episodes = episodesList.distinctBy { it.data }, // Loại bỏ các tập trùng link
+                posterUrl = posterUrl,
+                year = year,
+                plot = plot,
+                tags = tags,
+                actors = actors,
+                recommendations = recommendations,
+                // rating = document.selectFirst("div.rate")?.text()?.trim()?.removePrefix("★")?.trim()?.toRatingInt(),
+                // duration = document.select("div.focus-info-tag:contains(Thời lượng:) span")?.lastOrNull()?.text()?.trim(),
+                // showStatus = // Có thể lấy từ "Hoàn thành", "Đang chiếu" (source 960)
             )
         } else {
-            MovieLoadResponse(
-                name = title, url = url, apiName = this.name, type = tvType, dataUrl = episodes.firstOrNull()?.data,
-                posterUrl = poster, year = year, plot = plot, tags = tags, rating = rating,
-                recommendations = recommendations, // Truyền danh sách rỗng
-                actors = null, duration = durationMinutes
+            // Đây là phim lẻ
+            return MovieLoadResponse(
+                name = title,
+                url = url, // URL của trang thông tin phim
+                apiName = this.name,
+                type = TvType.Movie,
+                dataUrl = url, // URL này sẽ được truyền cho loadLinks để lấy server phát
+                posterUrl = posterUrl,
+                year = year,
+                plot = plot,
+                tags = tags,
+                actors = actors,
+                recommendations = recommendations,
+                // rating = document.selectFirst("div.rate")?.text()?.trim()?.removePrefix("★")?.trim()?.toRatingInt(),
+                // duration = document.select("div.focus-info-tag:contains(Thời lượng:) span")?.lastOrNull()?.text()?.trim()
             )
         }
     }
 
+    // Hàm tải link video trực tiếp (sẽ được làm sau)
     override suspend fun loadLinks(
-        data: String,
+        data: String, // Đây là URL của trang xem phim (epHref từ hàm load) hoặc URL trang info (cho phim lẻ)
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data, referer = mainUrl).document
-        var foundLinks = false
+        // TODO: Implement link extraction logic here based on watch.txt
+        // 1. Tải HTML của trang `data` (trang xem phim).
+        // 2. Tìm các nút server (a.streaming-server).
+        // 3. Với mỗi server:
+        //    - Lấy `data-type` và `data-link`.
+        //    - Nếu `data-type` là `m3u8` hoặc `mp4`, gọi `callback` với `ExtractorLink`.
+        //    - Nếu `data-type` là `embed`, dùng `app.get(data-link).document` để tải trang embed,
+        //      rồi tìm link video bên trong trang đó (thường là trong thẻ iframe hoặc script).
+        //      Hoặc sử dụng các extractor có sẵn của CloudStream3 nếu tên miền được hỗ trợ.
+        //      Ví dụ: apis.forEach { api -> api.getSafeUrl(link, referer)?.forEach(callback) }
+        //      Hoặc: invokeExtractor(link, data, subtitleCallback, callback)
 
-        document.select("a.streaming-server").apmap { serverButton ->
-            try {
-                val serverName = serverButton.text().trim()
-                val sourceLink = serverButton.attr("data-link").trim()
-
-                if (sourceLink.isNotBlank()) {
-                     if (sourceLink.endsWith(".m3u8", ignoreCase = true)) {
-                         callback(
-                            newExtractorLink(
-                                source = serverName, name = serverName, url = sourceLink
-                            ) {
-                                this.referer = mainUrl
-                                this.quality = Qualities.Unknown.value
-                            }
-                        )
-                        foundLinks = true
-                    }
-                    // else if (sourceLink.endsWith(".mp4", ignoreCase = true)) { ... } // Add MP4 check if needed
-                    else { // Assume embed
-                        loadExtractor(sourceLink, data, subtitleCallback, callback)
-                        foundLinks = true
-                    }
-                }
-            } catch (e: Exception) { e.printStackTrace() }
-        }
-        return foundLinks
-    }
-
-     // Hàm wrapper an toàn nếu cần thiết (giữ lại)
-     suspend fun <T> 안전하게(block: suspend () -> T): T? {
-        return try {
-            block()
-        } catch (e: Exception) {
-            e.printStackTrace()
-            null
-        }
+        println("loadLinks called with data: $data") // Log để debug
+        return false // Placeholder, trả về true nếu tìm được link
     }
 }
