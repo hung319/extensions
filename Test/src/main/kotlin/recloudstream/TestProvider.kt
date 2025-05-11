@@ -30,13 +30,13 @@ class VietSubTvProvider : MainAPI() {
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
-    ): HomePageResponse {
+    ): HomePageResponse { // Không còn là HomePageResponse? nữa
         val url = if (request.data.startsWith("http")) request.data else "$mainUrl${request.data}"
         val document = app.get(url, interceptor = CloudflareKiller()).document
         
         val items = mutableListOf<SearchResponse>()
 
-        // Selector chung cho các item phim trên các trang danh sách
+        // ... (logic parse items của bạn giữ nguyên) ...
         document.select("div.slider__column li.splide__slide, ul.video-listing li.video-item, div.item-wrap, li.film-item, div.movie-item") 
             .forEach { element ->
                 val title = element.selectFirst("div.splide__item-title, div.video-item-name, div.item-title, h3.film-title a, .movie-title a, .name a, .name")?.text()?.trim() ?: ""
@@ -73,32 +73,28 @@ class VietSubTvProvider : MainAPI() {
                     )
                 }
             }
-        
+
         // Tạo một HomePageList duy nhất cho request hiện tại
-        // Loại bỏ isHorizontal vì constructor chuẩn không có
-        val currentHomePageList = HomePageList(request.name, items) 
+        val currentHomePageList = HomePageList(request.name, items) // Bỏ isHorizontal
 
-        // Logic phân trang cơ bản: Giả sử trang web có tối đa 5 trang cho mỗi mục
-        // Bạn cần logic chính xác hơn nếu trang web có cách phân trang khác (ví dụ: nút "Next" hoặc số lượng item thực tế)
-        // Ví dụ: kiểm tra xem có nút "Next" không hoặc số item trả về có bằng một giới hạn nào đó không
         var hasNext = false
-        val pagination = document.select("ul.pagination li.next a, a.next.page-numbers, nav.wp-pagenavi a.nextpostslink") // Thêm các selector phân trang phổ biến
+        val pagination = document.select("ul.pagination li.next a, a.next.page-numbers, nav.wp-pagenavi a.nextpostslink, ul.pagination li.active + li a")
         if (pagination.isNotEmpty()) {
-            hasNext = true
-        } else if (items.size >= 20) { // Hoặc nếu số lượng item đạt một ngưỡng nào đó, có thể còn trang sau
-            hasNext = true
+             // Kiểm tra xem href của nút next có hợp lệ không (không phải javascript:void(0) hoặc #)
+            val nextPageLink = pagination.attr("href")
+            if (nextPageLink.isNotBlank() && !nextPageLink.contains("javascript:void(0)") && nextPageLink != "#") {
+                 hasNext = true
+            }
+        } else if (items.size >= 20 && page < 5) { // Fallback nếu không tìm thấy selector phân trang rõ ràng
+             hasNext = true
         }
-        // Nếu page đã lớn hơn một giới hạn nào đó, thì không còn trang sau nữa
-        if (page >= 5) { // Giới hạn cứng 5 trang làm ví dụ
+         if (page >= 5) { // Giới hạn cứng
              hasNext = false
-        }
+         }
 
 
-        // Trả về newHomePageResponse chứa chỉ mục hiện tại (dưới dạng list một phần tử)
-        // Tên của newHomePageResponse có thể là request.name hoặc một tên chung cho "trang chủ" nếu bạn gộp tất cả logic vào đây
-        // Cách làm này (trả về list chứa 1 HomePageList) là để tương thích với cách mainPageOf hoạt động
-        // và cách hàm newHomePageResponse(name: String, list: List<HomePageList>, ...) được định nghĩa.
-        return newHomePageResponse(request.name, listOf(currentHomePageList), hasNextPage = hasNext)
+        // Sử dụng overload: newHomePageResponse(list: HomePageList, hasNext: Boolean? = ...)
+        return newHomePageResponse(currentHomePageList, hasNextPage = hasNext) // Dòng 101 (số dòng có thể thay đổi)
     }
 
 
