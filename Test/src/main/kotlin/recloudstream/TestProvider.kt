@@ -36,17 +36,26 @@ class Xvv1deosProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        val pageNumber = if (page > 1) "/new/${page - 1}" else ""
+        val pageNumber = if (page > 1) "/new/${page - 1}" else "" // Trang 1 của API thường là không có số trang hoặc /new/0
         val document = app.get("$mainUrl$pageNumber").document
 
         val items = document.select("div.mozaique div.thumb-block")?.mapNotNull {
             it.toSearchResponse()
-        }
+        } ?: emptyList() // Đảm bảo items không bao giờ là null
 
-        return HomePageResponse(listOf(HomePageList("Videos", items ?: emptyList())))
+        // Kiểm tra xem có trang tiếp theo hay không dựa trên sự tồn tại của nút "Next"
+        // Ví dụ: <a href="/new/1" class="no-page next-page">
+        val hasNextPage = document.selectFirst("div.pagination a.next-page") != null
+        
+        // SỬA CẢNH BÁO DEPRECATION Ở ĐÂY
+        return newHomePageResponse(listOf(HomePageList("Videos", items)), hasNextPage)
     }
 
     override suspend fun search(query: String): List<SearchResponse>? {
+        // Đối với tìm kiếm, Cloudstream thường xử lý phân trang tự động nếu bạn trả về một danh sách lớn.
+        // Hoặc, nếu trang web có phân trang cho tìm kiếm, bạn sẽ cần thêm tham số page vào URL
+        // và logic để xác định hasNextPage tương tự như getMainPage.
+        // Ví dụ URL tìm kiếm có phân trang: "$mainUrl/?k=$query&p=$page" (nếu có)
         val document = app.get("$mainUrl/?k=$query").document
 
         return document.select("div.mozaique div.thumb-block")?.mapNotNull {
@@ -70,7 +79,7 @@ class Xvv1deosProvider : MainAPI() {
         var tags: List<String>? = null
         val scriptTagWithConfig = document.select("script").find { it.html().contains("xv.conf") }?.html()
         if (scriptTagWithConfig != null) {
-            val tagsRegex = Regex("""video_tags"\s*:\s*(\[.*?\])""") // Regex để trích video_tags
+            val tagsRegex = Regex("""video_tags"\s*:\s*(\[.*?\])""")
             val tagsMatch = tagsRegex.find(scriptTagWithConfig)
             if (tagsMatch != null && tagsMatch.groupValues.size > 1) {
                 try {
@@ -79,10 +88,10 @@ class Xvv1deosProvider : MainAPI() {
                         .split(",")
                         .map { it.trim().removeSurrounding("\"") }
                         .filter { it.isNotBlank() }
-                } catch (_: Exception) { /* Bỏ qua nếu parse lỗi */ }
+                } catch (_: Exception) { }
             }
         }
-        if (tags.isNullOrEmpty()) { // Nếu không lấy được từ script, thử từ HTML
+        if (tags.isNullOrEmpty()) {
             tags = document.select("div.video-tags-list li a.is-keyword")?.map { it.text() }?.filter { it.isNotBlank() }
         }
 
@@ -113,14 +122,8 @@ class Xvv1deosProvider : MainAPI() {
                                    recImage = "https:$recImage"
                                 } else if (!recImage.startsWith("http") && recImage.startsWith("/")) {
                                    recImage = mainUrl + recImage
-                                } else if (!recImage.startsWith("http") && !recImage.startsWith("/")){
-                                    // Trường hợp này có thể image là một URL đầy đủ nhưng thiếu scheme, hoặc là path tương đối không chuẩn
-                                    // Để an toàn, có thể không gán nếu không chắc chắn, hoặc thử thêm mainUrl
-                                    // Nếu video_related.i luôn là URL đầy đủ hoặc bắt đầu bằng // hoặc /, thì logic trên là ổn
                                 }
                              }
-
-
                             recommendations.add(newAnimeSearchResponse(recTitle, recHref, TvType.Movie) {
                                 this.posterUrl = if (recImage.isNotBlank()) recImage else null
                             })
@@ -137,8 +140,8 @@ class Xvv1deosProvider : MainAPI() {
             this.recommendations = recommendations
             this.duration = durationMinutes
             uploaderName?.let { name ->
-                val actor = Actor(name) // Tạo đối tượng Actor
-                this.actors = listOf(ActorData(actor = actor)) // SỬA LỖI Ở ĐÂY: Bọc Actor trong ActorData
+                val actor = Actor(name)
+                this.actors = listOf(ActorData(actor = actor))
             }
         }
     }
