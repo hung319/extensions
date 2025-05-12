@@ -70,7 +70,7 @@ class Xvv1deosProvider : MainAPI() {
         var tags: List<String>? = null
         val scriptTagWithConfig = document.select("script").find { it.html().contains("xv.conf") }?.html()
         if (scriptTagWithConfig != null) {
-            val tagsRegex = Regex("""video_tags"\s*:\s*(\[.*?\])""")
+            val tagsRegex = Regex("""video_tags"\s*:\s*(\[.*?\])""") // Regex để trích video_tags
             val tagsMatch = tagsRegex.find(scriptTagWithConfig)
             if (tagsMatch != null && tagsMatch.groupValues.size > 1) {
                 try {
@@ -79,10 +79,10 @@ class Xvv1deosProvider : MainAPI() {
                         .split(",")
                         .map { it.trim().removeSurrounding("\"") }
                         .filter { it.isNotBlank() }
-                } catch (_: Exception) { }
+                } catch (_: Exception) { /* Bỏ qua nếu parse lỗi */ }
             }
         }
-        if (tags.isNullOrEmpty()) {
+        if (tags.isNullOrEmpty()) { // Nếu không lấy được từ script, thử từ HTML
             tags = document.select("div.video-tags-list li a.is-keyword")?.map { it.text() }?.filter { it.isNotBlank() }
         }
 
@@ -111,13 +111,12 @@ class Xvv1deosProvider : MainAPI() {
                              if (recImage.isNotBlank()) {
                                 if (recImage.startsWith("//")) {
                                    recImage = "https:$recImage"
-                                } else if (!recImage.startsWith("http") && !recImage.startsWith("/")) {
-                                   // This case might need more specific handling if image URLs are truly relative like "image.jpg"
-                                   // For now, we assume if it's not http and not starting with //, it needs mainUrl if it starts with /
-                                   if(recImage.startsWith("/")) recImage = mainUrl + recImage
-                                   // else it might be an incomplete path or a full one already without protocol
-                                } else if (recImage.startsWith("/")) {
+                                } else if (!recImage.startsWith("http") && recImage.startsWith("/")) {
                                    recImage = mainUrl + recImage
+                                } else if (!recImage.startsWith("http") && !recImage.startsWith("/")){
+                                    // Trường hợp này có thể image là một URL đầy đủ nhưng thiếu scheme, hoặc là path tương đối không chuẩn
+                                    // Để an toàn, có thể không gán nếu không chắc chắn, hoặc thử thêm mainUrl
+                                    // Nếu video_related.i luôn là URL đầy đủ hoặc bắt đầu bằng // hoặc /, thì logic trên là ổn
                                 }
                              }
 
@@ -138,7 +137,8 @@ class Xvv1deosProvider : MainAPI() {
             this.recommendations = recommendations
             this.duration = durationMinutes
             uploaderName?.let { name ->
-                this.actors = listOf(Actor(name))
+                val actor = Actor(name) // Tạo đối tượng Actor
+                this.actors = listOf(ActorData(actor = actor)) // SỬA LỖI Ở ĐÂY: Bọc Actor trong ActorData
             }
         }
     }
