@@ -6,6 +6,9 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 // import android.util.Log // Bỏ comment để dùng Log.d cho debug
 
+// Định nghĩa ExtractorLinkType nếu chưa có (thường thì Cloudstream đã có sẵn)
+// enum class ExtractorLinkType { VIDEO, M3U8, DASH } // Ví dụ
+
 class Xvv1deosProvider : MainAPI() {
     override var mainUrl = "https://www.xvv1deos.com"
     override var name = "Xvv1deos"
@@ -56,8 +59,7 @@ class Xvv1deosProvider : MainAPI() {
 
         return newAnimeSearchResponse(title, fullUrl, TvType.Movie) {
             this.posterUrl = posterUrl
-            // === THÊM POSTER HEADERS VÀO ĐÂY ===
-            if (!posterUrl.isNullOrBlank()) { // Chỉ thêm header nếu có posterUrl
+            if (!posterUrl.isNullOrBlank()) {
                 this.posterHeaders = mapOf("Referer" to mainUrl)
             }
         }
@@ -65,7 +67,7 @@ class Xvv1deosProvider : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val pageNumber = if (page > 1) "/new/${page - 1}" else ""
-        val document = app.get("$mainUrl$pageNumber").document // Thêm header nếu cần: app.get(url, headers = mapOf("Referer" to mainUrl)).document
+        val document = app.get("$mainUrl$pageNumber").document
 
         val items = document.select("div.mozaique div.thumb-block")?.mapNotNull {
             it.toSearchResponse()
@@ -85,13 +87,12 @@ class Xvv1deosProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url).document // Thêm header nếu cần: app.get(url, headers = mapOf("Referer" to mainUrl)).document
+        val document = app.get(url).document
 
         val title = document.selectFirst("h2.page-title")?.ownText()?.trim()
             ?: document.selectFirst("meta[property=og:title]")?.attr("content")
             ?: return null
 
-        // Poster cho trang load, thường là ảnh lớn hơn, có thể cần header tương tự nếu từ CDN giống nhau
         var poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         poster?.let {
             if (it.startsWith("//")) poster = "https:$it"
@@ -151,7 +152,6 @@ class Xvv1deosProvider : MainAPI() {
                                    recImage = mainUrl + recImage
                                 }
                              }
-                            // Video liên quan cũng có thể cần posterHeaders
                             recommendations.add(newAnimeSearchResponse(recTitle, recHref, TvType.Movie) {
                                 this.posterUrl = if (recImage.isNotBlank()) recImage else null
                                 if (!this.posterUrl.isNullOrBlank()) {
@@ -167,7 +167,7 @@ class Xvv1deosProvider : MainAPI() {
         return newMovieLoadResponse(title, url, TvType.Movie, url) {
             this.posterUrl = poster
             if (!this.posterUrl.isNullOrBlank()) {
-                this.posterHeaders = mapOf("Referer" to mainUrl) // Thêm header cho poster chính của trang load
+                this.posterHeaders = mapOf("Referer" to mainUrl)
             }
             this.plot = description
             this.tags = tags
@@ -210,12 +210,81 @@ class Xvv1deosProvider : MainAPI() {
     }
 
     override suspend fun loadLinks(
-        data: String,
+        data: String, // data ở đây là URL của trang xem phim
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Hàm này sẽ được triển khai sau theo yêu cầu của bạn.
-        return false
+        val document = app.get(data).document
+        val scripts = document.select("script")
+        var linksFound = false
+
+        val videoUrlLowRegex = Regex("""html5player\.setVideoUrlLow\s*\(\s*['"](.*?)['"]\s*\)""")
+        val videoUrlHighRegex = Regex("""html5player\.setVideoUrlHigh\s*\(\s*['"](.*?)['"]\s*\)""")
+        val videoHlsRegex = Regex("""html5player\.setVideoHLS\s*\(\s*['"](.*?)['"]\s*\)""")
+
+        scripts.forEach { script ->
+            val scriptContent = script.html()
+
+            videoHlsRegex.find(scriptContent)?.groupValues?.get(1)?.let { hlsUrl ->
+                if (hlsUrl.isNotBlank()) {
+                    callback(
+                        ExtractorLink(
+                            source = this.name,
+                            name = "${this.name} HLS", // Hoặc có thể ghi "Auto"
+                            url = hlsUrl,
+                            referer = data, // Referer là URL của trang xem phim
+                            quality = Qualities.Unknown.value, // M3U8 tự chọn chất lượng
+                            type = ExtractorLinkType.M3U8, // Hoặc isM3u8 = true nếu dùng field đó
+                            headers = mapOf("Referer" to data)
+                        )
+                    )
+                    linksFound = true
+                }
+            }
+
+            videoUrlHighRegex.find(scriptContent)?.groupValues?.get(1)?.let { highQualityUrl ->
+                if (highQualityUrl.isNotBlank()) {
+                    // Cố gắng đoán chất lượng từ URL (nếu có, ví dụ: ..._1080p.mp4)
+                    // Nếu không, có thể đặt một giá trị mặc định hoặc dựa vào tên "High"
+                    val quality = if (highQualityUrl.contains("1080")) Qualities.P1080.value
+                                  else if (highQualityUrl.contains("720")) Qualities.P720.value
+                                  else Qualities.P720.value // Mặc định cho "High"
+                    callback(
+                        ExtractorLink(
+                            source = this.name,
+                            name = "${this.name} High", // Hoặc tên chất lượng cụ thể
+                            url = highQualityUrl,
+                            referer = data,
+                            quality = quality,
+                            type = ExtractorLinkType.VIDEO, // MP4 video
+                            headers = mapOf("Referer" to data)
+                        )
+                    )
+                    linksFound = true
+                }
+            }
+            
+            videoUrlLowRegex.find(scriptContent)?.groupValues?.get(1)?.let { lowQualityUrl ->
+                 if (lowQualityUrl.isNotBlank()) {
+                    val quality = if (lowQualityUrl.contains("480")) Qualities.P480.value
+                                  else if (lowQualityUrl.contains("360")) Qualities.P360.value
+                                  else Qualities.P360.value // Mặc định cho "Low"
+                    callback(
+                        ExtractorLink(
+                            source = this.name,
+                            name = "${this.name} Low",
+                            url = lowQualityUrl,
+                            referer = data,
+                            quality = quality,
+                            type = ExtractorLinkType.VIDEO, // MP4/3GP video
+                            headers = mapOf("Referer" to data)
+                        )
+                    )
+                    linksFound = true
+                }
+            }
+        }
+        return linksFound
     }
 }
