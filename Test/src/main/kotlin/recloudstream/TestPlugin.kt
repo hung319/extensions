@@ -1,4 +1,4 @@
-package com.lagradost.cloudstream3.plugins.xvv1deosprovider
+package com.lagradost.cloudstream3.plugins
 
 import android.content.Context
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
