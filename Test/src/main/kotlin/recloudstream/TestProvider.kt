@@ -4,6 +4,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
+// import android.util.Log // Bỏ comment để dùng Log.d cho debug
 
 class Xvv1deosProvider : MainAPI() {
     override var mainUrl = "https://www.xvv1deos.com"
@@ -19,35 +20,48 @@ class Xvv1deosProvider : MainAPI() {
         val title = titleElement?.attr("title")?.ifBlank { titleElement.text() } ?: titleElement?.text() ?: return null
         var originalHref = titleElement?.attr("href") ?: return null
 
-        // === SỬA LỖI URL Ở ĐÂY ===
-        // Mục tiêu: Chuyển đổi /video.ID_VIDEO/PHAN_KHONG_CAN_THIET_1/PHAN_KHONG_CAN_THIET_2/SLUG_TITLE
-        //           thành     /video.ID_VIDEO/SLUG_TITLE
-        // Ví dụ: /video.ohpmolh6424/41291503/THUMBNUM/milf_shaving...
-        //   sẽ thành /video.ohpmolh6424/milf_shaving...
         val urlCleanRegex = Regex("^(/video\\.[^/]+)/[^/]+/[^/]+/(.+)$")
         var cleanedHref = originalHref
         val matchResult = urlCleanRegex.find(originalHref)
         if (matchResult != null && matchResult.groupValues.size == 3) {
-            val videoIdPath = matchResult.groupValues[1] // ví dụ: /video.ohpmolh6424
-            val slug = matchResult.groupValues[2]      // ví dụ: milf_shaving_her_pussy...
+            val videoIdPath = matchResult.groupValues[1]
+            val slug = matchResult.groupValues[2]
             cleanedHref = "$videoIdPath/$slug"
         }
-        // Nếu regex không khớp, giữ nguyên href (coi như đã đúng định dạng /video.ID/SLUG)
-
         val fullUrl = if (cleanedHref.startsWith("http")) cleanedHref else mainUrl + cleanedHref
 
+        // === LOGIC LẤY POSTER ĐƯỢC CẬP NHẬT ===
+        var posterUrl: String? = null
+        val imgTag = this.selectFirst("div.thumb a img") // Selector cho thẻ img
 
-        val imageElement = this.selectFirst("div.thumb a img")
-        var image = imageElement?.attr("data-src")
-        if (image.isNullOrBlank() || image.contains("lightbox/lightbox-blank.gif")) {
-            image = imageElement?.attr("src")
+        if (imgTag != null) {
+            val dataSrc = imgTag.attr("data-src")
+            val src = imgTag.attr("src") // Lấy cả src để kiểm tra nếu data-src không ổn
+
+            // Ưu tiên data-src
+            if (!dataSrc.isNullOrBlank() && !dataSrc.contains("lightbox-blank.gif")) {
+                posterUrl = dataSrc
+            }
+            // Nếu data-src không hợp lệ, thử dùng src (nhưng cũng kiểm tra placeholder)
+            else if (!src.isNullOrBlank() && !src.contains("lightbox-blank.gif")) {
+                posterUrl = src
+            }
+
+            // Đảm bảo URL là tuyệt đối nếu nó là một đường dẫn tương đối
+            // (Trong file HTML bạn cung cấp, data-src đã là URL tuyệt đối https)
+            posterUrl?.let {
+                if (it.startsWith("//")) { // Dạng //cdn.example.com/image.jpg
+                    posterUrl = "https:$it"
+                } else if (it.startsWith("/") && !it.startsWith("//")) { // Dạng /path/image.jpg
+                    posterUrl = "$mainUrl$it"
+                }
+                // Nếu đã là http/https thì giữ nguyên
+            }
         }
-        if (image.isNullOrBlank() || image.contains("lightbox/lightbox-blank.gif")){
-            image = null
-        }
+        // Log.d("Xvv1deosProvider", "Title: $title, Poster: $posterUrl") // Dùng để debug
 
         return newAnimeSearchResponse(title, fullUrl, TvType.Movie) {
-            this.posterUrl = image
+            this.posterUrl = posterUrl // Gán posterUrl đã được xử lý
         }
     }
 
@@ -82,7 +96,7 @@ class Xvv1deosProvider : MainAPI() {
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         var description = document.selectFirst("meta[name=description]")?.attr("content")
         if (description.isNullOrBlank()) {
-            description = document.selectFirst("div.video-description-text")?.text() // Giả định
+            description = document.selectFirst("div.video-description-text")?.text()
         }
 
         var tags: List<String>? = null
@@ -191,7 +205,6 @@ class Xvv1deosProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         // Hàm này sẽ được triển khai sau theo yêu cầu của bạn.
-        // Hiện tại, nó sẽ không làm gì và trả về false.
         return false
     }
 }
