@@ -17,8 +17,24 @@ class Xvv1deosProvider : MainAPI() {
     private fun Element.toSearchResponse(): SearchResponse? {
         val titleElement = this.selectFirst("p.title a")
         val title = titleElement?.attr("title")?.ifBlank { titleElement.text() } ?: titleElement?.text() ?: return null
-        val href = titleElement?.attr("href") ?: return null
-        val fullUrl = if (href.startsWith("http")) href else mainUrl + href
+        var originalHref = titleElement?.attr("href") ?: return null
+
+        // === SỬA LỖI URL Ở ĐÂY ===
+        // Mục tiêu: Chuyển đổi /video.ID_VIDEO/PHAN_KHONG_CAN_THIET_1/PHAN_KHONG_CAN_THIET_2/SLUG_TITLE
+        //           thành     /video.ID_VIDEO/SLUG_TITLE
+        // Ví dụ: /video.ohpmolh6424/41291503/THUMBNUM/milf_shaving...
+        //   sẽ thành /video.ohpmolh6424/milf_shaving...
+        val urlCleanRegex = Regex("^(/video\\.[^/]+)/[^/]+/[^/]+/(.+)$")
+        var cleanedHref = originalHref
+        val matchResult = urlCleanRegex.find(originalHref)
+        if (matchResult != null && matchResult.groupValues.size == 3) {
+            val videoIdPath = matchResult.groupValues[1] // ví dụ: /video.ohpmolh6424
+            val slug = matchResult.groupValues[2]      // ví dụ: milf_shaving_her_pussy...
+            cleanedHref = "$videoIdPath/$slug"
+        }
+        // Nếu regex không khớp, giữ nguyên href (coi như đã đúng định dạng /video.ID/SLUG)
+
+        val fullUrl = if (cleanedHref.startsWith("http")) cleanedHref else mainUrl + cleanedHref
 
 
         val imageElement = this.selectFirst("div.thumb a img")
@@ -36,26 +52,19 @@ class Xvv1deosProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        val pageNumber = if (page > 1) "/new/${page - 1}" else "" // Trang 1 của API thường là không có số trang hoặc /new/0
+        val pageNumber = if (page > 1) "/new/${page - 1}" else ""
         val document = app.get("$mainUrl$pageNumber").document
 
         val items = document.select("div.mozaique div.thumb-block")?.mapNotNull {
             it.toSearchResponse()
-        } ?: emptyList() // Đảm bảo items không bao giờ là null
+        } ?: emptyList()
 
-        // Kiểm tra xem có trang tiếp theo hay không dựa trên sự tồn tại của nút "Next"
-        // Ví dụ: <a href="/new/1" class="no-page next-page">
         val hasNextPage = document.selectFirst("div.pagination a.next-page") != null
         
-        // SỬA CẢNH BÁO DEPRECATION Ở ĐÂY
         return newHomePageResponse(listOf(HomePageList("Videos", items)), hasNextPage)
     }
 
     override suspend fun search(query: String): List<SearchResponse>? {
-        // Đối với tìm kiếm, Cloudstream thường xử lý phân trang tự động nếu bạn trả về một danh sách lớn.
-        // Hoặc, nếu trang web có phân trang cho tìm kiếm, bạn sẽ cần thêm tham số page vào URL
-        // và logic để xác định hasNextPage tương tự như getMainPage.
-        // Ví dụ URL tìm kiếm có phân trang: "$mainUrl/?k=$query&p=$page" (nếu có)
         val document = app.get("$mainUrl/?k=$query").document
 
         return document.select("div.mozaique div.thumb-block")?.mapNotNull {
@@ -73,7 +82,7 @@ class Xvv1deosProvider : MainAPI() {
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         var description = document.selectFirst("meta[name=description]")?.attr("content")
         if (description.isNullOrBlank()) {
-            description = document.selectFirst("div.video-description-text")?.text()
+            description = document.selectFirst("div.video-description-text")?.text() // Giả định
         }
 
         var tags: List<String>? = null
