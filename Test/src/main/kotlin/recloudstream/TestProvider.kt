@@ -30,44 +30,42 @@ class Xvv1deosProvider : MainAPI() {
         }
         val fullUrl = if (cleanedHref.startsWith("http")) cleanedHref else mainUrl + cleanedHref
 
-        // === LOGIC LẤY POSTER ĐƯỢC CẬP NHẬT ===
         var posterUrl: String? = null
-        val imgTag = this.selectFirst("div.thumb a img") // Selector cho thẻ img
+        val imgTag = this.selectFirst("div.thumb a img")
 
         if (imgTag != null) {
             val dataSrc = imgTag.attr("data-src")
-            val src = imgTag.attr("src") // Lấy cả src để kiểm tra nếu data-src không ổn
+            val src = imgTag.attr("src")
 
-            // Ưu tiên data-src
             if (!dataSrc.isNullOrBlank() && !dataSrc.contains("lightbox-blank.gif")) {
                 posterUrl = dataSrc
             }
-            // Nếu data-src không hợp lệ, thử dùng src (nhưng cũng kiểm tra placeholder)
             else if (!src.isNullOrBlank() && !src.contains("lightbox-blank.gif")) {
                 posterUrl = src
             }
 
-            // Đảm bảo URL là tuyệt đối nếu nó là một đường dẫn tương đối
-            // (Trong file HTML bạn cung cấp, data-src đã là URL tuyệt đối https)
             posterUrl?.let {
-                if (it.startsWith("//")) { // Dạng //cdn.example.com/image.jpg
+                if (it.startsWith("//")) {
                     posterUrl = "https:$it"
-                } else if (it.startsWith("/") && !it.startsWith("//")) { // Dạng /path/image.jpg
+                } else if (it.startsWith("/") && !it.startsWith("//")) {
                     posterUrl = "$mainUrl$it"
                 }
-                // Nếu đã là http/https thì giữ nguyên
             }
         }
-        // Log.d("Xvv1deosProvider", "Title: $title, Poster: $posterUrl") // Dùng để debug
+        // Log.d("Xvv1deosProvider", "Title: $title, Poster: $posterUrl, FullURL: $fullUrl")
 
         return newAnimeSearchResponse(title, fullUrl, TvType.Movie) {
-            this.posterUrl = posterUrl // Gán posterUrl đã được xử lý
+            this.posterUrl = posterUrl
+            // === THÊM POSTER HEADERS VÀO ĐÂY ===
+            if (!posterUrl.isNullOrBlank()) { // Chỉ thêm header nếu có posterUrl
+                this.posterHeaders = mapOf("Referer" to mainUrl)
+            }
         }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val pageNumber = if (page > 1) "/new/${page - 1}" else ""
-        val document = app.get("$mainUrl$pageNumber").document
+        val document = app.get("$mainUrl$pageNumber").document // Thêm header nếu cần: app.get(url, headers = mapOf("Referer" to mainUrl)).document
 
         val items = document.select("div.mozaique div.thumb-block")?.mapNotNull {
             it.toSearchResponse()
@@ -87,13 +85,19 @@ class Xvv1deosProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url).document
+        val document = app.get(url).document // Thêm header nếu cần: app.get(url, headers = mapOf("Referer" to mainUrl)).document
 
         val title = document.selectFirst("h2.page-title")?.ownText()?.trim()
             ?: document.selectFirst("meta[property=og:title]")?.attr("content")
             ?: return null
 
-        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
+        // Poster cho trang load, thường là ảnh lớn hơn, có thể cần header tương tự nếu từ CDN giống nhau
+        var poster = document.selectFirst("meta[property=og:image]")?.attr("content")
+        poster?.let {
+            if (it.startsWith("//")) poster = "https:$it"
+            else if (it.startsWith("/") && !it.startsWith("//")) poster = "$mainUrl$it"
+        }
+
         var description = document.selectFirst("meta[name=description]")?.attr("content")
         if (description.isNullOrBlank()) {
             description = document.selectFirst("div.video-description-text")?.text()
@@ -147,8 +151,12 @@ class Xvv1deosProvider : MainAPI() {
                                    recImage = mainUrl + recImage
                                 }
                              }
+                            // Video liên quan cũng có thể cần posterHeaders
                             recommendations.add(newAnimeSearchResponse(recTitle, recHref, TvType.Movie) {
                                 this.posterUrl = if (recImage.isNotBlank()) recImage else null
+                                if (!this.posterUrl.isNullOrBlank()) {
+                                    this.posterHeaders = mapOf("Referer" to mainUrl)
+                                }
                             })
                         }
                     } catch (_: Exception) { }
@@ -158,6 +166,9 @@ class Xvv1deosProvider : MainAPI() {
 
         return newMovieLoadResponse(title, url, TvType.Movie, url) {
             this.posterUrl = poster
+            if (!this.posterUrl.isNullOrBlank()) {
+                this.posterHeaders = mapOf("Referer" to mainUrl) // Thêm header cho poster chính của trang load
+            }
             this.plot = description
             this.tags = tags
             this.recommendations = recommendations
