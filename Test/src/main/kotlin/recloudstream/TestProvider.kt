@@ -62,42 +62,26 @@ class TxnhhProvider : MainAPI() {
             val regex = Regex("""xv\.cats\.write_thumb_block_list\s*\((.+?),\s*['"]home-cat-list['"]\s*\)""")
             val matchResult = regex.find(scriptContent)
             
-            if (matchResult != null && matchResult.groupValues.size > 1) {
-                var arrayString = matchResult.groupValues[1]
-                arrayString = arrayString.replace(Regex("""\{\s*i:\s*[^,]+?\.png\s*,\s*u:\s*[^,]+?,\s*tf:\s*[^,]+?,\s*t:\s*[^,]+?,\s*n:\s*0,\s*w:\s*\d+,\s*no_rotate:\s*true,\s*tbk:\s*false\s*}"""), "")
-                                      .replace(Regex(""",\s*\]"""), "]")
-                                      .trim()
+            // Trong hàm getMainPage
+// ... (sau khi có matchResult)
+if (matchResult != null && matchResult.groupValues.size > 1) {
+    var arrayString = matchResult.groupValues[1].trim() // Chỉ trim()
 
-                if (arrayString.startsWith("[") && arrayString.endsWith("]")) {
-                    try {
-                        val items = AppUtils.parseJson<List<HomePageItem>>(arrayString)
-                        val categories = ArrayList<SearchResponse>()
+    // Thử comment dòng replace gây lỗi:
+    // arrayString = arrayString.replace(Regex("""... phức tạp ..."""), "") 
+    //                      .replace(Regex(""",\s*\]"""), "]")
+    //                      .trim()
 
-                        items.forEach { item ->
-                            val itemTitle = item.title ?: item.titleFallback ?: "Unknown Section"
-                            val itemUrl = if (item.url?.startsWith("/") == true) mainUrl + item.url else item.url
-                            val itemPoster = if (item.image?.startsWith("//") == true) "https:${item.image}" else item.image
-
-                            if (itemUrl != null) {
-                                categories.add(
-                                    newMovieSearchResponse(
-                                        name = itemTitle,
-                                        url = itemUrl,
-                                        type = TvType.NSFW
-                                    ) {
-                                        this.posterUrl = itemPoster
-                                    }
-                                )
-                            }
-                        }
-                        if (categories.isNotEmpty()) {
-                            homePageList.add(HomePageList("Browse Sections", categories, true))
-                        }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
-                }
-            }
+    if (arrayString.startsWith("[") && arrayString.endsWith("]")) {
+        try {
+            // Thử parse trực tiếp
+            val items = AppUtils.parseJson<List<HomePageItem>>(arrayString)
+            // ... (phần còn lại của code) ...
+        } catch (e: Exception) {
+            e.printStackTrace() // Xem lỗi parse JSON nếu có
+        }
+    }
+}
         }
         if (homePageList.isEmpty()) {
             homePageList.add(HomePageList("Default Sections (Example)", listOf(
