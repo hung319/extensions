@@ -4,10 +4,10 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import com.fasterxml.jackson.annotation.JsonProperty
-// import com.lagradost.cloudstream3.network.CloudflareKiller
+// import com.lagradost.cloudstream3.network.CloudflareKiller // Bỏ comment nếu cần
 
-// CloudStream API có thể thay đổi, đảm bảo các hàm tiện ích như newMovieSearchResponse, newMovieLoadResponse 
-// được gọi đúng với phiên bản bạn đang dùng.
+// Đảm bảo import SearchQuality
+import com.lagradost.cloudstream3.SearchQuality 
 
 class TxnhhProvider : MainAPI() {
     override var mainUrl = "https://www.txnhh.com"
@@ -20,14 +20,12 @@ class TxnhhProvider : MainAPI() {
     )
 
     companion object {
-        // Trả về enum SearchQuality trực tiếp nếu nó tồn tại và được chấp nhận
-        // Nếu không, tạm thời trả về null hoặc tìm cách map sang Int nếu trường quality là Int.
         fun getQualityFromString(quality: String?): SearchQuality? { 
             return when (quality?.trim()?.lowercase()) {
-                "1080p" -> SearchQuality.P1080 // Đảm bảo SearchQuality.P1080 tồn tại
-                "720p" -> SearchQuality.P720
-                "480p" -> SearchQuality.P480
-                "360p" -> SearchQuality.P360
+                "1080p" -> SearchQuality.HD // Hoặc .FourK nếu có và phù hợp
+                "720p" -> SearchQuality.HD
+                "480p" -> SearchQuality.SD
+                "360p" -> SearchQuality.SD // Hoặc .Cam
                 else -> null 
             }
         }
@@ -35,11 +33,9 @@ class TxnhhProvider : MainAPI() {
         fun parseDuration(durationString: String?): Int? {
             if (durationString.isNullOrBlank()) return null
             var totalSeconds = 0
-            // Tìm "Xmin"
             Regex("""(\d+)\s*min""").find(durationString)?.groupValues?.get(1)?.toIntOrNull()?.let {
                 totalSeconds += it * 60
             }
-            // Tìm "Xh"
             Regex("""(\d+)\s*h""").find(durationString)?.groupValues?.get(1)?.toIntOrNull()?.let {
                 totalSeconds += it * 3600
             }
@@ -84,11 +80,10 @@ class TxnhhProvider : MainAPI() {
 
                             if (itemUrl != null) {
                                 categories.add(
-                                    newMovieSearchResponse( // Sử dụng hàm helper của CloudStream
+                                    newMovieSearchResponse(
                                         name = itemTitle,
                                         url = itemUrl,
-                                        type = TvType.NSFW // Trực tiếp gán TvType
-                                        // apiName không cần thiết ở đây, this.name sẽ được dùng tự động
+                                        type = TvType.NSFW
                                     ) {
                                         this.posterUrl = itemPoster
                                     }
@@ -99,14 +94,13 @@ class TxnhhProvider : MainAPI() {
                             homePageList.add(HomePageList("Browse Sections", categories, true))
                         }
                     } catch (e: Exception) {
-                        e.printStackTrace() // Log lỗi
+                        e.printStackTrace()
                     }
                 }
             }
         }
         if (homePageList.isEmpty()) {
             homePageList.add(HomePageList("Default Sections (Example)", listOf(
-                // Đảm bảo các tham số là đúng cho newMovieSearchResponse
                 newMovieSearchResponse(name = "Asian Woman", url = "$mainUrl/search/asian_woman", type = TvType.NSFW) {},
                 newMovieSearchResponse(name = "Today's Selection", url = "$mainUrl/todays-selection", type = TvType.NSFW) {}
             )))
@@ -124,23 +118,18 @@ class TxnhhProvider : MainAPI() {
         val durationText = metadata?.ownText()?.trim()
         val qualityText = metadata?.selectFirst("span.video-hd")?.text()?.trim()
         
-        // Tạo SearchResponse và sau đó gán các thuộc tính nếu cần và nếu chúng là var
-        val searchResponse = newMovieSearchResponse(
+        // val durationSeconds = parseDuration(durationText) // Tạm thời bỏ qua nếu 'length' gây lỗi
+
+        return newMovieSearchResponse(
             name = title,
             url = href,
             type = TvType.NSFW
         ) {
             this.posterUrl = posterUrl
-            this.quality = getQualityFromString(qualityText) // Gán SearchQuality?
-            // Đối với length, nếu nó không phải là một phần của lambda builder,
-            // bạn có thể cần một đối tượng MovieSearchResponse đầy đủ hơn.
-            // Tạm thời bỏ qua 'length' nếu gây lỗi và không có cách gán trực tiếp rõ ràng.
+            this.quality = getQualityFromString(qualityText)
+            // Nếu trường 'length' không có hoặc gây lỗi, hãy comment dòng dưới
+            // parseDuration(durationText)?.let { this.length = it } 
         }
-        // Thử gán length sau nếu có thể, hoặc tìm cách truyền vào constructor/builder
-        // parseDuration(durationText)?.let { searchResponse.length = it } // Điều này yêu cầu 'length' phải là 'var' và đúng tên
-        // Hiện tại, nhiều provider không set length ở search mà chỉ ở load.
-
-        return searchResponse
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -202,23 +191,21 @@ class TxnhhProvider : MainAPI() {
                     data class RelatedItem(
                         @JsonProperty("u") val u: String?,
                         @JsonProperty("i") val i: String?,
-                        @JsonProperty("tf") val tf: String?,
-                        @JsonProperty("d") val d: String?
+                        @JsonProperty("tf") val tf: String?, // Title
+                        @JsonProperty("d") val d: String?  // Duration
                     )
                     val relatedItems = AppUtils.parseJson<List<RelatedItem>>(jsonArrayString)
                     relatedItems.forEach { related ->
                         if (related.u != null && related.tf != null) {
-                            val relatedResponse = newMovieSearchResponse(
+                            // val relatedDuration = parseDuration(related.d) // Tạm thời bỏ qua nếu 'length' gây lỗi
+                            relatedVideos.add(newMovieSearchResponse(
                                 name = related.tf,
                                 url = mainUrl + related.u,
                                 type = TvType.NSFW
-                                // apiName không cần thiết
                             ) {
                                 this.posterUrl = related.i?.let { if (it.startsWith("//")) "https:$it" else it }
-                                // Tạm thời bỏ qua length ở đây nếu gây lỗi
-                                // parseDuration(related.d)?.let { this.length = it }
-                            }
-                            relatedVideos.add(relatedResponse)
+                                // parseDuration(related.d)?.let { this.length = it } // Tạm thời bỏ qua
+                            })
                         }
                     }
                 } catch (e: Exception) {
@@ -227,20 +214,36 @@ class TxnhhProvider : MainAPI() {
             }
         }
         
+        // Lấy thời lượng từ trang load nếu có
+        val durationFromMeta = document.selectFirst("meta[property=og:duration]")?.attr("content")
+        var durationInSeconds: Int? = null
+        if (durationFromMeta != null) {
+            // PT02H25M23S -> 2*3600 + 25*60 + 23
+            try {
+                var tempDuration = 0
+                Regex("""PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?""").find(durationFromMeta)?.let { match ->
+                    match.groupValues[1].toIntOrNull()?.let { tempDuration += it * 3600 }
+                    match.groupValues[2].toIntOrNull()?.let { tempDuration += it * 60 }
+                    match.groupValues[3].toIntOrNull()?.let { tempDuration += it }
+                }
+                if (tempDuration > 0) durationInSeconds = tempDuration
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+
+
         return newMovieLoadResponse(
             name = title,
             url = url,
             type = TvType.NSFW,
-            dataUrl = videoData.joinToString("||")
+            dataUrl = videoData.joinToString("||") 
         ) {
             this.posterUrl = poster
             this.plot = description
             this.tags = tags
             this.recommendations = relatedVideos
-            // this.year = ... // Nếu có năm sản xuất
-            // parseDuration(document.selectFirst("meta[property=og:duration]")?.attr("content"))?.let {
-            //     this.duration = it // Nếu có trường duration và parse được từ meta
-            // }
+            this.duration = durationInSeconds // Gán duration ở đây nếu có trường 'duration'
         }
     }
 }
