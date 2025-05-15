@@ -19,12 +19,13 @@ class TxnhhProvider : MainAPI() {
     override val supportedTypes = setOf(
         TvType.NSFW
     )
-    // override val supportsSearchPage = true // Đã xóa
+    // Bỏ: override val supportsSearchPage = true 
 
     companion object {
+        // ... (companion object giữ nguyên)
         fun getQualityFromString(quality: String?): SearchQuality? {
             return when (quality?.trim()?.lowercase()) {
-                "1080p" -> SearchQuality.HD
+                "1080p" -> SearchQuality.HD 
                 "720p" -> SearchQuality.HD
                 "480p" -> SearchQuality.SD
                 "360p" -> SearchQuality.SD
@@ -56,6 +57,7 @@ class TxnhhProvider : MainAPI() {
     }
 
     data class HomePageItem(
+        // ... (data class giữ nguyên)
         @JsonProperty("i") val image: String?,
         @JsonProperty("u") val url: String?,
         @JsonProperty("t") val title: String?,
@@ -67,159 +69,100 @@ class TxnhhProvider : MainAPI() {
         @JsonProperty("w") val weight: Int? = null
     )
 
-    private suspend fun fetchSectionVideos(sectionUrl: String, pageForPagination: Int? = null): Pair<List<SearchResponse>, String?> {
-        var currentUrl = sectionUrl
-        var actualPageForUrl = pageForPagination ?: 1 // Trang bắt đầu từ 1 cho logic người dùng
-
-        if (actualPageForUrl > 1) {
-            val pageNumberInUrl = actualPageForUrl - 1 // XNXX dùng /0, /1, /2... cho trang 2, 3, 4...
-            val pageSuffix = "/$pageNumberInUrl"
-            
-            // Chỉ thêm suffix nếu URL chưa có phần số ở cuối cùng hoặc là base URL
-            if (!currentUrl.matches(Regex(".*/\\d+$"))) {
-                 currentUrl = "$currentUrl$pageSuffix"
-            } else {
-                // Nếu URL đã có dạng /search/term/number, thay thế number đó
-                currentUrl = currentUrl.replace(Regex("/\\d+$"), pageSuffix)
-            }
+    // fetchSectionVideos sẽ không cần xử lý page nữa vì search không có page
+    private suspend fun fetchSectionVideos(sectionUrl: String, maxItems: Int = Int.MAX_VALUE): List<SearchResponse> {
+        println("TxnhhProvider DEBUG: fetchSectionVideos called for URL = $sectionUrl, maxItems = $maxItems")
+        if (!sectionUrl.startsWith("http")) {
+            println("TxnhhProvider WARNING: Invalid sectionUrl in fetchSectionVideos: $sectionUrl")
+            return emptyList()
         }
-        println("TxnhhProvider DEBUG: fetchSectionVideos called for URL = $currentUrl (original: $sectionUrl, pageForApp: $actualPageForUrl)")
-
         val videoList = mutableListOf<SearchResponse>()
-        var nextPageUrl: String? = null
-
         try {
-            val document = app.get(currentUrl).document
+            // Nếu sectionUrl có dạng /page/number, Jsoup sẽ tải nó.
+            // Tuy nhiên, hàm search sẽ không tự động tạo các URL /page/number này.
+            val document = app.get(sectionUrl).document 
             val videoElements = document.select("div.mozaique div.thumb-block")
-            println("TxnhhProvider DEBUG: Found ${videoElements.size} thumb-blocks in fetchSectionVideos for $currentUrl")
+            println("TxnhhProvider DEBUG: Found ${videoElements.size} thumb-blocks in fetchSectionVideos for $sectionUrl")
             
-            videoElements.mapNotNullTo(videoList) { it.toSearchResponse() }
-
-            val pagination = document.selectFirst("div.pagination ul")
-            if (pagination != null) {
-                val nextElement = pagination.select("li a.next, li a:not(.active):not(.disabled)").lastOrNull { 
-                    // Lấy link trang kế tiếp không phải là "..." và có href
-                    it.text().toIntOrNull() != null || it.hasClass("next") || it.selectFirst("span.icon-f.icf-chevron-right") != null
-                }
-
-                if (nextElement != null && nextElement.hasAttr("href")) {
-                    val href = nextElement.attr("href")
-                    if (href.isNotBlank() && !nextElement.hasClass("active") && !nextElement.hasClass("disabled")) { // Đảm bảo nó không phải là trang hiện tại hoặc bị vô hiệu hóa
-                        // Kiểm tra xem href có phải là một trang hợp lệ không (ví dụ, không phải là #)
-                        if(href != "#") {
-                            nextPageUrl = mainUrl + href
-                             println("TxnhhProvider DEBUG: Found nextPageUrl for fetchSectionVideos: $nextPageUrl")
-                        } else {
-                            println("TxnhhProvider DEBUG: Next page link is '#', considering no next page.")
-                        }
-                    }
-                } else {
-                    println("TxnhhProvider DEBUG: No valid 'Next' page link found or it's the last page for $currentUrl.")
-                }
-            } else {
-                 println("TxnhhProvider DEBUG: Pagination block not found for $currentUrl")
-            }
+            videoElements.take(maxItems).mapNotNullTo(videoList) { it.toSearchResponse() }
         } catch (e: Exception) {
-            System.err.println("TxnhhProvider ERROR: Failed to fetch/parse section $currentUrl. Error: ${e.message}")
+            System.err.println("TxnhhProvider ERROR: Failed to fetch/parse section $sectionUrl. Error: ${e.message}")
         }
-        return Pair(videoList, nextPageUrl)
+        return videoList
     }
-
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         println("TxnhhProvider DEBUG: getMainPage called, page: $page")
         val homePageListsResult = ArrayList<HomePageList>()
+        var hasNextMainPage = false
 
-        val document = app.get(mainUrl).document // Chỉ get 1 lần cho trang chủ
-        val scriptElements = document.select("script:containsData(xv.cats.write_thumb_block_list)")
+        if (page == 1) { // Chỉ tải nội dung cho trang đầu tiên của getMainPage
+            val document = app.get(mainUrl).document
+            val scriptElements = document.select("script:containsData(xv.cats.write_thumb_block_list)")
 
-        var hasNextMainPage = false // Mặc định là không có trang chủ tiếp theo
+            if (scriptElements.isNotEmpty()) {
+                val scriptContent = scriptElements.html()
+                val regex = Regex("""xv\.cats\.write_thumb_block_list\s*\(\s*(\[(?:.|\n)*?\])\s*,\s*['"]home-cat-list['"]""")
+                val matchResult = regex.find(scriptContent)
+                
+                if (matchResult != null && matchResult.groupValues.size > 1) {
+                    val arrayString = matchResult.groupValues[1].trim() 
+                    if (arrayString.startsWith("[") && arrayString.endsWith("]")) {
+                        try {
+                            val allHomePageItems = AppUtils.parseJson<List<HomePageItem>>(arrayString)
+                            val validSectionsSource = allHomePageItems.mapNotNull { item ->
+                                val itemTitle = item.title ?: item.titleFallback
+                                val itemUrlPart = item.url
+                                if (itemTitle == null || itemUrlPart == null) return@mapNotNull null
+                                val itemUrl = if (itemUrlPart.startsWith("/")) mainUrl + itemUrlPart else itemUrlPart
+                                val isGameOrStory = itemUrl.contains("nutaku.net") || itemUrl.contains("sexstories.com")
+                                val isLikelyStaticLink = item.noRotate == true && item.count == "0" && item.tbk == false && 
+                                                         (isGameOrStory || item.url == "/your-suggestions/straight" || item.url == "/tags" || item.url == "/pornstars")
+                                if (isGameOrStory || isLikelyStaticLink) null
+                                else if (item.type == "cat" || item.type == "search" || item.url == "/todays-selection" || item.url == "/best" || item.url == "/hits" || item.url == "/fresh" || item.url == "/verified/videos" ) Pair(itemTitle, itemUrl)
+                                else null
+                            }.distinctBy { it.second } 
 
-        if (scriptElements.isNotEmpty()) {
-            val scriptContent = scriptElements.html()
-            val regex = Regex("""xv\.cats\.write_thumb_block_list\s*\(\s*(\[(?:.|\n)*?\])\s*,\s*['"]home-cat-list['"]""")
-            val matchResult = regex.find(scriptContent)
-            
-            if (matchResult != null && matchResult.groupValues.size > 1) {
-                val arrayString = matchResult.groupValues[1].trim() 
-                if (arrayString.startsWith("[") && arrayString.endsWith("]")) {
-                    try {
-                        val allHomePageItems = AppUtils.parseJson<List<HomePageItem>>(arrayString)
-                        val validSectionsSource = allHomePageItems.mapNotNull { item ->
-                            val itemTitle = item.title ?: item.titleFallback
-                            val itemUrlPart = item.url
-                            if (itemTitle == null || itemUrlPart == null) return@mapNotNull null
-                            val itemUrl = if (itemUrlPart.startsWith("/")) mainUrl + itemUrlPart else itemUrlPart
-                            val isGameOrStory = itemUrl.contains("nutaku.net") || itemUrl.contains("sexstories.com")
-                            val isLikelyStaticLink = item.noRotate == true && item.count == "0" && item.tbk == false && 
-                                                     (isGameOrStory || item.url == "/your-suggestions/straight" || item.url == "/tags" || item.url == "/pornstars")
-                            if (isGameOrStory || isLikelyStaticLink) null
-                            else if (item.type == "cat" || item.type == "search" || item.url == "/todays-selection" || item.url == "/best" || item.url == "/hits" || item.url == "/fresh" || item.url == "/verified/videos" ) Pair(itemTitle, itemUrl)
-                            else null
-                        }.distinctBy { it.second } 
-
-                        val sectionsToDisplayThisPage = mutableListOf<Pair<String, String>>()
-                        val todaySelectionUrlPart = "/todays-selection"
-                        
-                        // "Today's Selection" chỉ hiển thị ở trang 1
-                        if (page == 1) {
-                            validSectionsSource.find { it.second.endsWith(todaySelectionUrlPart) }?.let { 
-                                sectionsToDisplayThisPage.add(it)
-                            }
-                        }
-                        
-                        val otherSections = validSectionsSource.filterNot { it.second.endsWith(todaySelectionUrlPart) }.toMutableList()
-                        
-                        val itemsPerHomePage = 5 // Tổng số grid muốn hiển thị
-                        val randomItemsNeeded = itemsPerHomePage - sectionsToDisplayThisPage.size
-                        
-                        if (randomItemsNeeded > 0 && otherSections.isNotEmpty()) {
-                            // Để việc chọn ngẫu nhiên có tính "phân trang", ta cần một seed ổn định cho mỗi page
-                            // Hoặc đơn giản là lấy các phần tử dựa trên chỉ số `page`
-                            val randomSeedForPage = page.toLong() // Sử dụng page làm seed cơ bản
-                            otherSections.shuffle(Random(randomSeedForPage)) // Xáo trộn với seed dựa trên trang
+                            val sectionsToDisplayThisPage = mutableListOf<Pair<String, String>>()
+                            validSectionsSource.find { it.second.endsWith("/todays-selection") }?.let { sectionsToDisplayThisPage.add(it) }
                             
-                            // Tính toán để lấy các mục khác nhau cho mỗi trang (đơn giản hóa)
-                            // Ví dụ: trang 1 lấy 0->N-1, trang 2 lấy N->2N-1 (nếu có đủ)
-                            // Điều này không hoàn toàn ngẫu nhiên giữa các trang nhưng đảm bảo không lặp lại nếu số lượng section lớn
-                            val startIndexForRandom = (page - 1) * randomItemsNeeded 
-                            if (startIndexForRandom < otherSections.size) {
-                                sectionsToDisplayThisPage.addAll(otherSections.drop(startIndexForRandom).take(randomItemsNeeded))
-                            }
-                        }
-                        
-                        // Kiểm tra xem còn section nào để hiển thị cho trang tiếp theo không
-                        val nextStartIndexForRandom = page * randomItemsNeeded
-                        if (otherSections.drop(nextStartIndexForRandom).take(randomItemsNeeded).isNotEmpty() && sectionsToDisplayThisPage.size >= (itemsPerHomePage - (if(page==1 && todaysSelection!=null) 1 else 0) )) {
-                             hasNextMainPage = true
-                        }
+                            val remainingSections = validSectionsSource.filterNot { sectionsToDisplayThisPage.contains(it) }.toMutableList()
+                            remainingSections.shuffle(Random(System.currentTimeMillis())) // Ngẫu nhiên cho trang đầu
+                            
+                            val neededRandomSections = 5 - sectionsToDisplayThisPage.size
+                            if (neededRandomSections > 0) sectionsToDisplayThisPage.addAll(remainingSections.take(neededRandomSections))
+                            
+                            println("TxnhhProvider DEBUG: getMainPage (Page 1) - Final sections to display: ${sectionsToDisplayThisPage.map { it.first }}")
 
-
-                        println("TxnhhProvider DEBUG: getMainPage (Page $page) - Final sections to display: ${sectionsToDisplayThisPage.map { it.first }}")
-
-                        coroutineScope {
-                            val deferredLists = sectionsToDisplayThisPage.map { (sectionTitle, sectionUrl) ->
-                                async {
-                                    val (videos, _) = fetchSectionVideos(sectionUrl) // Lấy tất cả video
-                                    if (videos.isNotEmpty()) {
-                                        HomePageList(sectionTitle, videos)
-                                    } else { null }
+                            coroutineScope {
+                                val deferredLists = sectionsToDisplayThisPage.map { (sectionTitle, sectionUrl) ->
+                                    async {
+                                        val videos = fetchSectionVideos(sectionUrl) // Lấy tất cả video cho grid
+                                        if (videos.isNotEmpty()) HomePageList(sectionTitle, videos) else null
+                                    }
                                 }
+                                deferredLists.forEach { it?.await()?.let { homePageListsResult.add(it) } }
                             }
-                            deferredLists.forEach { it?.await()?.let { homePageListsResult.add(it) } }
-                        }
-                    } catch (e: Exception) { e.printStackTrace() }
+                            // Giả sử không có pagination cho các grid này trên trang chủ
+                            // hasNextMainPage = false (vì chúng ta chỉ làm 1 trang duy nhất cho getMainPage theo kiểu này)
+                        } catch (e: Exception) { e.printStackTrace() }
+                    }
                 }
             }
         }
 
-        if (homePageListsResult.isEmpty() && page == 1) { // Chỉ thêm default nếu là trang 1 và không có gì
+        if (homePageListsResult.isEmpty() && page == 1) {
             homePageListsResult.add(HomePageList("Default Links (Fallback)", listOf(
                 newMovieSearchResponse(name = "Asian Woman", url = "$mainUrl/search/asian_woman", type = TvType.NSFW) {},
                 newMovieSearchResponse(name = "Today's Selection", url = "$mainUrl/todays-selection", type = TvType.NSFW) {}
             )))
         }
-        return newHomePageResponse(list = homePageListsResult, hasNext = hasNextMainPage)
+        // Trang chủ của chúng ta không phân trang theo cách truyền thống (tải thêm section)
+        // Mà là hiển thị một bộ section cố định (hoặc ngẫu nhiên).
+        // Nếu bạn muốn `hasNext` cho `getMainPage` để CloudStream có thể gọi `getMainPage(2, ...)`
+        // thì logic chọn section phải khác nhau cho mỗi `page`.
+        // Hiện tại, ta sẽ coi `getMainPage` chỉ có 1 trang.
+        return newHomePageResponse(list = homePageListsResult, hasNext = false)
     }
 
      private fun Element.toSearchResponse(): SearchResponse? {
@@ -246,28 +189,30 @@ class TxnhhProvider : MainAPI() {
         }
     }
 
-    override suspend fun search(query: String, page: Int): SearchPageResponse { 
-        println("TxnhhProvider DEBUG: search() called with query/URL = $query, page = $page")
-        
-        val baseUrlForSearch = if (query.startsWith("http")) {
-             query.substringBeforeLast('/').let { if(it.substringAfterLast('/').toIntOrNull() != null && it.count{c -> c == '/'} >=3) it.substringBeforeLast('/') else it}
-                 .let { if (it.endsWith("search")) "$it/$query" else it } // Handle case where query is actually search term for a base url
+    // Sửa lại chữ ký hàm search để khớp với MainAPI
+    // Sẽ không có pagination tự động từ CloudStream cho hàm này
+    override suspend fun search(query: String): List<SearchResponse>? { 
+        println("TxnhhProvider DEBUG: search() called with query/URL = $query")
+        val searchUrl = if (query.startsWith("http")) {
+             // Nếu query là URL (ví dụ từ homepage item), nó có thể đã có sẵn page number
+             // ví dụ: https://www.txnhh.com/search/asian_woman/1 (cho trang 2)
+             query
         } else {
-            "$mainUrl/search/$query"
+            "$mainUrl/search/$query" // Mặc định lấy trang đầu cho từ khóa tìm kiếm
         }
-        // Loại bỏ /page nếu query là url từ homepage đã có phân trang
-        val cleanBaseUrl = baseUrlForSearch.replace(Regex("/\\d+$"), "")
-
-
-        val (videoList, nextPageUrl) = fetchSectionVideos(cleanBaseUrl, page) // Truyền page
-        println("TxnhhProvider DEBUG: search() - Fetched ${videoList.size} videos. Next page URL for app: $nextPageUrl. Current app page: $page")
-        // Nếu nextPageUrl không null, nghĩa là có trang tiếp theo
-        return newSearchPageResponse(title = query, list = videoList, hasNextPage = nextPageUrl != null)
+        println("TxnhhProvider DEBUG: Constructed searchUrl for search() = $searchUrl")
+        
+        // fetchSectionVideos sẽ tải trang đầu tiên hoặc trang được chỉ định trong searchUrl
+        val videoList = fetchSectionVideos(searchUrl) 
+        if (videoList.isEmpty()) {
+            println("TxnhhProvider DEBUG: search() returned no results for $searchUrl")
+            return null // Hoặc emptyList() tùy theo yêu cầu của MainAPI
+        }
+        return videoList
     }
 
-
     override suspend fun load(url: String): LoadResponse? {
-        // ... (Hàm load giữ nguyên như trước)
+        // ... (Hàm load giữ nguyên)
         println("TxnhhProvider DEBUG: load() called with URL = $url")
         val document = app.get(url).document
         val title = document.selectFirst(".video-title strong")?.text() ?: document.selectFirst("meta[property=og:title]")?.attr("content") ?: "Unknown Title"
@@ -303,6 +248,7 @@ class TxnhhProvider : MainAPI() {
             this.plot = description
             this.tags = tags
             this.duration = durationInSeconds
+            // this.recommendations = ... // Bạn có thể thêm lại logic parse video liên quan nếu muốn
         }
     }
 
@@ -319,9 +265,9 @@ class TxnhhProvider : MainAPI() {
                 callback.invoke(
                     ExtractorLink(
                         source = this.name,
-                        name = "HLS (Auto)",
+                        name = "HLS (Auto)", // Hoặc chỉ this.name
                         url = videoStreamUrl,
-                        referer = "", // Để CloudStream tự xử lý
+                        referer = "", // Để CloudStream tự xử lý referer (sẽ dùng URL của trang load)
                         quality = getQualityIntFromLinkType("hls"),
                         type = ExtractorLinkType.M3U8, 
                     )
