@@ -4,34 +4,27 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import com.fasterxml.jackson.annotation.JsonProperty
-// import com.lagradost.cloudstream3.network.CloudflareKiller // Bỏ comment nếu cần
+// import com.lagradost.cloudstream3.network.CloudflareKiller
 
-// Đảm bảo các import này là đúng với phiên bản CloudStream bạn đang dùng
-// import com.lagradost.cloudstream3.LoadResponse.Companion.newMovieLoadResponse // Có thể không cần nữa
-// import com.lagradost.cloudstream3.LoadResponse.Companion.newTvSeriesLoadResponse // Có thể không cần nữa
-
+// CloudStream API có thể thay đổi, đảm bảo các hàm tiện ích như newMovieSearchResponse, newMovieLoadResponse 
+// được gọi đúng với phiên bản bạn đang dùng.
 
 class TxnhhProvider : MainAPI() {
     override var mainUrl = "https://www.txnhh.com"
     override var name = "Txnhh"
     override val hasMainPage = true
     override var lang = "en"
-    override val hasChromecastSupport = true // Mặc định là true, có thể test lại
+    override val hasChromecastSupport = true
     override val supportedTypes = setOf(
         TvType.NSFW
     )
 
-    // override val mainPageInterceptors = listOf(CloudflareKiller()) // Bỏ comment nếu dùng CloudflareKiller
-
     companion object {
-        // getType không được sử dụng trong code hiện tại, có thể bỏ nếu không cần
-        // fun getType(t: String?): TvType {
-        //     return if (t?.contains("series") == true) TvType.TvSeries else TvType.Movie
-        // }
-
-        fun getQualityFromString(quality: String?): SearchQuality? { // Sửa kiểu trả về
+        // Trả về enum SearchQuality trực tiếp nếu nó tồn tại và được chấp nhận
+        // Nếu không, tạm thời trả về null hoặc tìm cách map sang Int nếu trường quality là Int.
+        fun getQualityFromString(quality: String?): SearchQuality? { 
             return when (quality?.trim()?.lowercase()) {
-                "1080p" -> SearchQuality.P1080
+                "1080p" -> SearchQuality.P1080 // Đảm bảo SearchQuality.P1080 tồn tại
                 "720p" -> SearchQuality.P720
                 "480p" -> SearchQuality.P480
                 "360p" -> SearchQuality.P360
@@ -41,14 +34,15 @@ class TxnhhProvider : MainAPI() {
 
         fun parseDuration(durationString: String?): Int? {
             if (durationString.isNullOrBlank()) return null
-            // Ví dụ: "13min", "2h 30min"
             var totalSeconds = 0
-            val minMatch = Regex("""(\d+)\s*min""").find(durationString)
-            minMatch?.groupValues?.get(1)?.toIntOrNull()?.let { totalSeconds += it * 60 }
-            
-            val hMatch = Regex("""(\d+)\s*h""").find(durationString)
-            hMatch?.groupValues?.get(1)?.toIntOrNull()?.let { totalSeconds += it * 3600 }
-
+            // Tìm "Xmin"
+            Regex("""(\d+)\s*min""").find(durationString)?.groupValues?.get(1)?.toIntOrNull()?.let {
+                totalSeconds += it * 60
+            }
+            // Tìm "Xh"
+            Regex("""(\d+)\s*h""").find(durationString)?.groupValues?.get(1)?.toIntOrNull()?.let {
+                totalSeconds += it * 3600
+            }
             return if (totalSeconds > 0) totalSeconds else null
         }
     }
@@ -74,7 +68,6 @@ class TxnhhProvider : MainAPI() {
             
             if (matchResult != null && matchResult.groupValues.size > 1) {
                 var arrayString = matchResult.groupValues[1]
-                // Đơn giản hóa việc dọn dẹp, có thể cần tinh chỉnh
                 arrayString = arrayString.replace(Regex("""\{\s*i:\s*[^,]+?\.png\s*,\s*u:\s*[^,]+?,\s*tf:\s*[^,]+?,\s*t:\s*[^,]+?,\s*n:\s*0,\s*w:\s*\d+,\s*no_rotate:\s*true,\s*tbk:\s*false\s*}"""), "")
                                       .replace(Regex(""",\s*\]"""), "]")
                                       .trim()
@@ -83,7 +76,6 @@ class TxnhhProvider : MainAPI() {
                     try {
                         val items = AppUtils.parseJson<List<HomePageItem>>(arrayString)
                         val categories = ArrayList<SearchResponse>()
-                        // val specialSections = mutableMapOf<String, ArrayList<SearchResponse>>()
 
                         items.forEach { item ->
                             val itemTitle = item.title ?: item.titleFallback ?: "Unknown Section"
@@ -91,13 +83,12 @@ class TxnhhProvider : MainAPI() {
                             val itemPoster = if (item.image?.startsWith("//") == true) "https:${item.image}" else item.image
 
                             if (itemUrl != null) {
-                                // Tất cả các mục từ trang chủ sẽ được coi là category/link để search() xử lý
                                 categories.add(
-                                    newMovieSearchResponse( // Đảm bảo đây là hàm đúng
+                                    newMovieSearchResponse( // Sử dụng hàm helper của CloudStream
                                         name = itemTitle,
-                                        url = itemUrl, // URL này sẽ được dùng trong search()
-                                        apiName = this.name,
-                                        type = TvType.NSFW // Cung cấp TvType
+                                        url = itemUrl,
+                                        type = TvType.NSFW // Trực tiếp gán TvType
+                                        // apiName không cần thiết ở đây, this.name sẽ được dùng tự động
                                     ) {
                                         this.posterUrl = itemPoster
                                     }
@@ -107,19 +98,17 @@ class TxnhhProvider : MainAPI() {
                         if (categories.isNotEmpty()) {
                             homePageList.add(HomePageList("Browse Sections", categories, true))
                         }
-                        
                     } catch (e: Exception) {
-                        // Sử dụng cơ chế log lỗi của CloudStream hoặc printStackTrace
-                        // MainAPIKt.logError(this, e) // Thử cách này
-                        e.printStackTrace()
+                        e.printStackTrace() // Log lỗi
                     }
                 }
             }
         }
         if (homePageList.isEmpty()) {
             homePageList.add(HomePageList("Default Sections (Example)", listOf(
-                newMovieSearchResponse("Asian Woman", "$mainUrl/search/asian_woman", this.name, type = TvType.NSFW),
-                newMovieSearchResponse("Today's Selection", "$mainUrl/todays-selection", this.name, type = TvType.NSFW),
+                // Đảm bảo các tham số là đúng cho newMovieSearchResponse
+                newMovieSearchResponse(name = "Asian Woman", url = "$mainUrl/search/asian_woman", type = TvType.NSFW) {},
+                newMovieSearchResponse(name = "Today's Selection", url = "$mainUrl/todays-selection", type = TvType.NSFW) {}
             )))
         }
         return HomePageResponse(homePageList)
@@ -135,15 +124,23 @@ class TxnhhProvider : MainAPI() {
         val durationText = metadata?.ownText()?.trim()
         val qualityText = metadata?.selectFirst("span.video-hd")?.text()?.trim()
         
-        val durationSeconds = parseDuration(durationText)
-
-        return newMovieSearchResponse(title, href, TvType.NSFW) { // TvType được cung cấp
+        // Tạo SearchResponse và sau đó gán các thuộc tính nếu cần và nếu chúng là var
+        val searchResponse = newMovieSearchResponse(
+            name = title,
+            url = href,
+            type = TvType.NSFW
+        ) {
             this.posterUrl = posterUrl
-            this.quality = getQualityFromString(qualityText) // Đã sửa hàm này
-            if (durationSeconds != null) {
-                this.length = durationSeconds // Giả sử trường là 'length'
-            }
+            this.quality = getQualityFromString(qualityText) // Gán SearchQuality?
+            // Đối với length, nếu nó không phải là một phần của lambda builder,
+            // bạn có thể cần một đối tượng MovieSearchResponse đầy đủ hơn.
+            // Tạm thời bỏ qua 'length' nếu gây lỗi và không có cách gán trực tiếp rõ ràng.
         }
+        // Thử gán length sau nếu có thể, hoặc tìm cách truyền vào constructor/builder
+        // parseDuration(durationText)?.let { searchResponse.length = it } // Điều này yêu cầu 'length' phải là 'var' và đúng tên
+        // Hiện tại, nhiều provider không set length ở search mà chỉ ở load.
+
+        return searchResponse
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -211,40 +208,39 @@ class TxnhhProvider : MainAPI() {
                     val relatedItems = AppUtils.parseJson<List<RelatedItem>>(jsonArrayString)
                     relatedItems.forEach { related ->
                         if (related.u != null && related.tf != null) {
-                            val relatedDuration = parseDuration(related.d)
-                            relatedVideos.add(newMovieSearchResponse(
-                                name = related.tf, // Đảm bảo tên tham số đúng
+                            val relatedResponse = newMovieSearchResponse(
+                                name = related.tf,
                                 url = mainUrl + related.u,
-                                apiName = this.name, // Đảm bảo tên tham số đúng
-                                type = TvType.NSFW // Cung cấp TvType
+                                type = TvType.NSFW
+                                // apiName không cần thiết
                             ) {
                                 this.posterUrl = related.i?.let { if (it.startsWith("//")) "https:$it" else it }
-                                if (relatedDuration != null) {
-                                    this.length = relatedDuration // Gán vào trường 'length'
-                                }
-                            })
+                                // Tạm thời bỏ qua length ở đây nếu gây lỗi
+                                // parseDuration(related.d)?.let { this.length = it }
+                            }
+                            relatedVideos.add(relatedResponse)
                         }
                     }
                 } catch (e: Exception) {
-                    // MainAPIKt.logError(this, e) // Thử cách này
                      e.printStackTrace()
                 }
             }
         }
         
-        return newMovieLoadResponse( // Đảm bảo hàm này tồn tại và đúng tham số
+        return newMovieLoadResponse(
             name = title,
             url = url,
             type = TvType.NSFW,
-            dataUrl = videoData.joinToString("||") // Truyền dữ liệu link cho loadLinks
+            dataUrl = videoData.joinToString("||")
         ) {
             this.posterUrl = poster
             this.plot = description
             this.tags = tags
             this.recommendations = relatedVideos
+            // this.year = ... // Nếu có năm sản xuất
+            // parseDuration(document.selectFirst("meta[property=og:duration]")?.attr("content"))?.let {
+            //     this.duration = it // Nếu có trường duration và parse được từ meta
+            // }
         }
     }
-
-    // loadLinks vẫn được comment
-    // override suspend fun loadLinks(...): Boolean { ... }
 }
