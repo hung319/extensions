@@ -5,7 +5,7 @@ import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.SearchQuality
-import com.lagradost.cloudstream3.extractors.helper.ExtractorLinkType // Import ExtractorLinkType
+import com.lagradost.cloudstream3.utils.ExtractorLinkType // Import ExtractorLinkType
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlin.random.Random
