@@ -1,10 +1,12 @@
-package com.ctemplar.app // Hoặc package của bạn
+package com.ctemplar.app // Hoặc package của bạn (ví dụ: com.yourname.txnhhprovider)
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import com.fasterxml.jackson.annotation.JsonProperty
-import com.lagradost.cloudstream3.SearchQuality
+import com.lagradost.cloudstream3.SearchQuality // Đảm bảo import này
+
+// import com.lagradost.cloudstream3.network.CloudflareKiller // Bỏ comment nếu trang web dùng Cloudflare
 
 class TxnhhProvider : MainAPI() {
     override var mainUrl = "https://www.txnhh.com"
@@ -16,13 +18,15 @@ class TxnhhProvider : MainAPI() {
         TvType.NSFW
     )
 
+    // override val mainPageInterceptors = listOf(CloudflareKiller())
+
     companion object {
         fun getQualityFromString(quality: String?): SearchQuality? { 
             return when (quality?.trim()?.lowercase()) {
-                "1080p" -> SearchQuality.HD 
+                "1080p" -> SearchQuality.HD // Hoặc FourK nếu API hỗ trợ và phù hợp
                 "720p" -> SearchQuality.HD
                 "480p" -> SearchQuality.SD
-                "360p" -> SearchQuality.SD
+                "360p" -> SearchQuality.SD // Hoặc Cam
                 else -> null 
             }
         }
@@ -48,16 +52,15 @@ class TxnhhProvider : MainAPI() {
         @JsonProperty("u") val url: String?,
         @JsonProperty("t") val title: String?,
         @JsonProperty("tf") val titleFallback: String?,
-        @JsonProperty("n") val count: String?, // count có thể là "0" hoặc "123,456"
+        @JsonProperty("n") val count: String?,
         @JsonProperty("ty") val type: String?,
-        // Thêm các trường có thể có trong các item đặc biệt như sexstories, games
         @JsonProperty("no_rotate") val noRotate: Boolean? = null,
         @JsonProperty("tbk") val tbk: Boolean? = null,
         @JsonProperty("w") val weight: Int? = null
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        println("TxnhhProvider DEBUG: getMainPage called")
+        println("TxnhhProvider DEBUG: getMainPage called, page: $page")
         val document = app.get(mainUrl).document
         val homePageList = ArrayList<HomePageList>()
 
@@ -70,51 +73,55 @@ class TxnhhProvider : MainAPI() {
             
             if (matchResult != null && matchResult.groupValues.size > 1) {
                 val arrayString = matchResult.groupValues[1].trim() 
-                println("TxnhhProvider DEBUG: Raw arrayString from regex = $arrayString")
+                println("TxnhhProvider DEBUG: Raw arrayString from regex = ${arrayString.take(500)}...") // Log một phần để tránh quá dài
 
                 if (arrayString.startsWith("[") && arrayString.endsWith("]")) {
                     try {
                         val items = AppUtils.parseJson<List<HomePageItem>>(arrayString)
                         println("TxnhhProvider DEBUG: Parsed ${items.size} items from HomePageItem JSON.")
                         
-                        val sectionItems = ArrayList<SearchResponse>()
                         items.forEach { item ->
                             val itemTitle = item.title ?: item.titleFallback ?: "Unknown Section"
                             val itemUrl = if (item.url?.startsWith("/") == true) mainUrl + item.url else item.url
                             val itemPoster = if (item.image?.startsWith("//") == true) "https:${item.image}" else item.image
 
                             if (itemUrl != null) {
-                                // Lọc các item không mong muốn
-                                val isSpecialLink = item.noRotate == true && item.tbk == false && item.count == "0"
                                 val isGameOrStory = itemUrl.contains("nutaku.net") || itemUrl.contains("sexstories.com")
-                                
-                                if (!isSpecialLink && !isGameOrStory) {
-                                    sectionItems.add(
+                                // Các mục "Today's selection", "Sex Stories", "Porn Games" từ home.html gốc có n=0, no_rotate=true, tbk=false
+                                // Chúng ta chỉ muốn lấy các mục là category video thực sự hoặc các section video
+                                val isLikelyStaticLink = item.noRotate == true && item.count == "0" && item.tbk == false && (isGameOrStory || item.url == "/your-suggestions/straight" || item.url == "/tags")
+
+
+                                if (!isGameOrStory && !isLikelyStaticLink) {
+                                    // Mỗi item hợp lệ sẽ tạo ra một HomePageList riêng.
+                                    // Bên trong HomePageList này sẽ là một SearchResponse duy nhất trỏ đến URL của mục đó.
+                                    // Khi người dùng bấm vào, CloudStream sẽ gọi search(url_cua_muc_do).
+                                    homePageList.add(HomePageList(itemTitle, listOf(
                                         newMovieSearchResponse(
-                                            name = itemTitle,
+                                            name = "Browse $itemTitle", // Hoặc chỉ itemTitle để ngắn gọn
                                             url = itemUrl,
                                             type = TvType.NSFW
                                         ) {
-                                            this.posterUrl = itemPoster
+                                            this.posterUrl = itemPoster // Poster cho mục này
                                         }
-                                    )
+                                    )))
+                                    println("TxnhhProvider DEBUG: Added HomePageList for section: '$itemTitle' with URL: $itemUrl")
                                 } else {
-                                     println("TxnhhProvider DEBUG: Filtered out special/game/story item: $itemTitle, URL: $itemUrl")
+                                     println("TxnhhProvider DEBUG: Filtered out item: '$itemTitle', URL: $itemUrl, Type: ${item.type}, NoRotate: ${item.noRotate}, Count: ${item.count}")
                                 }
                             }
                         }
-                        if (sectionItems.isNotEmpty()) {
-                            homePageList.add(HomePageList("Browse Sections", sectionItems, true))
-                            println("TxnhhProvider DEBUG: Added 'Browse Sections' with ${sectionItems.size} items.")
-                        } else {
-                            println("TxnhhProvider DEBUG: No valid section items found after filtering.")
+                        if (homePageList.isEmpty() && items.isNotEmpty()) {
+                            // Nếu tất cả item bị filter, có thể logic filter quá chặt
+                            println("TxnhhProvider WARNING: All items were filtered out from HomePage.")
                         }
+                        
                     } catch (e: Exception) {
                         System.err.println("TxnhhProvider ERROR: Failed to parse HomePage JSON. Error: ${e.message}")
                         e.printStackTrace()
                     }
                 } else {
-                    println("TxnhhProvider DEBUG: arrayString (value: $arrayString) does not start/end with brackets as expected.")
+                    println("TxnhhProvider DEBUG: arrayString (value starts with: ${arrayString.take(50)}...) does not start/end with brackets as expected.")
                 }
             } else {
                 println("TxnhhProvider DEBUG: Regex did not match xv.cats.write_thumb_block_list or did not find the array group.")
@@ -124,26 +131,39 @@ class TxnhhProvider : MainAPI() {
         }
 
         if (homePageList.isEmpty()) {
-            println("TxnhhProvider DEBUG: homePageList is empty, adding default sections.")
+            println("TxnhhProvider DEBUG: homePageList is empty after parsing, adding default sections.")
             homePageList.add(HomePageList("Default Sections (Example)", listOf(
                 newMovieSearchResponse(name = "Asian Woman", url = "$mainUrl/search/asian_woman", type = TvType.NSFW) {},
                 newMovieSearchResponse(name = "Today's Selection", url = "$mainUrl/todays-selection", type = TvType.NSFW) {},
                 newMovieSearchResponse(name = "Hardcore", url = "$mainUrl/search/hardcore?top", type = TvType.NSFW) {}
             )))
         }
+        println("TxnhhProvider DEBUG: getMainPage returning ${homePageList.size} HomePageList(s).")
         return HomePageResponse(homePageList)
     }
 
     private fun Element.toSearchResponse(): SearchResponse? {
-        val titleElement = this.selectFirst(".thumb-under p a") ?: return null
+        // println("TxnhhProvider DEBUG: toSearchResponse() called for element: ${this.html().take(150)}...") 
+        val titleElement = this.selectFirst(".thumb-under p a")
+        if (titleElement == null) {
+            // println("TxnhhProvider DEBUG: titleElement not found in toSearchResponse() for element: ${this.html().take(100)}")
+            return null
+        }
         val title = titleElement.attr("title")
         val href = mainUrl + titleElement.attr("href") 
-        val posterUrl = this.selectFirst(".thumb img")?.attr("data-src")?.let { if (it.startsWith("//")) "https:$it" else it }
-
-        val metadata = this.selectFirst(".thumb-under p.metadata")
-        val durationText = metadata?.ownText()?.trim()
-        val qualityText = metadata?.selectFirst("span.video-hd")?.text()?.trim()
         
+        val imgElement = this.selectFirst(".thumb img")
+        val posterUrl = imgElement?.attr("data-src")?.let { if (it.startsWith("//")) "https:$it" else it }
+        // if (imgElement == null) println("TxnhhProvider DEBUG: imgElement (for poster) not found for title: $title")
+        // else if (posterUrl == null) println("TxnhhProvider DEBUG: data-src not found on imgElement for title: $title")
+
+        val metadataElement = this.selectFirst(".thumb-under p.metadata")
+        val durationText = metadataElement?.ownText()?.trim()
+        val qualityText = metadataElement?.selectFirst("span.video-hd")?.text()?.trim()
+        // if (metadataElement == null) println("TxnhhProvider DEBUG: metadataElement not found for title: $title")
+        
+        // println("TxnhhProvider DEBUG: Extracted for search - Title: $title, Href: $href, Poster: $posterUrl, DurationStr: $durationText, QualityStr: $qualityText")
+
         return newMovieSearchResponse(
             name = title,
             url = href,
@@ -151,11 +171,8 @@ class TxnhhProvider : MainAPI() {
         ) {
             this.posterUrl = posterUrl
             this.quality = getQualityFromString(qualityText)
-            parseDuration(durationText)?.let {بحثطول -> // CloudStream thường dùng 'length' cho thời lượng trong SearchResponse
-                 // Gán vào một trường có tên là length hoặc tương tự nếu builder hỗ trợ
-                 // Ví dụ: this.length = بحثطول 
-                 // Nếu không, bạn có thể cần tạo một SearchResponse tùy chỉnh hơn
-            }
+            // Tạm thời comment lại việc gán length ở đây để tránh lỗi nếu API không hỗ trợ
+            // parseDuration(durationText)?.let { currentLength -> this.length = currentLength }
         }
     }
 
@@ -166,22 +183,28 @@ class TxnhhProvider : MainAPI() {
         } else {
             "$mainUrl/search/$query"
         }
+        println("TxnhhProvider DEBUG: Constructed searchUrl = $searchUrl")
 
         val document = app.get(searchUrl).document
         val searchResults = ArrayList<SearchResponse>()
-        val videoElements = document.select("div.mozaique div.thumb-block")
+        val videoElements = document.select("div.mozaique div.thumb-block") // Selector cho các item video
         println("TxnhhProvider DEBUG: Found ${videoElements.size} thumb-blocks on $searchUrl")
 
-
-        videoElements.forEach { element ->
+        videoElements.forEachIndexed { index, element ->
+            // println("TxnhhProvider DEBUG: Processing search item ${index + 1}/${videoElements.size}")
             try {
-                 element.toSearchResponse()?.let { searchResults.add(it) }
+                 element.toSearchResponse()?.let { 
+                    searchResults.add(it)
+                    // println("TxnhhProvider DEBUG: Added to searchResults: ${it.name}")
+                 } // else {
+                    // println("TxnhhProvider DEBUG: toSearchResponse returned null for item ${index + 1}")
+                // }
             } catch (e: Exception) {
-                System.err.println("TxnhhProvider ERROR: Failed to parse a search item from $searchUrl. Element HTML: ${element.html()}")
+                System.err.println("TxnhhProvider ERROR: Failed to parse a search item from $searchUrl. Index: $index. Element HTML snippet: ${element.html().take(100)}")
                 e.printStackTrace()
             }
         }
-        println("TxnhhProvider DEBUG: Returning ${searchResults.size} search results for $query")
+        println("TxnhhProvider DEBUG: search() returning ${searchResults.size} results for query '$query'")
         return searchResults
     }
 
@@ -244,7 +267,7 @@ class TxnhhProvider : MainAPI() {
                                 type = TvType.NSFW
                             ) {
                                 this.posterUrl = related.i?.let { if (it.startsWith("//")) "https:$it" else it }
-                                // parseDuration(related.d)?.let { this.length = it }
+                                // parseDuration(related.d)?.let { this.length = it } // Tạm thời bỏ qua length
                             })
                         }
                     }
@@ -284,4 +307,31 @@ class TxnhhProvider : MainAPI() {
             this.duration = durationInSeconds
         }
     }
+
+    // Hàm loadLinks vẫn được comment, sẽ implement khi bạn sẵn sàng
+    // override suspend fun loadLinks(
+    //     data: String, 
+    //     isCasting: Boolean,
+    //     subtitleCallback: (SubtitleFile) -> Unit,
+    //     callback: (ExtractorLink) -> Unit
+    // ): Boolean {
+    //     val links = data.split("||")
+    //     var hasLinks = false
+    //     links.forEach { linkData ->
+    //         if (linkData.isNotBlank()) {
+    //             val parts = linkData.split(":", limit = 2)
+    //             if (parts.size == 2) {
+    //                 val type = parts[0]
+    //                 val videoUrl = parts[1]
+    //                 hasLinks = true
+    //                 when (type) {
+    //                     "hls" -> callback.invoke(ExtractorLink(this.name, "HLS", videoUrl, mainUrl, Qualities.Unknown.value, isM3u8 = true))
+    //                     "low" -> callback.invoke(ExtractorLink(this.name, "Low Quality MP4", videoUrl, mainUrl, Qualities.P360.value))
+    //                     "high" -> callback.invoke(ExtractorLink(this.name, "High Quality MP4", videoUrl, mainUrl, Qualities.P720.value))
+    //                 }
+    //             }
+    //         }
+    //     }
+    //     return hasLinks
+    // }
 }
