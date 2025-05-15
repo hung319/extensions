@@ -58,31 +58,34 @@ class TxnhhProvider : MainAPI() {
         @JsonProperty("w") val weight: Int? = null
     )
 
-    private suspend fun fetchSectionVideos(sectionUrl: String, maxItems: Int = 10): List<SearchResponse> {
-        println("TxnhhProvider DEBUG: fetchSectionVideos called for URL = $sectionUrl, maxItems = $maxItems")
+    // Sửa hàm fetchSectionVideos: bỏ giới hạn maxItems mặc định hoặc đặt rất cao
+    private suspend fun fetchSectionVideos(sectionUrl: String, maxItems: Int = Int.MAX_VALUE): List<SearchResponse> {
+        println("TxnhhProvider DEBUG: fetchSectionVideos called for URL = $sectionUrl, maxItems = $maxItems (Int.MAX_VALUE means no limit)")
         if (!sectionUrl.startsWith("http")) {
             println("TxnhhProvider WARNING: Invalid sectionUrl in fetchSectionVideos: $sectionUrl")
             return emptyList()
         }
         try {
             val document = app.get(sectionUrl).document
-            val videoElements = document.select("div.mozaique div.thumb-block") // Selector cho các video item
+            val videoElements = document.select("div.mozaique div.thumb-block")
             println("TxnhhProvider DEBUG: Found ${videoElements.size} thumb-blocks in fetchSectionVideos for $sectionUrl")
             
+            // Nếu maxItems vẫn được truyền vào (ví dụ từ getMainPage), thì tôn trọng nó
+            // Nếu không (ví dụ từ search), thì lấy hết
             return videoElements.take(maxItems).mapNotNull { it.toSearchResponse() }
         } catch (e: Exception) {
             System.err.println("TxnhhProvider ERROR: Failed to fetch/parse section $sectionUrl. Error: ${e.message}")
-            // e.printStackTrace() // Tắt bớt để log đỡ rối, bật khi cần debug sâu
             return emptyList()
         }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         println("TxnhhProvider DEBUG: getMainPage called, page: $page")
-        val document = app.get(mainUrl).document
-        val finalHomePageLists = ArrayList<HomePageList>()
+        val homePageListsResult = ArrayList<HomePageList>() // Đổi tên biến để tránh nhầm lẫn
 
+        val document = app.get(mainUrl).document
         val scriptElements = document.select("script:containsData(xv.cats.write_thumb_block_list)")
+
         if (scriptElements.isNotEmpty()) {
             val scriptContent = scriptElements.html()
             val regex = Regex("""xv\.cats\.write_thumb_block_list\s*\(\s*(\[(?:.|\n)*?\])\s*,\s*['"]home-cat-list['"]""")
@@ -106,95 +109,85 @@ class TxnhhProvider : MainAPI() {
 
                             val isGameOrStory = itemUrl.contains("nutaku.net") || itemUrl.contains("sexstories.com")
                             val isLikelyStaticLink = item.noRotate == true && item.count == "0" && item.tbk == false && 
-                                                     (isGameOrStory || item.url == "/your-suggestions/straight" || item.url == "/tags" || item.url == "/pornstars") // Thêm /pornstars nếu nó là link tĩnh
+                                                     (isGameOrStory || item.url == "/your-suggestions/straight" || item.url == "/tags" || item.url == "/pornstars")
 
                             if (isGameOrStory || isLikelyStaticLink) {
-                                println("TxnhhProvider DEBUG: Filtering out static/game/story item: '$itemTitle', URL: $itemUrl")
+                                // println("TxnhhProvider DEBUG: Filtering out static/game/story item: '$itemTitle', URL: $itemUrl")
                                 null
                             } else {
-                                // Chỉ giữ lại các mục có khả năng là danh sách video
-                                // Ví dụ: type 'cat', 'search', hoặc các URL cụ thể như '/todays-selection'
                                 if (item.type == "cat" || item.type == "search" || item.url == "/todays-selection" || item.url == "/best" || item.url == "/hits" || item.url=="/fresh" || item.url=="/verified/videos" ) {
                                     Pair(itemTitle, itemUrl)
                                 } else {
-                                    println("TxnhhProvider DEBUG: Filtering out item not matching section criteria: '$itemTitle', URL: $itemUrl, Type: ${item.type}")
+                                    // println("TxnhhProvider DEBUG: Filtering out item not matching section criteria: '$itemTitle', URL: $itemUrl, Type: ${item.type}")
                                     null
                                 }
                             }
-                        }.distinctBy { it.second } // Loại bỏ các section có URL trùng lặp
+                        }.distinctBy { it.second } 
 
                         println("TxnhhProvider DEBUG: Found ${validSections.size} valid sections after initial filtering.")
 
                         val sectionsToDisplay = mutableListOf<Pair<String, String>>()
+                        val todaysSelectionUrlPart = "/todays-selection" // URL part cho "Today's Selection"
 
-                        // Ưu tiên "Today's Selection"
-                        val todaysSelection = validSections.find { it.second.endsWith("/todays-selection") }
+                        val todaysSelection = validSections.find { it.second.endsWith(todaysSelectionUrlPart) }
                         if (todaysSelection != null) {
                             sectionsToDisplay.add(todaysSelection)
-                            println("TxnhhProvider DEBUG: Added 'Today's Selection' to display list.")
+                            println("TxnhhProvider DEBUG: Prioritized 'Today's Selection' for display.")
                         }
 
-                        // Lấy các section còn lại, loại bỏ "Today's Selection" nếu đã thêm
                         val remainingSections = validSections.filter { it != todaysSelection }.toMutableList()
-                        
-                        // Xáo trộn và lấy ngẫu nhiên để đủ 5 sections (nếu "Today's Selection" đã có thì lấy thêm 4)
-                        remainingSections.shuffle(Random(System.currentTimeMillis())) // Xáo trộn ngẫu nhiên
+                        remainingSections.shuffle(Random(System.currentTimeMillis())) 
                         
                         val neededRandomSections = 5 - sectionsToDisplay.size
                         if (neededRandomSections > 0 && remainingSections.isNotEmpty()) {
                             sectionsToDisplay.addAll(remainingSections.take(neededRandomSections))
-                            println("TxnhhProvider DEBUG: Added ${remainingSections.take(neededRandomSections).size} random sections to display list.")
+                            println("TxnhhProvider DEBUG: Added ${remainingSections.take(neededRandomSections).size} random sections. Total to display: ${sectionsToDisplay.size}")
                         }
                         
-                        println("TxnhhProvider DEBUG: Total sections to display: ${sectionsToDisplay.size}")
+                        println("TxnhhProvider DEBUG: Final sections to display on homepage: ${sectionsToDisplay.map { it.first }}")
 
-                        // Fetch video cho các section đã chọn (có thể dùng async cho hiệu suất)
                         coroutineScope {
                             val deferredLists = sectionsToDisplay.map { (sectionTitle, sectionUrl) ->
                                 async {
-                                    val videos = fetchSectionVideos(sectionUrl, maxItems = 8) // Lấy 8 video cho mỗi grid
+                                    // Gọi fetchSectionVideos KHÔNG giới hạn maxItems cho trang chủ
+                                    val videos = fetchSectionVideos(sectionUrl, maxItems = 20) // Giới hạn lại chút để không quá chậm
                                     if (videos.isNotEmpty()) {
+                                        println("TxnhhProvider DEBUG: Successfully fetched ${videos.size} videos for homepage section '$sectionTitle'")
                                         HomePageList(sectionTitle, videos)
                                     } else {
-                                        println("TxnhhProvider WARNING: No videos fetched for section '$sectionTitle' ($sectionUrl) for homepage grid.")
+                                        println("TxnhhProvider WARNING: No videos fetched for homepage section '$sectionTitle' ($sectionUrl)")
                                         null
                                     }
                                 }
                             }
                             deferredLists.forEach { deferred ->
-                                deferred?.await()?.let { finalHomePageLists.add(it) }
+                                deferred?.await()?.let { homePageListsResult.add(it) }
                             }
                         }
-
                     } catch (e: Exception) {
                         System.err.println("TxnhhProvider ERROR: Failed to parse HomePage JSON in getMainPage. Error: ${e.message}")
                         e.printStackTrace()
                     }
-                } else {
-                    println("TxnhhProvider DEBUG: getMainPage - arrayString (value starts with: ${arrayString.take(50)}...) does not start/end with brackets.")
-                }
-            } else {
-                println("TxnhhProvider DEBUG: getMainPage - Regex did not match xv.cats.write_thumb_block_list.")
-            }
-        } else {
-            println("TxnhhProvider DEBUG: getMainPage - Script containing xv.cats.write_thumb_block_list not found.")
-        }
+                } else { /* Log */ }
+            } else { /* Log */ }
+        } else { /* Log */ }
 
-        if (finalHomePageLists.isEmpty()) {
-            println("TxnhhProvider DEBUG: finalHomePageLists is empty after parsing, adding default link sections.")
-            finalHomePageLists.add(HomePageList("Default Links (Fallback)", listOf(
+        if (homePageListsResult.isEmpty()) {
+            println("TxnhhProvider DEBUG: homePageList is empty after parsing, adding default link sections as fallback.")
+            // Fallback này chỉ là link, không phải grid video
+            homePageListsResult.add(HomePageList("Default Links (Fallback)", listOf(
                 newMovieSearchResponse(name = "Asian Woman", url = "$mainUrl/search/asian_woman", type = TvType.NSFW) {},
                 newMovieSearchResponse(name = "Today's Selection", url = "$mainUrl/todays-selection", type = TvType.NSFW) {}
             )))
         }
-        println("TxnhhProvider DEBUG: getMainPage returning ${finalHomePageLists.size} HomePageList(s).")
-        return HomePageResponse(finalHomePageLists)
+        println("TxnhhProvider DEBUG: getMainPage returning ${homePageListsResult.size} HomePageList(s).")
+        // Sử dụng newHomePageResponse theo khuyến nghị
+        return newHomePageResponse(homePageListsResult, hasNext = false) // Giả sử không có trang tiếp theo cho trang chủ
     }
 
-     private fun Element.toSearchResponse(): SearchResponse? {
+    private fun Element.toSearchResponse(): SearchResponse? {
         val titleElement = this.selectFirst(".thumb-under p a")
         if (titleElement == null) {
-            // println("TxnhhProvider DEBUG: titleElement not found in toSearchResponse() for element: ${this.html().take(100)}")
             return null
         }
         val title = titleElement.attr("title")
@@ -207,8 +200,6 @@ class TxnhhProvider : MainAPI() {
         val durationText = metadataElement?.ownText()?.trim()
         val qualityText = metadataElement?.selectFirst("span.video-hd")?.text()?.trim()
         
-        // println("TxnhhProvider DEBUG: Extracted for search - Title: $title, Href: $href, Poster: $posterUrl, DurationStr: $durationText, QualityStr: $qualityText")
-
         return newMovieSearchResponse(
             name = title,
             url = href,
@@ -216,7 +207,7 @@ class TxnhhProvider : MainAPI() {
         ) {
             this.posterUrl = posterUrl
             this.quality = getQualityFromString(qualityText)
-            // parseDuration(durationText)?.let { currentLength -> this.length = currentLength }
+            // parseDuration(durationText)?.let { currentLength -> this.length = currentLength } // Vẫn tạm comment
         }
     }
 
@@ -227,23 +218,23 @@ class TxnhhProvider : MainAPI() {
         } else {
             "$mainUrl/search/$query"
         }
-        println("TxnhhProvider DEBUG: Constructed searchUrl = $searchUrl")
-
-        // Hàm fetchSectionVideos giờ sẽ được dùng cho search luôn
-        return fetchSectionVideos(searchUrl, maxItems = 50) // Có thể tăng maxItems cho trang search/category
+        println("TxnhhProvider DEBUG: Constructed searchUrl for search() = $searchUrl")
+        // Gọi fetchSectionVideos không giới hạn số lượng item cho trang search/category
+        return fetchSectionVideos(searchUrl) 
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        // ... (Hàm load giữ nguyên như trước vì bạn nói nó đã hoạt động tốt)
         println("TxnhhProvider DEBUG: load() called with URL = $url")
         val document = app.get(url).document
 
-        val title = document.selectFirst(".video-title strong")?.text() 
-            ?: document.selectFirst("meta[property=og:title]")?.attr("content") 
+        val title = document.selectFirst(".video-title strong")?.text()
+            ?: document.selectFirst("meta[property=og:title]")?.attr("content")
             ?: "Unknown Title"
-        
+
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")?.let { if (it.startsWith("//")) "https:$it" else it }
         val description = document.selectFirst("p.video-description")?.text()?.trim()
-        
+
         val tags = document.select(".metadata-row.video-tags a:not(#suggestion)")
             .mapNotNull { it.text()?.trim() }
             .filter { it.isNotEmpty() }
@@ -262,19 +253,49 @@ class TxnhhProvider : MainAPI() {
         } else {
             println("TxnhhProvider DEBUG: Script for html5player links not found on load page: $url")
         }
-        
+
         val videoData = mutableListOf<String>()
         hlsLink?.let { videoData.add("hls:$it") }
         lowQualityLink?.let { videoData.add("low:$it") }
         highQualityLink?.let { videoData.add("high:$it") }
 
-        // Parse video liên quan (có thể bỏ qua nếu không cần thiết hoặc để tối ưu)
         val relatedVideos = ArrayList<SearchResponse>()
-        // ... (logic parse related videos như trước, hoặc bỏ qua) ...
+        val relatedScript = document.select("script:containsData(var video_related)")
+        if (relatedScript.isNotEmpty()) {
+            val scriptContentRelated = relatedScript.html()
+            val jsonRegexRelated = Regex("""var video_related\s*=\s*(\[.*?\]);""")
+            val matchRelated = jsonRegexRelated.find(scriptContentRelated)
+            if (matchRelated != null && matchRelated.groupValues.size > 1) {
+                val jsonArrayStringRelated = matchRelated.groupValues[1]
+                try {
+                    data class RelatedItem(
+                        @JsonProperty("u") val u: String?,
+                        @JsonProperty("i") val i: String?,
+                        @JsonProperty("tf") val tf: String?,
+                        @JsonProperty("d") val d: String?
+                    )
+                    val relatedItems = AppUtils.parseJson<List<RelatedItem>>(jsonArrayStringRelated)
+                    relatedItems.forEach { related ->
+                        if (related.u != null && related.tf != null) {
+                            relatedVideos.add(newMovieSearchResponse(
+                                name = related.tf,
+                                url = mainUrl + related.u,
+                                type = TvType.NSFW
+                            ) {
+                                this.posterUrl = related.i?.let { if (it.startsWith("//")) "https:$it" else it }
+                                // parseDuration(related.d)?.let { this.length = it }
+                            })
+                        }
+                    }
+                } catch (e: Exception) {
+                     System.err.println("TxnhhProvider ERROR: Failed to parse related videos JSON. Error: ${e.message}")
+                     // e.printStackTrace()
+                }
+            }
+        }
 
         var durationInSeconds: Int? = null
         document.selectFirst("meta[property=og:duration]")?.attr("content")?.let { durationMeta ->
-            // Format: PT02H25M23S
             try {
                 var tempDuration = 0
                 Regex("""PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?""").find(durationMeta)?.let { match ->
@@ -284,7 +305,7 @@ class TxnhhProvider : MainAPI() {
                 }
                 if (tempDuration > 0) durationInSeconds = tempDuration
             } catch (e: Exception) {
-                e.printStackTrace()
+                // e.printStackTrace()
             }
         }
         println("TxnhhProvider DEBUG: Loaded video details for '$title', Duration: $durationInSeconds seconds")
@@ -293,7 +314,7 @@ class TxnhhProvider : MainAPI() {
             name = title,
             url = url,
             type = TvType.NSFW,
-            dataUrl = videoData.joinToString("||") 
+            dataUrl = videoData.joinToString("||")
         ) {
             this.posterUrl = poster
             this.plot = description
@@ -302,4 +323,5 @@ class TxnhhProvider : MainAPI() {
             this.duration = durationInSeconds
         }
     }
+    // loadLinks vẫn được comment
 }
