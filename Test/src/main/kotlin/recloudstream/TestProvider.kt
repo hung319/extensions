@@ -1,244 +1,320 @@
-package com.cloudstream.txnhhprovider // Giữ nguyên package hoặc thay đổi nếu bạn cần
+package com.ctemplar.app // Bạn có thể thay đổi package name này
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import org.jsoup.nodes.Document
-import org.json.JSONArray
-import java.net.URLEncoder // Thêm import này
-import java.nio.charset.StandardCharsets // Thêm import này
+import com.lagradost.cloudstream3.LoadResponse.Companion.newMovieLoadResponse
+import com.lagradost.cloudstream3.LoadResponse.Companion.newTvSeriesLoadResponse
+import org.jsoup.nodes.Element
+import com.fasterxml.jackson.annotation.JsonProperty
+import com.lagradost.cloudstream3.network.CloudflareKiller
+import com.lagradost.cloudstream3.movieproviders.Vote // Or any other provider you want to import
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.ExtractorLink
 
-
-class TXNHHProvider : MainAPI() {
+// Đặt tên cho Provider của bạn
+class TxnhhProvider : MainAPI() { // Hoặc kế thừa từ HttpVidSrcAPIExtractor nếu trang web của bạn đơn giản hơn
     override var mainUrl = "https://www.txnhh.com"
-    override var name = "TXNHH"
+    override var name = "Txnhh" // Tên sẽ hiển thị trong CloudStream
     override val hasMainPage = true
-    override var lang = "vi"
-    override val supportedTypes = setOf(TvType.NSFW)
+    override var lang = "en" // Ngôn ngữ mặc định, có thể thay đổi
+    override val hasChromecastSupport = true
+    override val supportedTypes = setOf(
+        TvType.NSFW // Vì đây là nội dung người lớn
+    )
+
+    // Interceptor để xử lý Cloudflare nếu cần
+    // override val mainPageInterceptors = listOf(CloudflareKiller())
 
     companion object {
-        fun fixUrl(url: String?, domain: String): String? {
-            if (url.isNullOrEmpty()) return null
-            return if (url.startsWith("http")) {
-                url
-            } else {
-                domain + (if (url.startsWith("/")) url else "/$url")
+        fun getType(t: String?): TvType {
+            return if (t?.contains("series") == true) TvType.TvSeries else TvType.Movie
+        }
+
+        fun getQualityFromString(quality: String?): Int {
+            return when (quality?.trim()?.lowercase()) {
+                "1080p" -> Qualities.P1080.value
+                "720p" -> Qualities.P720.value
+                "480p" -> Qualities.P480.value
+                "360p" -> Qualities.P360.value
+                else -> Qualities.Unknown.value
             }
         }
 
-        // URI ಗುರುತಿಸುವಿಕೆಗಳು (URI identifiers)
-        const val URI_PREFIX_HOMEPAGE_CATEGORIES = "txnhhprovider://homepagecategories"
-        const val URI_PREFIX_CATEGORY_PAGE = "txnhhprovider://categorypage/" // Lưu ý dấu / ở cuối
-    }
-
-    override val mainPage = mainPageOf(
-        URI_PREFIX_HOMEPAGE_CATEGORIES to "Danh Mục Từ Trang Chủ"
-        // Thêm các mục tĩnh khác ở đây nếu cần, ví dụ:
-        // "$mainUrl/new-videos" to "Video Mới Nhất", // Sẽ được loadPage xử lý trực tiếp
-    )
-
-    // getMainPage không cần override phức tạp nếu mainPage (val) đã đủ
-    // override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResult? { ... }
-
-
-    // Helper class nội bộ để chứa dữ liệu trang đã parse
-    internal data class VideoListPage(
-        val items: List<SearchResponse>,
-        val nextPageUrl: String? = null
-    )
-
-    private fun parseVideoFromBlock(element: org.jsoup.nodes.Element): SearchResponse? {
-        val linkTag = element.selectFirst("div.thumb > a") ?: return null
-        val videoPageUrl = fixUrl(linkTag.attr("href"), mainUrl) ?: return null
-
-        val imgTag = linkTag.selectFirst("img")
-        val posterUrl = imgTag?.attr("data-src") ?: imgTag?.attr("src")
-
-        val titleTag = element.selectFirst("div.thumb-under > p > a")
-        val title = titleTag?.attr("title")?.trim() ?: titleTag?.text()?.trim() ?: "N/A"
-
-        val metadataText = element.selectFirst("div.thumb-under > p.metadata")?.text() ?: ""
-        val durationRegex = Regex("""(\d+)min""")
-        val durationMinutes = durationRegex.find(metadataText)?.groupValues?.get(1)?.toIntOrNull()
-
-        val qualityText = element.selectFirst("div.thumb-under > p.metadata > span.video-hd")?.text()
-            ?.replace("-", "")?.trim()
-
-        return newMovieSearchResponse(title, videoPageUrl, TvType.NSFW) {
-            this.posterUrl = posterUrl
-            this.duration = durationMinutes // CloudStream kỳ vọng duration là Int? (số giây), không phải phút
-            if (!qualityText.isNullOrBlank()) {
-                this.quality = getQualityFromString(qualityText)
+        fun parseDuration(durationString: String?): Int? {
+            if (durationString.isNullOrBlank()) return null
+            return durationString.lowercase().filter { it.isDigit() }.toIntOrNull()?.let {
+                if (durationString.contains("min")) it * 60 else it
             }
         }
     }
 
-    private suspend fun parseAndExtractHomepageCategories(doc: Document): List<SearchResponse> {
-        val categories = mutableListOf<SearchResponse>()
-        val scriptTag = doc.select("script:containsData(xv.cats.write_thumb_block_list)").html()
-        val regex = Regex("""xv\.cats\.write_thumb_block_list\s*\((.+?),\s*".*?"\s*\);""")
-        val matchResult = regex.find(scriptTag)
-        val jsonArrayString = matchResult?.groups?.get(1)?.value?.trim()
+    // Dùng để parse JSON từ script trên trang chủ
+    data class HomePageItem(
+        @JsonProperty("i") val image: String?, // Image URL
+        @JsonProperty("u") val url: String?,   // Relative URL
+        @JsonProperty("t") val title: String?, // Title
+        @JsonProperty("tf") val titleFallback: String?, // Fallback title
+        @JsonProperty("n") val count: String?, // Video count (string "123,456" or "0")
+        @JsonProperty("ty") val type: String? // "cat", "search", or null
+    )
 
-        if (jsonArrayString != null) {
-            try {
-                val jsonArray = JSONArray(jsonArrayString)
-                for (i in 0 until jsonArray.length()) {
-                    val item = jsonArray.getJSONObject(i)
-                    val title = item.optString("t")
-                    val poster = fixUrl(item.optString("i"), mainUrl)
-                    val actualCategoryUrl = fixUrl(item.optString("u"), mainUrl)
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val document = app.get(mainUrl).document
+        val homePageList = ArrayList<HomePageList>()
 
-                    if (title.isNotBlank() && !actualCategoryUrl.isNullOrBlank()) {
-                        // Encode URL để đảm bảo nó an toàn khi dùng làm một phần của URI khác
-                        val encodedActualUrl = URLEncoder.encode(actualCategoryUrl, StandardCharsets.UTF_8.toString())
-                        val providerUriForCategory = "$URI_PREFIX_CATEGORY_PAGE$encodedActualUrl"
+        // Trích xuất script chứa danh sách categories/items
+        val scriptElements = document.select("script:containsData(xv.cats.write_thumb_block_list)")
+        if (scriptElements.isNotEmpty()) {
+            val scriptContent = scriptElements.html()
+            // Regex để lấy phần array bên trong hàm write_thumb_block_list
+            // Cần regex cẩn thận hơn nếu cấu trúc phức tạp
+            val regex = Regex("""xv\.cats\.write_thumb_block_list\s*\((.+?),\s*['"]home-cat-list['"]\s*\)""")
+            val matchResult = regex.find(scriptContent)
+            
+            if (matchResult != null && matchResult.groupValues.size > 1) {
+                var arrayString = matchResult.groupValues[1]
+                // Loại bỏ các hàm JavaScript hoặc đối tượng không phải JSON thuần túy nếu có
+                // Đây là một bước đơn giản hóa, có thể cần xử lý phức tạp hơn
+                arrayString = arrayString.replace(Regex("""\{\s*i:\s*[^,]+?\.png\s*,\s*u:\s*[^,]+?,\s*tf:\s*[^,]+?,\s*t:\s*[^,]+?,\s*n:\s*0,\s*w:\s*\d+,\s*no_rotate:\s*true,\s*tbk:\s*false\s*}"""), "")
+                                      .replace(Regex(""",\s*\]"""), "]") // Dọn dẹp dấu phẩy thừa cuối array
+                                      .trim()
 
-                        categories.add(
-                            newAnimeSearchResponse( // Sử dụng newAnimeSearchResponse cho các collection/category
-                                name = title,
-                                url = providerUriForCategory, // URL để loadPage biết cần tải category này
-                                type = TvType.Others // Đánh dấu là một collection
-                            ) {
-                                this.posterUrl = poster
+                // Kiểm tra xem có phải là một JSON array hợp lệ không
+                if (arrayString.startsWith("[") && arrayString.endsWith("]")) {
+                    try {
+                        val items = parseJson<List<HomePageItem>>(arrayString)
+                        // Nhóm các items có type "cat" hoặc "search" thành một HomePageList "Categories"
+                        // Và các items khác (ví dụ: "Today's selection") thành các HomePageList riêng nếu chúng trỏ đến trang danh sách video
+                        
+                        val categories = ArrayList<SearchResponse>()
+                        val otherSections = mutableMapOf<String, ArrayList<SearchResponse>>()
+
+                        items.forEach { item ->
+                            val itemTitle = item.title ?: item.titleFallback ?: "Unknown Section"
+                            val itemUrl = if (item.url?.startsWith("/") == true) mainUrl + item.url else item.url
+                            val itemPoster = if (item.image?.startsWith("//") == true) "https:${item.image}" else item.image
+
+                            if (itemUrl != null) {
+                                // Nếu là category link (dựa trên phân tích home.html)
+                                if (item.type == "cat" || item.type == "search") {
+                                    categories.add(
+                                        newMovieSearchResponse(
+                                            itemTitle,
+                                            itemUrl, // URL này sẽ được dùng trong search() hoặc loadPage()
+                                            this.name
+                                        ) {
+                                            this.posterUrl = itemPoster
+                                        }
+                                    )
+                                } else if (item.url == "/todays-selection") { // Ví dụ mục "Today's selection"
+                                     // Mục này sẽ tải danh sách video trực tiếp, nên ta sẽ gọi search()
+                                     // Hoặc tạo một list item đặc biệt để loadPage xử lý
+                                     // Hiện tại, coi nó như một category để search() xử lý
+                                     categories.add(
+                                        newMovieSearchResponse(
+                                            itemTitle,
+                                            itemUrl,
+                                            this.name
+                                        ) {
+                                            this.posterUrl = itemPoster
+                                        }
+                                    )
+                                }
+                                // Các mục khác có thể được xử lý tương tự hoặc tạo HomePageList riêng
+                                // Dựa trên `hot.html` (Today's selection), có vẻ nó sẽ là 1 list video
+                                // => HomePageList(itemTitle, videoList)
+                                // Tuy nhiên, để đơn giản, ta có thể cho search() xử lý hết
                             }
-                        )
-                    }
-                }
-            } catch (e: Exception) {
-                logError(e) // Ghi log lỗi
-            }
-        }
-        return categories
-    }
+                        }
+                        if (categories.isNotEmpty()) {
+                            homePageList.add(HomePageList("Categories", categories, true)) // true nếu có thể cuộn ngang
+                        }
+                        
+                        // Ví dụ cho "Today's selection" nếu nó load video trực tiếp (dựa trên hot.html)
+                        // Vì hot.html có cấu trúc giống asia.html (search), nên ta sẽ để hàm search xử lý URL của "Today's selection"
+                        // Hoặc có thể fetch và parse hot.html ngay tại đây nếu muốn nó hiển thị video ngay trên homepage
+                        // For now, keep it simple: "Today's selection" will be a link that opens with search()
 
-
-    private suspend fun parseRegularVideoListPage(doc: Document, currentUrl: String): VideoListPage {
-        val items = doc.select("div.mozaique div.thumb-block")
-            .mapNotNull { parseVideoFromBlock(it) }
-
-        var nextPageUrl: String? = null
-        val pagination = doc.selectFirst("div.pagination ul")
-        if (pagination != null) {
-            val nextButton = pagination.selectFirst("li a.next")
-            if (nextButton != null) {
-                val href = nextButton.attr("href")
-                if (href.isNotBlank() && href != "#") {
-                    nextPageUrl = fixUrl(href, mainUrl)
-                }
-            } else {
-                 // Logic tìm trang kế tiếp dựa trên số trang hiện tại (nếu có)
-                val activePageLink = pagination.selectFirst("li a.active")
-                val currentPageNum = activePageLink?.text()?.toIntOrNull()
-                if (currentPageNum != null) {
-                    val nextPageNumCandidateLink = activePageLink?.parent()?.nextElementSibling()?.selectFirst("a")
-                    if (nextPageNumCandidateLink != null) {
-                         val nextPageHref = nextPageNumCandidateLink.attr("href")
-                         if(nextPageHref.isNotBlank() && nextPageHref != "#") {
-                            nextPageUrl = fixUrl(nextPageHref, mainUrl)
-                         }
+                    } catch (e: Exception) {
+                        logError(e) // Ghi log lỗi nếu parse JSON thất bại
                     }
                 }
             }
         }
-         // Xử lý trường hợp trang đầu tiên của tìm kiếm hoặc category không có số trang rõ ràng
-        if (nextPageUrl == null) {
-            if (currentUrl.contains("?k=") && !currentUrl.contains("&p=")) { // Tìm kiếm, trang đầu (p=0)
-                nextPageUrl = "$currentUrl&p=1" // Trang tiếp theo p=1
-            } else if ((currentUrl.contains("/search/") || currentUrl.contains("/todays-selection")) && !currentUrl.matches(Regex(".*/\\d+$"))) {
-                // Category/selection trang đầu, trang tiếp theo là /1
-                nextPageUrl = if (currentUrl.endsWith("/")) "${currentUrl}1" else "$currentUrl/1"
-            }
+        // Nếu không có script hoặc parse lỗi, có thể trả về danh sách rỗng hoặc mặc định
+        if (homePageList.isEmpty()) {
+             // Thêm các category mặc định nếu cần
+            homePageList.add(HomePageList("Popular Categories (Example)", listOf(
+                newMovieSearchResponse("Asian Woman", "$mainUrl/search/asian_woman", this.name),
+                newMovieSearchResponse("Today's Selection", "$mainUrl/todays-selection", this.name),
+            )))
         }
-
-        return VideoListPage(items, nextPageUrl)
+        return HomePageResponse(homePageList)
     }
 
-    override suspend fun loadPage(url: String): LoadPageResult? {
-        log("loadPage called with URL: $url")
-        return try {
-            when {
-                url.startsWith(URI_PREFIX_HOMEPAGE_CATEGORIES) -> {
-                    val doc = app.get(mainUrl).document
-                    val categoryCards = parseAndExtractHomepageCategories(doc)
-                    newPage(categoryCards, null) // Không có trang tiếp theo cho danh sách category từ trang chủ
-                }
-                url.startsWith(URI_PREFIX_CATEGORY_PAGE) -> {
-                    val encodedActualUrl = url.removePrefix(URI_PREFIX_CATEGORY_PAGE)
-                    val actualUrl = java.net.URLDecoder.decode(encodedActualUrl, StandardCharsets.UTF_8.toString())
-                    val doc = app.get(actualUrl).document
-                    val pageData = parseRegularVideoListPage(doc, actualUrl)
-                    newPage(pageData.items, pageData.nextPageUrl)
-                }
-                // Xử lý các URL next page thông thường (đã được fixUrl)
-                url.startsWith(mainUrl) -> {
-                    val doc = app.get(url).document
-                    val pageData = parseRegularVideoListPage(doc, url)
-                    newPage(pageData.items, pageData.nextPageUrl)
-                }
-                else -> null
-            }
-        } catch (e: Exception) {
-            logError(e)
-            null
+    private fun Element.toSearchResponse(): SearchResponse? {
+        val titleElement = this.selectFirst(".thumb-under p a") ?: return null
+        val title = titleElement.attr("title")
+        val href = mainUrl + titleElement.attr("href")
+        val posterUrl = this.selectFirst(".thumb img")?.attr("data-src")?.let { if (it.startsWith("//")) "https:$it" else it }
+
+        val metadata = this.selectFirst(".thumb-under p.metadata")
+        val durationText = metadata?.ownText()?.trim()
+        val qualityText = metadata?.selectFirst("span.video-hd")?.text()?.trim()
+        
+        return newMovieSearchResponse(title, href, TvType.NSFW) { // Gán TvType.NSFW
+            this.posterUrl = posterUrl
+            this.quality = getQualityFromString(qualityText)
+            this.duration = parseDuration(durationText)
         }
     }
 
-    override suspend fun search(query: String): List<SearchResponse>? {
-        // URL tìm kiếm trên txnhh.com dùng ?k=keyword&p=pagenum (0-indexed)
-        val searchStartUrl = "$mainUrl/?k=${URLEncoder.encode(query, StandardCharsets.UTF_8.toString())}&p=0"
-        // Để CloudStream xử lý phân trang, loadPage cần có khả năng xử lý URL tìm kiếm
-        // Tạo một URL nội bộ để loadPage xử lý
-        val providerUriForSearch = "$URI_PREFIX_CATEGORY_PAGE${URLEncoder.encode(searchStartUrl, StandardCharsets.UTF_8.toString())}"
+    override suspend fun search(query: String): List<SearchResponse> {
+        // Kiểm tra xem query có phải là một URL đầy đủ không (từ getMainPage)
+        val searchUrl = if (query.startsWith("http")) {
+            query
+        } else {
+            // Nếu là từ khóa tìm kiếm
+            "$mainUrl/search/$query"
+        }
 
-        // Trả về một item "collection" giả để CloudStream gọi loadPage
-        // CloudStream sẽ hiển thị tên này, và khi click sẽ gọi loadPage với providerUriForSearch
-        return listOf(
-            newAnimeSearchResponse( // Hoặc một loại card phù hợp khác cho "kết quả tìm kiếm"
-                name = "Kết quả cho: $query",
-                url = providerUriForSearch,
-                type = TvType.Others
-            ) {
-                // Không cần poster cho mục này
+        val document = app.get(searchUrl).document
+        val searchResults = ArrayList<SearchResponse>()
+
+        document.select("div.mozaique div.thumb-block").forEach { element ->
+            element.toSearchResponse()?.let { searchResults.add(it) }
+        }
+        return searchResults
+    }
+    
+    // Hàm loadPage có thể được dùng nếu một mục trên homepage là danh sách video
+    // và bạn muốn load nó mà không qua hàm search.
+    // Hiện tại, cấu trúc getMainPage đang trỏ các mục category/selection vào search.
+    // suspend fun loadPage(url: String): List<SearchResponse> {
+    //     val document = app.get(url).document
+    //     val results = ArrayList<SearchResponse>()
+    //     document.select("div.mozaique div.thumb-block").forEach { element ->
+    //         element.toSearchResponse()?.let { results.add(it) }
+    //     }
+    //     return results
+    // }
+
+
+    override suspend fun load(url: String): LoadResponse? {
+        val document = app.get(url).document
+
+        val title = document.selectFirst(".video-title strong")?.text() 
+            ?: document.selectFirst("meta[property=og:title]")?.attr("content") 
+            ?: "Unknown Title"
+        
+        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")?.let { if (it.startsWith("//")) "https:$it" else it }
+        val description = document.selectFirst("p.video-description")?.text()?.trim()
+        
+        val tags = document.select(".metadata-row.video-tags a:not(#suggestion)")
+            .mapNotNull { it.text()?.trim() }
+            .filter { it.isNotEmpty() }
+
+        // Trích xuất thông tin video links (sẽ dùng cho loadLinks sau)
+        val scriptElements = document.select("script:containsData(html5player.setVideoUrlLow)")
+        var hlsLink: String? = null
+        var lowQualityLink: String? = null
+        var highQualityLink: String? = null
+
+        if (scriptElements.isNotEmpty()) {
+            val scriptContent = scriptElements.html()
+            hlsLink = Regex("""html5player\.setVideoHLS\s*\(\s*['"](.*?)['"]\s*\)""").find(scriptContent)?.groupValues?.get(1)
+            lowQualityLink = Regex("""html5player\.setVideoUrlLow\s*\(\s*['"](.*?)['"]\s*\)""").find(scriptContent)?.groupValues?.get(1)
+            highQualityLink = Regex("""html5player\.setVideoUrlHigh\s*\(\s*['"](.*?)['"]\s*\)""").find(scriptContent)?.groupValues?.get(1)
+        }
+        
+        // Lưu trữ các link này vào data để loadLinks có thể truy cập
+        // Hoặc nếu loadLinks được gọi ngay sau load, có thể truyền trực tiếp
+        // Hiện tại, ta sẽ tạo data string để loadLinks sau này parse.
+        val videoData = mutableListOf<String>()
+        hlsLink?.let { videoData.add("hls:$it") }
+        lowQualityLink?.let { videoData.add("low:$it") }
+        highQualityLink?.let { videoData.add("high:$it") }
+
+
+        // Related videos
+        val relatedVideos = ArrayList<SearchResponse>()
+        val relatedScript = document.select("script:containsData(var video_related)")
+        if (relatedScript.isNotEmpty()) {
+            val scriptContent = relatedScript.html()
+            val jsonRegex = Regex("""var video_related\s*=\s*(\[.*?\]);""")
+            val match = jsonRegex.find(scriptContent)
+            if (match != null && match.groupValues.size > 1) {
+                val jsonArrayString = match.groupValues[1]
+                try {
+                    // Đây là cấu trúc JSON dự kiến cho related video items
+                    data class RelatedItem(
+                        @JsonProperty("u") val u: String?,
+                        @JsonProperty("i") val i: String?,
+                        @JsonProperty("tf") val tf: String?, // Title
+                        @JsonProperty("d") val d: String?  // Duration
+                        // Thêm các trường khác nếu cần: r (rating), n (views)
+                    )
+                    val relatedItems = parseJson<List<RelatedItem>>(jsonArrayString)
+                    relatedItems.forEach { related ->
+                        if (related.u != null && related.tf != null) {
+                            relatedVideos.add(newMovieSearchResponse(
+                                related.tf,
+                                mainUrl + related.u,
+                                TvType.NSFW // Gán TvType.NSFW
+                            ) {
+                                this.posterUrl = related.i?.let { if (it.startsWith("//")) "https:$it" else it }
+                                this.duration = parseDuration(related.d)
+                            })
+                        }
+                    }
+                } catch (e: Exception) {
+                    logError(e)
+                }
             }
-        )
-    }
-
-    override suspend fun loadLinks(
-        data: String, // URL trang video
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        // TODO: Hoàn thiện phần này
-        log("loadLinks called for: $data. Implementation pending.")
-        // Ví dụ:
-        // try {
-        //     val document = app.get(data).document
-        //     val scriptContent = document.select("script:containsData(html5player.setVideoUrlHigh)").html()
-        //     val videoUrlHigh = Regex("""html5player\.setVideoUrlHigh\s*\(['"]([^'"]+)['"]\)""").find(scriptContent)?.groupValues?.get(1)
-        //     // Tương tự cho setVideoUrlLow, setVideoHLS, etc.
-        //
-        //     if (!videoUrlHigh.isNullOrBlank()) {
-        //         callback(
-        //             ExtractorLink(
-        //                 source = this.name,
-        //                 name = "Chất lượng Cao", // Hoặc lấy từ tên biến JS nếu có
-        //                 url = videoUrlHigh,
-        //                 referer = data,
-        //                 quality = Qualities.P720.value // Hoặc xác định chất lượng
-        //             )
-        //         )
-        //         return true
-        //     }
-        // } catch (e: Exception) {
-        //     logError(e)
-        // }
-        return false
-    }
-
-    private fun getQualityFromString(qualityString: String?): InferredQuality? {
-        return qualityString?.filter { it.isDigit() }?.toIntOrNull()?.let {
-            InferredQuality.Custom(it) // Gán giá trị Int cho Custom
+        }
+        
+        // Vì là nội dung NSFW và thường là các video đơn lẻ
+        return newMovieLoadResponse(
+            title,
+            url,
+            TvType.NSFW, // Quan trọng: Đặt đúng type
+            url // Truyền data chứa các link video cho loadLinks, hoặc URL gốc để loadLinks tự fetch lại
+            // Hoặc truyền videoData.joinToString(";") để loadLinks xử lý
+        ) {
+            this.posterUrl = poster
+            this.plot = description
+            this.tags = tags
+            this.recommendations = relatedVideos
+            // this.data = videoData.joinToString("||") // Lưu các link trích xuất được để loadLinks sử dụng
         }
     }
+
+    // override suspend fun loadLinks(
+    //     data: String, // data này sẽ là url hoặc chuỗi chứa các link đã trích xuất
+    //     isCasting: Boolean,
+    //     subtitleCallback: (SubtitleFile) -> Unit,
+    //     callback: (ExtractorLink) -> Unit
+    // ): Boolean {
+    //     // TODO: Implement loadLinks when requested
+    //     // If data contains pre-extracted links:
+    //     // val links = data.split("||")
+    //     // links.forEach { linkData ->
+    //     //     val parts = linkData.split(":", limit = 2)
+    //     //     val type = parts[0]
+    //     //     val videoUrl = parts[1]
+    //     //     when (type) {
+    //     //         "hls" -> callback.invoke(ExtractorLink(this.name, "HLS", videoUrl, mainUrl, Qualities.Unknown.value, isM3u8 = true))
+    //     //         "low" -> callback.invoke(ExtractorLink(this.name, "Low Quality", videoUrl, mainUrl, Qualities.P360.value))
+    //     //         "high" -> callback.invoke(ExtractorLink(this.name, "High Quality", videoUrl, mainUrl, Qualities.P720.value)) // Hoặc P1080
+    //     //     }
+    //     // }
+    //     // return true
+
+    //     // If data is just the URL and loadLinks needs to re-fetch or parse:
+    //     // val document = app.get(data).document (if needed)
+    //     // ... extract HLS/MP4 links ...
+    //     // callback.invoke(...)
+    //     println("loadLinks function is not yet implemented as per request.")
+    //     return false 
+    // }
 }
