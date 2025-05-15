@@ -231,7 +231,7 @@ class Anime47Provider : MainAPI() {
     }
 
     // Helper function để mã hóa giống encodeURIComponent của JavaScript
-    private fun encodeURIComponent(s: String): String {
+    private suspend fun encodeURIComponent(s: String): String {
         return try {
             URLEncoder.encode(s, "UTF-8").replace("+", "%20")
         } catch (e: Exception) {
@@ -311,7 +311,7 @@ class Anime47Provider : MainAPI() {
                                 "User-Agent" to commonUA,
                                 "Origin" to mainUrl // Origin của Anime47
                             )
-                            val jsonHeaders = toJson(headersForProxy)
+                            val jsonHeaders = headersForProxy.toJson()
                             val encodedM3u8Url = encodeURIComponent(videoUrl)
                             val encodedHeaders = encodeURIComponent(jsonHeaders)
 
