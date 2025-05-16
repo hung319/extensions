@@ -8,92 +8,177 @@ import com.lagradost.cloudstream3.SearchQuality
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlin.random.Random
-import org.jsoup.parser.Parser // THÊM IMPORT NÀY
+import org.jsoup.parser.Parser // Đảm bảo import này
 
 class TxnhhProvider : MainAPI() {
-    // ... (phần còn lại của class giữ nguyên)
+    override var mainUrl = "https://www.txnhh.com"
+    override var name = "Txnhh"
+    override val hasMainPage = true
+    override var lang = "en"
+    override val hasChromecastSupport = true
+    override val supportedTypes = setOf(
+        TvType.NSFW
+    )
 
-    // Trong data class HomePageItem, không cần thay đổi gì.
+    companion object {
+        fun getQualityFromString(quality: String?): SearchQuality? {
+            return when (quality?.trim()?.lowercase()) {
+                "1080p" -> SearchQuality.HD
+                "720p" -> SearchQuality.HD
+                "480p" -> SearchQuality.SD
+                "360p" -> SearchQuality.SD
+                else -> null
+            }
+        }
+        
+        fun getQualityIntFromLinkType(type: String): Int {
+            return when (type) {
+                "hls" -> Qualities.Unknown.value 
+                else -> Qualities.Unknown.value
+            }
+        }
+
+        fun parseDuration(durationString: String?): Int? {
+            if (durationString.isNullOrBlank()) return null
+            var totalSeconds = 0
+            Regex("""(\d+)\s*h""").find(durationString)?.groupValues?.get(1)?.toIntOrNull()?.let {
+                totalSeconds += it * 3600
+            }
+            Regex("""(\d+)\s*min""").find(durationString)?.groupValues?.get(1)?.toIntOrNull()?.let {
+                totalSeconds += it * 60
+            }
+            Regex("""(\d+)\s*s""").find(durationString)?.groupValues?.get(1)?.toIntOrNull()?.let {
+                totalSeconds += it
+            }
+            return if (totalSeconds > 0) totalSeconds else null
+        }
+    }
+
+    data class HomePageItem(
+        @JsonProperty("i") val image: String?,
+        @JsonProperty("u") val url: String?,
+        @JsonProperty("t") val title: String?,
+        @JsonProperty("tf") val titleFallback: String?,
+        @JsonProperty("n") val count: String?,
+        @JsonProperty("ty") val type: String?,
+        @JsonProperty("no_rotate") val noRotate: Boolean? = null,
+        @JsonProperty("tbk") val tbk: Boolean? = null,
+        @JsonProperty("w") val weight: Int? = null
+    )
+
+    private suspend fun fetchSectionVideos(sectionUrl: String, maxItems: Int = Int.MAX_VALUE): List<SearchResponse> {
+        println("TxnhhProvider DEBUG: fetchSectionVideos called for URL = $sectionUrl, maxItems = $maxItems")
+        if (!sectionUrl.startsWith("http")) {
+            println("TxnhhProvider WARNING: Invalid sectionUrl in fetchSectionVideos: $sectionUrl")
+            return emptyList()
+        }
+        val videoList = mutableListOf<SearchResponse>()
+        try {
+            val document = app.get(sectionUrl).document 
+            val videoElements = document.select("div.mozaique div.thumb-block")
+            println("TxnhhProvider DEBUG: Found ${videoElements.size} thumb-blocks in fetchSectionVideos for $sectionUrl")
+            
+            videoElements.take(maxItems).mapNotNullTo(videoList) { it.toSearchResponse() }
+        } catch (e: Exception) {
+            System.err.println("TxnhhProvider ERROR: Failed to fetch/parse section $sectionUrl. Error: ${e.message}")
+        }
+        return videoList
+    }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         println("TxnhhProvider DEBUG: getMainPage called, page: $page")
         val homePageListsResult = ArrayList<HomePageList>()
         var hasNextMainPage = false 
 
-        if (page == 1) { 
-            val document = app.get(mainUrl).document
-            val scriptElements = document.select("script:containsData(xv.cats.write_thumb_block_list)")
+        // Chỉ tải script từ trang chủ gốc một lần
+        val document = app.get(mainUrl).document 
+        val scriptElements = document.select("script:containsData(xv.cats.write_thumb_block_list)")
 
-            if (scriptElements.isNotEmpty()) {
-                val scriptContent = scriptElements.html()
-                val regex = Regex("""xv\.cats\.write_thumb_block_list\s*\(\s*(\[(?:.|\n)*?\])\s*,\s*['"]home-cat-list['"]""")
-                val matchResult = regex.find(scriptContent)
-                
-                if (matchResult != null && matchResult.groupValues.size > 1) {
-                    val arrayString = matchResult.groupValues[1].trim() 
-                    if (arrayString.startsWith("[") && arrayString.endsWith("]")) {
-                        try {
-                            val allHomePageItems = AppUtils.parseJson<List<HomePageItem>>(arrayString)
-                            val validSectionsSource = allHomePageItems.mapNotNull { item ->
-                                // Lấy title thô
-                                val rawTitle = item.title ?: item.titleFallback
-                                // Decode HTML entities
-                                val itemTitle = rawTitle?.let { Parser.unescapeEntities(it, false) }
+        if (scriptElements.isNotEmpty()) {
+            val scriptContent = scriptElements.html()
+            val regex = Regex("""xv\.cats\.write_thumb_block_list\s*\(\s*(\[(?:.|\n)*?\])\s*,\s*['"]home-cat-list['"]""")
+            val matchResult = regex.find(scriptContent)
+            
+            if (matchResult != null && matchResult.groupValues.size > 1) {
+                val arrayString = matchResult.groupValues[1].trim() 
+                if (arrayString.startsWith("[") && arrayString.endsWith("]")) {
+                    try {
+                        val allHomePageItems = AppUtils.parseJson<List<HomePageItem>>(arrayString)
+                        val validSectionsSource = allHomePageItems.mapNotNull { item ->
+                            var currentItemTitle = item.title ?: item.titleFallback // Lấy title thô
+                            val itemUrlPart = item.url
+                            
+                            if (itemUrlPart == null) return@mapNotNull null
+                            val itemUrl = if (itemUrlPart.startsWith("/")) mainUrl + itemUrlPart else itemUrlPart
 
-                                val itemUrlPart = item.url
-                                if (itemTitle == null || itemUrlPart == null) return@mapNotNull null
-                                val itemUrl = if (itemUrlPart.startsWith("/")) mainUrl + itemUrlPart else itemUrlPart
-                                
-                                // ... (logic lọc isGameOrStory, isLikelyStaticLink giữ nguyên)
-                                val isGameOrStory = itemUrl.contains("nutaku.net") || itemUrl.contains("sexstories.com")
-                                val isLikelyStaticLink = item.noRotate == true && item.count == "0" && item.tbk == false && 
-                                                         (isGameOrStory || item.url == "/your-suggestions/straight" || item.url == "/tags" || item.url == "/pornstars")
-                                if (isGameOrStory || isLikelyStaticLink) null
-                                else if (item.type == "cat" || item.type == "search" || item.url == "/todays-selection" || item.url == "/best" || item.url == "/hits" || item.url == "/fresh" || item.url == "/verified/videos" ) Pair(itemTitle, itemUrl)
-                                else null
-                            }.distinctBy { it.second } 
+                            // SỬA LỖI HIỂN THỊ TÊN CHO "TODAY'S SELECTION"
+                            if (itemUrlPart == "/todays-selection") {
+                                currentItemTitle = "Today's Selection" // Gán tên cố định
+                            } else if (currentItemTitle != null) {
+                                currentItemTitle = Parser.unescapeEntities(currentItemTitle, false) // Decode cho các mục khác
+                            }
 
-                            // ... (logic chọn sectionsToDisplayThisPage và fetch video giữ nguyên)
-                            val sectionsToDisplayThisPage = mutableListOf<Pair<String, String>>()
-                            validSectionsSource.find { it.second.endsWith("/todays-selection") }?.let { 
+                            if (currentItemTitle == null) return@mapNotNull null
+
+                            val isGameOrStory = itemUrl.contains("nutaku.net") || itemUrl.contains("sexstories.com")
+                            val isLikelyStaticLink = item.noRotate == true && item.count == "0" && item.tbk == false && 
+                                                     (isGameOrStory || item.url == "/your-suggestions/straight" || item.url == "/tags" || item.url == "/pornstars")
+                            
+                            if (isGameOrStory || isLikelyStaticLink) null
+                            else if (item.type == "cat" || item.type == "search" || item.url == "/todays-selection" || item.url == "/best" || item.url == "/hits" || item.url == "/fresh" || item.url == "/verified/videos" ) Pair(currentItemTitle, itemUrl)
+                            else null
+                        }.distinctBy { it.second } 
+
+                        val sectionsToDisplayThisPage = mutableListOf<Pair<String, String>>()
+                        val todaySelectionUrlPart = "/todays-selection" 
+                        
+                        var hasPrioritizedTodaysSelectionThisPage = false
+                        if (page == 1) {
+                            validSectionsSource.find { it.second.endsWith(todaySelectionUrlPart) }?.let { 
                                 sectionsToDisplayThisPage.add(it)
+                                hasPrioritizedTodaysSelectionThisPage = true
                             }
+                        }
+                        
+                        val otherSectionsPool = validSectionsSource.filterNot { it.second.endsWith(todaySelectionUrlPart) }.toMutableList()
+                        
+                        val itemsPerHomePage = 5
+                        val randomItemsNeeded = itemsPerHomePage - sectionsToDisplayThisPage.size
+                        
+                        if (randomItemsNeeded > 0 && otherSectionsPool.isNotEmpty()) {
+                            val random = Random(page.toLong() + System.currentTimeMillis() / 10000 ) // Seed thay đổi nhẹ mỗi lần load nhưng vẫn dựa vào page
+                            val shuffledOtherSections = otherSectionsPool.shuffled(random)
+                            val startIndexForRandom = (page - 1) * randomItemsNeeded 
                             
-                            val otherSections = validSectionsSource.filterNot { sectionsToDisplayThisPage.map { it.second }.contains(it.second) }.toMutableList()
-                            
-                            val itemsPerHomePage = 5
-                            val randomItemsNeeded = itemsPerHomePage - sectionsToDisplayThisPage.size
-                            
-                            if (randomItemsNeeded > 0 && otherSections.isNotEmpty()) {
-                                otherSections.shuffle(Random(System.currentTimeMillis())) 
-                                sectionsToDisplayThisPage.addAll(otherSections.take(randomItemsNeeded))
+                            if(startIndexForRandom < shuffledOtherSections.size) {
+                                sectionsToDisplayThisPage.addAll(shuffledOtherSections.drop(startIndexForRandom).take(randomItemsNeeded))
                             }
-                            
-                            if (validSectionsSource.size > itemsPerHomePage && page < 3) { 
-                                hasNextMainPage = true
-                            }
+                        }
+                        
+                        val nextRandomItemsNeededCheck = itemsPerHomePage - (if(page + 1 == 1 && hasPrioritizedTodaysSelectionThisPage) 1 else 0) // if todayselection only on page 1
+                        val nextStartIndexForRandomCheck = page * nextRandomItemsNeededCheck 
+                        if (nextStartIndexForRandomCheck < otherSectionsPool.size && sectionsToDisplayThisPage.isNotEmpty()) {
+                             hasNextMainPage = true
+                        }
+                        if (page >= 3) hasNextMainPage = false // Giới hạn 3 "trang" cho homepage
 
-                            println("TxnhhProvider DEBUG: getMainPage (Page $page) - Final sections to display: ${sectionsToDisplayThisPage.size} -> ${sectionsToDisplayThisPage.map { it.first }}. HasNext: $hasNextMainPage")
 
-                            if (sectionsToDisplayThisPage.isNotEmpty()) {
-                                coroutineScope {
-                                    val deferredLists = sectionsToDisplayThisPage.map { (sectionTitle, sectionUrl) ->
-                                        async {
-                                            val videos = fetchSectionVideos(sectionUrl) 
-                                            if (videos.isNotEmpty()) HomePageList(sectionTitle, videos) else null
-                                        }
+                        println("TxnhhProvider DEBUG: getMainPage (Page $page) - Final sections to display: ${sectionsToDisplayThisPage.size} -> ${sectionsToDisplayThisPage.map { it.first }}. HasNext: $hasNextMainPage")
+
+                        if (sectionsToDisplayThisPage.isNotEmpty()) {
+                            coroutineScope {
+                                val deferredLists = sectionsToDisplayThisPage.map { (sectionTitle, sectionUrl) ->
+                                    async {
+                                        val videos = fetchSectionVideos(sectionUrl) 
+                                        if (videos.isNotEmpty()) HomePageList(sectionTitle, videos) else null
                                     }
-                                    deferredLists.forEach { it?.await()?.let { homePageListsResult.add(it) } }
                                 }
+                                deferredLists.forEach { it?.await()?.let { homePageListsResult.add(it) } }
                             }
-
-                        } catch (e: Exception) { e.printStackTrace() }
-                    }
+                        }
+                    } catch (e: Exception) { e.printStackTrace() }
                 }
             }
-        } else if (page > 1) { 
-             println("TxnhhProvider DEBUG: getMainPage - No specific content for page $page, returning empty with hasNext=false")
-             hasNextMainPage = false 
         }
 
         if (homePageListsResult.isEmpty() && page == 1) {
@@ -106,16 +191,12 @@ class TxnhhProvider : MainAPI() {
         return newHomePageResponse(list = homePageListsResult, hasNext = hasNextMainPage)
     }
 
-    // ... (các hàm toSearchResponse, search, load, loadLinks giữ nguyên như phiên bản trước)
-    // Chắc chắn rằng toSearchResponse cũng decode title nếu nó lấy từ thuộc tính 'title' của thẻ <a>
-    // mà không phải .text()
      private fun Element.toSearchResponse(): SearchResponse? {
         val titleElement = this.selectFirst(".thumb-under p a") ?: return null
-        val rawTitle = titleElement.attr("title") // attr("title") có thể chứa HTML entities
-        val title = Parser.unescapeEntities(rawTitle, false) // Decode ở đây
+        val rawTitle = titleElement.attr("title") 
+        val title = Parser.unescapeEntities(rawTitle, false) // Decode title
 
         var rawHref = titleElement.attr("href")
-
         val cleanHrefPath: String
         val thumbNumPattern = Regex("""(/video-[^/]+)/(\d+/THUMBNUM/)(.+)""")
         val matchThumbNum = thumbNumPattern.find(rawHref)
@@ -163,15 +244,15 @@ class TxnhhProvider : MainAPI() {
         
         val rawOgTitle = document.selectFirst("meta[property=og:title]")?.attr("content")
         val rawPageTitle = document.selectFirst(".video-title strong")?.text()
-        // Ưu tiên og:title, sau đó mới đến title trên trang, decode cả hai
         val title = (rawOgTitle?.let { Parser.unescapeEntities(it, false) } ?: rawPageTitle?.let { Parser.unescapeEntities(it, false) }) ?: "Unknown Title"
         
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")?.let { if (it.startsWith("//")) "https:$it" else it }
+        
         val rawDescription = document.selectFirst("p.video-description")?.text()?.trim()
         val description = rawDescription?.let { Parser.unescapeEntities(it, false) }
 
         val tags = document.select(".metadata-row.video-tags a:not(#suggestion)")
-            .mapNotNull { Parser.unescapeEntities(it.text(), false).trim() } // Decode tags
+            .mapNotNull { Parser.unescapeEntities(it.text(), false).trim() } 
             .filter { it.isNotEmpty() }
 
         val scriptElements = document.select("script:containsData(html5player.setVideoHLS)")
