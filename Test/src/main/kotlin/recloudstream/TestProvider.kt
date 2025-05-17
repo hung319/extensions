@@ -354,9 +354,9 @@ class AnimeVietsubProvider : MainAPI() {
 
                 if (useProxy) {
                     val headersForProxyToUse = mapOf(
-                        "referer" to episodeFullUrl
+                        "referer" to episodeFullUrl,
                         //"User-Agent" to USER_AGENT,
-                        //"Origin" to currentSiteBaseUrl
+                        "Origin" to currentSiteBaseUrl
                     )
                     
                     val encodedFinalM3u8Url = finalM3u8Url.encodeUri()
