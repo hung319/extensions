@@ -32,7 +32,7 @@ class AnimeVietsubProvider : MainAPI() {
     private val gson = Gson()
 
     // USER_AGENT (quan trọng cho nhiều request, bao gồm cả proxy headers)
-    private val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.0.0 Safari/537.36"
+    // private val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.0.0 Safari/537.36"
 
     // Thông tin cơ bản của Provider
     override var mainUrl = "https://animevietsub.lol"
@@ -354,9 +354,9 @@ class AnimeVietsubProvider : MainAPI() {
 
                 if (useProxy) {
                     val headersForProxyToUse = mapOf(
-                        "referer" to episodeFullUrl,
-                        "User-Agent" to USER_AGENT,
-                        "Origin" to currentSiteBaseUrl
+                        "referer" to episodeFullUrl
+                        //"User-Agent" to USER_AGENT,
+                        //"Origin" to currentSiteBaseUrl
                     )
                     
                     val encodedFinalM3u8Url = finalM3u8Url.encodeUri()
