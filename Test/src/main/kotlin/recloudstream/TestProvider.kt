@@ -351,7 +351,7 @@ class AnimeVietsubProvider : MainAPI() {
             // --- Bước 4: Gọi API giải mã ---
              Log.d("AnimeVietsubProvider", "POSTing 'dataenc' to Decryption API: $decryptApiUrl")
              val requestBody = dataEnc.toByteArray().toRequestBody(textPlainMediaType)
-             val decryptResponse = app.post(decryptApiUrl, headers = mapOf("User-Agent" to USER_AGENT), requestBody = requestBody)
+             val decryptResponse = app.post(decryptApiUrl, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to episodeUrl), requestBody = requestBody)
              Log.d("AnimeVietsubProvider", "Decryption API Response Status: ${decryptResponse.code}")
              // Log thêm body nếu cần debug kỹ hơn:
              // Log.v("AnimeVietsubProvider", "Decryption API Response Body: ${decryptResponse.text}")
@@ -360,7 +360,7 @@ class AnimeVietsubProvider : MainAPI() {
             // --- Bước 5: Lấy link M3U8 cuối cùng ---
             val finalM3u8Url = decryptResponse.text.trim()
 
-            if (finalM3u8Url.startsWith("https") && finalM3u8Url.endsWith(".m3u8")) {
+            if (finalM3u8Url.startsWith("http") && finalM3u8Url.endsWith(".m3u8")) {
                 Log.i("AnimeVietsubProvider", "Successfully obtained final M3U8 link: $finalM3u8Url")
 
                 // Tạo Map chứa các header cần thiết cho trình phát
