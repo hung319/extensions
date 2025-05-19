@@ -1,5 +1,5 @@
 // === File: AnimeVietsubProvider.kt ===
-// Version: 2025-05-16 - Sửa lỗi import MalformedURLException
+// Version: 2025-05-19 - Tích hợp ZenRows proxy cho M3U8
 
 package recloudstream // Đảm bảo package name phù hợp với dự án của bạn
 
@@ -16,7 +16,7 @@ import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
 import java.net.URL
-import java.net.MalformedURLException // <--- ĐÃ THÊM
+import java.net.MalformedURLException // Import cần thiết
 import kotlin.math.roundToInt
 import kotlin.text.Regex
 
@@ -31,8 +31,8 @@ class AnimeVietsubProvider : MainAPI() {
     // Tạo một instance Gson để tái sử dụng
     private val gson = Gson()
 
-    // USER_AGENT (quan trọng cho nhiều request, bao gồm cả proxy headers)
-    // private val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.0.0 Safari/537.36"
+    // USER_AGENT (quan trọng cho nhiều request)
+    private val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.0.0 Safari/537.36"
 
     // Thông tin cơ bản của Provider
     override var mainUrl = "https://animevietsub.lol"
@@ -291,8 +291,12 @@ class AnimeVietsubProvider : MainAPI() {
         val decryptApiUrl = "https://m3u8.013666.xyz/animevietsub/decrypt"
         val textPlainMediaType = "text/plain".toMediaTypeOrNull()
 
-        val proxyServiceUrl = "https://m3u8-proxy-chi.vercel.app/m3u8-proxy"
-        val useProxy = true
+        // --- Cấu hình ZenRows Proxy ---
+        val zenRowsApiKey = "db35592a9e60e11b0e8c93c121773c75b44b7267" // API Key bạn cung cấp
+        val zenRowsApiBase = "https://api.zenrows.com/v1/"
+        // Đặt thành true để dùng ZenRows cho link M3U8, false để dùng link trực tiếp.
+        val useZenRows = true
+        // -----------------------------
 
         Log.d("AnimeVietsubProvider", "LoadLinks received data: $data")
 
@@ -344,48 +348,35 @@ class AnimeVietsubProvider : MainAPI() {
             val decryptResponse = app.post(decryptApiUrl, headers = decryptHeaders, requestBody = requestBody)
             Log.d("AnimeVietsubProvider", "Decryption API Response Status: ${decryptResponse.code}")
 
-            val finalM3u8Url = decryptResponse.text.trim()
+            val rawFinalM3u8Url = decryptResponse.text.trim()
 
-            if (finalM3u8Url.startsWith("https://") && finalM3u8Url.contains(".m3u8")) {
-                Log.i("AnimeVietsubProvider", "Successfully obtained final M3U8 link: $finalM3u8Url")
+            if (rawFinalM3u8Url.startsWith("https://") && rawFinalM3u8Url.contains(".m3u8")) {
+                Log.i("AnimeVietsubProvider", "Successfully obtained raw M3U8 link: $rawFinalM3u8Url")
 
-                val m3u8UrlToLoadInPlayer: String
-                val headersForExtractorLink: Map<String, String>
+                var urlForPlayer: String
+                val linkName: String
+                val playerRequestHeaders = mutableMapOf("User-Agent" to USER_AGENT)
 
-                if (useProxy) {
-                    val headersForProxyToUse = mapOf(
-                        "referer" to episodeFullUrl,
-                        //"User-Agent" to USER_AGENT,
-                        "Origin" to currentSiteBaseUrl
-                    )
-                    
-                    val encodedFinalM3u8Url = finalM3u8Url.encodeUri()
-                    val encodedHeadersJson = gson.toJson(headersForProxyToUse).encodeUri()
-
-                    m3u8UrlToLoadInPlayer = "$proxyServiceUrl?url=$encodedFinalM3u8Url&headers=$encodedHeadersJson"
-                    
-                    Log.d("AnimeVietsubProvider", "Using new proxied M3U8 URL: $m3u8UrlToLoadInPlayer")
-                    Log.d("AnimeVietsubProvider", "Original M3U8 for proxy: $finalM3u8Url")
-                    Log.d("AnimeVietsubProvider", "Headers for proxy to use (JSON source for encoding): ${gson.toJson(headersForProxyToUse)}")
-
-                    headersForExtractorLink = mapOf("User-Agent" to USER_AGENT)
+                if (useZenRows) {
+                    val encodedTargetM3u8Url = rawFinalM3u8Url.encodeUri()
+                    urlForPlayer = "${zenRowsApiBase}?apikey=${zenRowsApiKey}&url=${encodedTargetM3u8Url}"
+                    linkName = "$name (ZenRows)"
+                    Log.d("AnimeVietsubProvider", "Using ZenRows proxied M3U8 URL: $urlForPlayer")
                 } else {
-                    m3u8UrlToLoadInPlayer = finalM3u8Url
-                    Log.d("AnimeVietsubProvider", "Using direct M3U8 URL: $m3u8UrlToLoadInPlayer")
-                    headersForExtractorLink = mapOf(
-                        "User-Agent" to USER_AGENT,
-                        "Origin" to currentSiteBaseUrl
-                    )
+                    urlForPlayer = rawFinalM3u8Url
+                    linkName = "$name (Direct)"
+                    Log.d("AnimeVietsubProvider", "Using direct M3U8 URL: $urlForPlayer")
+                    playerRequestHeaders["Origin"] = currentSiteBaseUrl
                 }
 
                 val extractorLinkObject = ExtractorLink(
                     source = name,
-                    name = if (useProxy) "$name (Proxy)" else "$name API",
-                    url = m3u8UrlToLoadInPlayer,
+                    name = linkName,
+                    url = urlForPlayer,
                     referer = episodeFullUrl,
                     quality = Qualities.Unknown.value,
                     type = ExtractorLinkType.M3U8,
-                    headers = headersForExtractorLink
+                    headers = playerRequestHeaders
                 )
                 callback(extractorLinkObject)
                 foundLinks = true
