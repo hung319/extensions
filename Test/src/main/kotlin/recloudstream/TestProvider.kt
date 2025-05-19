@@ -351,7 +351,7 @@ class AnimeVietsubProvider : MainAPI() {
             // --- Bước 4: Gọi API giải mã ---
              Log.d("AnimeVietsubProvider", "POSTing 'dataenc' to Decryption API: $decryptApiUrl")
              val requestBody = dataEnc.toByteArray().toRequestBody(textPlainMediaType)
-             val decryptResponse = app.post(decryptApiUrl, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to episodeUrl), requestBody = requestBody)
+             val decryptResponse = app.post(decryptApiUrl, headers = mapOf("User-Agent" to USER_AGENT), requestBody = requestBody)
              Log.d("AnimeVietsubProvider", "Decryption API Response Status: ${decryptResponse.code}")
              // Log thêm body nếu cần debug kỹ hơn:
              // Log.v("AnimeVietsubProvider", "Decryption API Response Body: ${decryptResponse.text}")
