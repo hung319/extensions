@@ -251,7 +251,7 @@ class AnimeVietsubProvider : MainAPI() {
                     val episodeNumber = episodeNumberString.toIntOrNull()
                     
                     // Sửa lỗi tên tập - logic mới
-                    val cleanEpName = epNameFull.replace(Regex("""^(Tập\s*\d+\s*-\s*|\d+\s*-\s*|\s*Tập\s*\d+\s*|\s*\d+\s*)"""), "", RegexOption.IGNORE_CASE).trim()
+                    val cleanEpName = epNameFull.replace(Regex("""^(Tập\s*\d+\s*-\s*|\d+\s*-\s*|\s*Tập\s*\d+\s*|\s*\d+\s*)""", RegexOption.IGNORE_CASE), "").trim()
                     
                     var displayEpNum = episodeNumber?.toString()?.padStart(2,'0')
                     if (displayEpNum == null || displayEpNum.isEmpty()) { // Nếu không parse được số từ episodeNumber
