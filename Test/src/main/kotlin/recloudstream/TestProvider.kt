@@ -28,7 +28,7 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 class AnimeVietsubProvider : MainAPI() {
 
     private val gson = Gson()
-    override var mainUrl = "https://animevietsub.tv"
+    override var mainUrl = "https://bit.ly/animevietsubtv"
     override var name = "AnimeVietsub"
     override val supportedTypes = setOf(TvType.Anime)
     override var lang = "vi"
@@ -37,9 +37,9 @@ class AnimeVietsubProvider : MainAPI() {
 
     private var currentActiveUrl = mainUrl
     private var domainCheckPerformed = false
-    private val domainCheckUrls = listOf("https://animevietsub.tv", "https://bit.ly/animevietsubtv")
+    private val domainCheckUrls = listOf("https://bit.ly/animevietsubtv")
     private suspend fun getBaseUrl(): String {
-        if (domainCheckPerformed && !currentActiveUrl.contains("animevietsub.tv")) {
+        if (domainCheckPerformed && !currentActiveUrl.contains("bit.ly")) {
             // Nếu đã kiểm tra và currentActiveUrl không còn là link bit.ly (đã được phân giải) thì trả về luôn
             return currentActiveUrl
         }
