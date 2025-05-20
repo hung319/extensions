@@ -39,38 +39,80 @@ class AnimeVietsubProvider : MainAPI() {
     private var domainCheckPerformed = false
     private val domainCheckUrls = listOf("https://animevietsub.tv", "https://bit.ly/animevietsubtv")
     private suspend fun getBaseUrl(): String {
-        if (domainCheckPerformed) return currentActiveUrl
+        if (domainCheckPerformed && !currentActiveUrl.contains("animevietsub.tv")) {
+            // Nếu đã kiểm tra và currentActiveUrl không còn là link bit.ly (đã được phân giải) thì trả về luôn
+            return currentActiveUrl
+        }
+        // Nếu domainCheckPerformed là true nhưng currentActiveUrl VẪN là bit.ly, có thể lần trước check lỗi, nên check lại.
+
         var fetchedNewUrl: String? = null
-        val urlsToCheck = listOf(currentActiveUrl) + domainCheckUrls.filter { it != currentActiveUrl }
-        Log.d("AnimeVietsubProvider", "Bắt đầu kiểm tra domain. Các URL sẽ kiểm tra: $urlsToCheck")
-        for (checkUrl in urlsToCheck) {
+        // Tạo danh sách URL để kiểm tra, ưu tiên currentActiveUrl (có thể đang là bit.ly)
+        val urlsToCheck = mutableListOf<String>()
+        if (currentActiveUrl.contains("bit.ly") || !domainCheckPerformed) { // Nếu chưa check hoặc current là bit.ly
+            urlsToCheck.add(currentActiveUrl) // Thêm bit.ly vào đầu để check
+            urlsToCheck.addAll(domainCheckUrls.filter { it != currentActiveUrl }) // Thêm các url khác (nếu có)
+        } else {
+            urlsToCheck.add(currentActiveUrl) // Nếu đã có url cụ thể, vẫn thử check lại phòng trường hợp domain đó chết
+            urlsToCheck.addAll(domainCheckUrls.filter { it != currentActiveUrl }) // Thêm bit.ly và các url khác
+        }
+
+
+        Log.d("AnimeVietsubProvider", "Bắt đầu kiểm tra domain. Các URL sẽ kiểm tra: ${urlsToCheck.distinct()}")
+
+        for (checkUrl in urlsToCheck.distinct()) { // Sử dụng distinct để tránh kiểm tra trùng lặp
             try {
                 Log.d("AnimeVietsubProvider", "Đang kiểm tra domain qua $checkUrl")
-                val response = app.get(checkUrl, allowRedirects = true, timeout = 10_000)
-                val finalUrlString = response.url
+                // Quan trọng: app.get với allowRedirects = true sẽ tự động theo dõi chuyển hướng của Bitly
+                // và response.url sẽ là URL cuối cùng.
+                val response = app.get(checkUrl, allowRedirects = true, timeout = 15_000) // Tăng timeout một chút cho Bitly
+                val finalUrlString = response.url // Đây sẽ là URL thật sau khi Bitly redirect (ví dụ: https://animevietsub.lol)
+
+                Log.d("AnimeVietsubProvider", "URL '$checkUrl' được phân giải thành '$finalUrlString'")
+
                 val urlObject = URL(finalUrlString)
-                val extractedBaseUrl = "${urlObject.protocol}://${urlObject.host}"
-                if (extractedBaseUrl.startsWith("http")) {
+                val extractedBaseUrl = "${urlObject.protocol}://${urlObject.host}" // Trích xuất protocol và host
+
+                if (extractedBaseUrl.startsWith("http") && !extractedBaseUrl.contains("bit.ly")) { // Đảm bảo URL hợp lệ và không phải là link bit.ly nữa
                     fetchedNewUrl = extractedBaseUrl
-                    Log.d("AnimeVietsubProvider", "Đã phân giải thành công $checkUrl sang $fetchedNewUrl")
-                    break
-                } else {
-                    Log.w("AnimeVietsubProvider", "Lược đồ URL không hợp lệ thu được từ $checkUrl -> $finalUrlString")
+                    Log.d("AnimeVietsubProvider", "Đã phân giải thành công $checkUrl sang domain thực: $fetchedNewUrl")
+                    break // Tìm thấy URL hoạt động, thoát vòng lặp
+                } else if (extractedBaseUrl.contains("bit.ly")) {
+                    Log.w("AnimeVietsubProvider", "URL '$checkUrl' vẫn là link bit.ly sau khi get: $finalUrlString. Có thể Bitly chưa chuyển hướng hoặc có lỗi.")
+                }
+                 else {
+                    Log.w("AnimeVietsubProvider", "Lược đồ URL không hợp lệ thu được từ $checkUrl -> $finalUrlString (Base: $extractedBaseUrl)")
                 }
             } catch (e: Exception) {
                 Log.e("AnimeVietsubProvider", "Không thể kiểm tra domain từ $checkUrl. Lỗi: ${e.message}")
             }
         }
+
         if (fetchedNewUrl != null && fetchedNewUrl != currentActiveUrl) {
             Log.i("AnimeVietsubProvider", "Domain đã được cập nhật: $currentActiveUrl -> $fetchedNewUrl")
             currentActiveUrl = fetchedNewUrl
-            mainUrl = currentActiveUrl
-        } else if (fetchedNewUrl == null) {
-            Log.w("AnimeVietsubProvider", "Tất cả các URL kiểm tra domain đều thất bại. Sử dụng URL đã biết cuối cùng: $currentActiveUrl")
-        } else {
-             Log.d("AnimeVietsubProvider", "Kiểm tra domain hoàn tất. URL hoạt động hiện tại vẫn là: $currentActiveUrl")
+            // Cập nhật cả mainUrl của MainAPI() để các hàm khác sử dụng URL đã được phân giải
+            this.mainUrl = currentActiveUrl
+        } else if (fetchedNewUrl == null && currentActiveUrl.contains("bit.ly")) {
+            // Nếu không fetch được URL mới và currentActiveUrl vẫn là bit.ly -> có lỗi xảy ra
+            Log.e("AnimeVietsubProvider", "Tất cả các URL kiểm tra domain đều thất bại và không thể phân giải link Bitly. Giữ nguyên: $currentActiveUrl")
+            // Ở đây bạn có thể quyết định ném lỗi nếu muốn người dùng biết không thể truy cập trang
+            // throw ErrorLoadingException("Không thể kết nối đến AnimeVietsub qua link rút gọn. Vui lòng thử lại sau.")
+        } else if (fetchedNewUrl == null && !currentActiveUrl.contains("bit.ly")) {
+            // Không fetch được URL mới, nhưng currentActiveUrl đã là một domain cụ thể (không phải bit.ly)
+            Log.w("AnimeVietsubProvider", "Không thể fetch URL mới, nhưng đã có domain cụ thể $currentActiveUrl. Tiếp tục sử dụng domain này.")
+            // Vẫn cập nhật mainUrl của provider để đảm bảo nó là domain cụ thể
+            this.mainUrl = currentActiveUrl
+        }
+        else {
+             Log.d("AnimeVietsubProvider", "Kiểm tra domain hoàn tất. URL hoạt động hiện tại là: $currentActiveUrl")
+             // Đảm bảo mainUrl của provider cũng được cập nhật nếu currentActiveUrl đã được phân giải
+             if (!currentActiveUrl.contains("bit.ly")) {
+                this.mainUrl = currentActiveUrl
+             }
         }
         domainCheckPerformed = true
+        // Trả về currentActiveUrl, lúc này nó nên là domain đã được phân giải (ví dụ: https://animevietsub.lol)
+        // trừ khi có lỗi nghiêm trọng xảy ra.
         return currentActiveUrl
     }
 
