@@ -246,7 +246,7 @@ if (ratingTextRaw != null) {
     val ratingDouble = normalizedRatingText.toDoubleOrNull()
     Log.d("AnimeVietsubProvider", "Rating: 3. Parsed double for '$title': $ratingDouble")
     if (ratingDouble != null) {
-        ratingValue = (ratingDouble * 100).roundToInt().coerceIn(0, 1000)
+        ratingValue = (ratingDouble * 1000).roundToInt().coerceIn(0, 10000)
         Log.d("AnimeVietsubProvider", "Rating: 4. Final Int (0-1000) for '$title': $ratingValue")
     } else { Log.w("AnimeVietsubProvider", "Rating: Failed to parse '$normalizedRatingText' to double for '$title'.") }
 } else { Log.w("AnimeVietsubProvider", "Rating: Raw text was null for '$title'.") }
@@ -547,7 +547,7 @@ if (ratingTextRaw != null) {
         catch (e: Exception) { Log.e("AnimeVietsubProvider", "Lỗi URL encode: $this", e); this }
     }
 
-    private fun Double?.toAnimeVietsubRatingInt(): Int? = this?.let { (it * 100).roundToInt().coerceIn(0, 1000) }
+    private fun Double?.toAnimeVietsubRatingInt(): Int? = this?.let { (it * 1000).roundToInt().coerceIn(0, 10000) }
 
     private fun fixUrl(url: String?, baseUrl: String): String? {
         if (url.isNullOrBlank()) return null
