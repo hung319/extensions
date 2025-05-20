@@ -215,15 +215,22 @@ class AnimeVietsubProvider : MainAPI() {
             posterUrl = fixUrl(posterUrl, baseUrl)
             val description = infoDoc.selectFirst("div.TPost.Single div.Description")?.text()?.trim()
                 ?: infoDoc.selectFirst("meta[property=og:description]")?.attr("content")
-            val infoSection = infoDoc.selectFirst("div.Info") ?: infoDoc
+            val infoSection = infoDoc.selectFirst("div.Info") ?: infoDoc // Fallback to whole doc if div.Info not found
             val genres = infoSection.select("li:has(strong:containsOwn(Thể loại)) a[href*=the-loai]").mapNotNull { it.text()?.trim() }
             val yearText = infoSection.select("li:has(strong:containsOwn(Năm))")?.firstOrNull()?.ownText()?.trim()
+                ?: infoDoc.select("div.InfoList li.AAIco-adjust:contains(Năm)")
+                    .firstOrNull()?.ownText()?.trim() // Alternative selector from load.html
             val year = yearText?.filter { it.isDigit() }?.toIntOrNull()
+
             val ratingText = infoSection.select("li:has(strong:containsOwn(Điểm))")?.firstOrNull()?.ownText()?.trim()?.substringBefore("/")
+                ?: infoDoc.selectFirst("div.VotesCn div.post-ratings #average_score")?.text()?.trim() // Alternative from load.html
             val rating = ratingText?.toDoubleOrNull()?.toAnimeVietsubRatingInt()
+
             val statusText = infoSection.select("li:has(strong:containsOwn(Trạng thái))")?.firstOrNull()?.ownText()?.trim()
+                 ?: infoDoc.select("ul.InfoList li.AAIco-adjust:contains(Trạng thái)")
+                    .firstOrNull()?.textNodes()?.lastOrNull()?.text()?.trim() // More robust status parsing
             val status = when {
-                statusText?.contains("Đang tiến hành", ignoreCase = true) == true -> ShowStatus.Ongoing
+                statusText?.contains("Đang chiếu", ignoreCase = true) == true || statusText?.contains("Đang tiến hành", ignoreCase = true) == true -> ShowStatus.Ongoing
                 statusText?.contains("Hoàn thành", ignoreCase = true) == true -> ShowStatus.Completed
                 else -> null
             }
@@ -241,11 +248,10 @@ class AnimeVietsubProvider : MainAPI() {
                     val episodeData = EpisodeData(url = epUrl ?: "", dataId = dataId, duHash = duHash)
                     val episodeNumber = epName.replace(Regex("""[^\d]"""), "").toIntOrNull()
 
-                    // Cần có dataId cho loadLinks mới
                     if (!epName.isNullOrBlank() && epUrl != null && dataId != null) {
                         newEpisode(data = gson.toJson(episodeData)) {
                             this.name = if (epName.contains("tập", ignoreCase = true) || epName.matches(Regex("^\\d+$"))) {
-                                "Tập ${epName.replace("tập", "", ignoreCase = true).trim()}"
+                                "Tập ${epName.replace("tập", "", ignoreCase = true).trim().padStart(2,'0')}" // Ensure consistent naming
                             } else { epName }
                             this.episode = episodeNumber
                         }
@@ -255,28 +261,90 @@ class AnimeVietsubProvider : MainAPI() {
                     }
                 }.sortedBy { it.episode ?: Int.MAX_VALUE }
             } else {
-                 Log.w("AnimeVietsubProvider", "[Episode Parsing - Watch Page] Watch page document was null. Cannot parse episodes using old method.")
-                 emptyList<Episode>()
+                Log.w("AnimeVietsubProvider", "[Episode Parsing - Watch Page] Watch page document was null. Cannot parse episodes using old method.")
+                emptyList<Episode>()
             }
             Log.i("AnimeVietsubProvider", "[Episode Parsing - Watch Page] Finished parsing. Found ${episodes.size} valid episodes.")
 
+
+            // +++ NEW: Parse "Phim liên quan" (Recommendations) from infoDoc +++
+            Log.d("AnimeVietsubProvider", "Parsing recommendations from info page...")
+            val recommendations = mutableListOf<SearchResponse>()
+            // Selector from load.html for "Phim liên quan"
+            infoDoc.select("div.Wdgt div.MovieListRelated.owl-carousel div.TPostMv").forEach { item ->
+                try {
+                    val linkElement = item.selectFirst("div.TPost > a")
+                    if (linkElement != null) {
+                        val recHref = fixUrl(linkElement.attr("href"), baseUrl)
+                        val recTitle = linkElement.selectFirst("div.Title")?.text()?.trim()
+                        val recPosterUrl = fixUrl(linkElement.selectFirst("div.Image img")?.attr("src"), baseUrl)
+                        // Determine TvType based on mli-eps or other indicators if available
+                        // For simplicity, defaulting to TvSeries if mli-eps exists, else Movie.
+                        // This might need refinement based on actual site structure for recommendations.
+                        val isTvSeriesRec = linkElement.selectFirst("span.mli-eps") != null
+                        val recTvType = if (isTvSeriesRec) TvType.TvSeries else TvType.Movie
+
+                        if (recHref != null && recTitle != null) {
+                            recommendations.add(
+                                provider.newMovieSearchResponse(recTitle, recHref, recTvType) {
+                                    this.posterUrl = recPosterUrl
+                                    // You could add other fields like quality if available in HTML for recommendations
+                                }
+                            )
+                        } else {
+                             Log.w("AnimeVietsubProvider", "[Recommendations] Skipping item: Missing href or title. Element: ${item.html()}")
+                        }
+                    } else {
+                        Log.w("AnimeVietsubProvider", "[Recommendations] Skipping item: Link element not found. Element: ${item.html()}")
+                    }
+                } catch (e: Exception) {
+                    Log.e("AnimeVietsubProvider", "[Recommendations] Error parsing recommendation item: ${item.html()}", e)
+                }
+            }
+            Log.i("AnimeVietsubProvider", "Found ${recommendations.size} recommendations.")
+            // +++ END NEW +++
+
+
             // --- Xác định loại TV/Movie và trả về response ---
-             val isTvSeries = episodes.size > 1 || infoSection.select("li:has(strong:containsOwn(Thể loại)) a[href*=anime-bo]").isNotEmpty()
-             return if (isTvSeries) {
-                 Log.d("AnimeVietsubProvider", "Creating TvSeriesLoadResponse for '$title'")
-                 provider.newTvSeriesLoadResponse(title, infoUrl, TvType.TvSeries, episodes = episodes) {
-                     this.posterUrl = posterUrl; this.plot = description; this.tags = genres; this.year = year; this.rating = rating; this.showStatus = status;
-                 }
-             } else {
-                 Log.d("AnimeVietsubProvider", "Creating MovieLoadResponse for '$title'")
-                 val durationText = infoSection.select("li:has(strong:containsOwn(Thời lượng))")?.firstOrNull()?.ownText()?.trim()
-                 val durationMinutes = durationText?.filter { it.isDigit() }?.toIntOrNull()
-                 // Movie data cần để loadLinks hoạt động, lấy từ tập duy nhất nếu có
-                 val movieData = if (episodes.isNotEmpty()) episodes[0].data else gson.toJson(EpisodeData(url = infoUrl, dataId = null, duHash = null)) // Fallback data
-                 provider.newMovieLoadResponse(title, infoUrl, TvType.Movie, movieData) {
-                     this.posterUrl = posterUrl; this.plot = description; this.tags = genres; this.year = year; this.rating = rating; durationMinutes?.let { addDuration(it.toString()) }
-                 }
-             }
+            val isTvSeries = episodes.size > 1 ||
+                             (episodes.size == 1 && episodes.first().name?.contains("Tập", ignoreCase = true) == true) || // Single episode but named "Tập X"
+                             infoSection.select("li:has(strong:containsOwn(Thể loại)) a[href*=anime-bo]").isNotEmpty() ||
+                             (statusText?.contains("Phim bộ", ignoreCase = true) == true) // Another indicator
+
+            return if (isTvSeries) {
+                Log.d("AnimeVietsubProvider", "Creating TvSeriesLoadResponse for '$title'")
+                provider.newTvSeriesLoadResponse(title, infoUrl, TvType.TvSeries, episodes = episodes) {
+                    this.posterUrl = posterUrl; this.plot = description; this.tags = genres; this.year = year; this.rating = rating; this.showStatus = status;
+                    this.recommendations = recommendations // Add recommendations here
+                }
+            } else {
+                Log.d("AnimeVietsubProvider", "Creating MovieLoadResponse for '$title'")
+                val durationText = infoSection.select("li:has(strong:containsOwn(Thời lượng))")?.firstOrNull()?.ownText()?.trim()
+                    ?: infoDoc.select("ul.InfoList li.AAIco-adjust:contains(Thời lượng)")
+                        .firstOrNull()?.ownText()?.trim() // Alternative
+                val durationMinutes = durationText?.filter { it.isDigit() }?.toIntOrNull()
+
+                // Movie data cần để loadLinks hoạt động, lấy từ tập duy nhất nếu có, or infoUrl itself
+                val movieDataForLoadLinks = if (episodes.isNotEmpty() && episodes.first().dataId != null) {
+                    episodes.first().data // Use data from the (single) episode if available and has dataId
+                } else {
+                    // Fallback: if no episodes or episode has no dataId (e.g. movie directly on info page)
+                    // We need a valid EpisodeData JSON structure.
+                    // For movies without explicit episodes, the infoUrl itself might not have dataId/duHash.
+                    // The loadLinks logic relies on dataId.
+                    // If the movie is a single file and doesn't use the episode ajax system, loadLinks might need adjustment.
+                    // For now, providing a basic structure. This might need review if movies have different loading mechanisms.
+                    val moviePageDataId = infoDoc.selectFirst("a.watch_button_more[href*=xem-phim]")?.attr("href")?.substringAfterLast("-")?.substringBeforeLast(".")
+                    // This is a guess, actual dataId for movies might be elsewhere or not used.
+                    // If movies don't use the ajax player, then loadLinks won't work for them this way.
+                    gson.toJson(EpisodeData(url = infoUrl, dataId = moviePageDataId, duHash = null))
+                }
+
+                provider.newMovieLoadResponse(title, infoUrl, TvType.Movie, movieDataForLoadLinks) {
+                    this.posterUrl = posterUrl; this.plot = description; this.tags = genres; this.year = year; this.rating = rating; durationMinutes?.let { addDuration(it.toString()) }
+                    this.recommendations = recommendations // Add recommendations here
+                }
+            }
         } catch (e: Exception) {
             Log.e("AnimeVietsubProvider", "Error in toLoadResponse processing for url: $infoUrl", e); return null
         }
