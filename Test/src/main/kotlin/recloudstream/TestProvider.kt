@@ -233,20 +233,23 @@ class AnimeVietsubProvider : MainAPI() {
             val yearText = infoSection.select("li:has(strong:containsOwn(Năm))")?.firstOrNull()?.ownText()?.trim()
                 ?: infoDoc.selectFirst("p.Info span.Date a")?.text()?.trim()
             val year = yearText?.filter { it.isDigit() }?.toIntOrNull()
-            val ratingTextRaw = infoSection.select("li:has(strong:containsOwn(Điểm))")?.firstOrNull()?.ownText()?.trim()?.substringBefore("/")
-                 ?: infoDoc.selectFirst("div.VotesCn div.post-ratings #average_score")?.text()?.trim()
-            Log.d("AnimeVietsubProvider", "Rating: 1. Raw text for '$title': '$ratingTextRaw'")
-            var ratingValue: Int? = null
-            if (ratingTextRaw != null) {
-                val normalizedRatingText = ratingTextRaw.replace(",", ".")
-                Log.d("AnimeVietsubProvider", "Rating: 2. Normalized text for '$title': '$normalizedRatingText'")
-                val ratingDouble = normalizedRatingText.toDoubleOrNull()
-                Log.d("AnimeVietsubProvider", "Rating: 3. Parsed double for '$title': $ratingDouble")
-                if (ratingDouble != null) {
-                    ratingValue = (ratingDouble * 100).roundToInt().coerceIn(0, 1000)
-                    Log.d("AnimeVietsubProvider", "Rating: 4. Final Int (0-1000) for '$title': $ratingValue")
-                } else { Log.w("AnimeVietsubProvider", "Rating: Failed to parse '$normalizedRatingText' to double for '$title'.") }
-            } else { Log.w("AnimeVietsubProvider", "Rating: Raw text was null for '$title'.") }
+            val ratingTextRaw = infoDoc.selectFirst("div#star[data-score]")?.attr("data-score")?.trim() // Ưu tiên 1
+    ?: infoDoc.selectFirst("input#score_current[value]")?.attr("value")?.trim() // Ưu tiên 2
+    ?: infoDoc.selectFirst("div.VotesCn div.post-ratings strong#average_score")?.text()?.trim() // Ưu tiên 3
+    ?: infoSection.select("li:has(strong:containsOwn(Điểm))")?.firstOrNull()?.ownText()?.trim()?.substringBefore("/") // Fallback selector cũ
+
+Log.d("AnimeVietsubProvider", "Rating: 1. Raw text for '$title': '$ratingTextRaw'")
+var ratingValue: Int? = null
+if (ratingTextRaw != null) {
+    val normalizedRatingText = ratingTextRaw.replace(",", ".")
+    Log.d("AnimeVietsubProvider", "Rating: 2. Normalized text for '$title': '$normalizedRatingText'")
+    val ratingDouble = normalizedRatingText.toDoubleOrNull()
+    Log.d("AnimeVietsubProvider", "Rating: 3. Parsed double for '$title': $ratingDouble")
+    if (ratingDouble != null) {
+        ratingValue = (ratingDouble * 100).roundToInt().coerceIn(0, 1000)
+        Log.d("AnimeVietsubProvider", "Rating: 4. Final Int (0-1000) for '$title': $ratingValue")
+    } else { Log.w("AnimeVietsubProvider", "Rating: Failed to parse '$normalizedRatingText' to double for '$title'.") }
+} else { Log.w("AnimeVietsubProvider", "Rating: Raw text was null for '$title'.") }
             val statusTextOriginal = infoSection.select("li:has(strong:containsOwn(Trạng thái))")?.firstOrNull()?.ownText()?.trim()
                 ?: infoDoc.select("div.mvici-left li.AAIco-adjust:contains(Trạng thái)")
                     .firstOrNull()?.textNodes()?.lastOrNull()?.text()?.trim()?.replace("Trạng thái:", "")?.trim()
