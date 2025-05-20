@@ -28,7 +28,7 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 class AnimeVietsubProvider : MainAPI() {
 
     private val gson = Gson()
-    override var mainUrl = "https://animevietsub.lol"
+    override var mainUrl = "https://animevietsub.tv"
     override var name = "AnimeVietsub"
     override val supportedTypes = setOf(TvType.Anime)
     override var lang = "vi"
@@ -37,7 +37,7 @@ class AnimeVietsubProvider : MainAPI() {
 
     private var currentActiveUrl = mainUrl
     private var domainCheckPerformed = false
-    private val domainCheckUrls = listOf("https://animevietsub.lol", "https://animevietsub.tv")
+    private val domainCheckUrls = listOf("https://animevietsub.tv", "https://bit.ly/animevietsubtv")
     private suspend fun getBaseUrl(): String {
         if (domainCheckPerformed) return currentActiveUrl
         var fetchedNewUrl: String? = null
