@@ -340,7 +340,7 @@ class AnimeVietsubProvider : MainAPI() {
         @JsonProperty("label") val label: String? = null
     )
 
-    override suspend fun loadLinks(
+        override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
@@ -349,7 +349,7 @@ class AnimeVietsubProvider : MainAPI() {
         var foundLinks = false
         val baseUrl = getBaseUrl()
         val ajaxUrl = "$baseUrl/ajax/player?v=2019a"
-        val decryptApiUrl = "https://m3u8.013666.xyz/animevietsub/decrypt"
+        val decryptApiUrl = "https://m3u8.013666.xyz/animevietsub/decrypt" // API này có thể thay đổi
         val textPlainMediaType = "text/plain".toMediaTypeOrNull()
 
         Log.d("AnimeVietsubProvider", "LoadLinks nhận được data: $data")
@@ -408,60 +408,74 @@ class AnimeVietsubProvider : MainAPI() {
                 val dataEncOrDirectLink = linkSource.file
                 if (dataEncOrDirectLink.isNullOrBlank()) {
                     Log.w("AnimeVietsubProvider", "Bỏ qua link source vì 'file' rỗng hoặc null.")
-                    return@forEach
+                    return@forEach // Bỏ qua link source này và tiếp tục với link source tiếp theo
                 }
 
                 val finalStreamUrl: String
                 if (dataEncOrDirectLink.startsWith("http") && (dataEncOrDirectLink.contains(".m3u8") || dataEncOrDirectLink.contains(".mp4"))) {
+                    // Nếu là link trực tiếp (ít khả năng với AnimeVietsub hiện tại cho video chính)
                     finalStreamUrl = dataEncOrDirectLink
                     Log.i("AnimeVietsubProvider", "Lấy được link trực tiếp từ API: $finalStreamUrl")
                 } else {
+                    // Nếu là dataEnc, cần giải mã
                     Log.d("AnimeVietsubProvider", "Lấy được 'dataenc': ${dataEncOrDirectLink.take(50)}...")
                     Log.d("AnimeVietsubProvider", "POSTing 'dataenc' đến API giải mã: $decryptApiUrl")
                     
                     val requestBody = dataEncOrDirectLink.toRequestBody(textPlainMediaType)
+                    val decryptHeaders = mapOf(
+                        "User-Agent" to USER_AGENT,
+                        "Referer" to episodePageUrl // Hoặc ajaxUrl, tùy theo yêu cầu của API giải mã
+                    )
                     val decryptResponse = app.post(
                         decryptApiUrl,
-                        headers = mapOf("User-Agent" to USER_AGENT, "Referer" to episodePageUrl),
+                        headers = decryptHeaders,
                         requestBody = requestBody
                     )
                     Log.d("AnimeVietsubProvider", "API giải mã Response Status: ${decryptResponse.code}")
+                    // Log.v("AnimeVietsubProvider", "API giải mã Response Body: ${decryptResponse.text}") // Log nếu cần debug kỹ
+
                     finalStreamUrl = decryptResponse.text.trim()
                 }
 
                 if (finalStreamUrl.startsWith("http") && (finalStreamUrl.endsWith(".m3u8") || finalStreamUrl.contains(".mp4")) ) {
                     Log.i("AnimeVietsubProvider", "Đã lấy thành công link M3U8/MP4 cuối cùng: $finalStreamUrl")
 
-                    val streamType = if (finalStreamUrl.endsWith(".m3u8")) {
+                    val streamTypeCalculated = if (finalStreamUrl.endsWith(".m3u8")) {
                         ExtractorLinkType.M3U8
                     } else {
                         ExtractorLinkType.VIDEO // Sử dụng VIDEO cho MP4 trực tiếp
                     }
 
-                    val requiredHeaders = mapOf(
+                    val requiredStreamHeaders = mapOf(
                         "User-Agent" to USER_AGENT,
-                        "Origin" to baseUrl,
-                        "Referer" to episodePageUrl
+                        "Origin" to baseUrl, // Origin nên là baseUrl của trang web
+                        "Referer" to episodePageUrl // Referer cho stream có thể là trang tập phim hoặc ajaxUrl
                     )
 
-                    newExtractorLink(
-                        source = name,
+                    // Sử dụng newExtractorLink với initializer lambda
+                    val extractorLink = newExtractorLink(
+                        source = this.name, // Sử dụng tên provider (this.name)
                         name = "AnimeVietsub API" + (linkSource.label?.let { " - $it" } ?: ""),
                         url = finalStreamUrl,
-                        referer = episodePageUrl,
-                        quality = Qualities.Unknown.value,
-                        type = streamType,
-                        headers = requiredHeaders
-                    ).let { callback(it) }
-
+                        type = streamTypeCalculated // Truyền type đã tính toán
+                    ) {
+                        // Bên trong lambda này, 'this' chính là đối tượng ExtractorLink đang được tạo
+                        this.referer = episodePageUrl // Đặt referer bên trong initializer
+                        this.quality = Qualities.Unknown.value // Hoặc parse từ linkSource.label nếu có
+                        this.headers = requiredStreamHeaders // Đặt headers
+                        // Các thuộc tính khác có thể được đặt ở đây nếu cần
+                        // ví dụ: this.extractorData = "dữ liệu gì đó nếu cần"
+                    }
+                    callback(extractorLink)
                     foundLinks = true
                 } else {
-                    Log.e("AnimeVietsubProvider", "API giải mã không trả về URL M3U8/MP4 hợp lệ. Response: $finalStreamUrl")
+                    Log.e("AnimeVietsubProvider", "API giải mã không trả về URL M3U8/MP4 hợp lệ. Response: '$finalStreamUrl'")
                 }
             }
 
         } catch (e: Exception) {
             Log.e("AnimeVietsubProvider", "Lỗi trong quá trình trích xuất link API cho ID tập phim $episodeId", e)
+            // Cân nhắc throw ErrorLoadingException("Không thể tải link phim: ${e.message}") để người dùng biết
         }
 
         if (!foundLinks) {
