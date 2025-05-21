@@ -2,15 +2,14 @@ package recloudstream // Hoặc tên package của bạn
 
 import android.util.Base64
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.* // Quan trọng để có AppUtils
-import com.lagradost.cloudstream3.utils.AppUtils.toJson
+import com.lagradost.cloudstream3.utils.* // import com.lagradost.cloudstream3.utils.toJson // Không cần nữa nếu không dùng cho proxy
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
 import org.jsoup.Jsoup
-import java.net.URLEncoder
+import java.net.URLEncoder // Vẫn có thể cần cho việc khác, nhưng không cho proxy nữa
 
 // Đổi tên class thành tên Provider của bạn nếu khác
 class Anime47Provider : MainAPI() { 
@@ -31,7 +30,6 @@ class Anime47Provider : MainAPI() {
         try { app.get(logUrl, timeout = 5) } catch (e: Exception) { println("Failed to send log: ${e.message}") }
     }
     
-    // ... (getMainPage, search, load, getBackgroundImageUrl giữ nguyên) ...
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         if (page > 1) return null
         val lists = mutableListOf<HomePageList>()
@@ -236,9 +234,9 @@ class Anime47Provider : MainAPI() {
         val commonUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" 
         val thanhhoaRegex = Regex("""var\s+thanhhoa\s*=\s*atob\(['"](.*?)['"]\)""")
         val externalDecryptApiBase = "https://m3u8.013666.xyz/anime47/link/"
-        val proxyBaseUrl = "https://proxy.h4rs.io.vn/proxy"
+        // val proxyBaseUrl = "https://proxy.h4rs.io.vn/proxy" // <<<< Bỏ proxy
 
-        sendLog("loadLinks started for: $data - Using external decrypt API with proxy. Servers: ${serverIds.joinToString()}.")
+        sendLog("loadLinks started for: $data - Using external decrypt API directly. Servers: ${serverIds.joinToString()}.")
 
         suspend fun tryLoadFromServerExternalApi(serverId: String): Boolean {
             var success = false
@@ -284,34 +282,23 @@ class Anime47Provider : MainAPI() {
                         val videoUrl = parsedJson?.modifiedM3u8Url
 
                         if (!videoUrl.isNullOrBlank() && videoUrl.startsWith("http") && videoUrl.endsWith(".m3u8")) {
-                            sendLog("Server $serverName: Extracted M3U8 URL: $videoUrl")
+                            sendLog("Server $serverName: Extracted M3U8 URL: $videoUrl. Using directly.")
 
-                            val headersForProxy = mapOf(
-                                "Referer" to data, 
-                                "User-Agent" to commonUA 
+                            // Headers Cloudstream Player sẽ sử dụng khi fetch M3U8 và các segments
+                            val directHeaders = mapOf(
+                                "Referer" to data, // Trang xem phim gốc làm Referer
+                                "User-Agent" to commonUA
                             )
-                            
-                            
-                            // CÁC LỰA CHỌN KHÁC (NẾU AppUtils.toJson(obj) KHÔNG HOẠT ĐỘNG):
-                            // 1. Extension function (cần import com.lagradost.cloudstream3.utils.toJson và Dokka phải khớp):
-                            val headersJsonString = headersForProxy.toJson() 
-                            // 2. Sử dụng mapper trực tiếp (an toàn nhất nếu các cách trên lỗi):
-                            // val headersJsonString = AppUtils.mapper.writeValueAsString(headersForProxy)
-
-                            val encodedM3u8Url = URLEncoder.encode(videoUrl, "UTF-8")
-                            val encodedHeadersJson = URLEncoder.encode(headersJsonString, "UTF-8")
-
-                            val proxiedM3u8Url = "$proxyBaseUrl?url=$encodedM3u8Url&headers=$encodedHeadersJson"
-                            sendLog("Server $serverName: Using proxied URL: $proxiedM3u8Url")
                             
                             callback(
                                 ExtractorLink(
-                                    source = "$name $serverName (Proxy)",
+                                    source = "$name $serverName", // Bỏ (Proxy)
                                     name = "$name $serverName HLS",
-                                    url = proxiedM3u8Url,
+                                    url = videoUrl, // Link M3U8 trực tiếp
                                     referer = data, 
                                     quality = Qualities.Unknown.value,
                                     type = ExtractorLinkType.M3U8,
+                                    headers = directHeaders // Truyền headers cho player
                                 )
                             )
                             success = true
