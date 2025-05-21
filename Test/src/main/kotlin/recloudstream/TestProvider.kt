@@ -269,7 +269,7 @@ class Anime47Provider : MainAPI() {
                     sendLog("Server $serverName: Calling external API for JSON: $decryptUrl")
 
                     try {
-                        val decryptApiResponseText = app.get(decryptUrl, headers = mapOf("referer" to apiUrl)).text
+                        val decryptApiResponseText = app.get(decryptUrl, headers = mapOf("referer" to data)).text
                         sendLog("Server $serverName: External API raw JSON response: ${decryptApiResponseText.take(300)}")
 
                         val parsedJson = try {
