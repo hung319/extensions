@@ -209,8 +209,22 @@ class AnimeVietsubProvider : MainAPI() {
             var posterUrl = infoDoc.selectFirst("div.TPost.Single div.Image img")?.attr("src")
                 ?: infoDoc.selectFirst("meta[property=og:image]")?.attr("content")
             posterUrl = fixUrl(posterUrl, baseUrl)
-            val description = infoDoc.selectFirst("div.TPost.Single div.Description")?.text()?.trim()
-                ?: infoDoc.selectFirst("meta[property=og:description]")?.attr("content")
+            // SỬA ĐỔI CÁCH LẤY DESCRIPTION Ở ĐÂY
+            // Ưu tiên lấy từ <div class="Description"> bên trong <article class="TPost Single">
+            // Sử dụng .wholeText() để giữ lại các thẻ <br> thành xuống dòng nếu có, hoặc .text() nếu muốn loại bỏ hết HTML.
+            // .html() sẽ lấy cả HTML bên trong, có thể cần xử lý thêm để loại bỏ tag không mong muốn.
+            // .text() thường là lựa chọn an toàn nhất để lấy nội dung chữ.
+            val descriptionFromDiv = infoDoc.selectFirst("article.TPost.Single div.Description")?.text()?.trim()
+            Log.d("AnimeVietsubProvider", "Description from div.Description: '$descriptionFromDiv'")
+
+            // Fallback về meta tag nếu div.Description rỗng hoặc không tìm thấy
+            val description = if (!descriptionFromDiv.isNullOrBlank()) {
+                descriptionFromDiv
+            } else {
+                Log.w("AnimeVietsubProvider", "div.Description is empty or not found for '$title', falling back to meta og:description")
+                infoDoc.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
+            }
+            Log.d("AnimeVietsubProvider", "Final description for '$title': '$description'")
             val infoSection = infoDoc.selectFirst("div.Info") ?: infoDoc
             val genres = infoSection.select("li:has(strong:containsOwn(Thể loại)) a[href*=the-loai], div.mvici-left li.AAIco-adjust:contains(Thể loại) a")
                 .mapNotNull { it.text()?.trim() }.distinct()
