@@ -1,11 +1,8 @@
-package recloudstream
+package recloudstream // Hoặc tên package của bạn
 
 import android.util.Base64
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-// toJson được gọi như một extension function, không cần import riêng nếu AppUtils đã được import.
-// import com.lagradost.cloudstream3.utils.AppUtils.toJson 
+import com.lagradost.cloudstream3.utils.* // Quan trọng để có AppUtils
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
@@ -14,7 +11,8 @@ import org.jsoup.nodes.Element
 import org.jsoup.Jsoup
 import java.net.URLEncoder
 
-class Anime47Provider : MainAPI() { // Đổi tên TestProvider thành Anime47Provider nếu cần
+// Đổi tên class thành tên Provider của bạn nếu khác
+class Anime47Provider : MainAPI() { 
     override var mainUrl = "https://anime47.fun"
     override var name = "Anime47"
     override val hasMainPage = true
@@ -31,16 +29,9 @@ class Anime47Provider : MainAPI() { // Đổi tên TestProvider thành Anime47Pr
         val logUrl = "https://text.013666.xyz/upload/text/logs.txt/$encodedLog"
         try { app.get(logUrl, timeout = 5) } catch (e: Exception) { println("Failed to send log: ${e.message}") }
     }
-
-    private fun getBackgroundImageUrl(element: Element?): String? {
-        val style = element?.attr("style")
-        return style?.let {
-            Regex("""background-image:\s*url\(['"]?(.*?)['"]?\)""").find(it)?.groupValues?.getOrNull(1)
-        }
-    }
-
+    
+    // ... (getMainPage, search, load, getBackgroundImageUrl giữ nguyên) ...
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        // (Giữ nguyên)
         if (page > 1) return null
         val lists = mutableListOf<HomePageList>()
         try {
@@ -90,8 +81,14 @@ class Anime47Provider : MainAPI() { // Đổi tên TestProvider thành Anime47Pr
         return HomePageResponse(lists)
     }
 
+    private fun getBackgroundImageUrl(element: Element?): String? {
+        val style = element?.attr("style")
+        return style?.let {
+            Regex("""background-image:\s*url\(['"]?(.*?)['"]?\)""").find(it)?.groupValues?.getOrNull(1)
+        }
+    }
+
     override suspend fun search(query: String): List<SearchResponse>? {
-        // (Giữ nguyên)
         val searchUrl = "$mainUrl/tim-nang-cao/?keyword=${URLEncoder.encode(query, "UTF-8")}"
         return try {
             val document = app.get(searchUrl).document
@@ -118,7 +115,6 @@ class Anime47Provider : MainAPI() { // Đổi tên TestProvider thành Anime47Pr
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        // (Giữ nguyên)
         try {
             val infoDocument = app.get(url).document
             val title = infoDocument.selectFirst("h1.movie-title span.title-1")?.text()?.trim()
@@ -278,7 +274,7 @@ class Anime47Provider : MainAPI() { // Đổi tên TestProvider thành Anime47Pr
                         sendLog("Server $serverName: External API raw JSON response: ${decryptApiResponseText.take(300)}")
 
                         val parsedJson = try {
-                            parseJson<ModifiedM3u8ApiResponse>(decryptApiResponseText)
+                            AppUtils.parseJson<ModifiedM3u8ApiResponse>(decryptApiResponseText)
                         } catch (e: Exception) {
                             sendLog("Server $serverName: Failed to parse JSON: ${e.message}. Resp: ${decryptApiResponseText.take(100)}")
                             null
@@ -293,8 +289,15 @@ class Anime47Provider : MainAPI() { // Đổi tên TestProvider thành Anime47Pr
                                 "Referer" to data, 
                                 "User-Agent" to commonUA 
                             )
-                            // Sửa lỗi ở dòng này:
-                            val headersJsonString = headersForProxy.toJson() // Gọi toJson() như một extension function
+                            
+                            // THỬ CÁCH GỌI NÀY THEO GỢI Ý CỦA BẠN:
+                            val headersJsonString = AppUtils.toJson(headersForProxy) 
+                            
+                            // CÁC LỰA CHỌN KHÁC (NẾU AppUtils.toJson(obj) KHÔNG HOẠT ĐỘNG):
+                            // 1. Extension function (cần import com.lagradost.cloudstream3.utils.toJson và Dokka phải khớp):
+                            // val headersJsonString = headersForProxy.toJson() 
+                            // 2. Sử dụng mapper trực tiếp (an toàn nhất nếu các cách trên lỗi):
+                            // val headersJsonString = AppUtils.mapper.writeValueAsString(headersForProxy)
 
                             val encodedM3u8Url = URLEncoder.encode(videoUrl, "UTF-8")
                             val encodedHeadersJson = URLEncoder.encode(headersJsonString, "UTF-8")
