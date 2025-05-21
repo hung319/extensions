@@ -3,6 +3,7 @@ package recloudstream // Hoặc tên package của bạn
 import android.util.Base64
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.* // Quan trọng để có AppUtils
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
@@ -290,12 +291,10 @@ class Anime47Provider : MainAPI() {
                                 "User-Agent" to commonUA 
                             )
                             
-                            // THỬ CÁCH GỌI NÀY THEO GỢI Ý CỦA BẠN:
-                            val headersJsonString = AppUtils.toJson(headersForProxy) 
                             
                             // CÁC LỰA CHỌN KHÁC (NẾU AppUtils.toJson(obj) KHÔNG HOẠT ĐỘNG):
                             // 1. Extension function (cần import com.lagradost.cloudstream3.utils.toJson và Dokka phải khớp):
-                            // val headersJsonString = headersForProxy.toJson() 
+                            val headersJsonString = headersForProxy.toJson() 
                             // 2. Sử dụng mapper trực tiếp (an toàn nhất nếu các cách trên lỗi):
                             // val headersJsonString = AppUtils.mapper.writeValueAsString(headersForProxy)
 
