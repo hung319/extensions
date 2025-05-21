@@ -204,67 +204,67 @@ class AnimeVietsubProvider : MainAPI() {
                 ?: infoDoc.selectFirst("meta[property=og:title]")?.attr("content")?.substringBefore(" Tập")?.trim()
                 ?: run { Log.e("AnimeVietsubProvider", "Could not find title on info page $infoUrl"); return null }
 
-            // --- LẤY POSTER URL VỚI LOGIC FALLBACK CẢI TIẾN ---
+            // --- LẤY POSTER URL VỚI LOGIC MỚI ---
             var posterUrlForResponse: String? = null
-            var rawPosterUrl: String?
+            var rawPosterUrl: String? // Biến tạm để lưu URL thô trước khi fixUrl
             Log.d("AnimeVietsubProvider", "Attempting to fetch poster for '$title'")
 
-            // Ưu tiên 1: Ảnh banner lớn từ TPostBg
-            rawPosterUrl = infoDoc.selectFirst("div.TPostBg.Objf img.TPostBg")?.attr("src")
-            if (!rawPosterUrl.isNullOrBlank()) {
-                posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
-                Log.d("AnimeVietsubProvider", "Poster (Big Banner TPostBg): Raw='$rawPosterUrl', Fixed='$posterUrlForResponse'")
+            // Bước 1: Thử lấy "Big Banner" thực sự của phim (nếu có và theo cấu trúc mong muốn)
+            // Selector này nhắm vào banner chính của phim nếu nó có cấu trúc riêng biệt
+            // Ví dụ: một banner trong div#hero-banner hoặc một og:image đặc biệt chứa "/big_banner/"
+            // (A) Thử từ meta tag trước, nếu nó rõ ràng là big_banner của phim
+            val metaBigBanner = infoDoc.select("meta[property=og:image], meta[itemprop=image]")
+                .mapNotNull { it.attr("content").takeIf { c -> c.isNotBlank() && c.contains("/data/big_banner/", ignoreCase = true) } }
+                .firstOrNull()
+            if (!metaBigBanner.isNullOrBlank()) {
+                posterUrlForResponse = fixUrl(metaBigBanner, baseUrl)
+                Log.d("AnimeVietsubProvider", "Poster from Meta (specific /data/big_banner/): $posterUrlForResponse")
             }
 
-            // Ưu tiên 1.1: Ảnh banner từ cấu trúc item (nếu bước 1 không thành công hoặc posterUrlForResponse rỗng)
+            // (B) Thử từ cấu trúc div.TPostBg nếu nó là banner cụ thể (ít khả năng hơn là ảnh nền chung)
             if (posterUrlForResponse.isNullOrBlank()) {
-                rawPosterUrl = infoDoc.select("div.owl-item div.item img[src*=data/big_banner], div.item > img[src*=data/big_banner]")
-                                   .firstOrNull()?.attr("src")
-                if (!rawPosterUrl.isNullOrBlank()) {
+                rawPosterUrl = infoDoc.selectFirst("div.TPostBg.Objf img.TPostBg")?.attr("src")
+                if (!rawPosterUrl.isNullOrBlank() && rawPosterUrl.contains("/data/big_banner/", ignoreCase = true)) { // Chỉ lấy nếu là banner cụ thể
                     posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
-                    Log.d("AnimeVietsubProvider", "Poster (Big Banner div.item): Raw='$rawPosterUrl', Fixed='$posterUrlForResponse'")
+                    Log.d("AnimeVietsubProvider", "Poster from TPostBg (specific /data/big_banner/): $posterUrlForResponse")
+                } else if (!rawPosterUrl.isNullOrBlank()) {
+                    Log.d("AnimeVietsubProvider", "TPostBg image found but not a specific big_banner: $rawPosterUrl. Will try other options.")
                 }
             }
             
-            // Ưu tiên 2: Ảnh poster chuẩn từ figure.Objf (nếu các bước trên không thành công)
-            if (posterUrlForResponse.isNullOrBlank()) { 
+            // Bước 2: Nếu không có "Big Banner" thực sự, lấy "Poster chuẩn"
+            if (posterUrlForResponse.isNullOrBlank()) {
                 rawPosterUrl = infoDoc.selectFirst("div.TPost.Single div.Image figure.Objf img")?.attr("src")
                 if (!rawPosterUrl.isNullOrBlank()) {
                     posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
-                    Log.d("AnimeVietsubProvider", "Poster (Standard Figure): Raw='$rawPosterUrl', Fixed='$posterUrlForResponse'")
+                    Log.d("AnimeVietsubProvider", "Poster from Standard Figure: $posterUrlForResponse")
                 }
             }
-            
-            // Ưu tiên 3: Ảnh poster từ div.Image img (ít cụ thể hơn)
-            if (posterUrlForResponse.isNullOrBlank()) { 
+            if (posterUrlForResponse.isNullOrBlank()) { // Fallback cho poster chuẩn
                 rawPosterUrl = infoDoc.selectFirst("div.TPost.Single div.Image img")?.attr("src")
                 if (!rawPosterUrl.isNullOrBlank()) {
                     posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
-                    Log.d("AnimeVietsubProvider", "Poster (Standard Div): Raw='$rawPosterUrl', Fixed='$posterUrlForResponse'")
+                    Log.d("AnimeVietsubProvider", "Poster from Standard Div (div.Image img): $posterUrlForResponse")
                 }
             }
 
-            // Ưu tiên 4: Thẻ Meta
-            if (posterUrlForResponse.isNullOrBlank()) { 
+            // Bước 3: Nếu vẫn không có, lấy từ các thẻ meta còn lại (ưu tiên chứa "/poster/")
+            if (posterUrlForResponse.isNullOrBlank()) {
                 val metaImages = infoDoc.select("meta[property=og:image], meta[itemprop=image]")
                     .mapNotNull { it.attr("content").takeIf { c -> c.isNotBlank() } }
+                    .distinct() // Loại bỏ các URL trùng lặp từ nhiều thẻ meta
 
                 if (metaImages.isNotEmpty()) {
                     rawPosterUrl = metaImages.firstOrNull { it.contains("/poster/", ignoreCase = true) }
                     if (!rawPosterUrl.isNullOrBlank()) {
                         posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
-                        Log.d("AnimeVietsubProvider", "Poster (Meta /poster/): Raw='$rawPosterUrl', Fixed='$posterUrlForResponse'")
+                        Log.d("AnimeVietsubProvider", "Poster from Meta (preferred /poster/): $posterUrlForResponse")
                     } else {
-                        rawPosterUrl = metaImages.firstOrNull { it.contains("/big_banner/", ignoreCase = true) }
+                        // Nếu không có /poster/, lấy bất kỳ cái nào còn lại (tránh lấy lại /big_banner/ đã thử ở Bước 1A)
+                        rawPosterUrl = metaImages.firstOrNull { !it.contains("/data/big_banner/", ignoreCase = true) } ?: metaImages.firstOrNull()
                         if (!rawPosterUrl.isNullOrBlank()) {
                             posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
-                            Log.d("AnimeVietsubProvider", "Poster (Meta /big_banner/): Raw='$rawPosterUrl', Fixed='$posterUrlForResponse'")
-                        } else {
-                            rawPosterUrl = metaImages.firstOrNull()
-                            if (!rawPosterUrl.isNullOrBlank()) {
-                                posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
-                                Log.d("AnimeVietsubProvider", "Poster (Meta first): Raw='$rawPosterUrl', Fixed='$posterUrlForResponse'")
-                            }
+                            Log.d("AnimeVietsubProvider", "Poster from Meta (first available, avoiding duplicate big_banner check): $posterUrlForResponse")
                         }
                     }
                 }
