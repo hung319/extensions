@@ -1,5 +1,5 @@
 // === File: AnimeVietsubProvider.kt ===
-// Version: 2025-05-21 - Refined Poster URL Priority (Big Banner First - Attempt 2)
+// Version: 2025-05-21 - Robust Poster Fallback Logic
 package recloudstream
 
 import com.lagradost.cloudstream3.*
@@ -170,7 +170,6 @@ class AnimeVietsubProvider : MainAPI() {
             if (finalTvType == null) {
                 finalTvType = if (hasEpisodeSpan || this.selectFirst("span.mli-quality") == null) TvType.Anime else TvType.Movie
             }
-            // Log.d("AnimeVietsubProvider (Search)", "TvType for '$titleFromElement': $finalTvType")
             provider.newMovieSearchResponse(titleFromElement, href, finalTvType ?: TvType.TvSeries) {
                 this.posterUrl = posterUrl
             }
@@ -205,67 +204,72 @@ class AnimeVietsubProvider : MainAPI() {
                 ?: infoDoc.selectFirst("meta[property=og:title]")?.attr("content")?.substringBefore(" Tập")?.trim()
                 ?: run { Log.e("AnimeVietsubProvider", "Could not find title on info page $infoUrl"); return null }
 
-            // --- LẤY POSTER URL THEO ƯU TIÊN MỚI ---
+            // --- LẤY POSTER URL VỚI LOGIC FALLBACK CẢI TIẾN ---
             var posterUrlForResponse: String? = null
+            var rawPosterUrl: String?
             Log.d("AnimeVietsubProvider", "Attempting to fetch poster for '$title'")
 
-            // Ưu tiên 1: Ảnh banner lớn từ TPostBg (thường là ảnh nền của bài viết)
-            posterUrlForResponse = infoDoc.selectFirst("div.TPostBg.Objf img.TPostBg")?.attr("src")
-            if (!posterUrlForResponse.isNullOrBlank()) {
-                Log.d("AnimeVietsubProvider", "Poster from Big Banner (TPostBg): $posterUrlForResponse")
+            // Ưu tiên 1: Ảnh banner lớn từ TPostBg
+            rawPosterUrl = infoDoc.selectFirst("div.TPostBg.Objf img.TPostBg")?.attr("src")
+            if (!rawPosterUrl.isNullOrBlank()) {
+                posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
+                Log.d("AnimeVietsubProvider", "Poster (Big Banner TPostBg): Raw='$rawPosterUrl', Fixed='$posterUrlForResponse'")
             }
 
-            // Ưu tiên 1.1: Thử tìm ảnh trong cấu trúc <div class="item "><img src=".../data/big_banner/...">
-            // hoặc một selector khác cho banner chính nếu có
+            // Ưu tiên 1.1: Ảnh banner từ cấu trúc item (nếu bước 1 không thành công hoặc posterUrlForResponse rỗng)
             if (posterUrlForResponse.isNullOrBlank()) {
-                // Cố gắng tìm một selector ổn định hơn cho "main banner item" nếu có.
-                // Ví dụ này tìm img đầu tiên trong một "div.item" mà src chứa "data/big_banner"
-                // Điều này có thể cần điều chỉnh tùy theo cấu trúc HTML thực tế của banner chính.
-                posterUrlForResponse = infoDoc.select("div.owl-item div.item img[src*=data/big_banner], div.item > img[src*=data/big_banner]")
-                                           .firstOrNull()?.attr("src")
-                if (!posterUrlForResponse.isNullOrBlank()) {
-                    Log.d("AnimeVietsubProvider", "Poster from Big Banner (div.item structure): $posterUrlForResponse")
+                rawPosterUrl = infoDoc.select("div.owl-item div.item img[src*=data/big_banner], div.item > img[src*=data/big_banner]")
+                                   .firstOrNull()?.attr("src")
+                if (!rawPosterUrl.isNullOrBlank()) {
+                    posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
+                    Log.d("AnimeVietsubProvider", "Poster (Big Banner div.item): Raw='$rawPosterUrl', Fixed='$posterUrlForResponse'")
                 }
             }
             
-            // Ưu tiên 2: Ảnh poster chuẩn (nếu banner không có hoặc không tìm thấy ở bước 1)
+            // Ưu tiên 2: Ảnh poster chuẩn từ figure.Objf (nếu các bước trên không thành công)
             if (posterUrlForResponse.isNullOrBlank()) { 
-                posterUrlForResponse = infoDoc.selectFirst("div.TPost.Single div.Image figure.Objf img")?.attr("src")
-                if (!posterUrlForResponse.isNullOrBlank()) {
-                    Log.d("AnimeVietsubProvider", "Poster from Standard Figure (div.Image figure.Objf img): $posterUrlForResponse")
+                rawPosterUrl = infoDoc.selectFirst("div.TPost.Single div.Image figure.Objf img")?.attr("src")
+                if (!rawPosterUrl.isNullOrBlank()) {
+                    posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
+                    Log.d("AnimeVietsubProvider", "Poster (Standard Figure): Raw='$rawPosterUrl', Fixed='$posterUrlForResponse'")
                 }
             }
             
             // Ưu tiên 3: Ảnh poster từ div.Image img (ít cụ thể hơn)
             if (posterUrlForResponse.isNullOrBlank()) { 
-                posterUrlForResponse = infoDoc.selectFirst("div.TPost.Single div.Image img")?.attr("src")
-                if (!posterUrlForResponse.isNullOrBlank()) {
-                    Log.d("AnimeVietsubProvider", "Poster from Standard Div (div.Image img): $posterUrlForResponse")
+                rawPosterUrl = infoDoc.selectFirst("div.TPost.Single div.Image img")?.attr("src")
+                if (!rawPosterUrl.isNullOrBlank()) {
+                    posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
+                    Log.d("AnimeVietsubProvider", "Poster (Standard Div): Raw='$rawPosterUrl', Fixed='$posterUrlForResponse'")
                 }
             }
 
-            // Ưu tiên 4: Thẻ Meta (ưu tiên link chứa "/poster/", sau đó đến "/big_banner/", rồi bất kỳ cái nào)
+            // Ưu tiên 4: Thẻ Meta
             if (posterUrlForResponse.isNullOrBlank()) { 
                 val metaImages = infoDoc.select("meta[property=og:image], meta[itemprop=image]")
                     .mapNotNull { it.attr("content").takeIf { c -> c.isNotBlank() } }
 
                 if (metaImages.isNotEmpty()) {
-                    // Log.d("AnimeVietsubProvider", "Found ${metaImages.size} meta image tags for '$title': $metaImages")
-                    posterUrlForResponse = metaImages.firstOrNull { it.contains("/poster/", ignoreCase = true) } 
-                    if (!posterUrlForResponse.isNullOrBlank()) {
-                        // Log.d("AnimeVietsubProvider", "Poster for '$title' from meta (preferred /poster/): $posterUrlForResponse")
+                    rawPosterUrl = metaImages.firstOrNull { it.contains("/poster/", ignoreCase = true) }
+                    if (!rawPosterUrl.isNullOrBlank()) {
+                        posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
+                        Log.d("AnimeVietsubProvider", "Poster (Meta /poster/): Raw='$rawPosterUrl', Fixed='$posterUrlForResponse'")
                     } else {
-                        posterUrlForResponse = metaImages.firstOrNull { it.contains("/big_banner/", ignoreCase = true) }
-                        if (!posterUrlForResponse.isNullOrBlank()) {
-                            // Log.d("AnimeVietsubProvider", "Poster for '$title' from meta (preferred /big_banner/): $posterUrlForResponse")
+                        rawPosterUrl = metaImages.firstOrNull { it.contains("/big_banner/", ignoreCase = true) }
+                        if (!rawPosterUrl.isNullOrBlank()) {
+                            posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
+                            Log.d("AnimeVietsubProvider", "Poster (Meta /big_banner/): Raw='$rawPosterUrl', Fixed='$posterUrlForResponse'")
                         } else {
-                            posterUrlForResponse = metaImages.firstOrNull()
+                            rawPosterUrl = metaImages.firstOrNull()
+                            if (!rawPosterUrl.isNullOrBlank()) {
+                                posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
+                                Log.d("AnimeVietsubProvider", "Poster (Meta first): Raw='$rawPosterUrl', Fixed='$posterUrlForResponse'")
+                            }
                         }
                     }
                 }
             }
             
-            posterUrlForResponse = fixUrl(posterUrlForResponse, baseUrl)
             if (posterUrlForResponse.isNullOrBlank()){
                 Log.w("AnimeVietsubProvider", "CRITICAL: NO POSTER FOUND for '$title' after all attempts.")
             } else {
@@ -376,8 +380,8 @@ class AnimeVietsubProvider : MainAPI() {
                     }
                 } catch (e: Exception) { Log.e("AnimeVietsubProvider", "[Rec] Error parsing recommendation item.", e) }
             }
-            if (recommendations.isEmpty()) Log.w("AnimeVietsubProvider", "No recommendations found for '$title'")
-            // else Log.i("AnimeVietsubProvider", "Found ${recommendations.size} recommendations for '$title'")
+             if (recommendations.isEmpty()) Log.w("AnimeVietsubProvider", "No recommendations found for '$title'")
+             // else Log.i("AnimeVietsubProvider", "Found ${recommendations.size} recommendations for '$title'")
 
             var finalTvType: TvType? = null
             val country = infoDoc.getCountry()?.lowercase()
