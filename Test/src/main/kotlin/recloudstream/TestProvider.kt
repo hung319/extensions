@@ -209,41 +209,60 @@ class AnimeVietsubProvider : MainAPI() {
                 ?: infoDoc.selectFirst("meta[property=og:title]")?.attr("content")?.substringBefore(" Tập")?.trim()
                 ?: run { Log.e("AnimeVietsubProvider", "Could not find title on info page $infoUrl"); return null }
 
+            
+           
             var posterUrlForResponse: String? = null
             var rawPosterUrl: String?
-            rawPosterUrl = infoDoc.selectFirst("div.TPostBg.Objf img.TPostBg")?.attr("src")
-            if (!rawPosterUrl.isNullOrBlank()) posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
-            if (posterUrlForResponse.isNullOrBlank()) {
-                rawPosterUrl = infoDoc.select("div.owl-item div.item img[src*=data/big_banner], div.item > img[src*=data/big_banner]")
-                                   .firstOrNull()?.attr("src")
-                if (!rawPosterUrl.isNullOrBlank()) posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
+            
+            val metaBigBanner = infoDoc.select("meta[property=og:image], meta[itemprop=image]")
+                .mapNotNull { it.attr("content").takeIf { c -> c.isNotBlank() && c.contains("/data/big_banner/", ignoreCase = true) } }
+                .firstOrNull()
+            if (!metaBigBanner.isNullOrBlank()) {
+                posterUrlForResponse = fixUrl(metaBigBanner, baseUrl)
             }
-            if (posterUrlForResponse.isNullOrBlank()) { 
+
+            if (posterUrlForResponse.isNullOrBlank()) {
+                rawPosterUrl = infoDoc.selectFirst("div.TPostBg.Objf img.TPostBg")?.attr("src")
+                if (!rawPosterUrl.isNullOrBlank() && rawPosterUrl.contains("/data/big_banner/", ignoreCase = true)) {
+                    posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
+                } else if (!rawPosterUrl.isNullOrBlank()) {
+                }
+            }
+            
+            if (posterUrlForResponse.isNullOrBlank()) {
                 rawPosterUrl = infoDoc.selectFirst("div.TPost.Single div.Image figure.Objf img")?.attr("src")
-                if (!rawPosterUrl.isNullOrBlank()) posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
+                if (!rawPosterUrl.isNullOrBlank()) {
+                    posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
+                }
             }
             if (posterUrlForResponse.isNullOrBlank()) { 
                 rawPosterUrl = infoDoc.selectFirst("div.TPost.Single div.Image img")?.attr("src")
-                if (!rawPosterUrl.isNullOrBlank()) posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
+                if (!rawPosterUrl.isNullOrBlank()) {
+                    posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
+                }
             }
-            if (posterUrlForResponse.isNullOrBlank()) { 
+
+            if (posterUrlForResponse.isNullOrBlank()) {
                 val metaImages = infoDoc.select("meta[property=og:image], meta[itemprop=image]")
-                    .mapNotNull { it.attr("content").takeIf { c -> c.isNotBlank() } }.distinct()
+                    .mapNotNull { it.attr("content").takeIf { c -> c.isNotBlank() } }
+                    .distinct()
+
                 if (metaImages.isNotEmpty()) {
                     rawPosterUrl = metaImages.firstOrNull { it.contains("/poster/", ignoreCase = true) }
-                    if (!rawPosterUrl.isNullOrBlank()) { posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
+                    if (!rawPosterUrl.isNullOrBlank()) {
+                        posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
                     } else {
-                        rawPosterUrl = metaImages.firstOrNull { it.contains("/big_banner/", ignoreCase = true) }
-                        if (!rawPosterUrl.isNullOrBlank()) { posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
-                        } else {
-                            rawPosterUrl = metaImages.firstOrNull()
-                            if (!rawPosterUrl.isNullOrBlank()) posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
+                        rawPosterUrl = metaImages.firstOrNull { !it.contains("/data/big_banner/", ignoreCase = true) } ?: metaImages.firstOrNull()
+                        if (!rawPosterUrl.isNullOrBlank()) {
+                            posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
                         }
                     }
                 }
             }
-            if (posterUrlForResponse.isNullOrBlank()) Log.w("AnimeVietsubProvider", "NO POSTER FOUND for '$title'.")
-            else Log.i("AnimeVietsubProvider", "Final posterUrl for '$title': $posterUrlForResponse")
+            
+            if (posterUrlForResponse.isNullOrBlank()){
+            } else {
+            }
 
             val descriptionFromDiv = infoDoc.selectFirst("article.TPost.Single div.Description")?.text()?.trim()
             val description = if (!descriptionFromDiv.isNullOrBlank()) descriptionFromDiv
