@@ -3,14 +3,14 @@ package recloudstream
 import android.util.Base64
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-// import com.lagradost.cloudstream3.utils.AppUtils.parseJson // Không cần parseJson nữa
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson // <<<<<< Đảm bảo import này có mặt
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
 import org.jsoup.Jsoup
-// import java.net.URLEncoder // Không được sử dụng trực tiếp trong đoạn code này
+// import java.net.URLEncoder // Không được sử dụng trực tiếp
 
 class Anime47Provider : MainAPI() {
     override var mainUrl = "https://anime47.fun"
@@ -20,7 +20,8 @@ class Anime47Provider : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
 
-    // private data class DecryptionResponse(val decryptedResult: String?) // Bỏ class này
+    // Data class mới cho phản hồi JSON từ API giải mã
+    private data class ModifiedM3u8ApiResponse(val modifiedM3u8Url: String?)
 
     private suspend fun sendLog(logMessage: String) {
         val encodedLog = try {
@@ -38,7 +39,7 @@ class Anime47Provider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        // (Giữ nguyên)
+        // (Giữ nguyên như phiên bản trước)
         if (page > 1) return null
         val lists = mutableListOf<HomePageList>()
         try {
@@ -89,8 +90,8 @@ class Anime47Provider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse>? {
-        // (Giữ nguyên)
-        val searchUrl = "$mainUrl/tim-nang-cao/?keyword=${query.replace(" ", "+")}" // Nên encode query
+        // (Giữ nguyên như phiên bản trước)
+        val searchUrl = "$mainUrl/tim-nang-cao/?keyword=${query.replace(" ", "+")}"
         return try {
             val document = app.get(searchUrl).document
             document.select("ul#movie-last-movie li")
@@ -115,8 +116,8 @@ class Anime47Provider : MainAPI() {
         }
     }
 
-        override suspend fun load(url: String): LoadResponse? {
-        // (Giữ nguyên)
+    override suspend fun load(url: String): LoadResponse? {
+        // (Giữ nguyên như phiên bản trước)
         try {
             val infoDocument = app.get(url).document
             val title = infoDocument.selectFirst("h1.movie-title span.title-1")?.text()?.trim()
@@ -136,14 +137,14 @@ class Anime47Provider : MainAPI() {
                 }
                 statusText.contains("Hoàn thành", ignoreCase = true) -> ShowStatus.Completed
                 statusText.contains("Đang tiến hành", ignoreCase = true) -> ShowStatus.Ongoing
-                else -> ShowStatus.Ongoing // Hoặc null nếu không chắc chắn
+                else -> ShowStatus.Ongoing 
             }
             val recommendations = mutableListOf<SearchResponse>()
             infoDocument.select("div#div1 div.CSSTableGenerator tbody tr")?.forEach { row ->
                 val titleElement = row.selectFirst("td:nth-child(1) a")
                 val href = titleElement?.attr("href")?.let { fixUrl(it) }
                 val recTitle = titleElement?.text()?.trim()
-                if (href != null && recTitle != null && !url.contains(href)) { // Đảm bảo không tự recommend chính nó
+                if (href != null && recTitle != null && !url.contains(href)) { 
                     recommendations.add(newAnimeSearchResponse(recTitle, href, TvType.Anime))
                 }
             }
@@ -163,7 +164,7 @@ class Anime47Provider : MainAPI() {
                             val epNameFromText = element.text()?.trim()
                             val potentialName = if (!epTitle.isNullOrBlank()) epTitle else epNameFromText
                             if (epHref != null && !potentialName.isNullOrBlank()) {
-                                val epNum = potentialName.replace(Regex("""[^\d]"""), "").toIntOrNull() // Lấy số tập tốt hơn
+                                val epNum = potentialName.replace(Regex("""[^\d]"""), "").toIntOrNull()
                                 val finalEpName = epNum?.let { "Tập $it" } ?: potentialName
                                 Episode(
                                     data = epHref,
@@ -195,7 +196,7 @@ class Anime47Provider : MainAPI() {
                             val epNameFromText = element.text()?.trim()
                             val potentialName = if (!epTitle.isNullOrBlank()) epTitle else epNameFromText
                             if (epHref != null && !potentialName.isNullOrBlank()) {
-                                val epNum = potentialName.replace(Regex("""[^\d]"""), "").toIntOrNull() // Lấy số tập tốt hơn
+                                val epNum = potentialName.replace(Regex("""[^\d]"""), "").toIntOrNull() 
                                 val finalEpName = epNum?.let { "Tập $it" } ?: potentialName
                                 Episode(
                                     data = epHref,
@@ -229,8 +230,6 @@ class Anime47Provider : MainAPI() {
         }
     }
 
-
-    // Hàm tải link video và phụ đề
     override suspend fun loadLinks(
         data: String, // Watch page URL
         isCasting: Boolean,
@@ -240,11 +239,11 @@ class Anime47Provider : MainAPI() {
         var sourceLoaded = false
         val episodeId = data.substringAfterLast('/').substringBefore('.').trim()
         val serverIds = listOf("4", "2", "7") // Ưu tiên Fe, Fa, Hy
-        val commonUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36" // Có thể cần cập nhật UA mới hơn
+        val commonUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" // Cập nhật UA nếu cần
         val thanhhoaRegex = Regex("""var\s+thanhhoa\s*=\s*atob\(['"](.*?)['"]\)""")
-        val externalDecryptApiBase = "https://m3u8.013666.xyz/anime47/link/" // API này sẽ trả về link m3u8 trực tiếp
+        val externalDecryptApiBase = "https://m3u8.013666.xyz/anime47/link/"
 
-        sendLog("loadLinks started for: $data - Using external decrypt API. Servers: ${serverIds.joinToString()}. Expecting direct M3U8 URL from API.")
+        sendLog("loadLinks started for: $data - Using external decrypt API. Servers: ${serverIds.joinToString()}. Expecting JSON response with 'modifiedM3u8Url'.")
 
         suspend fun tryLoadFromServerExternalApi(serverId: String): Boolean {
             var success = false
@@ -255,7 +254,6 @@ class Anime47Provider : MainAPI() {
                 val apiHeaders = mapOf( "X-Requested-With" to "XMLHttpRequest", "User-Agent" to commonUA, "Origin" to mainUrl, "Referer" to data )
                 val apiResponse = app.post(apiUrl, data = mapOf("ID" to episodeId, "SV" to serverId), referer = data, headers = apiHeaders).document
 
-                // Lấy phụ đề (giữ nguyên)
                 val apiScript = apiResponse.select("script:containsData(jwplayer(\"player\").setup)").html()
                 val tracksRegex = Regex("""tracks:\s*(\[.*?\])""", RegexOption.DOT_MATCHES_ALL)
                 tracksRegex.find(apiScript)?.groupValues?.getOrNull(1)?.let { tracksJson ->
@@ -263,42 +261,48 @@ class Anime47Provider : MainAPI() {
                         val subtitleRegex = Regex("""file:\s*["'](.*?)["'].*?label:\s*["'](.*?)["']""")
                         subtitleRegex.findAll(tracksJson).forEach { match ->
                             val subUrl = fixUrl(match.groupValues[1])
-                            if (subUrl.isNotBlank()) { // Chỉ thêm nếu URL phụ đề không rỗng
+                            if (subUrl.isNotBlank()) {
                                 subtitleCallback(SubtitleFile(match.groupValues[2], subUrl))
                             }
                         }
                     } catch (e: Exception) { sendLog("Error parsing subtitles from API server $serverId: $e") }
                 }
 
-                // Trích xuất chuỗi Base64 gốc từ 'thanhhoa'
                 val apiThanhhoaBase64 = thanhhoaRegex.find(apiScript)?.groupValues?.getOrNull(1)
 
                 if (apiThanhhoaBase64 != null) {
                     sendLog("Server $serverName: Found thanhhoa Base64 string: ${apiThanhhoaBase64.take(50)}...")
-                    val decryptUrl = "$externalDecryptApiBase$apiThanhhoaBase64" // Gửi Base64 gốc
-                    sendLog("Server $serverName: Calling external API for M3U8 URL: $decryptUrl")
+                    val decryptUrl = "$externalDecryptApiBase$apiThanhhoaBase64"
+                    sendLog("Server $serverName: Calling external API for JSON: $decryptUrl")
 
                     try {
-                        val videoUrl = app.get(decryptUrl, headers = mapOf("Referer" to apiUrl)).text.trim() // Thêm referer cho API giải mã nếu cần
-                        sendLog("Server $serverName: External API response (expected M3U8 URL): ${videoUrl.take(200)}...")
+                        val decryptApiResponseText = app.get(decryptUrl, headers = mapOf("Referer" to apiUrl)).text
+                        sendLog("Server $serverName: External API raw JSON response: ${decryptApiResponseText.take(300)}...")
 
-                        if (videoUrl.startsWith("http") && videoUrl.endsWith(".m3u8")) { // Kiểm tra kỹ hơn
-                            sendLog("Server $serverName: Success! Extracted M3U8 URL from external API: $videoUrl")
-                            // val linkHeaders = mapOf( "Referer" to data, "User-Agent" to commonUA, "Origin" to mainUrl ) // Headers này có thể không cần nếu videoUrl đã là M3U8 công khai
+                        val parsedJson = try {
+                            parseJson<ModifiedM3u8ApiResponse>(decryptApiResponseText)
+                        } catch (e: Exception) {
+                            sendLog("Server $serverName: Failed to parse JSON from external API: ${e.message}. Response: ${decryptApiResponseText.take(300)}")
+                            null
+                        }
+                        
+                        val videoUrl = parsedJson?.modifiedM3u8Url
+
+                        if (!videoUrl.isNullOrBlank() && videoUrl.startsWith("http") && videoUrl.endsWith(".m3u8")) {
+                            sendLog("Server $serverName: Success! Extracted M3U8 URL from JSON: $videoUrl")
                             callback(
                                 ExtractorLink(
                                     source = "$name $serverName (Ext)",
                                     name = "$name $serverName HLS",
                                     url = videoUrl,
-                                    referer = data, // Referer của trang xem phim gốc
+                                    referer = data, 
                                     quality = Qualities.Unknown.value,
-                                    type = ExtractorLinkType.M3U8, // Luôn là M3U8
-                                    // headers = linkHeaders // Cân nhắc có cần headers riêng cho link M3U8 không
+                                    type = ExtractorLinkType.M3U8
                                 )
                             )
                             success = true
                         } else {
-                            sendLog("Server $serverName: Failed to get a valid M3U8 URL from external API. Response: ${videoUrl.take(200)}")
+                            sendLog("Server $serverName: Failed to get a valid 'modifiedM3u8Url' from JSON or URL invalid. Parsed URL: $videoUrl. Raw response: ${decryptApiResponseText.take(300)}")
                         }
                     } catch (apiError: Exception) {
                         sendLog("Server $serverName: Error calling external API ($decryptUrl): ${apiError.message}")
@@ -306,11 +310,10 @@ class Anime47Provider : MainAPI() {
                     }
                 } else {
                     sendLog("API Response (Server $serverName) does not contain 'thanhhoa'. Checking for iframes...")
-                        apiResponse.select("iframe[src]").forEach { iframe ->
+                    apiResponse.select("iframe[src]").forEach { iframe ->
                         if (success) return@forEach
                         val iframeSrc = iframe.attr("src") ?: return@forEach
                         sendLog("Server $serverName: Found iframe fallback: $iframeSrc")
-                        // Cần đảm bảo loadExtractor xử lý đúng và có thể trả về true/false
                         if (loadExtractor(iframeSrc, data, subtitleCallback, callback)) {
                             success = true
                         }
@@ -322,25 +325,22 @@ class Anime47Provider : MainAPI() {
             }
             return success
         }
-        // --- Kết thúc hàm tryLoadFromServerExternalApi ---
 
-        // Lặp qua các server theo thứ tự ưu tiên
         serverIds.forEach { serverId ->
             if (tryLoadFromServerExternalApi(serverId)) {
                 sourceLoaded = true
-                return@forEach // Thoát vòng lặp sớm nếu đã tìm thấy nguồn
+                return@forEach 
             }
         }
 
-        // Fallback cuối cùng: Thử tìm iframe trên trang gốc
         if (!sourceLoaded) {
             sendLog("All API attempts failed. Trying iframe fallback on original page...")
             try {
-                val document = app.get(data, referer = data).document // Thêm referer cho trang gốc
+                val document = app.get(data, referer = data).document
                 document.select("iframe[src]").forEach { iframe ->
                     if (sourceLoaded) return@forEach
                     val iframeSrc = iframe.attr("src") ?: return@forEach
-                    if (!iframeSrc.contains("facebook.com")) { // Bỏ qua iframe của Facebook
+                    if (!iframeSrc.contains("facebook.com")) { 
                         sendLog("Found iframe fallback on original page: $iframeSrc")
                          if (loadExtractor(iframeSrc, data, subtitleCallback, callback)) {
                             sourceLoaded = true
@@ -360,8 +360,8 @@ class Anime47Provider : MainAPI() {
         return sourceLoaded
     }
 
-    // (Giữ nguyên)
     private fun getQualityFromString(str: String?): Int {
+        // (Giữ nguyên)
         return Regex("""\b(\d{3,4})p?\b""").find(str ?: "")?.groupValues?.getOrNull(1)?.toIntOrNull()
             ?: Qualities.Unknown.value
     }
