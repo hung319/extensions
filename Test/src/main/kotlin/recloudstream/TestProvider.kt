@@ -1,5 +1,5 @@
 // === File: AnimeVietsubProvider.kt ===
-// Version: 2025-05-21 - Updated Poster URL Priority (Big Banner First)
+// Version: 2025-05-21 - Refined Poster URL Priority (Big Banner First - Attempt 2)
 package recloudstream
 
 import com.lagradost.cloudstream3.*
@@ -170,6 +170,7 @@ class AnimeVietsubProvider : MainAPI() {
             if (finalTvType == null) {
                 finalTvType = if (hasEpisodeSpan || this.selectFirst("span.mli-quality") == null) TvType.Anime else TvType.Movie
             }
+            // Log.d("AnimeVietsubProvider (Search)", "TvType for '$titleFromElement': $finalTvType")
             provider.newMovieSearchResponse(titleFromElement, href, finalTvType ?: TvType.TvSeries) {
                 this.posterUrl = posterUrl
             }
@@ -215,10 +216,11 @@ class AnimeVietsubProvider : MainAPI() {
             }
 
             // Ưu tiên 1.1: Thử tìm ảnh trong cấu trúc <div class="item "><img src=".../data/big_banner/...">
-            // Selector này cần cụ thể hơn nếu có thể để tránh lấy nhầm ảnh từ carousel khác.
-            // Ví dụ: nếu banner chính nằm trong một div có id="main_hero_banner" thì selector sẽ là "div#main_hero_banner div.item img"
-            // Hiện tại dùng một selector chung chung hơn, ưu tiên ảnh chứa "/data/big_banner/"
+            // hoặc một selector khác cho banner chính nếu có
             if (posterUrlForResponse.isNullOrBlank()) {
+                // Cố gắng tìm một selector ổn định hơn cho "main banner item" nếu có.
+                // Ví dụ này tìm img đầu tiên trong một "div.item" mà src chứa "data/big_banner"
+                // Điều này có thể cần điều chỉnh tùy theo cấu trúc HTML thực tế của banner chính.
                 posterUrlForResponse = infoDoc.select("div.owl-item div.item img[src*=data/big_banner], div.item > img[src*=data/big_banner]")
                                            .firstOrNull()?.attr("src")
                 if (!posterUrlForResponse.isNullOrBlank()) {
@@ -227,7 +229,7 @@ class AnimeVietsubProvider : MainAPI() {
             }
             
             // Ưu tiên 2: Ảnh poster chuẩn (nếu banner không có hoặc không tìm thấy ở bước 1)
-            if (posterUrlForResponse.isNullOrBlank()) {
+            if (posterUrlForResponse.isNullOrBlank()) { 
                 posterUrlForResponse = infoDoc.selectFirst("div.TPost.Single div.Image figure.Objf img")?.attr("src")
                 if (!posterUrlForResponse.isNullOrBlank()) {
                     Log.d("AnimeVietsubProvider", "Poster from Standard Figure (div.Image figure.Objf img): $posterUrlForResponse")
@@ -235,7 +237,7 @@ class AnimeVietsubProvider : MainAPI() {
             }
             
             // Ưu tiên 3: Ảnh poster từ div.Image img (ít cụ thể hơn)
-            if (posterUrlForResponse.isNullOrBlank()) {
+            if (posterUrlForResponse.isNullOrBlank()) { 
                 posterUrlForResponse = infoDoc.selectFirst("div.TPost.Single div.Image img")?.attr("src")
                 if (!posterUrlForResponse.isNullOrBlank()) {
                     Log.d("AnimeVietsubProvider", "Poster from Standard Div (div.Image img): $posterUrlForResponse")
@@ -243,24 +245,21 @@ class AnimeVietsubProvider : MainAPI() {
             }
 
             // Ưu tiên 4: Thẻ Meta (ưu tiên link chứa "/poster/", sau đó đến "/big_banner/", rồi bất kỳ cái nào)
-            if (posterUrlForResponse.isNullOrBlank()) {
+            if (posterUrlForResponse.isNullOrBlank()) { 
                 val metaImages = infoDoc.select("meta[property=og:image], meta[itemprop=image]")
                     .mapNotNull { it.attr("content").takeIf { c -> c.isNotBlank() } }
 
                 if (metaImages.isNotEmpty()) {
                     // Log.d("AnimeVietsubProvider", "Found ${metaImages.size} meta image tags for '$title': $metaImages")
-                    posterUrlForResponse = metaImages.firstOrNull { it.contains("/poster/", ignoreCase = true) } // Ưu tiên /poster/
+                    posterUrlForResponse = metaImages.firstOrNull { it.contains("/poster/", ignoreCase = true) } 
                     if (!posterUrlForResponse.isNullOrBlank()) {
-                        Log.d("AnimeVietsubProvider", "Poster for '$title' from meta (preferred /poster/): $posterUrlForResponse")
+                        // Log.d("AnimeVietsubProvider", "Poster for '$title' from meta (preferred /poster/): $posterUrlForResponse")
                     } else {
-                        posterUrlForResponse = metaImages.firstOrNull { it.contains("/big_banner/", ignoreCase = true) } // Tiếp theo là /big_banner/
+                        posterUrlForResponse = metaImages.firstOrNull { it.contains("/big_banner/", ignoreCase = true) }
                         if (!posterUrlForResponse.isNullOrBlank()) {
-                            Log.d("AnimeVietsubProvider", "Poster for '$title' from meta (preferred /big_banner/): $posterUrlForResponse")
+                            // Log.d("AnimeVietsubProvider", "Poster for '$title' from meta (preferred /big_banner/): $posterUrlForResponse")
                         } else {
-                            posterUrlForResponse = metaImages.firstOrNull() // Lấy cái đầu tiên nếu không có ưu tiên
-                            if (!posterUrlForResponse.isNullOrBlank()) {
-                                Log.d("AnimeVietsubProvider", "Poster for '$title' from meta (first available): $posterUrlForResponse")
-                            }
+                            posterUrlForResponse = metaImages.firstOrNull()
                         }
                     }
                 }
@@ -377,8 +376,8 @@ class AnimeVietsubProvider : MainAPI() {
                     }
                 } catch (e: Exception) { Log.e("AnimeVietsubProvider", "[Rec] Error parsing recommendation item.", e) }
             }
-             if (recommendations.isEmpty()) Log.w("AnimeVietsubProvider", "No recommendations found for '$title'")
-             // else Log.i("AnimeVietsubProvider", "Found ${recommendations.size} recommendations for '$title'")
+            if (recommendations.isEmpty()) Log.w("AnimeVietsubProvider", "No recommendations found for '$title'")
+            // else Log.i("AnimeVietsubProvider", "Found ${recommendations.size} recommendations for '$title'")
 
             var finalTvType: TvType? = null
             val country = infoDoc.getCountry()?.lowercase()
@@ -418,11 +417,11 @@ class AnimeVietsubProvider : MainAPI() {
                 }
             }
 
-            if (finalTvType == null) {
+            if (finalTvType == null) { // Fallback
                 // Log.w("AnimeVietsubProvider", "TvType for '$title' still undetermined, using final fallback logic.")
-                finalTvType = if (episodesCount > 1 || statusTextOriginal?.contains("Anime bộ", ignoreCase = true) == true) {
+                finalTvType = if (episodesCount > 1 || statusTextOriginal?.contains("Anime bộ", ignoreCase = true) == true) { // Series-like
                     when { isJapaneseContext -> TvType.Anime; country == "trung quốc" || country == "china" -> TvType.Cartoon; else -> TvType.TvSeries }
-                } else {
+                } else { // Movie-like
                      when { isJapaneseContext && (isMovieHintFromTitle || isSingleEpisodeActuallyMovie || hasAnimeLeTag) -> TvType.Anime; isJapaneseContext -> TvType.Anime; else -> TvType.Movie }
                 }
             }
@@ -539,7 +538,7 @@ class AnimeVietsubProvider : MainAPI() {
                         type = streamType
                     ) {
                         this.referer = episodePageUrl
-                        this.quality = Qualities.Unknown.value // Cần parse từ label nếu có
+                        this.quality = Qualities.Unknown.value
                         this.headers = streamHeaders
                     }
                     callback(extractorLink)
