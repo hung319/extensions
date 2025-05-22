@@ -280,6 +280,10 @@ class Anime47Provider : MainAPI() {
                     if (videoUrl != null && videoUrl.startsWith("http")) {
                         sendLog("Server $serverNameDisplay: Success! Extracted M3U8 URL: $videoUrl")
 
+                        val videoHeaders = mutableMapOf<String, String>()
+                        videoHeaders["Referer"] = data // URL trang xem phim gốc
+                        videoHeaders["User-Agent"] = commonUA // User-Agent đã định nghĩa
+
                         // === LOGIC PROXY ĐÃ BỊ LOẠI BỎ ===
 
                         callback(
@@ -290,6 +294,7 @@ class Anime47Provider : MainAPI() {
                                 referer = data,
                                 quality = Qualities.Unknown.value,
                                 type = ExtractorLinkType.M3U8,
+                                headers = videoHeaders,
                             )
                         )
                         sourceLoaded = true
