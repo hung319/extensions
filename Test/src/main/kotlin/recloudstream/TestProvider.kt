@@ -282,7 +282,7 @@ class Anime47Provider : MainAPI() {
 
                         // === BẮT ĐẦU LOGIC PROXY ===
                         val proxyRequestHeaders = mapOf("Referer" to data) // `data` là URL trang xem phim gốc
-                        val proxyHeadersJsonString = toJson(proxyRequestHeaders) // Sử dụng AppUtils.toJson
+                        val proxyHeadersJsonString = proxyRequestHeaders.toJson()
 
                         val encodedOriginalUrl = URLEncoder.encode(videoUrl, "UTF-8")
                         val encodedHeaders = URLEncoder.encode(proxyHeadersJsonString, "UTF-8")
