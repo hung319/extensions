@@ -4,14 +4,14 @@ import android.util.Base64
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-// import com.lagradost.cloudstream3.utils.AppUtils.toJson // Không cần thiết nữa nếu chỉ dùng cho proxy
+import com.lagradost.cloudstream3.utils.AppUtils.toJson // Cần thiết cho proxy headers
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
 import org.jsoup.Jsoup
-import java.net.URLEncoder
+import java.net.URLEncoder // Cần thiết cho proxy headers
 
 class Anime47Provider : MainAPI() {
     override var mainUrl = "https://anime47.fun"
@@ -31,13 +31,7 @@ class Anime47Provider : MainAPI() {
         try { app.get(logUrl, timeout = 5) } catch (e: Exception) { println("Failed to send log: ${e.message}") }
     }
 
-    private fun getBackgroundImageUrl(element: Element?): String? {
-        val style = element?.attr("style")
-        return style?.let {
-            Regex("""background-image:\s*url\(['"]?(.*?)['"]?\)""").find(it)?.groupValues?.getOrNull(1)
-        }
-    }
-
+    // ... (các hàm khác giữ nguyên: getBackgroundImageUrl, getMainPage, search, load) ...
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         if (page > 1) return null
         val lists = mutableListOf<HomePageList>()
@@ -114,7 +108,7 @@ class Anime47Provider : MainAPI() {
         }
     }
 
-    override suspend fun load(url: String): LoadResponse? {
+   override suspend fun load(url: String): LoadResponse? {
         try {
             val infoDocument = app.get(url).document
             val title = infoDocument.selectFirst("h1.movie-title span.title-1")?.text()?.trim()
@@ -237,9 +231,9 @@ class Anime47Provider : MainAPI() {
         val commonUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
         val thanhhoaRegex = Regex("""var\s+thanhhoa\s*=\s*atob\(['"](.*?)['"]\)""")
         val externalDecryptApiBase = "https://m3u8.013666.xyz/anime47/link/"
-        // val proxyBaseUrl = "https://proxy.h4rs.io.vn/proxy" // Xóa bỏ proxy base URL
+        val proxyBaseUrl = "https://proxy.h4rs.io.vn/proxy" // Thêm lại proxy base URL
 
-        sendLog("loadLinks started for: $data - Attempting with preferred server $serverNameDisplay (ID: $preferredServerId) via external API.")
+        sendLog("loadLinks started for: $data - Attempting with preferred server $serverNameDisplay (ID: $preferredServerId) via external API and M3U8 Proxy.")
 
         try {
             sendLog("Attempting server $serverNameDisplay (ID: $preferredServerId)")
@@ -278,24 +272,32 @@ class Anime47Provider : MainAPI() {
                     val videoUrl = masterPlaylistData?.masterPlaylistUrl
 
                     if (videoUrl != null && videoUrl.startsWith("http")) {
-                        sendLog("Server $serverNameDisplay: Success! Extracted M3U8 URL: $videoUrl")
+                        sendLog("Server $serverNameDisplay: Success! Extracted original M3U8 URL: $videoUrl")
 
-                        val videoHeaders = mutableMapOf<String, String>()
-                        videoHeaders["Referer"] = data // URL trang xem phim gốc
-                        videoHeaders["User-Agent"] = commonUA // User-Agent đã định nghĩa
-                        videoHeaders["Origin"] = mainUrl // <<< THÊM HEADER ORIGIN VÀO ĐÂY
+                        // === BẮT ĐẦU LOGIC PROXY ===
+                        val proxyRequestHeaders = mapOf(
+                            "Referer" to data,          // URL trang xem phim gốc (từ anime47.fun)
+                            "User-Agent" to commonUA,   // User-Agent chung
+                            "Origin" to mainUrl         // Origin là anime47.fun
+                        )
+                        val proxyHeadersJsonString = proxyRequestHeaders.toJson()
 
-                        // === LOGIC PROXY ĐÃ BỊ LOẠI BỎ ===
+                        val encodedOriginalUrl = URLEncoder.encode(videoUrl, "UTF-8")
+                        val encodedHeaders = URLEncoder.encode(proxyHeadersJsonString, "UTF-8")
+
+                        val proxiedM3u8Url = "$proxyBaseUrl?url=$encodedOriginalUrl&headers=$encodedHeaders"
+                        sendLog("Server $serverNameDisplay: Using proxied M3U8 URL: $proxiedM3u8Url with headers: $proxyHeadersJsonString")
+                        // === KẾT THÚC LOGIC PROXY ===
 
                         callback(
                             ExtractorLink(
-                                source = "$name $serverNameDisplay (Ext)", // Đặt lại tên nguồn
-                                name = "$name $serverNameDisplay HLS",
-                                url = videoUrl, // Sử dụng URL gốc
-                                referer = data,
+                                source = "$name $serverNameDisplay (Proxied)", // Cập nhật tên nguồn
+                                name = "$name $serverNameDisplay HLS (Proxied)",
+                                url = proxiedM3u8Url, // Sử dụng URL đã qua proxy
+                                referer = data, // Vẫn giữ referer gốc cho context của player
                                 quality = Qualities.Unknown.value,
-                                type = ExtractorLinkType.M3U8,
-                                headers = videoHeaders,
+                                type = ExtractorLinkType.M3U8
+                                // Không cần ExtractorLink.headers ở đây vì proxy đã xử lý
                             )
                         )
                         sourceLoaded = true
@@ -324,6 +326,7 @@ class Anime47Provider : MainAPI() {
             e.printStackTrace()
         }
 
+        // Fallback logic giữ nguyên
         if (!sourceLoaded) {
             sendLog("Preferred server API or its iframe fallbacks failed. Trying iframe fallback on original page: $data")
             try {
