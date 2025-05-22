@@ -4,14 +4,14 @@ import android.util.Base64
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import com.lagradost.cloudstream3.utils.AppUtils.toJson // Cần thiết để chuyển map thành JSON string
+// import com.lagradost.cloudstream3.utils.AppUtils.toJson // Không cần thiết nữa nếu chỉ dùng cho proxy
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
 import org.jsoup.Jsoup
-import java.net.URLEncoder // Cần thiết cho việc encode URL
+import java.net.URLEncoder
 
 class Anime47Provider : MainAPI() {
     override var mainUrl = "https://anime47.fun"
@@ -231,13 +231,13 @@ class Anime47Provider : MainAPI() {
     ): Boolean {
         var sourceLoaded = false
         val episodeId = data.substringAfterLast('/').substringBefore('.').trim()
-        val preferredServerId = "4" 
-        val serverNameDisplay = "Fe" 
+        val preferredServerId = "4"
+        val serverNameDisplay = "Fe"
 
         val commonUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
         val thanhhoaRegex = Regex("""var\s+thanhhoa\s*=\s*atob\(['"](.*?)['"]\)""")
         val externalDecryptApiBase = "https://m3u8.013666.xyz/anime47/link/"
-        val proxyBaseUrl = "https://proxy.h4rs.io.vn/proxy" // Thêm base URL cho proxy
+        // val proxyBaseUrl = "https://proxy.h4rs.io.vn/proxy" // Xóa bỏ proxy base URL
 
         sendLog("loadLinks started for: $data - Attempting with preferred server $serverNameDisplay (ID: $preferredServerId) via external API.")
 
@@ -278,25 +278,16 @@ class Anime47Provider : MainAPI() {
                     val videoUrl = masterPlaylistData?.masterPlaylistUrl
 
                     if (videoUrl != null && videoUrl.startsWith("http")) {
-                        sendLog("Server $serverNameDisplay: Success! Extracted original M3U8 URL: $videoUrl")
+                        sendLog("Server $serverNameDisplay: Success! Extracted M3U8 URL: $videoUrl")
 
-                        // === BẮT ĐẦU LOGIC PROXY ===
-                        val proxyRequestHeaders = mapOf("Referer" to data) // `data` là URL trang xem phim gốc
-                        val proxyHeadersJsonString = proxyRequestHeaders.toJson()
-
-                        val encodedOriginalUrl = URLEncoder.encode(videoUrl, "UTF-8")
-                        val encodedHeaders = URLEncoder.encode(proxyHeadersJsonString, "UTF-8")
-
-                        val proxiedM3u8Url = "$proxyBaseUrl?url=$encodedOriginalUrl&headers=$encodedHeaders"
-                        sendLog("Server $serverNameDisplay: Using proxied M3U8 URL: $proxiedM3u8Url")
-                        // === KẾT THÚC LOGIC PROXY ===
+                        // === LOGIC PROXY ĐÃ BỊ LOẠI BỎ ===
 
                         callback(
                             ExtractorLink(
-                                source = "$name $serverNameDisplay (Proxied)", // Cập nhật tên nguồn
+                                source = "$name $serverNameDisplay (Ext)", // Đặt lại tên nguồn
                                 name = "$name $serverNameDisplay HLS",
-                                url = proxiedM3u8Url, // Sử dụng URL đã qua proxy
-                                referer = data, // Vẫn giữ referer gốc cho context của player nếu cần
+                                url = videoUrl, // Sử dụng URL gốc
+                                referer = data,
                                 quality = Qualities.Unknown.value,
                                 type = ExtractorLinkType.M3U8,
                             )
@@ -312,7 +303,7 @@ class Anime47Provider : MainAPI() {
             } else {
                 sendLog("API Response (Server $serverNameDisplay) does not contain 'thanhhoa'. Checking for iframes in player response...")
                 apiResponse.select("iframe[src]").forEach { iframe ->
-                    if (sourceLoaded) return@forEach 
+                    if (sourceLoaded) return@forEach
                     val iframeSrc = iframe.attr("src")?.let { if (it.startsWith("//")) "https:$it" else it } ?: return@forEach
                      if (!iframeSrc.contains("facebook.com")) {
                         sendLog("Server $serverNameDisplay: Found iframe fallback in player response: $iframeSrc")
