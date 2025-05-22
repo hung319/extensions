@@ -283,6 +283,7 @@ class Anime47Provider : MainAPI() {
                         val videoHeaders = mutableMapOf<String, String>()
                         videoHeaders["Referer"] = data // URL trang xem phim gốc
                         videoHeaders["User-Agent"] = commonUA // User-Agent đã định nghĩa
+                        videoHeaders["Origin"] = mainUrl // <<< THÊM HEADER ORIGIN VÀO ĐÂY
 
                         // === LOGIC PROXY ĐÃ BỊ LOẠI BỎ ===
 
