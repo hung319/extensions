@@ -1,31 +1,32 @@
 package com.example.nangcucprovider // Giữ nguyên package name của bạn
 
-import android.content.Context
-import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
-import com.lagradost.cloudstream3.plugins.Plugin
+// Các import cần thiết
 import com.lagradost.cloudstream3.MainAPI
-import com.lagradost.cloudstream3.HomePageList
-import com.lagradost.cloudstream3.SearchResponse // Vẫn cần thiết cho kiểu dữ liệu trong recommendations
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.MainPageRequest
+import com.lagradost.cloudstream3.HomePageList
+import com.lagradost.cloudstream3.SearchResponse // Cần cho kiểu dữ liệu của recommendations
+
+// Import cho các kiểu dữ liệu trả về của hàm
+import com.lagradost.cloudstream3.HomePageResponse
+import com.lagradost.cloudstream3.LoadResponse
 
 // Import các hàm tiện ích mới
 import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
-// import com.lagradost.cloudstream3.LoadResponse // Không cần trực tiếp nếu dùng newMovieLoadResponse
-// import com.lagradost.cloudstream3.HomePageResponse // Không cần trực tiếp nếu dùng newHomePageResponse
 
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.SubtitleFile
+// Các import khác nếu bạn cần cho loadLinks sau này
+// import com.lagradost.cloudstream3.utils.ExtractorLink
+// import com.lagradost.cloudstream3.utils.Qualities
+// import com.lagradost.cloudstream3.SubtitleFile
 
 import org.jsoup.Jsoup
 
-class NangCucProvider : MainAPI() { // Đổi tên class này nếu bạn muốn
+class NangCucProvider : MainAPI() {
     override var mainUrl = "https://nangcuc.cc"
-    override var name = "Nắng Cực TV" // Tên này sẽ được tự động dùng bởi các hàm newXxxResponse
+    override var name = "Nắng Cực TV"
     override val supportedTypes = setOf(TvType.Movie)
     override var lang = "vi"
     override val hasMainPage = true
@@ -33,7 +34,7 @@ class NangCucProvider : MainAPI() { // Đổi tên class này nếu bạn muốn
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
-    ): HomePageResponse? { // Kiểu trả về vẫn là HomePageResponse?
+    ): HomePageResponse? { // Đảm bảo HomePageResponse được import
         val url = if (page > 1) "$mainUrl/moi-nhat/$page" else "$mainUrl/moi-nhat/"
         
         try {
@@ -56,14 +57,12 @@ class NangCucProvider : MainAPI() { // Đổi tên class này nếu bạn muốn
                     }
 
                     if (name != null && href != null && posterUrl != null) {
-                        // Sử dụng newMovieSearchResponse
-                        newMovieSearchResponse(
+                        newMovieSearchResponse( // tvType không còn là tham số trực tiếp ở đây
                             name = name,
                             url = if (href.startsWith("http")) href else mainUrl + href,
-                            tvType = TvType.Movie,
                         ) {
                             this.posterUrl = posterUrl
-                            // this.apiName = this@NangCucProvider.name // Thường được tự động gán
+                            this.type = TvType.Movie // Gán type trong lambda
                         }
                     } else {
                         null
@@ -75,8 +74,8 @@ class NangCucProvider : MainAPI() { // Đổi tên class này nếu bạn muốn
             }
             
             if (lists.isEmpty()) return null
-            // Sử dụng newHomePageResponse
-            return newHomePageResponse(request.name, lists) // request.name thường là tiêu đề chung của trang
+            // Sửa cách gọi newHomePageResponse
+            return newHomePageResponse(lists) 
         } catch (e: Exception) {
             e.printStackTrace()
             return null
@@ -99,13 +98,12 @@ class NangCucProvider : MainAPI() { // Đổi tên class này nếu bạn muốn
                 }
 
                 if (name != null && href != null && posterUrl != null) {
-                    // Sử dụng newMovieSearchResponse
-                    newMovieSearchResponse(
+                    newMovieSearchResponse( // tvType không còn là tham số trực tiếp
                         name = name,
                         url = if (href.startsWith("http")) href else mainUrl + href,
-                        tvType = TvType.Movie
                     ) {
                         this.posterUrl = posterUrl
+                        this.type = TvType.Movie // Gán type trong lambda
                     }
                 } else {
                     null
@@ -118,7 +116,7 @@ class NangCucProvider : MainAPI() { // Đổi tên class này nếu bạn muốn
         }
     }
 
-    override suspend fun load(url: String): LoadResponse? { // Kiểu trả về vẫn là LoadResponse?
+    override suspend fun load(url: String): LoadResponse? { // Đảm bảo LoadResponse được import
         try {
             val document = app.get(url).document
 
@@ -164,12 +162,12 @@ class NangCucProvider : MainAPI() { // Đổi tên class này nếu bạn muốn
                 }
 
                 if (nameRec != null && hrefRec != null && posterUrlRec != null) {
-                    newMovieSearchResponse(
+                    newMovieSearchResponse( // tvType không còn là tham số trực tiếp
                         name = nameRec,
                         url = if (hrefRec.startsWith("http")) hrefRec else mainUrl + hrefRec,
-                        tvType = TvType.Movie
                     ) {
                          this.posterUrl = posterUrlRec
+                         this.type = TvType.Movie // Gán type trong lambda
                     }
                 } else {
                     null
@@ -181,19 +179,16 @@ class NangCucProvider : MainAPI() { // Đổi tên class này nếu bạn muốn
                 return null
             }
             
-            // Sử dụng newMovieLoadResponse
             return newMovieLoadResponse(
                 name = title,
-                url = url, // url gốc của trang phim
-                type = TvType.Movie,
-                dataUrl = dataUrlForLoadLinks!! // Đảm bảo không null ở đây sau khi đã kiểm tra
+                url = url,
+                type = TvType.Movie, // newMovieLoadResponse có vẻ vẫn giữ type ở tham số chính
+                dataUrl = dataUrlForLoadLinks!!
             ) {
                 this.posterUrl = poster
                 this.plot = plot
                 this.tags = genres
-                this.recommendations = recommendationsList // Đảm bảo đây là List<SearchResponse>
-                // this.contentRating = null // Thêm nếu bạn có thông tin, nếu không có thể bỏ qua hoặc đặt là null
-                // this.apiName = this@NangCucProvider.name // Thường được tự động gán
+                this.recommendations = recommendationsList
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -201,5 +196,13 @@ class NangCucProvider : MainAPI() { // Đổi tên class này nếu bạn muốn
         }
     }
 
-    // ... (loadLinks giữ nguyên để làm sau) ...
+    // ... (loadLinks) ...
 }
+
+// Phần đăng ký plugin đã được loại bỏ theo yêu cầu
+// @CloudstreamPlugin
+// class TestPlugin: Plugin() { 
+//     override fun load(context: Context) {
+//         registerMainAPI(NangCucProvider())
+//     }
+// }
