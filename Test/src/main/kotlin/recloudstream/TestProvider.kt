@@ -1,4 +1,4 @@
-package com.example.nangcucprovider // Hoặc package của bạn
+package com.example.nangcucprovider
 
 import android.content.Context
 import com.lagradost.cloudstream3.MainAPI
@@ -25,10 +25,10 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 
-// Data class để truyền thông tin cần thiết cho loadLinks (chỉ còn apiUrl và moviePageUrl)
+// Data class để truyền thông tin cần thiết cho loadLinks
 data class LoadLinksHelperData(
     val apiUrl: String,
-    val moviePageUrl: String // Vẫn cần cho referer trong loadLinks
+    val moviePageUrl: String // URL của trang phim để fetch lại lấy phụ đề và làm referer
 )
 
 // Data classes cho API response (giữ nguyên)
@@ -51,8 +51,8 @@ class NangCucProvider : MainAPI() {
     override var lang = "vi"
     override val hasMainPage = true
 
-    // Hàm trích xuất phụ đề, giờ sẽ được gọi từ load()
-    private fun extractAndCallbackSubtitles(document: Document, subtitleCallback: (SubtitleFile) -> Unit) {
+    // Hàm này sẽ được gọi bên trong loadLinks
+    private fun extractSubtitlesFromHtmlAndCallback(document: Document, subtitleCallback: (SubtitleFile) -> Unit) {
         var subtitlesCalledCount = 0
         var scriptContainingSubtitlesFound = false
         val allExtractedSubtitles = mutableListOf<SubtitleFile>()
@@ -62,59 +62,40 @@ class NangCucProvider : MainAPI() {
             if (scriptData.startsWith("eval(function(p,a,c,k,e,d)")) {
                 try {
                     scriptData = JsUnpacker(scriptData).unpack() ?: scriptData
-                    println("NangCucProvider LOG (extractSubs): Script #${index} đã được unpack.")
-                } catch (e: Exception) {
-                    println("NangCucProvider LOG (extractSubs): Lỗi khi unpack script #${index}: $e")
-                }
+                } catch (e: Exception) { /* Bỏ qua lỗi unpack */ }
             }
 
             if (scriptData.contains("subtitles", ignoreCase = true)) {
                 scriptContainingSubtitlesFound = true
-                println("NangCucProvider LOG (extractSubs): Script #${index} có chứa 'subtitles'.")
-
                 val arrayContentMatch = Regex("""["']?subtitles["']?\s*[:=]\s*(\[.*?\])""", RegexOption.DOT_MATCHES_ALL).find(scriptData)
                 if (arrayContentMatch != null) {
                     val arrayContent = arrayContentMatch.groupValues[1]
-                    println("NangCucProvider LOG (extractSubs): Nội dung array phụ đề: $arrayContent")
                     val subObjectRegex = Regex("""\{\s*(?:["']?hl["']?\s*:\s*["']([^"']+)["']|["']?label["']?\s*:\s*["']([^"']+)["'])\s*,\s*(?:["']?url["']?\s*:\s*["']([^"']+\.(?:srt|vtt))["'])\s*.*?\}""", RegexOption.IGNORE_CASE)
-                    
                     val scriptSubtitles = subObjectRegex.findAll(arrayContent).mapNotNull { objMatchResult ->
                         val langFromHl = objMatchResult.groupValues.getOrNull(1)?.trim()
                         val langFromLabel = objMatchResult.groupValues.getOrNull(2)?.trim()
                         val lang = langFromHl?.takeIf { it.isNotEmpty() } ?: langFromLabel?.takeIf { it.isNotEmpty() }
                         val subUrlValue = objMatchResult.groupValues.getOrNull(3)?.trim()
-
                         if (lang != null && subUrlValue != null && subUrlValue.startsWith("http")) {
                             SubtitleFile(lang, subUrlValue)
                         } else { null }
                     }.toList()
-                    
                     if (scriptSubtitles.isNotEmpty()) {
                         allExtractedSubtitles.addAll(scriptSubtitles)
                     }
-                } else {
-                    println("NangCucProvider LOG (extractSubs): Không tìm thấy nội dung array ([...]) sau 'subtitles=' trong script #${index}.")
                 }
             }
         }
-
-        if (!scriptContainingSubtitlesFound) {
-            println("NangCucProvider LOG (extractSubs): Không tìm thấy script nào chứa 'subtitles='.")
-        }
-
         allExtractedSubtitles.distinctBy { it.url }.forEach { subtitle ->
-            println("NangCucProvider LOG (extractSubs): Gọi subtitleCallback cho: ${subtitle.lang} - ${subtitle.url}")
             subtitleCallback(subtitle)
             subtitlesCalledCount++
         }
-        println("NangCucProvider LOG (extractSubs): Đã gọi subtitleCallback $subtitlesCalledCount lần.")
+        println("NangCucProvider LOG (extractSubtitles): Đã gọi subtitleCallback $subtitlesCalledCount lần.")
     }
 
-    override suspend fun getMainPage(
-        page: Int,
-        request: MainPageRequest
-    ): HomePageResponse? {
-        // ... (giữ nguyên không đổi) ...
+
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+        // ... (giữ nguyên) ...
         val url = if (page > 1) "$mainUrl/moi-nhat/$page" else "$mainUrl/moi-nhat/"
         try {
             val document = app.get(url).document
@@ -155,7 +136,7 @@ class NangCucProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse>? {
-        // ... (giữ nguyên không đổi) ...
+        // ... (giữ nguyên) ...
         val searchUrl = "$mainUrl/tim-kiem/$query/"
         try {
             val document = app.get(searchUrl).document
@@ -184,18 +165,15 @@ class NangCucProvider : MainAPI() {
         }
     }
 
-    // Hàm load giờ sẽ gọi subtitleCallback
-    override suspend fun load(url: String): LoadResponse? { // url ở đây là moviePageUrl
+    override suspend fun load(url: String): LoadResponse? {
         try {
-            println("NangCucProvider LOG (load): Fetching page: $url")
-            val document = app.get(url).document // Tải HTML trang phim
+            val document = app.get(url).document
             val title = document.selectFirst("h1.video-title")?.text()
                 ?: document.selectFirst("meta[property=\"og:title\"]")?.attr("content")
             val poster = document.selectFirst("meta[property=\"og:image\"]")?.attr("content")
             val plot = document.selectFirst("div.about span p")?.text()
                 ?: document.selectFirst("meta[property=\"og:description\"]")?.attr("content")
             val genres = document.select("div.genres a")?.mapNotNull { it.text() }
-            var videoApiIdFromScript: String? = null
             var apiUrlFromScript: String? = null
 
             document.select("script").forEach { script ->
@@ -206,16 +184,15 @@ class NangCucProvider : MainAPI() {
                     if (apiUrlFromScript == null) {
                         val idRegexV2 = Regex("""api\.nangdata\.xyz/v2/([a-zA-Z0-9\-]+)""")
                         val idRegexShort = Regex("""api\.nangdata\.xyz/([a-zA-Z0-9\-]+)""")
-                        videoApiIdFromScript = idRegexV2.find(scriptData)?.groupValues?.getOrNull(1)
+                        val videoApiIdFromScript = idRegexV2.find(scriptData)?.groupValues?.getOrNull(1)
                             ?: idRegexShort.find(scriptData)?.groupValues?.getOrNull(1)
                         if (videoApiIdFromScript != null && videoApiIdFromScript != "v2") {
                             apiUrlFromScript = "https://api.nangdata.xyz/v2/$videoApiIdFromScript"
                         }
                     }
                 }
-                if (apiUrlFromScript != null) return@forEach // Thoát sớm nếu đã tìm thấy API URL
+                if (apiUrlFromScript != null) return@forEach
             }
-            println("NangCucProvider LOG (load): apiUrlFromScript: $apiUrlFromScript")
 
             val recommendationsList = document.select("section.block_area-related div.flw-item").mapNotNull {
                 // ... (logic lấy recommendations giữ nguyên) ...
@@ -238,21 +215,15 @@ class NangCucProvider : MainAPI() {
             }
 
             if (title == null || apiUrlFromScript == null) {
-                println("NangCucProvider LOG: Lỗi load(): Không tìm thấy title hoặc apiUrlFromScript. Title: $title, ApiUrl: $apiUrlFromScript, Page URL: $url")
                 return null
             }
 
-            // Gọi hàm trích xuất phụ đề và subtitleCallback ngay tại đây
-            // Lưu ý: subtitleCallback được truyền ngầm vào load thông qua MainAPI
-            println("NangCucProvider LOG (load): Bắt đầu trích xuất phụ đề từ HTML đã tải.")
-            extractAndCallbackSubtitles(document, SubtitleCallback) // ಮುಖ್ಯSubtitleCallback là callback của MainAPI
-
+            // Không trích xuất phụ đề ở đây nữa. Chỉ truyền apiUrl và moviePageUrl (chính là `url`)
             val loadLinksData = LoadLinksHelperData(
                 apiUrl = apiUrlFromScript!!,
-                moviePageUrl = url // url gốc của trang phim, để loadLinks dùng làm referer
+                moviePageUrl = url // url của trang phim hiện tại
             )
             val dataForLoadLinks = mapper.writeValueAsString(loadLinksData)
-            println("NangCucProvider LOG (load): dataForLoadLinks: $dataForLoadLinks")
 
             return newMovieLoadResponse(
                 name = title,
@@ -264,7 +235,6 @@ class NangCucProvider : MainAPI() {
                 this.plot = plot
                 this.tags = genres
                 this.recommendations = recommendationsList
-                // Không cần syncData cho phụ đề nữa
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -273,22 +243,26 @@ class NangCucProvider : MainAPI() {
     }
 
     override suspend fun loadLinks(
-        data: String, // Đây là JSON string của LoadLinksHelperData (chỉ chứa apiUrl và moviePageUrl)
+        data: String, // JSON string của LoadLinksHelperData
         isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit, // subtitleCallback này sẽ không được dùng ở đây nữa
-                                                // vì `load` đã gọi callback của MainAPI
+        subtitleCallback: (SubtitleFile) -> Unit, // subtitleCallback này SẼ được dùng
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         try {
-            println("NangCucProvider LOG (loadLinks): Nhận được data string: $data")
             val helperData = parseJson<LoadLinksHelperData>(data)
             val apiUrl = helperData.apiUrl
-            val moviePageUrl = helperData.moviePageUrl // Dùng cho referer
+            val moviePageUrl = helperData.moviePageUrl
 
-            println("NangCucProvider LOG (loadLinks): apiUrl: $apiUrl")
-            println("NangCucProvider LOG (loadLinks): moviePageUrl (cho referer): $moviePageUrl")
+            // Bước 1: Lấy phụ đề từ HTML của trang phim (dùng moviePageUrl)
+            try {
+                val moviePageDocument = app.get(moviePageUrl).document
+                extractSubtitlesFromHtmlAndCallback(moviePageDocument, subtitleCallback) // Gọi hàm đã tách
+            } catch (e: Exception) {
+                println("NangCucProvider LOG (loadLinks): Lỗi khi fetch/parse trang phim để lấy phụ đề: ${e.message}")
+                // Tiếp tục dù có lỗi phụ đề
+            }
 
-            // Bước 1: Lấy link video từ API
+            // Bước 2: Lấy link video từ API
             val apiResponseJson = app.get(apiUrl).text
             val apiData = parseJson<VideoApiResponse>(apiResponseJson)
             var foundVideoLinks = false
@@ -318,8 +292,7 @@ class NangCucProvider : MainAPI() {
                         callback.invoke(
                             ExtractorLink(
                                 source = serverName, name = serverName, url = videoUrl,
-                                referer = moviePageUrl, // Sử dụng moviePageUrl đã lấy từ helperData
-                                quality = quality, type = linkType,
+                                referer = moviePageUrl, quality = quality, type = linkType,
                                 headers = mapOf(), extractorData = null
                             )
                         )
@@ -327,28 +300,14 @@ class NangCucProvider : MainAPI() {
                     }
                 }
             } else {
-                println("NangCucProvider LOG (loadLinks): API video trả về status không thành công: ${apiData.status} cho URL: $apiUrl")
+                println("NangCucProvider LOG (loadLinks): API video trả về status: ${apiData.status}")
             }
-
-            // Bước 2: Lấy phụ đề ĐÃ ĐƯỢC CHUYỂN SANG HÀM LOAD()
-            // Không cần fetch lại trang phim ở đây nữa.
-            println("NangCucProvider LOG (loadLinks): Phụ đề đã được xử lý trong hàm load().")
-
             return foundVideoLinks
         } catch (e: Exception) {
-            println("NangCucProvider LOG (loadLinks): Lỗi nghiêm trọng: ${e.message}")
             e.printStackTrace()
             return false
         }
     }
 }
 
-// import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
-// import com.lagradost.cloudstream3.plugins.Plugin
-
-// @CloudstreamPlugin
-// class NangCucLoader : Plugin() {
-//    override fun load(context: Context) {
-//        registerMainAPI(NangCucProvider())
-//    }
-// }
+// Phần plugin loader đã comment
