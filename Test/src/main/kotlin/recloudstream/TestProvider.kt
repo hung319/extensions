@@ -20,7 +20,7 @@ import org.jsoup.Jsoup
 class NangCucProvider : MainAPI() {
     override var mainUrl = "https://nangcuc.cc"
     override var name = "Nắng Cực TV"
-    override val supportedTypes = setOf(TvType.Movie)
+    override val supportedTypes = setOf(TvType.NSFW)
     override var lang = "vi"
 
     // Đảm bảo signature của hàm getMainPage khớp hoàn toàn
