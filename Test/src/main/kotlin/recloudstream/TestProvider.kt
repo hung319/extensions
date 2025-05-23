@@ -1,6 +1,6 @@
-package com.example.nangcucprovider // Hoặc package của bạn
+package com.example.nangcucprovider
 
-import android.content.Context
+// ... (các import khác giữ nguyên hoặc thêm vào nếu cần) ...
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.app
@@ -16,15 +16,21 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.SubtitleFile
-// import com.lagradost.cloudstream3.utils.M3u8Helper // Import nếu cần xử lý M3U8 phức tạp hơn
 
 import com.fasterxml.jackson.annotation.JsonProperty
-import com.lagradost.cloudstream3.mapper // Đối tượng mapper của Jackson
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson // Hoặc dùng tiện ích này
+import com.lagradost.cloudstream3.mapper
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 
 import org.jsoup.Jsoup
 
-// --- Data Classes đã được cập nhật theo JSON bạn cung cấp ---
+// Data class để truyền nhiều thông tin hơn vào loadLinks
+data class LoadLinksHelperData(
+    val apiUrl: String,
+    val moviePageUrl: String,
+    val extractedSubtitles: List<SubtitleFile>?
+)
+
+// Data classes cho API response (giữ nguyên từ trước)
 data class VideoApiResponse(
     @JsonProperty("status") val status: Int?,
     @JsonProperty("links") val links: List<VideoLink>?,
@@ -73,9 +79,7 @@ class NangCucProvider : MainAPI() {
                             this.posterUrl = moviePosterUrl
                             this.type = TvType.Movie
                         }
-                    } else {
-                        null
-                    }
+                    } else { null }
                 }
                 if (movies.isNotEmpty()) {
                     lists.add(HomePageList(sectionTitle, movies))
@@ -109,9 +113,7 @@ class NangCucProvider : MainAPI() {
                         this.posterUrl = moviePosterUrl
                         this.type = TvType.Movie
                     }
-                } else {
-                    null
-                }
+                } else { null }
             }
             return searchResults.ifEmpty { null }
         } catch (e: Exception) {
@@ -120,7 +122,7 @@ class NangCucProvider : MainAPI() {
         }
     }
 
-    override suspend fun load(url: String): LoadResponse? {
+    override suspend fun load(url: String): LoadResponse? { // url ở đây là moviePageUrl
         try {
             val document = app.get(url).document
             val title = document.selectFirst("h1.video-title")?.text()
@@ -129,47 +131,40 @@ class NangCucProvider : MainAPI() {
             val plot = document.selectFirst("div.about span p")?.text()
                 ?: document.selectFirst("meta[property=\"og:description\"]")?.attr("content")
             val genres = document.select("div.genres a")?.mapNotNull { it.text() }
-            var videoApiId: String? = null
-            var dataUrlForLoadLinks: String? = null
+            var videoApiIdFromScript: String? = null
+            var apiUrlFromScript: String? = null
             var extractedSubtitles: List<SubtitleFile> = emptyList()
 
             document.select("script").forEach { script ->
                 val scriptData = script.data()
                 if (scriptData.contains("api.nangdata.xyz")) {
                     val fullUrlRegex = Regex("""["'](https?://api\.nangdata\.xyz/v2/[a-zA-Z0-9\-]+)["']""")
-                    dataUrlForLoadLinks = fullUrlRegex.find(scriptData)?.groupValues?.getOrNull(1)
-                    if (dataUrlForLoadLinks == null) {
+                    apiUrlFromScript = fullUrlRegex.find(scriptData)?.groupValues?.getOrNull(1)
+                    if (apiUrlFromScript == null) {
                         val idRegexV2 = Regex("""api\.nangdata\.xyz/v2/([a-zA-Z0-9\-]+)""")
                         val idRegexShort = Regex("""api\.nangdata\.xyz/([a-zA-Z0-9\-]+)""")
-                        videoApiId = idRegexV2.find(scriptData)?.groupValues?.getOrNull(1)
+                        videoApiIdFromScript = idRegexV2.find(scriptData)?.groupValues?.getOrNull(1)
                             ?: idRegexShort.find(scriptData)?.groupValues?.getOrNull(1)
-                        if (videoApiId != null && videoApiId != "v2") {
-                            dataUrlForLoadLinks = "https://api.nangdata.xyz/v2/$videoApiId"
+                        if (videoApiIdFromScript != null && videoApiIdFromScript != "v2") {
+                            apiUrlFromScript = "https://api.nangdata.xyz/v2/$videoApiIdFromScript"
                         }
                     }
                 }
                 if (scriptData.contains("subtitles=")) {
+                    // Dòng 241 có thể gây lỗi ở đây nếu subRegex trả về MatchGroup
+                    // Chúng ta cần đảm bảo lấy .value từ group nếu cần
                     val subRegex = Regex("""subtitles=\s*\[\s*\{.*?["']hl["']\s*:\s*["']([^"']+)["']\s*,\s*.*?["']url["']\s*:\s*["']([^"']+\.(?:srt|vtt))["'].*?\}\s*\]""")
                     extractedSubtitles = subRegex.findAll(scriptData).mapNotNull { matchResult ->
-                        val lang = matchResult.groupValues.getOrNull(1)
-                        val subUrlValue = matchResult.groupValues.getOrNull(2)
+                        // groupValues[0] là toàn bộ match, groupValues[1] là group đầu tiên, ...
+                        val lang: String? = matchResult.groupValues.getOrNull(1) // groupValues trả về String
+                        val subUrlValue: String? = matchResult.groupValues.getOrNull(2) // groupValues trả về String
                         if (lang != null && subUrlValue != null) {
-                            SubtitleFile(lang, subUrlValue)
+                            SubtitleFile(lang, subUrlValue) // Đúng: String, String
                         } else {
                             null
                         }
                     }.toList()
                 }
-                // Thoát sớm nếu đã tìm thấy cả hai thông tin quan trọng
-                if (dataUrlForLoadLinks != null && extractedSubtitles.isNotEmpty() && scriptData.contains("api.nangdata.xyz") && scriptData.contains("subtitles=")) {
-                     //Điều kiện thoát này có thể cần điều chỉnh nếu vị trí của subtitles và api.nangdata.xyz không nhất quán
-                     return@forEach
-                }
-                 // Hoặc nếu chỉ cần dataUrlForLoadLinks để tiếp tục
-                 if (dataUrlForLoadLinks != null && !scriptData.contains("subtitles=")) {
-                     // Nếu đã tìm thấy link API và script này không chứa subtitles, có thể thoát sớm để tối ưu
-                     // return@forEach // Bỏ comment nếu muốn tối ưu mạnh hơn
-                 }
             }
 
             val recommendationsList = document.select("section.block_area-related div.flw-item").mapNotNull { item ->
@@ -188,37 +183,33 @@ class NangCucProvider : MainAPI() {
                         this.posterUrl = posterUrlRec
                         this.type = TvType.Movie
                     }
-                } else {
-                    null
-                }
+                } else { null }
             }
 
-            if (title == null || dataUrlForLoadLinks == null) {
-                println("Lỗi load(): Không tìm thấy title hoặc dataUrlForLoadLinks. Title: $title, DataUrl: $dataUrlForLoadLinks, Extracted API ID: $videoApiId, Page URL: $url")
+            if (title == null || apiUrlFromScript == null) {
+                println("Lỗi load(): Không tìm thấy title hoặc apiUrlFromScript. Title: $title, ApiUrl: $apiUrlFromScript, Page URL: $url")
                 return null
             }
 
-            val syncDataMap = mutableMapOf("movie_page_url" to url)
-            if (extractedSubtitles.isNotEmpty()) {
-                try {
-                    syncDataMap["extracted_subtitles"] = mapper.writeValueAsString(extractedSubtitles)
-                } catch (e: Exception) {
-                    println("Lỗi khi chuyển extracted_subtitles thành JSON string: $e")
-                    // Không làm crash app nếu lỗi serialize, chỉ log lỗi
-                }
-            }
+            // Tạo payload để truyền cho loadLinks
+            val loadLinksData = LoadLinksHelperData(
+                apiUrl = apiUrlFromScript!!,
+                moviePageUrl = url, // url của trang phim hiện tại
+                extractedSubtitles = extractedSubtitles.ifEmpty { null }
+            )
+            val dataForLoadLinks = mapper.writeValueAsString(loadLinksData)
 
             return newMovieLoadResponse(
                 name = title,
-                url = url,
+                url = url, // URL gốc của trang phim
                 type = TvType.Movie,
-                dataUrl = dataUrlForLoadLinks!!
+                dataUrl = dataForLoadLinks // Truyền JSON string của LoadLinksHelperData
             ) {
                 this.posterUrl = poster
                 this.plot = plot
                 this.tags = genres
                 this.recommendations = recommendationsList
-                this.syncData = syncDataMap
+                // Không cần syncData nữa nếu chúng ta truyền mọi thứ qua dataUrl
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -227,25 +218,23 @@ class NangCucProvider : MainAPI() {
     }
 
     override suspend fun loadLinks(
-        data: String, // dataUrl từ MovieLoadResponse (API endpoint)
+        data: String, // Đây là JSON string của LoadLinksHelperData
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         try {
-            val currentLoadResponse = currentMovieData
-            val syncData = currentLoadResponse?.syncData
+            val helperData = parseJson<LoadLinksHelperData>(data)
+            val apiUrl = helperData.apiUrl
+            val moviePageUrl = helperData.moviePageUrl // Dùng cho referer
+            val subtitlesFromLoad = helperData.extractedSubtitles
 
-            syncData?.get("extracted_subtitles")?.let { subtitlesJson ->
-                try {
-                    val subtitles = parseJson<List<SubtitleFile>>(subtitlesJson)
-                    subtitles.forEach { subtitle -> subtitleCallback(subtitle) }
-                } catch (e: Exception) {
-                    println("Lỗi parse extracted_subtitles từ syncData: $e")
-                }
+            // Gọi subtitleCallback cho các phụ đề đã trích xuất từ hàm load
+            subtitlesFromLoad?.forEach { subtitle ->
+                subtitleCallback(subtitle)
             }
 
-            val apiResponseJson = app.get(data).text
+            val apiResponseJson = app.get(apiUrl).text // Gọi API video
             val apiData = parseJson<VideoApiResponse>(apiResponseJson)
 
             var foundLinks = false
@@ -269,23 +258,19 @@ class NangCucProvider : MainAPI() {
                         } else if (videoUrl.contains(".mp4", ignoreCase = true)) {
                             ExtractorLinkType.VIDEO
                         } else if (isIframe) {
-                            // Xử lý cẩn thận cho iframe. Nếu link là m3u8 thì vẫn là M3U8.
-                            // Nếu không, có thể cần một extractor hoặc nó là một link video trực tiếp khác.
-                            if (videoUrl.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                            // Cân nhắc log warning ở đây nếu link iframe không phải là media trực tiếp
-                            // println("Warning: Link iframe ${serverName} có thể cần xử lý đặc biệt: $videoUrl")
-                        } else {
-                            ExtractorLinkType.VIDEO
-                        }
+                             if (videoUrl.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                        } else { ExtractorLinkType.VIDEO }
                         
-                        val refererUrl = syncData?.get("movie_page_url") ?: mainUrl
+                        // Dòng 288 có thể bị lỗi ở đây nếu moviePageUrl không phải là String
+                        // Hiện tại moviePageUrl đã là String từ LoadLinksHelperData
+                        val referer = moviePageUrl // Đã là String
 
                         callback.invoke(
                             ExtractorLink(
                                 source = serverName,
                                 name = serverName,
                                 url = videoUrl,
-                                referer = refererUrl,
+                                referer = referer, // Đảm bảo đây là String
                                 quality = quality,
                                 type = linkType,
                                 headers = mapOf(),
@@ -296,14 +281,8 @@ class NangCucProvider : MainAPI() {
                     }
                 }
             } else {
-                println("API trả về status không thành công: ${apiData.status} cho URL: $data")
+                println("API video trả về status không thành công: ${apiData.status} cho URL: $apiUrl")
             }
-            // Xử lý phụ đề từ API nếu có (ví dụ)
-            // apiData.subtitles?.forEach { apiSub ->
-            //     if (apiSub.url != null && apiSub.langCode != null) {
-            //         subtitleCallback.invoke(SubtitleFile(apiSub.langCode, apiSub.url))
-            //     }
-            // }
             return foundLinks
         } catch (e: Exception) {
             e.printStackTrace()
@@ -311,13 +290,3 @@ class NangCucProvider : MainAPI() {
         }
     }
 }
-
-// import com.lagradost.cloudstream3.plugins.CloudstreamPlugin // Bỏ comment nếu muốn đăng ký plugin
-// import com.lagradost.cloudstream3.plugins.Plugin
-
-// @CloudstreamPlugin
-// class NangCucLoader : Plugin() {
-//    override fun load(context: Context) {
-//        registerMainAPI(NangCucProvider())
-//    }
-// }
