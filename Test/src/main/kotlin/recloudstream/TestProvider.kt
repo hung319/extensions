@@ -22,6 +22,7 @@ class NangCucProvider : MainAPI() {
     override var name = "Nắng Cực TV"
     override val supportedTypes = setOf(TvType.NSFW)
     override var lang = "vi"
+    override val hasMainPage = true
 
     // Đảm bảo signature của hàm getMainPage khớp hoàn toàn
     override suspend fun getMainPage(
