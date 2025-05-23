@@ -245,7 +245,7 @@ class NangCucProvider : MainAPI() {
             // Gọi hàm trích xuất phụ đề và subtitleCallback ngay tại đây
             // Lưu ý: subtitleCallback được truyền ngầm vào load thông qua MainAPI
             println("NangCucProvider LOG (load): Bắt đầu trích xuất phụ đề từ HTML đã tải.")
-            extractAndCallbackSubtitles(document, મુખ્યSubtitleCallback) // ಮುಖ್ಯSubtitleCallback là callback của MainAPI
+            extractAndCallbackSubtitles(document, SubtitleCallback) // ಮುಖ್ಯSubtitleCallback là callback của MainAPI
 
             val loadLinksData = LoadLinksHelperData(
                 apiUrl = apiUrlFromScript!!,
