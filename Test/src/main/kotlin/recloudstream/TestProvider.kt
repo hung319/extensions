@@ -4,19 +4,18 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.fasterxml.jackson.annotation.JsonProperty
 import org.jsoup.nodes.Element
-import java.util.regex.Pattern // Để dùng regex
+import java.util.regex.Pattern
 
-// Data class cho streamqq (giữ nguyên)
+// Data class (giữ nguyên)
 data class StreamQQVideoData(
     @JsonProperty("sources") val sources: List<StreamQQSource>?
 )
 
 data class StreamQQSource(
     @JsonProperty("file") val file: String?,
-    @JsonProperty("type") val type: String? // Thường là "application/vnd.apple.mpegurl" cho HLS
+    @JsonProperty("type") val type: String?
 )
 
-// Data class cho item trong suggestions (giữ nguyên)
 data class RecommendationItem(
     @JsonProperty("title") val title: String?,
     @JsonProperty("url") val url: String?,
@@ -162,7 +161,25 @@ class HeoVLProvider : MainAPI() {
         }
     }
 
-    // Hàm loadLinks được cập nhật để sử dụng newExtractorLink theo signature mới
+    // Hàm helper để tìm link .m3u8 hoặc .mp4 từ một đoạn text (HTML/script)
+    // Sẽ trả về Pair<String?, ExtractorLinkType?>: link và type của nó
+    private fun findDirectVideoLink(text: String): Pair<String?, ExtractorLinkType?> {
+        // Ưu tiên M3U8
+        val m3u8Pattern = Pattern.compile("""["'](https?://[^"']+\.m3u8[^"']*)["']""")
+        var matcher = m3u8Pattern.matcher(text)
+        if (matcher.find()) {
+            return Pair(matcher.group(1), ExtractorLinkType.M3U8)
+        }
+
+        // Nếu không có M3U8, tìm MP4
+        val mp4Pattern = Pattern.compile("""["'](https?://[^"']+\.mp4[^"']*)["']""")
+        matcher = mp4Pattern.matcher(text)
+        if (matcher.find()) {
+            return Pair(matcher.group(1), ExtractorLinkType.MP4)
+        }
+        return Pair(null, null)
+    }
+
     override suspend fun loadLinks(
         data: String, // URL của trang video HeoVL
         isCasting: Boolean,
@@ -170,11 +187,11 @@ class HeoVLProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val heovlPageDocument = app.get(data).document 
-        var foundLinks = false
+        var foundAnyDirectLinks = false
 
         val embedSources = heovlPageDocument.select("button.set-player-source").mapNotNull { button ->
             val embedUrl = button.attr("data-source")
-            val serverName = button.text().trim().ifBlank { name } // Dùng tên provider nếu tên server rỗng
+            val serverName = button.text().trim().ifBlank { name }
             if (embedUrl.isNotBlank()) Pair(serverName, embedUrl) else null
         }
 
@@ -183,7 +200,7 @@ class HeoVLProvider : MainAPI() {
                 println("Processing server: $serverName, embed URL: $embedUrl")
                 if (embedUrl.contains("streamqq.com")) {
                     val embedDocText = app.get(embedUrl, referer = data).text
-                    val videoDataRegex = Regex("""window\.videoData\s*=\s*(\{[\s\S]+?\});""") // Regex rộng hơn để match JSON
+                    val videoDataRegex = Regex("""window\.videoData\s*=\s*(\{[\s\S]+?\});""")
                     val matchResult = videoDataRegex.find(embedDocText)
                     
                     if (matchResult != null) {
@@ -193,76 +210,71 @@ class HeoVLProvider : MainAPI() {
                             videoData.sources?.firstOrNull { 
                                 it.type?.contains("hls", true) == true || it.type?.contains("mpegurl", true) == true 
                             }?.file?.let { m3u8RelativePath ->
-                                val domain = if (embedUrl.startsWith("http")) embedUrl.substringBefore("/videos/") else "https://e.streamqq.com" // Cần domain chính xác
+                                val domain = if (embedUrl.startsWith("http")) embedUrl.substringBefore("/videos/") else "https://e.streamqq.com"
                                 val absoluteM3u8Url = if (m3u8RelativePath.startsWith("http")) m3u8RelativePath else domain + m3u8RelativePath.trimStart('/')
                                 
                                 callback(
                                     newExtractorLink(
-                                        source = serverName, // Tên của server (StreamQQ)
-                                        name = "$serverName (M3U8)", // Tên hiển thị cho link
+                                        source = serverName,
+                                        name = "$serverName (M3U8)",
                                         url = absoluteM3u8Url,
                                         type = ExtractorLinkType.M3U8
                                     ) {
-                                        this.referer = embedUrl // Referer là trang embed
-                                        this.quality = Qualities.Unknown.value // Hoặc parse từ label nếu có
+                                        this.referer = embedUrl
+                                        this.quality = Qualities.Unknown.value
                                     }
                                 )
-                                foundLinks = true
+                                foundAnyDirectLinks = true
                                 println("Found M3U8 for StreamQQ: $absoluteM3u8Url")
                             } ?: println("No M3U8 source found in StreamQQ videoData for $serverName")
                         } catch (e: Exception) {
                              println("Error parsing StreamQQ videoData JSON: ${e.message} for $embedUrl")
-                             // Fallback nếu parse JSON thất bại
-                            callback(newExtractorLink(serverName, "$serverName (Embed)", embedUrl, ExtractorLinkType.EMBED) {
-                                this.referer = data
-                                this.quality = Qualities.Unknown.value
-                            })
-                            foundLinks = true
                         }
                     } else {
                          println("Could not find window.videoData for StreamQQ: $embedUrl")
-                         callback(newExtractorLink(serverName, "$serverName (Embed)", embedUrl, ExtractorLinkType.EMBED) {
-                            this.referer = data
-                            this.quality = Qualities.Unknown.value
-                         })
-                         foundLinks = true 
                     }
                 } else if (embedUrl.contains("playheovl.xyz") || embedUrl.contains("vnstream.net")) {
                     println("PlayHeoVL/VNStream Embed: $embedUrl. Requires JS deobfuscation and API call logic.")
                     // **PHẦN NÀY VẪN CẦN LOGIC GIẢI MÃ JAVASCRIPT VÀ GỌI API PHỨC TẠP**
-                    // Do sự phức tạp của việc tái tạo logic JS mã hóa, chúng ta sẽ tạm thời
-                    // chỉ gửi link embed để CloudStream thử xử lý bằng các extractor chung (nếu có).
-                    callback(
-                        newExtractorLink(
-                            source = serverName,
-                            name = "$serverName (Embed - Cần xử lý JS)",
-                            url = embedUrl,
-                            type = ExtractorLinkType.EMBED
-                        ) {
-                            this.referer = data 
-                            this.quality = Qualities.Unknown.value
-                        }
-                    )
-                    foundLinks = true 
+                    // Hiện tại, chúng ta không thể cung cấp link M3U8/MP4 trực tiếp mà không có logic đó.
+                    // Vì không có ExtractorLinkType.EMBED, chúng ta sẽ không gọi callback cho server này
+                    // trừ khi bạn hoàn thành logic bóc tách JS.
+                    // Để ví dụ, nếu bạn *đã* có logic đó và lấy được linkM3U8:
+                    // val directM3u8FromPlayHeoVL = yourCustomJsExtractionFunction(embedUrl, data)
+                    // if (directM3u8FromPlayHeoVL != null) {
+                    //    callback(newExtractorLink(serverName, "$serverName (M3U8 - API)", directM3u8FromPlayHeoVL, ExtractorLinkType.M3U8) { ... })
+                    //    foundAnyDirectLinks = true
+                    // }
+                    println("Skipping PlayHeoVL/VNStream for now as direct link extraction is not implemented.")
+
                 } else {
-                    println("Unknown server, trying embed URL: $embedUrl for server $serverName")
-                    callback(
-                        newExtractorLink(
-                            source = serverName,
-                            name = "$serverName (Embed)",
-                            url = embedUrl,
-                            type = ExtractorLinkType.EMBED
-                        ) {
-                            this.referer = data 
-                            this.quality = Qualities.Unknown.value
-                        }
-                    )
-                    foundLinks = true
+                    // Thử tìm link M3U8/MP4 chung cho các server không xác định
+                    println("Unknown server type, attempting generic M3U8/MP4 extraction for: $embedUrl")
+                    val embedPageContent = app.get(embedUrl, referer = data).text
+                    val (directLink, linkType) = findDirectVideoLink(embedPageContent)
+
+                    if (directLink != null && linkType != null) {
+                        callback(
+                            newExtractorLink(
+                                source = serverName,
+                                name = "$serverName (${linkType.name})",
+                                url = directLink,
+                                type = linkType
+                            ) {
+                                this.referer = embedUrl
+                                this.quality = Qualities.Unknown.value
+                            }
+                        )
+                        foundAnyDirectLinks = true
+                        println("Found generic direct link: $directLink")
+                    } else {
+                        println("No generic M3U8/MP4 found for $embedUrl")
+                    }
                 }
             } catch (e: Exception) {
                 println("Error in loadLinks for $embedUrl: ${e.message}")
             }
         }
-        return foundLinks
+        return foundAnyDirectLinks
     }
 }
