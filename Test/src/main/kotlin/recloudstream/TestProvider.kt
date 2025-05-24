@@ -1,7 +1,9 @@
 package com.heovl
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.* // Đảm bảo import này bao gồm các utility cần thiết
+// Thử import trực tiếp AppUtils nếu utils.* không đủ
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson // Hoặc có thể không cần nếu là extension function
 import com.fasterxml.jackson.annotation.JsonProperty
 import org.jsoup.nodes.Element
 import java.util.regex.Pattern
@@ -33,7 +35,6 @@ class HeoVLProvider : MainAPI() {
     override var lang = "vi"
     override val hasMainPage = true
 
-    // ... (các hàm toSearchResponse, getMainPage, search, load giữ nguyên như trước) ...
     private fun Element.toSearchResponse(): SearchResponse? {
         val titleElement = this.selectFirst("h3.video-box__heading")
         val title = titleElement?.text()?.trim() ?: return null
@@ -124,9 +125,13 @@ class HeoVLProvider : MainAPI() {
             val videoSlug = url.substringAfterLast("/videos/").substringBefore("?")
             if (videoSlug.isNotBlank()) {
                 val recommendationsAjaxUrl = "$mainUrl/ajax/suggestions/$videoSlug"
-                val recommendationResponse = app.get(recommendationsAjaxUrl).parsed<RecommendationResponse>()
+                val recommendationsJsonText = app.get(recommendationsAjaxUrl).text
                 
-                pageRecommendations = recommendationResponse.data?.mapNotNull { item ->
+                // Sửa lỗi parse JSON: thử dùng recommendationsJsonText.parseJson<T>()
+                val recommendationResponse = recommendationsJsonText.parseJson<RecommendationResponse>() // SỬA Ở ĐÂY
+                
+                pageRecommendations = recommendationResponse.data?.mapNotNull { item -> // Không cần chỉ định kiểu item: RecommendationItem ở đây nữa nếu parseJson hoạt động đúng
+                    // Truy cập các thuộc tính của item (giờ đây item nên được suy luận đúng kiểu RecommendationItem)
                     val itemTitle = item.title 
                     val itemUrl = item.url
                     val itemThumbnail = item.thumbnailFileUrl
@@ -145,6 +150,7 @@ class HeoVLProvider : MainAPI() {
             }
         } catch (e: Exception) {
             println("Error fetching or parsing recommendations: ${e.message}")
+            // e.printStackTrace()
         }
 
         return newMovieLoadResponse(
@@ -161,27 +167,25 @@ class HeoVLProvider : MainAPI() {
         }
     }
 
-    // Hàm helper để tìm link .m3u8 hoặc .mp4 từ một đoạn text (HTML/script)
-    // Sẽ trả về Pair<String?, ExtractorLinkType?>: link và type của nó
     private fun findDirectVideoLink(text: String): Pair<String?, ExtractorLinkType?> {
-        // Ưu tiên M3U8
         val m3u8Pattern = Pattern.compile("""["'](https?://[^"']+\.m3u8[^"']*)["']""")
         var matcher = m3u8Pattern.matcher(text)
         if (matcher.find()) {
             return Pair(matcher.group(1), ExtractorLinkType.M3U8)
         }
 
-        // Nếu không có M3U8, tìm MP4
-        val mp4Pattern = Pattern.compile("""["'](https?://[^"']+\.mp4[^"']*)["']""")
-        matcher = mp4Pattern.matcher(text)
+        // Đổi MP4 thành VIDEO
+        val videoPattern = Pattern.compile("""["'](https?://[^"']+\.mp4[^"']*)["']""") // Vẫn tìm .mp4 nhưng type là VIDEO
+        matcher = videoPattern.matcher(text)
         if (matcher.find()) {
-            return Pair(matcher.group(1), ExtractorLinkType.MP4)
+            // Lỗi 178: Sửa ExtractorLinkType.MP4 thành ExtractorLinkType.VIDEO
+            return Pair(matcher.group(1), ExtractorLinkType.VIDEO) // SỬA Ở ĐÂY
         }
         return Pair(null, null)
     }
 
     override suspend fun loadLinks(
-        data: String, // URL của trang video HeoVL
+        data: String, 
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
@@ -206,7 +210,8 @@ class HeoVLProvider : MainAPI() {
                     if (matchResult != null) {
                         val videoDataJson = matchResult.groupValues[1]
                         try {
-                            val videoData = parseJson<StreamQQVideoData>(videoDataJson)
+                            // Sửa lỗi parse JSON: thử dùng videoDataJson.parseJson<T>()
+                            val videoData = videoDataJson.parseJson<StreamQQVideoData>() // SỬA Ở ĐÂY
                             videoData.sources?.firstOrNull { 
                                 it.type?.contains("hls", true) == true || it.type?.contains("mpegurl", true) == true 
                             }?.file?.let { m3u8RelativePath ->
@@ -235,21 +240,10 @@ class HeoVLProvider : MainAPI() {
                     }
                 } else if (embedUrl.contains("playheovl.xyz") || embedUrl.contains("vnstream.net")) {
                     println("PlayHeoVL/VNStream Embed: $embedUrl. Requires JS deobfuscation and API call logic.")
-                    // **PHẦN NÀY VẪN CẦN LOGIC GIẢI MÃ JAVASCRIPT VÀ GỌI API PHỨC TẠP**
-                    // Hiện tại, chúng ta không thể cung cấp link M3U8/MP4 trực tiếp mà không có logic đó.
-                    // Vì không có ExtractorLinkType.EMBED, chúng ta sẽ không gọi callback cho server này
-                    // trừ khi bạn hoàn thành logic bóc tách JS.
-                    // Để ví dụ, nếu bạn *đã* có logic đó và lấy được linkM3U8:
-                    // val directM3u8FromPlayHeoVL = yourCustomJsExtractionFunction(embedUrl, data)
-                    // if (directM3u8FromPlayHeoVL != null) {
-                    //    callback(newExtractorLink(serverName, "$serverName (M3U8 - API)", directM3u8FromPlayHeoVL, ExtractorLinkType.M3U8) { ... })
-                    //    foundAnyDirectLinks = true
-                    // }
                     println("Skipping PlayHeoVL/VNStream for now as direct link extraction is not implemented.")
 
                 } else {
-                    // Thử tìm link M3U8/MP4 chung cho các server không xác định
-                    println("Unknown server type, attempting generic M3U8/MP4 extraction for: $embedUrl")
+                    println("Unknown server type, attempting generic M3U8/VIDEO extraction for: $embedUrl")
                     val embedPageContent = app.get(embedUrl, referer = data).text
                     val (directLink, linkType) = findDirectVideoLink(embedPageContent)
 
@@ -257,7 +251,7 @@ class HeoVLProvider : MainAPI() {
                         callback(
                             newExtractorLink(
                                 source = serverName,
-                                name = "$serverName (${linkType.name})",
+                                name = "$serverName (${linkType.name})", // Hiển thị VIDEO hoặc M3U8
                                 url = directLink,
                                 type = linkType
                             ) {
@@ -266,9 +260,9 @@ class HeoVLProvider : MainAPI() {
                             }
                         )
                         foundAnyDirectLinks = true
-                        println("Found generic direct link: $directLink")
+                        println("Found generic direct link: $directLink of type ${linkType.name}")
                     } else {
-                        println("No generic M3U8/MP4 found for $embedUrl")
+                        println("No generic M3U8/VIDEO found for $embedUrl")
                     }
                 }
             } catch (e: Exception) {
