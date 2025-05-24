@@ -1,9 +1,7 @@
 package com.heovl
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.* // Đảm bảo import này bao gồm các utility cần thiết
-// Thử import trực tiếp AppUtils nếu utils.* không đủ
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson // Hoặc có thể không cần nếu là extension function
+import com.lagradost.cloudstream3.utils.* // Đảm bảo AppUtils nằm trong đây
 import com.fasterxml.jackson.annotation.JsonProperty
 import org.jsoup.nodes.Element
 import java.util.regex.Pattern
@@ -127,17 +125,19 @@ class HeoVLProvider : MainAPI() {
                 val recommendationsAjaxUrl = "$mainUrl/ajax/suggestions/$videoSlug"
                 val recommendationsJsonText = app.get(recommendationsAjaxUrl).text
                 
-                // Sửa lỗi parse JSON: thử dùng recommendationsJsonText.parseJson<T>()
-                val recommendationResponse = recommendationsJsonText.parseJson<RecommendationResponse>() // SỬA Ở ĐÂY
+                // Sửa lỗi parse JSON: thử dùng AppUtils.parseJson<T>(jsonString)
+                // Lỗi 131: Unresolved reference 'parseJson'
+                val recommendationResponse = AppUtils.parseJson<RecommendationResponse>(recommendationsJsonText) // SỬA Ở ĐÂY
                 
-                pageRecommendations = recommendationResponse.data?.mapNotNull { item -> // Không cần chỉ định kiểu item: RecommendationItem ở đây nữa nếu parseJson hoạt động đúng
-                    // Truy cập các thuộc tính của item (giờ đây item nên được suy luận đúng kiểu RecommendationItem)
+                pageRecommendations = recommendationResponse.data?.mapNotNull { item: RecommendationItem -> // Chỉ định rõ kiểu cho item
+                    // Lỗi 133, 135, 136, 137, 141, 142, 146: các lỗi này là do item không được suy luận đúng kiểu
                     val itemTitle = item.title 
                     val itemUrl = item.url
                     val itemThumbnail = item.thumbnailFileUrl
 
                     if (itemTitle == null || itemUrl == null) return@mapNotNull null
 
+                    // Đảm bảo itemUrl và itemThumbnail là String? trước khi gọi startsWith/trimStart
                     val absoluteUrl = if (itemUrl.startsWith("http")) itemUrl else mainUrl + itemUrl.trimStart('/')
                     val absolutePoster = itemThumbnail?.let { thumb -> 
                         if (thumb.startsWith("http")) thumb else mainUrl + thumb.trimStart('/') 
@@ -174,12 +174,10 @@ class HeoVLProvider : MainAPI() {
             return Pair(matcher.group(1), ExtractorLinkType.M3U8)
         }
 
-        // Đổi MP4 thành VIDEO
-        val videoPattern = Pattern.compile("""["'](https?://[^"']+\.mp4[^"']*)["']""") // Vẫn tìm .mp4 nhưng type là VIDEO
+        val videoPattern = Pattern.compile("""["'](https?://[^"']+\.mp4[^"']*)["']""")
         matcher = videoPattern.matcher(text)
         if (matcher.find()) {
-            // Lỗi 178: Sửa ExtractorLinkType.MP4 thành ExtractorLinkType.VIDEO
-            return Pair(matcher.group(1), ExtractorLinkType.VIDEO) // SỬA Ở ĐÂY
+            return Pair(matcher.group(1), ExtractorLinkType.VIDEO)
         }
         return Pair(null, null)
     }
@@ -210,11 +208,13 @@ class HeoVLProvider : MainAPI() {
                     if (matchResult != null) {
                         val videoDataJson = matchResult.groupValues[1]
                         try {
-                            // Sửa lỗi parse JSON: thử dùng videoDataJson.parseJson<T>()
-                            val videoData = videoDataJson.parseJson<StreamQQVideoData>() // SỬA Ở ĐÂY
+                            // Sửa lỗi parse JSON: thử dùng AppUtils.parseJson<T>(jsonString)
+                            // Lỗi 214: Unresolved reference 'parseJson'
+                            val videoData = AppUtils.parseJson<StreamQQVideoData>(videoDataJson) // SỬA Ở ĐÂY
                             videoData.sources?.firstOrNull { 
                                 it.type?.contains("hls", true) == true || it.type?.contains("mpegurl", true) == true 
                             }?.file?.let { m3u8RelativePath ->
+                                // Lỗi 216, 217: các lỗi này là do 'it' không được suy luận đúng kiểu
                                 val domain = if (embedUrl.startsWith("http")) embedUrl.substringBefore("/videos/") else "https://e.streamqq.com"
                                 val absoluteM3u8Url = if (m3u8RelativePath.startsWith("http")) m3u8RelativePath else domain + m3u8RelativePath.trimStart('/')
                                 
@@ -251,7 +251,7 @@ class HeoVLProvider : MainAPI() {
                         callback(
                             newExtractorLink(
                                 source = serverName,
-                                name = "$serverName (${linkType.name})", // Hiển thị VIDEO hoặc M3U8
+                                name = "$serverName (${linkType.name})",
                                 url = directLink,
                                 type = linkType
                             ) {
@@ -269,6 +269,10 @@ class HeoVLProvider : MainAPI() {
                 println("Error in loadLinks for $embedUrl: ${e.message}")
             }
         }
+        // Lỗi 201, 205, 206, 208, 210, 211, 212, 215, 216, 217, 229, 231, 234, 236, 269:
+        // Các lỗi này thường là hệ quả của việc parse JSON thất bại hoặc kiểu dữ liệu không chính xác,
+        // làm cho các lambda hoặc lời gọi hàm sau đó bị sai kiểu.
+        // Việc sửa parseJson thành AppUtils.parseJson hy vọng sẽ giải quyết được gốc rễ.
         return foundAnyDirectLinks
     }
 }
