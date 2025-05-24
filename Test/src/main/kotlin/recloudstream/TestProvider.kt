@@ -3,6 +3,20 @@ package com.heovl // Bạn có thể thay đổi package này
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
+import com.fasterxml.jackson.annotation.JsonProperty // Cần import nếu dùng data class hoặc parseJson<T>
+
+// Data class cho item trong suggestions (tùy chọn, nhưng tốt cho type safety)
+// Nếu không dùng data class, bạn có thể truy cập trực tiếp từ JsonObject
+data class RecommendationItem(
+    @JsonProperty("title") val title: String?,
+    @JsonProperty("url") val url: String?,
+    @JsonProperty("thumbnail_file_url") val thumbnail_file_url: String?
+    // Thêm các trường khác nếu bạn cần, ví dụ: "views", "slug"
+)
+
+data class RecommendationResponse(
+    @JsonProperty("data") val data: List<RecommendationItem>?
+)
 
 class HeoVLProvider : MainAPI() {
     override var mainUrl = "https://heovl.fit"
@@ -10,6 +24,22 @@ class HeoVLProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.NSFW)
     override var lang = "vi"
     override val hasMainPage = true
+
+    // Hàm helper để chuyển RecommendationItem thành SearchResponse
+    private fun RecommendationItem.toSearchResponse(): SearchResponse? {
+        val videoTitle = this.title ?: return null
+        val videoUrl = this.url ?: return null
+        // Đảm bảo URL là tuyệt đối nếu nó chưa phải
+        val absoluteUrl = if (videoUrl.startsWith("http")) videoUrl else mainUrl + videoUrl.trimStart('/')
+        val absolutePosterUrl = this.thumbnail_file_url?.let {
+            if (it.startsWith("http")) it else mainUrl + it.trimStart('/')
+        }
+
+        return newMovieSearchResponse(videoTitle, absoluteUrl, TvType.NSFW) {
+            this.posterUrl = absolutePosterUrl
+        }
+    }
+
 
     private fun Element.toSearchResponse(): SearchResponse? {
         val titleElement = this.selectFirst("h3.video-box__heading")
@@ -21,13 +51,9 @@ class HeoVLProvider : MainAPI() {
         } else if (href.startsWith("/")) {
             href = mainUrl + href
         }
-        // Đảm bảo href là URL hợp lệ trước khi trả về
         if (!href.startsWith("http")) {
-            // Log hoặc xử lý trường hợp href không hợp lệ nếu cần
-            // println("Invalid href found: $href")
             return null
         }
-
 
         val posterUrl = this.selectFirst("a.video-box__thumbnail__link img")?.attr("src")
         var absolutePosterUrl = posterUrl?.let {
@@ -45,49 +71,31 @@ class HeoVLProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        // Trang chủ của heovl.fit dường như không có phân trang cho các mục lớn,
-        // chỉ tải các mục category chính một lần.
-        // Nếu page > 1, trả về null vì không có trang tiếp theo cho chính getMainPage.
         if (page > 1) return null
 
         val document = app.get(mainUrl).document
         val homePageList = mutableListOf<HomePageList>()
 
-        // Parse các mục video chính từ trang chủ (Việt Nam, Vietsub, etc.)
         document.select("div.lg\\:col-span-3 > a[title^=Xem thêm]").forEach { sectionAnchor ->
             val sectionTitle = sectionAnchor.selectFirst("h2.heading-2")?.text()?.trim()
             if (sectionTitle != null) {
-                // URL để "Xem thêm" cho category này
-                val categoryUrl = sectionAnchor.attr("href")?.let { if (it.startsWith("/")) mainUrl + it else it }
-
                 val videoElements = sectionAnchor.nextElementSibling()?.select("div.videos__box-wrapper")
                 val videos = videoElements?.mapNotNull { it.selectFirst("div.video-box")?.toSearchResponse() } ?: emptyList()
-                
                 if (videos.isNotEmpty()) {
-                    // Thêm HomePageList với categoryUrl làm key để CloudStream có thể gọi search/loadPage
-                    // khi người dùng muốn xem thêm từ mục này (nếu UI hỗ trợ).
-                    // Hiện tại, HomePageList không có trường `key` hoặc `url` rõ ràng cho mục đích này
-                    // mà thường dựa vào việc các item là SearchResponse trỏ đến category,
-                    // hoặc provider implement loadPage và HomePageList có hasNext=true.
-                    // Vì chúng ta đã có video, chỉ hiển thị chúng.
                     homePageList.add(HomePageList(sectionTitle, videos))
                 }
             }
         }
         
-        // Đã bỏ mục "Thể loại nổi bật" theo yêu cầu
+        // Mục "Thể loại nổi bật" đã được bỏ
 
         if (homePageList.isEmpty()) {
-            // Fallback nếu không parse được section nào, thử lấy từ navbar
             document.select("nav#navbar div.hidden.md\\:flex a.navbar__link[href*=categories]").forEach { navLink ->
                  val title = navLink.attr("title")
-                 // Tạo HomePageList rỗng, người dùng sẽ phải tự tìm kiếm category này
-                 homePageList.add(HomePageList(title, emptyList())) 
+                 homePageList.add(HomePageList(title, emptyList()))
             }
         }
 
-        // `hasNext` cho getMainPage: Vì trang chủ không có phân trang cho các mục lớn,
-        // nên sau khi tải trang 1, sẽ không có trang tiếp theo.
         return newHomePageResponse(list = homePageList, hasNext = false) 
     }
 
@@ -97,7 +105,6 @@ class HeoVLProvider : MainAPI() {
         } else {
             "$mainUrl/search?q=$query"
         }
-        // CloudStream sẽ tự động thêm &page= vào URL nếu cần phân trang
         val document = app.get(searchOrCategoryUrl).document 
         return document.select("div.videos div.videos__box-wrapper").mapNotNull {
             it.selectFirst("div.video-box")?.toSearchResponse()
@@ -125,27 +132,29 @@ class HeoVLProvider : MainAPI() {
         
         var pageRecommendations: List<SearchResponse>? = null
         try {
-            // Trích xuất slug video từ URL hiện tại để xây dựng URL AJAX recommendations
             val videoSlug = url.substringAfterLast("/videos/").substringBefore("?")
             if (videoSlug.isNotBlank()) {
                 val recommendationsAjaxUrl = "$mainUrl/ajax/suggestions/$videoSlug"
-                // Thực hiện request thứ hai để lấy HTML/JSON của recommendations
-                val recommendationsDoc = app.get(recommendationsAjaxUrl).document
-                // Parse các video items từ response AJAX này.
-                // Giả sử response là HTML chứa các div.video-box tương tự.
-                pageRecommendations = recommendationsDoc.select("div.video-box")?.mapNotNull {
-                    // Cần đảm bảo toSearchResponse xử lý đúng URL tương đối nếu có từ AJAX response
-                    // Nếu link trong AJAX response là tương đối, cần mainUrl
-                    // Tuy nhiên, toSearchResponse đã có logic prefix mainUrl nếu href bắt đầu bằng /
-                    it.toSearchResponse()
+                // Lấy text JSON từ API
+                val recommendationsJsonText = app.get(recommendationsAjaxUrl).text
+                // Parse JSON text thành object RecommendationResponse
+                val recommendationResponse = parseJson<RecommendationResponse>(recommendationsJsonText)
+                
+                pageRecommendations = recommendationResponse.data?.mapNotNull { item ->
+                    // Chuyển đổi từng RecommendationItem thành SearchResponse
+                    // Đảm bảo URL là tuyệt đối nếu nó chưa phải
+                    val absoluteUrl = item.url?.let { if (it.startsWith("http")) it else mainUrl + it.trimStart('/') } ?: return@mapNotNull null
+                    val absolutePoster = item.thumbnail_file_url?.let { if (it.startsWith("http")) it else mainUrl + it.trimStart('/') }
+                    
+                    newMovieSearchResponse(item.title ?: "N/A", absoluteUrl, TvType.NSFW) {
+                        this.posterUrl = absolutePoster
+                    }
                 }
             }
         } catch (e: Exception) {
-            // Log lỗi nếu không lấy được recommendations, nhưng không làm dừng toàn bộ hàm load
-            println("Error fetching recommendations: ${e.message}")
+            println("Error fetching or parsing recommendations: ${e.message}")
             e.printStackTrace()
         }
-
 
         return newMovieLoadResponse(
             name = title,
@@ -156,7 +165,7 @@ class HeoVLProvider : MainAPI() {
             this.posterUrl = pagePosterUrl
             this.plot = pageDescription
             this.tags = combinedTags
-            this.recommendations = pageRecommendations // Gán recommendations đã parse (có thể null)
+            this.recommendations = pageRecommendations 
             this.year = null 
         }
     }
