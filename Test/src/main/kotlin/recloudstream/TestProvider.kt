@@ -1,12 +1,12 @@
 package com.heovl
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.* // Đảm bảo AppUtils nằm trong đây
+import com.lagradost.cloudstream3.utils.*
 import com.fasterxml.jackson.annotation.JsonProperty
 import org.jsoup.nodes.Element
 import java.util.regex.Pattern
 
-// Data class (giữ nguyên)
+// Data class cho streamqq
 data class StreamQQVideoData(
     @JsonProperty("sources") val sources: List<StreamQQSource>?
 )
@@ -16,6 +16,7 @@ data class StreamQQSource(
     @JsonProperty("type") val type: String?
 )
 
+// Data class cho item trong suggestions
 data class RecommendationItem(
     @JsonProperty("title") val title: String?,
     @JsonProperty("url") val url: String?,
@@ -34,33 +35,32 @@ class HeoVLProvider : MainAPI() {
     override val hasMainPage = true
 
     private fun Element.toSearchResponse(): SearchResponse? {
-        val titleElement = this.selectFirst("h3.video-box__heading")
-        val title = titleElement?.text()?.trim() ?: return null
-        
+        val title = this.selectFirst("h3.video-box__heading")?.text()?.trim() ?: return null
         var href = this.selectFirst("a.video-box__thumbnail__link")?.attr("href") ?: return null
-        if (href.startsWith("//")) {
-            href = "https:$href"
-        } else if (href.startsWith("/")) {
-            href = mainUrl + href
-        }
-        if (!href.startsWith("http")) {
-            return null
-        }
+        
+        href = fixUrl(href)
+        if (!href.startsWith("http")) return null
 
-        val posterUrl = this.selectFirst("a.video-box__thumbnail__link img")?.attr("src")
-        var absolutePosterUrl = posterUrl?.let {
-            if (it.startsWith("//")) "https:$it"
-            else if (it.startsWith("/")) mainUrl + it 
-            else it 
-        }
-        if (absolutePosterUrl?.startsWith("http") == false) {
-            absolutePosterUrl = null
-        }
+        var poster = this.selectFirst("a.video-box__thumbnail__link img")?.attr("src")
+        poster = poster?.let { fixUrl(it) }
+        if (poster?.startsWith("http") == false) poster = null
 
         return newMovieSearchResponse(title, href, TvType.NSFW) {
-            this.posterUrl = absolutePosterUrl
+            this.posterUrl = poster
         }
     }
+
+    // Helper to fix URLs (relative or //)
+    private fun fixUrl(url: String): String {
+        if (url.startsWith("//")) {
+            return "https:$url"
+        }
+        if (url.startsWith("/")) {
+            return mainUrl + url
+        }
+        return url
+    }
+
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         if (page > 1) return null
@@ -69,10 +69,11 @@ class HeoVLProvider : MainAPI() {
         val homePageList = mutableListOf<HomePageList>()
 
         document.select("div.lg\\:col-span-3 > a[title^=Xem thêm]").forEach { sectionAnchor ->
-            val sectionTitle = sectionAnchor.selectFirst("h2.heading-2")?.text()?.trim()
-            if (sectionTitle != null) {
-                val videoElements = sectionAnchor.nextElementSibling()?.select("div.videos__box-wrapper")
-                val videos = videoElements?.mapNotNull { it.selectFirst("div.video-box")?.toSearchResponse() } ?: emptyList()
+            sectionAnchor.selectFirst("h2.heading-2")?.text()?.trim()?.let { sectionTitle ->
+                val videos = sectionAnchor.nextElementSibling()
+                    ?.select("div.videos__box-wrapper div.video-box")
+                    ?.mapNotNull { it.toSearchResponse() } 
+                    ?: emptyList()
                 if (videos.isNotEmpty()) {
                     homePageList.add(HomePageList(sectionTitle, videos))
                 }
@@ -81,24 +82,20 @@ class HeoVLProvider : MainAPI() {
         
         if (homePageList.isEmpty()) {
             document.select("nav#navbar div.hidden.md\\:flex a.navbar__link[href*=categories]").forEach { navLink ->
-                 val title = navLink.attr("title")
-                 homePageList.add(HomePageList(title, emptyList()))
+                 navLink.attr("title").let { title ->
+                     homePageList.add(HomePageList(title, emptyList()))
+                 }
             }
         }
-
         return newHomePageResponse(list = homePageList, hasNext = false) 
     }
 
     override suspend fun search(query: String): List<SearchResponse>? {
-        val searchOrCategoryUrl = if (query.startsWith("http")) {
-            query 
-        } else {
-            "$mainUrl/search?q=$query"
-        }
-        val document = app.get(searchOrCategoryUrl).document 
-        return document.select("div.videos div.videos__box-wrapper").mapNotNull {
-            it.selectFirst("div.video-box")?.toSearchResponse()
-        }
+        val searchOrCategoryUrl = if (query.startsWith("http")) query else "$mainUrl/search?q=$query"
+        
+        return app.get(searchOrCategoryUrl).document
+            .select("div.videos div.videos__box-wrapper div.video-box")
+            .mapNotNull { it.toSearchResponse() }
     }
 
     override suspend fun load(url: String): LoadResponse? {
@@ -113,35 +110,17 @@ class HeoVLProvider : MainAPI() {
             document.select("div.featured-list__desktop__list__item a[href*=tag]").mapNotNull { it.text() }
         ).distinct()
         
-        val episode = Episode(
-            data = url, 
-            name = title
-        )
+        val episode = Episode(data = url, name = title) // data là URL trang HeoVL
         
         var pageRecommendations: List<SearchResponse>? = null
         try {
-            val videoSlug = url.substringAfterLast("/videos/").substringBefore("?")
-            if (videoSlug.isNotBlank()) {
+            url.substringAfterLast("/videos/").substringBefore("?").takeIf { it.isNotBlank() }?.let { videoSlug ->
                 val recommendationsAjaxUrl = "$mainUrl/ajax/suggestions/$videoSlug"
-                val recommendationsJsonText = app.get(recommendationsAjaxUrl).text
-                
-                // Sửa lỗi parse JSON: thử dùng AppUtils.parseJson<T>(jsonString)
-                // Lỗi 131: Unresolved reference 'parseJson'
-                val recommendationResponse = AppUtils.parseJson<RecommendationResponse>(recommendationsJsonText) // SỬA Ở ĐÂY
-                
-                pageRecommendations = recommendationResponse.data?.mapNotNull { item: RecommendationItem -> // Chỉ định rõ kiểu cho item
-                    // Lỗi 133, 135, 136, 137, 141, 142, 146: các lỗi này là do item không được suy luận đúng kiểu
-                    val itemTitle = item.title 
-                    val itemUrl = item.url
-                    val itemThumbnail = item.thumbnailFileUrl
-
-                    if (itemTitle == null || itemUrl == null) return@mapNotNull null
-
-                    // Đảm bảo itemUrl và itemThumbnail là String? trước khi gọi startsWith/trimStart
-                    val absoluteUrl = if (itemUrl.startsWith("http")) itemUrl else mainUrl + itemUrl.trimStart('/')
-                    val absolutePoster = itemThumbnail?.let { thumb -> 
-                        if (thumb.startsWith("http")) thumb else mainUrl + thumb.trimStart('/') 
-                    }
+                pageRecommendations = app.get(recommendationsAjaxUrl).parsed<RecommendationResponse>().data?.mapNotNull { item ->
+                    val itemTitle = item.title ?: return@mapNotNull null
+                    val itemUrl = item.url ?: return@mapNotNull null
+                    val absoluteUrl = fixUrl(itemUrl)
+                    val absolutePoster = item.thumbnailFileUrl?.let { fixUrl(it) }
                     
                     newMovieSearchResponse(itemTitle, absoluteUrl, TvType.NSFW) {
                         this.posterUrl = absolutePoster
@@ -149,16 +128,10 @@ class HeoVLProvider : MainAPI() {
                 }
             }
         } catch (e: Exception) {
-            println("Error fetching or parsing recommendations: ${e.message}")
-            // e.printStackTrace()
+            // Lỗi khi lấy recommendations không làm dừng hàm load
         }
 
-        return newMovieLoadResponse(
-            name = title,
-            url = url, 
-            type = TvType.NSFW,
-            dataUrl = episode.data 
-        ) {
+        return newMovieLoadResponse(name = title, url = url, type = TvType.NSFW, dataUrl = episode.data) {
             this.posterUrl = pagePosterUrl
             this.plot = pageDescription
             this.tags = combinedTags
@@ -183,7 +156,7 @@ class HeoVLProvider : MainAPI() {
     }
 
     override suspend fun loadLinks(
-        data: String, 
+        data: String, // URL của trang video HeoVL
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
@@ -193,86 +166,55 @@ class HeoVLProvider : MainAPI() {
 
         val embedSources = heovlPageDocument.select("button.set-player-source").mapNotNull { button ->
             val embedUrl = button.attr("data-source")
-            val serverName = button.text().trim().ifBlank { name }
+            val serverName = button.text().trim().ifBlank { name } // Dùng tên provider nếu tên server rỗng
             if (embedUrl.isNotBlank()) Pair(serverName, embedUrl) else null
         }
 
         for ((serverName, embedUrl) in embedSources) {
             try {
-                println("Processing server: $serverName, embed URL: $embedUrl")
                 if (embedUrl.contains("streamqq.com")) {
                     val embedDocText = app.get(embedUrl, referer = data).text
                     val videoDataRegex = Regex("""window\.videoData\s*=\s*(\{[\s\S]+?\});""")
-                    val matchResult = videoDataRegex.find(embedDocText)
-                    
-                    if (matchResult != null) {
-                        val videoDataJson = matchResult.groupValues[1]
+                    matchRegexResult(videoDataRegex, embedDocText) { videoDataJson ->
                         try {
-                            // Sửa lỗi parse JSON: thử dùng AppUtils.parseJson<T>(jsonString)
-                            // Lỗi 214: Unresolved reference 'parseJson'
-                            val videoData = AppUtils.parseJson<StreamQQVideoData>(videoDataJson) // SỬA Ở ĐÂY
+                            val videoData = videoDataJson.parseJson<StreamQQVideoData>()
                             videoData.sources?.firstOrNull { 
                                 it.type?.contains("hls", true) == true || it.type?.contains("mpegurl", true) == true 
                             }?.file?.let { m3u8RelativePath ->
-                                // Lỗi 216, 217: các lỗi này là do 'it' không được suy luận đúng kiểu
                                 val domain = if (embedUrl.startsWith("http")) embedUrl.substringBefore("/videos/") else "https://e.streamqq.com"
-                                val absoluteM3u8Url = if (m3u8RelativePath.startsWith("http")) m3u8RelativePath else domain + m3u8RelativePath.trimStart('/')
+                                val absoluteM3u8Url = fixUrl(domain + m3u8RelativePath)
                                 
                                 callback(
-                                    newExtractorLink(
-                                        source = serverName,
-                                        name = "$serverName (M3U8)",
-                                        url = absoluteM3u8Url,
-                                        type = ExtractorLinkType.M3U8
-                                    ) {
-                                        this.referer = embedUrl
-                                        this.quality = Qualities.Unknown.value
+                                    newExtractorLink(source = serverName, name = "$serverName (M3U8)", url = absoluteM3u8Url, type = ExtractorLinkType.M3U8) {
+                                        this.referer = embedUrl; this.quality = Qualities.Unknown.value
                                     }
                                 )
                                 foundAnyDirectLinks = true
-                                println("Found M3U8 for StreamQQ: $absoluteM3u8Url")
-                            } ?: println("No M3U8 source found in StreamQQ videoData for $serverName")
-                        } catch (e: Exception) {
-                             println("Error parsing StreamQQ videoData JSON: ${e.message} for $embedUrl")
-                        }
-                    } else {
-                         println("Could not find window.videoData for StreamQQ: $embedUrl")
+                            }
+                        } catch (e: Exception) { /* Error parsing StreamQQ JSON */ }
                     }
-                } else if (embedUrl.contains("playheovl.xyz") || embedUrl.contains("vnstream.net")) {
-                    println("PlayHeoVL/VNStream Embed: $embedUrl. Requires JS deobfuscation and API call logic.")
-                    println("Skipping PlayHeoVL/VNStream for now as direct link extraction is not implemented.")
-
-                } else {
-                    println("Unknown server type, attempting generic M3U8/VIDEO extraction for: $embedUrl")
+                } else { 
+                    // Xử lý chung cho các server không phải streamqq.com (và đã loại bỏ playheovl)
+                    // Thử tìm link M3U8/VIDEO chung
                     val embedPageContent = app.get(embedUrl, referer = data).text
                     val (directLink, linkType) = findDirectVideoLink(embedPageContent)
 
                     if (directLink != null && linkType != null) {
                         callback(
-                            newExtractorLink(
-                                source = serverName,
-                                name = "$serverName (${linkType.name})",
-                                url = directLink,
-                                type = linkType
-                            ) {
-                                this.referer = embedUrl
-                                this.quality = Qualities.Unknown.value
+                            newExtractorLink(source = serverName, name = "$serverName (${linkType.name})", url = directLink, type = linkType) {
+                                this.referer = embedUrl; this.quality = Qualities.Unknown.value
                             }
                         )
                         foundAnyDirectLinks = true
-                        println("Found generic direct link: $directLink of type ${linkType.name}")
-                    } else {
-                        println("No generic M3U8/VIDEO found for $embedUrl")
                     }
                 }
-            } catch (e: Exception) {
-                println("Error in loadLinks for $embedUrl: ${e.message}")
-            }
+            } catch (e: Exception) { /* Error processing individual embedUrl */ }
         }
-        // Lỗi 201, 205, 206, 208, 210, 211, 212, 215, 216, 217, 229, 231, 234, 236, 269:
-        // Các lỗi này thường là hệ quả của việc parse JSON thất bại hoặc kiểu dữ liệu không chính xác,
-        // làm cho các lambda hoặc lời gọi hàm sau đó bị sai kiểu.
-        // Việc sửa parseJson thành AppUtils.parseJson hy vọng sẽ giải quyết được gốc rễ.
         return foundAnyDirectLinks
+    }
+
+    // Helper function to process regex match
+    private inline fun matchRegexResult(regex: Regex, content: String, R:(String) -> Unit ) {
+        regex.find(content)?.groupValues?.get(1)?.let { R(it) }
     }
 }
