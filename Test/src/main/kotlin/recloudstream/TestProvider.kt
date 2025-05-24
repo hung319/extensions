@@ -80,30 +80,11 @@ class HeoVLProvider : MainAPI() {
             }
         }
 
-        // w: ... 'constructor HomePageResponse' is deprecated. Use newHomePageResponse method.
-        // FIX: Replace HomePageResponse(homePageList) with newHomePageResponse(homePageList)
-        // The newHomePageResponse function might take the list directly or a series of HomePageList objects.
-        // Typically, it takes a list.
-        // If newHomePageResponse expects individual HomePageRequest objects, we'd spread the list:
-        // return newHomePageResponse(*homePageList.toTypedArray()) 
-        // But more commonly it takes a list for the 'items' or 'requests' parameter.
-        // Let's assume it expects a List<HomePageList> for its primary data.
-        // The `newHomePageResponse` function usually looks like:
-        // fun newHomePageResponse(requests: List<HomePageList>, hasNextPage: Boolean = false): HomePageResponse
-        // or
-        // fun newHomePageResponse(vararg request: HomePageList): HomePageResponse (less likely for a list)
-
-        // The simplest and most common is providing the list directly.
-        // If the warning implies the constructor HomePageResponse(List<HomePageList>, Boolean) is deprecated,
-        // and newHomePageResponse is a direct replacement that might also take a list and a boolean.
-        // Often, newHomePageResponse takes the list and infers hasNext or has other params.
-        // For now, let's assume the most direct replacement:
-        if (homePageList.isEmpty() && page > 1) { // Avoid returning empty on subsequent pages if nothing is found
+        if (homePageList.isEmpty() && page > 1) { 
             return null
         }
-        return newHomePageResponse(homePageList, hasNextPage = false) // Assuming no pagination for the main page itself here.
-                                                                    // If your getMainPage supports pagination via the 'page' param,
-                                                                    // you'd set hasNextPage accordingly.
+        // FIX: Match the parameter name 'hasNext' from the error message.
+        return newHomePageResponse(list = homePageList, hasNext = false) 
     }
 
     override suspend fun search(query: String): List<SearchResponse>? {
