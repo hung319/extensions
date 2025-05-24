@@ -6,7 +6,7 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import org.jsoup.nodes.Element
 import java.util.regex.Pattern
 
-// Data class cho streamqq
+// Data class (giữ nguyên)
 data class StreamQQVideoData(
     @JsonProperty("sources") val sources: List<StreamQQSource>?
 )
@@ -16,7 +16,6 @@ data class StreamQQSource(
     @JsonProperty("type") val type: String?
 )
 
-// Data class cho item trong suggestions
 data class RecommendationItem(
     @JsonProperty("title") val title: String?,
     @JsonProperty("url") val url: String?,
@@ -39,7 +38,9 @@ class HeoVLProvider : MainAPI() {
         var href = this.selectFirst("a.video-box__thumbnail__link")?.attr("href") ?: return null
         
         href = fixUrl(href)
+        // Đảm bảo href là URL hợp lệ trước khi trả về
         if (!href.startsWith("http")) return null
+
 
         var poster = this.selectFirst("a.video-box__thumbnail__link img")?.attr("src")
         poster = poster?.let { fixUrl(it) }
@@ -50,7 +51,6 @@ class HeoVLProvider : MainAPI() {
         }
     }
 
-    // Helper to fix URLs (relative or //)
     private fun fixUrl(url: String): String {
         if (url.startsWith("//")) {
             return "https:$url"
@@ -60,7 +60,6 @@ class HeoVLProvider : MainAPI() {
         }
         return url
     }
-
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         if (page > 1) return null
@@ -110,18 +109,30 @@ class HeoVLProvider : MainAPI() {
             document.select("div.featured-list__desktop__list__item a[href*=tag]").mapNotNull { it.text() }
         ).distinct()
         
-        val episode = Episode(data = url, name = title) // data là URL trang HeoVL
+        val episode = Episode(data = url, name = title)
         
         var pageRecommendations: List<SearchResponse>? = null
         try {
             url.substringAfterLast("/videos/").substringBefore("?").takeIf { it.isNotBlank() }?.let { videoSlug ->
                 val recommendationsAjaxUrl = "$mainUrl/ajax/suggestions/$videoSlug"
-                pageRecommendations = app.get(recommendationsAjaxUrl).parsed<RecommendationResponse>().data?.mapNotNull { item ->
-                    val itemTitle = item.title ?: return@mapNotNull null
-                    val itemUrl = item.url ?: return@mapNotNull null
-                    val absoluteUrl = fixUrl(itemUrl)
-                    val absolutePoster = item.thumbnailFileUrl?.let { fixUrl(it) }
-                    
+                val recommendationsJsonText = app.get(recommendationsAjaxUrl).text
+                
+                // Lỗi 131: Sửa lại cách parse JSON bằng app.parseJson
+                val recommendationResponse = app.parseJson<RecommendationResponse>(recommendationsJsonText) // SỬA Ở ĐÂY
+                
+                pageRecommendations = recommendationResponse.data?.mapNotNull { item -> // item bây giờ nên được suy luận kiểu RecommendationItem
+                    val itemTitle = item.title // Lỗi 135
+                    val itemUrl = item.url     // Lỗi 136
+                    val itemThumbnail = item.thumbnailFileUrl // Lỗi 137
+
+                    if (itemTitle == null || itemUrl == null) return@mapNotNull null
+
+                    // Lỗi 141, 142: startsWith và trimStart sẽ hoạt động nếu itemUrl là String
+                    val absoluteUrl = if (itemUrl.startsWith("http")) itemUrl else mainUrl + itemUrl.trimStart('/') 
+                    val absolutePoster = itemThumbnail?.let { thumb -> 
+                        if (thumb.startsWith("http")) thumb else mainUrl + thumb.trimStart('/') 
+                    }
+                    // Lỗi 146
                     newMovieSearchResponse(itemTitle, absoluteUrl, TvType.NSFW) {
                         this.posterUrl = absolutePoster
                     }
@@ -156,7 +167,7 @@ class HeoVLProvider : MainAPI() {
     }
 
     override suspend fun loadLinks(
-        data: String, // URL của trang video HeoVL
+        data: String, 
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
@@ -166,7 +177,7 @@ class HeoVLProvider : MainAPI() {
 
         val embedSources = heovlPageDocument.select("button.set-player-source").mapNotNull { button ->
             val embedUrl = button.attr("data-source")
-            val serverName = button.text().trim().ifBlank { name } // Dùng tên provider nếu tên server rỗng
+            val serverName = button.text().trim().ifBlank { name }
             if (embedUrl.isNotBlank()) Pair(serverName, embedUrl) else null
         }
 
@@ -177,13 +188,19 @@ class HeoVLProvider : MainAPI() {
                     val videoDataRegex = Regex("""window\.videoData\s*=\s*(\{[\s\S]+?\});""")
                     matchRegexResult(videoDataRegex, embedDocText) { videoDataJson ->
                         try {
-                            val videoData = videoDataJson.parseJson<StreamQQVideoData>()
-                            videoData.sources?.firstOrNull { 
-                                it.type?.contains("hls", true) == true || it.type?.contains("mpegurl", true) == true 
-                            }?.file?.let { m3u8RelativePath ->
+                            // Lỗi 214: Sửa lại cách parse JSON bằng app.parseJson
+                            val videoData = app.parseJson<StreamQQVideoData>(videoDataJson) // SỬA Ở ĐÂY
+                            
+                            // Lỗi 215, 216, 217: Các lỗi này là do videoData không được parse đúng kiểu
+                            videoData.sources?.firstOrNull { sourceItem -> // Đặt tên biến khác 'it' để rõ ràng
+                                sourceItem.type?.contains("hls", true) == true || sourceItem.type?.contains("mpegurl", true) == true 
+                            }?.file?.let { m3u8RelativePath -> // file là thuộc tính của sourceItem
                                 val domain = if (embedUrl.startsWith("http")) embedUrl.substringBefore("/videos/") else "https://e.streamqq.com"
                                 val absoluteM3u8Url = fixUrl(domain + m3u8RelativePath)
                                 
+                                // Lỗi 194, 205, 206, 208, 210, 211, 212, 229, 231, 234, 236, 269:
+                                // Các lỗi argument type mismatch này thường là hệ quả của các lỗi type inference trước đó.
+                                // Khi kiểu dữ liệu của các biến là đúng, các hàm gọi sau đó sẽ nhận đúng kiểu tham số.
                                 callback(
                                     newExtractorLink(source = serverName, name = "$serverName (M3U8)", url = absoluteM3u8Url, type = ExtractorLinkType.M3U8) {
                                         this.referer = embedUrl; this.quality = Qualities.Unknown.value
@@ -194,8 +211,6 @@ class HeoVLProvider : MainAPI() {
                         } catch (e: Exception) { /* Error parsing StreamQQ JSON */ }
                     }
                 } else { 
-                    // Xử lý chung cho các server không phải streamqq.com (và đã loại bỏ playheovl)
-                    // Thử tìm link M3U8/VIDEO chung
                     val embedPageContent = app.get(embedUrl, referer = data).text
                     val (directLink, linkType) = findDirectVideoLink(embedPageContent)
 
@@ -213,7 +228,6 @@ class HeoVLProvider : MainAPI() {
         return foundAnyDirectLinks
     }
 
-    // Helper function to process regex match
     private inline fun matchRegexResult(regex: Regex, content: String, R:(String) -> Unit ) {
         regex.find(content)?.groupValues?.get(1)?.let { R(it) }
     }
