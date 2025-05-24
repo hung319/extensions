@@ -2,8 +2,9 @@ package com.heovl
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.mapper // THÊM LẠI IMPORT NÀY
+import com.lagradost.cloudstream3.mapper // Đảm bảo import này
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.fasterxml.jackson.core.type.TypeReference // Có thể cần cho List<T> phức tạp, nhưng hiện tại Class<T> là đủ
 import org.jsoup.nodes.Element
 import java.util.regex.Pattern
 
@@ -116,22 +117,22 @@ class HeoVLProvider : MainAPI() {
                 val recommendationsAjaxUrl = "$mainUrl/ajax/suggestions/$videoSlug"
                 val recommendationsJsonText = app.get(recommendationsAjaxUrl).text
                 
-                // Lỗi 121: Sửa lại cách parse JSON bằng mapper.readValue
-                val recommendationResponse = mapper.readValue<RecommendationResponse>(recommendationsJsonText) // SỬA Ở ĐÂY
+                // Lỗi 120: Sửa lại cách parse JSON bằng mapper.readValue với Class
+                val recommendationResponse = mapper.readValue(recommendationsJsonText, RecommendationResponse::class.java) // SỬA Ở ĐÂY
                 
                 pageRecommendations = recommendationResponse.data?.mapNotNull { item -> 
-                    val itemTitle = item.title // Lỗi 124
-                    val itemUrl = item.url     // Lỗi 125
-                    val itemThumbnail = item.thumbnailFileUrl // Lỗi 126
+                    val itemTitle = item.title 
+                    val itemUrl = item.url     
+                    val itemThumbnail = item.thumbnailFileUrl
 
                     if (itemTitle == null || itemUrl == null) return@mapNotNull null
 
-                    val absoluteUrl = if (itemUrl.startsWith("http")) itemUrl else mainUrl + itemUrl.trimStart('/') // Lỗi 131
-                    val absolutePoster = itemThumbnail?.let { thumb -> // Lỗi 132
+                    val absoluteUrl = if (itemUrl.startsWith("http")) itemUrl else mainUrl + itemUrl.trimStart('/') 
+                    val absolutePoster = itemThumbnail?.let { thumb -> 
                         if (thumb.startsWith("http")) thumb else mainUrl + thumb.trimStart('/') 
                     }
                     
-                    newMovieSearchResponse(itemTitle, absoluteUrl, TvType.NSFW) { // Lỗi 136
+                    newMovieSearchResponse(itemTitle, absoluteUrl, TvType.NSFW) {
                         this.posterUrl = absolutePoster
                     }
                 }
@@ -186,13 +187,12 @@ class HeoVLProvider : MainAPI() {
                     val videoDataRegex = Regex("""window\.videoData\s*=\s*(\{[\s\S]+?\});""")
                     matchRegexResult(videoDataRegex, embedDocText) { videoDataJson ->
                         try {
-                            // Lỗi 192: Sửa lại cách parse JSON bằng mapper.readValue
-                            val videoData = mapper.readValue<StreamQQVideoData>(videoDataJson) // SỬA Ở ĐÂY
+                            // Lỗi 190: Sửa lại cách parse JSON bằng mapper.readValue với Class
+                            val videoData = mapper.readValue(videoDataJson, StreamQQVideoData::class.java) // SỬA Ở ĐÂY
                             
                             videoData.sources?.firstOrNull { sourceItem -> 
-                                // Lỗi 195, 196: Các lỗi này là do sourceItem không được suy luận đúng kiểu
                                 sourceItem.type?.contains("hls", true) == true || sourceItem.type?.contains("mpegurl", true) == true 
-                            }?.file?.let { m3u8RelativePath -> // Lỗi 197
+                            }?.file?.let { m3u8RelativePath -> 
                                 val domain = if (embedUrl.startsWith("http")) embedUrl.substringBefore("/videos/") else "https://e.streamqq.com"
                                 val absoluteM3u8Url = fixUrl(domain + m3u8RelativePath)
                                 
@@ -220,8 +220,6 @@ class HeoVLProvider : MainAPI() {
                 }
             } catch (e: Exception) { /* Error processing individual embedUrl */ }
         }
-        // Lỗi 205, 206, 208, 210, 211, 212, 215, 216, 217, 229, 231, 234, 236, 269:
-        // Hy vọng việc sửa parse JSON sẽ giải quyết phần lớn các lỗi này.
         return foundAnyDirectLinks
     }
 
