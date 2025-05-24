@@ -1,17 +1,16 @@
 package com.heovl // Bạn có thể thay đổi package này
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
+// Đảm bảo AppUtils được import đúng cách, thường thì utils.* sẽ bao gồm nó
+import com.lagradost.cloudstream3.utils.* // Hoặc import cụ thể nếu cần: import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.fasterxml.jackson.annotation.JsonProperty
 import org.jsoup.nodes.Element
-import com.fasterxml.jackson.annotation.JsonProperty // Cần import nếu dùng data class hoặc parseJson<T>
 
-// Data class cho item trong suggestions (tùy chọn, nhưng tốt cho type safety)
-// Nếu không dùng data class, bạn có thể truy cập trực tiếp từ JsonObject
+// Data class cho item trong suggestions
 data class RecommendationItem(
     @JsonProperty("title") val title: String?,
     @JsonProperty("url") val url: String?,
-    @JsonProperty("thumbnail_file_url") val thumbnail_file_url: String?
-    // Thêm các trường khác nếu bạn cần, ví dụ: "views", "slug"
+    @JsonProperty("thumbnail_file_url") val thumbnailFileUrl: String?
 )
 
 data class RecommendationResponse(
@@ -24,22 +23,6 @@ class HeoVLProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.NSFW)
     override var lang = "vi"
     override val hasMainPage = true
-
-    // Hàm helper để chuyển RecommendationItem thành SearchResponse
-    private fun RecommendationItem.toSearchResponse(): SearchResponse? {
-        val videoTitle = this.title ?: return null
-        val videoUrl = this.url ?: return null
-        // Đảm bảo URL là tuyệt đối nếu nó chưa phải
-        val absoluteUrl = if (videoUrl.startsWith("http")) videoUrl else mainUrl + videoUrl.trimStart('/')
-        val absolutePosterUrl = this.thumbnail_file_url?.let {
-            if (it.startsWith("http")) it else mainUrl + it.trimStart('/')
-        }
-
-        return newMovieSearchResponse(videoTitle, absoluteUrl, TvType.NSFW) {
-            this.posterUrl = absolutePosterUrl
-        }
-    }
-
 
     private fun Element.toSearchResponse(): SearchResponse? {
         val titleElement = this.selectFirst("h3.video-box__heading")
@@ -87,8 +70,6 @@ class HeoVLProvider : MainAPI() {
             }
         }
         
-        // Mục "Thể loại nổi bật" đã được bỏ
-
         if (homePageList.isEmpty()) {
             document.select("nav#navbar div.hidden.md\\:flex a.navbar__link[href*=categories]").forEach { navLink ->
                  val title = navLink.attr("title")
@@ -135,25 +116,30 @@ class HeoVLProvider : MainAPI() {
             val videoSlug = url.substringAfterLast("/videos/").substringBefore("?")
             if (videoSlug.isNotBlank()) {
                 val recommendationsAjaxUrl = "$mainUrl/ajax/suggestions/$videoSlug"
-                // Lấy text JSON từ API
                 val recommendationsJsonText = app.get(recommendationsAjaxUrl).text
-                // Parse JSON text thành object RecommendationResponse
-                val recommendationResponse = parseJson<RecommendationResponse>(recommendationsJsonText)
                 
-                pageRecommendations = recommendationResponse.data?.mapNotNull { item ->
-                    // Chuyển đổi từng RecommendationItem thành SearchResponse
-                    // Đảm bảo URL là tuyệt đối nếu nó chưa phải
-                    val absoluteUrl = item.url?.let { if (it.startsWith("http")) it else mainUrl + it.trimStart('/') } ?: return@mapNotNull null
-                    val absolutePoster = item.thumbnail_file_url?.let { if (it.startsWith("http")) it else mainUrl + it.trimStart('/') }
+                // Sửa lại cách parse JSON sử dụng AppUtils.parseJson
+                // Cần import com.lagradost.cloudstream3.utils.AppUtils.parseJson hoặc đảm bảo nó trong scope
+                val recommendationResponse = parseJson<RecommendationResponse>(recommendationsJsonText) //
+                
+                pageRecommendations = recommendationResponse.data?.mapNotNull { item -> // Không cần chỉ định kiểu item: RecommendationItem nữa nếu parseJson hoạt động đúng
+                    val itemTitle = item.title 
+                    val itemUrl = item.url
+                    val itemThumbnail = item.thumbnailFileUrl
+
+                    if (itemTitle == null || itemUrl == null) return@mapNotNull null
+
+                    val absoluteUrl = if (itemUrl.startsWith("http")) itemUrl else mainUrl + itemUrl.trimStart('/')
+                    val absolutePoster = itemThumbnail?.let { if (it.startsWith("http")) it else mainUrl + it.trimStart('/') }
                     
-                    newMovieSearchResponse(item.title ?: "N/A", absoluteUrl, TvType.NSFW) {
+                    newMovieSearchResponse(itemTitle, absoluteUrl, TvType.NSFW) {
                         this.posterUrl = absolutePoster
                     }
                 }
             }
         } catch (e: Exception) {
             println("Error fetching or parsing recommendations: ${e.message}")
-            e.printStackTrace()
+            // e.printStackTrace() // Bỏ comment nếu muốn xem stack trace chi tiết khi debug
         }
 
         return newMovieLoadResponse(
