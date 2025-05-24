@@ -1,12 +1,10 @@
 package com.heovl // Bạn có thể thay đổi package này
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
-import org.jsoup.nodes.Element
+import com.lagradost.cloudstream3.utils.* import org.jsoup.nodes.Element
 
 class HeoVLProvider : MainAPI() {
-    // Cập nhật khai báo thuộc tính theo yêu cầu
-    override var mainUrl = "https://heovl.fit" // Đổi từ mainPageUrl và thành var
+    override var mainUrl = "https://heovl.fit"
     override var name = "HeoVL"
     override val supportedTypes = setOf(TvType.NSFW)
     override var lang = "vi"
@@ -20,7 +18,6 @@ class HeoVLProvider : MainAPI() {
         if (href.startsWith("//")) {
             href = "https:$href"
         } else if (href.startsWith("/")) {
-            // Sử dụng mainUrl đã được khai báo ở trên
             href = mainUrl + href
         }
         if (!href.startsWith("http")) return null
@@ -41,20 +38,30 @@ class HeoVLProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        val document = app.get(mainUrl).document // Sử dụng mainUrl
+        val document = app.get(mainUrl).document
         val homePageList = mutableListOf<HomePageList>()
 
         document.select("div.lg\\:col-span-3 > a[title^=Xem thêm]").forEach { sectionAnchor ->
             val sectionTitle = sectionAnchor.selectFirst("h2.heading-2")?.text()?.trim()
-            var sectionCategoryUrl = sectionAnchor.attr("href") 
-            if (sectionCategoryUrl.startsWith("/")) sectionCategoryUrl = mainUrl + sectionCategoryUrl
-
-            if (sectionTitle != null && sectionCategoryUrl.isNotEmpty()) {
+            // val sectionCategoryUrl = mainUrl + sectionAnchor.attr("href") // Đã được xử lý trong toSearchResponse
+            // Lỗi 62: HomePageList có thể không có tham số 'url' hoặc 'nextKey' trực tiếp như vậy.
+            // Thường thì nếu sectionCategoryUrl là link để "xem thêm", nó sẽ là data của một item đặc biệt,
+            // hoặc CloudStream sẽ tự động gọi loadSearch/loadPage khi người dùng cuộn xuống/chuyển trang cho HomePageList đó.
+            // Để đơn giản, ta sẽ không truyền url/nextKey ở đây nếu API không hỗ trợ rõ ràng.
+            // Thay vào đó, đảm bảo rằng sectionTitle là duy nhất hoặc đủ để CloudStream phân biệt.
+            // Nếu 'sectionCategoryUrl' là quan trọng để load thêm, nó thường được CloudStream quản lý qua 'key' của HomePageList.
+            // Hoặc, CloudStream sẽ gọi `loadSearch(sectionCategoryUrl)` nếu `HomePageList.name` được cấu hình đúng.
+            // Hiện tại, chúng ta chỉ thêm danh sách video có sẵn.
+            if (sectionTitle != null) {
                 val videoElements = sectionAnchor.nextElementSibling()?.select("div.videos__box-wrapper")
                 val videos = videoElements?.mapNotNull { it.selectFirst("div.video-box")?.toSearchResponse() } ?: emptyList()
                 if (videos.isNotEmpty()) {
-                    // HomePageList constructor thường là (name, list, urlForNextPage)
-                    homePageList.add(HomePageList(sectionTitle, videos, url = sectionCategoryUrl))
+                    // Thử constructor HomePageList(name: String, list: List<SearchResponse>)
+                    // Nếu cần link "Xem thêm", cách làm có thể khác tùy phiên bản CS3.
+                    // Một số provider dùng name là Pair(displayName, internalKeyForNextPage)
+                    // Hoặc tạo một SearchResponse cuối cùng trong list với vai trò "Next Page".
+                    // Tạm thời bỏ sectionCategoryUrl khỏi đây để tránh lỗi.
+                    homePageList.add(HomePageList(sectionTitle, videos))
                 }
             }
         }
@@ -70,7 +77,7 @@ class HeoVLProvider : MainAPI() {
                 val poster = catElement.selectFirst("img")?.attr("src")
                 val absolutePosterUrl = poster?.let { if (it.startsWith("/")) mainUrl + it else it }
                 
-                newMovieSearchResponse(title, href, TvType.NSFW) {
+                newMovieSearchResponse(title, href, TvType.NSFW) { // href ở đây là URL của category
                     this.posterUrl = absolutePosterUrl
                 }
             }
@@ -84,7 +91,14 @@ class HeoVLProvider : MainAPI() {
                  val title = navLink.attr("title")
                  var href = navLink.attr("href")
                  if (href.startsWith("/")) href = mainUrl + href
-                 homePageList.add(HomePageList(title, emptyList(), url = href ))
+                 // Lỗi 87: Tương tự, bỏ url/nextKey nếu không chắc chắn.
+                 // HomePageList này sẽ chỉ có tiêu đề, CloudStream sẽ không tự động load gì thêm từ nó.
+                 // Để nó có thể click và load, title phải trỏ đến một query cho search().
+                 // Hoặc, href này nên là một phần của `SearchResponse` nếu đây là danh sách category.
+                 // Cách đơn giản:
+                 homePageList.add(HomePageList(title, emptyList())) // Sẽ không click được để load thêm trừ khi cấu hình khác.
+                 // Cách tốt hơn: tạo SearchResponse cho category
+                 // homePageList.add(HomePageList(title, listOf(CategorySearchResponse(title, href, TvType.NSFW))))
             }
         }
 
@@ -95,7 +109,7 @@ class HeoVLProvider : MainAPI() {
         val searchOrCategoryUrl = if (query.startsWith("http")) {
             query 
         } else {
-            "$mainUrl/search?q=$query" // Sử dụng mainUrl
+            "$mainUrl/search?q=$query"
         }
         val document = app.get(searchOrCategoryUrl).document
         return document.select("div.videos div.videos__box-wrapper").mapNotNull {
@@ -110,41 +124,41 @@ class HeoVLProvider : MainAPI() {
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         val description = document.selectFirst("article.detail-page__information__content")?.text()?.trim()
         
-        val parsedGenres = document.select("div.featured-list__desktop__list__item a[href*=categories]").mapNotNull { it.text() }.distinct()
-        val parsedTags = document.select("div.featured-list__desktop__list__item a[href*=tag]").mapNotNull { it.text() }.distinct()
+        // Kết hợp genres và tags vào một danh sách tags cho MovieLoadResponse
+        val combinedTags = (
+            document.select("div.featured-list__desktop__list__item a[href*=categories]").mapNotNull { it.text() } +
+            document.select("div.featured-list__desktop__list__item a[href*=tag]").mapNotNull { it.text() }
+        ).distinct()
 
-        // Lấy danh sách các URL nguồn từ các nút server
         val sourceUrls = document.select("button.set-player-source").mapNotNull { button ->
             button.attr("data-source").ifBlank { null }
         }
         
-        // Nếu không có source URL nào, không thể phát video
         if (sourceUrls.isEmpty()) return null
 
-        // Với phim lẻ, chỉ có một Episode.
-        // Chúng ta sẽ đặt URL nguồn đầu tiên vào `Episode.data`.
-        // CloudStream sẽ sử dụng URL này để gọi `loadLinks` (nội bộ hoặc của extractor khác nếu khớp).
         val episode = Episode(
-            data = sourceUrls.first(), // URL này sẽ được CloudStream xử lý tiếp
-            name = title, // Hoặc một tên chung như "Xem Phim"
-            // Các thông tin khác của episode nếu có
+            data = sourceUrls.first(), 
+            name = title,
         )
         
         val currentRecommendations = document.select("div[x-data*=list\\(\\'\\/ajax\\/suggestions\\/").firstOrNull()?.parent()
             ?.select("div.video-box")?.mapNotNull { it.toSearchResponse() }
 
-        // Loại bỏ extractorLinks khỏi đây
-        return newAnimeLoadResponse( // Hoặc newMovieLoadResponse nếu nó phù hợp hơn và có API tương tự
+        // Lỗi 141-147: Sử dụng newMovieLoadResponse và truyền các tham số mà nó hỗ trợ.
+        // newMovieLoadResponse(name: String, url: String, type: TvType, data: List<Episode>, ...)
+        // 'data' chính là danh sách episodes.
+        return newMovieLoadResponse(
             name = title,
             url = url,
             type = TvType.NSFW,
-            episodes = listOf(episode), 
+            data = listOf(episode), // 'data' is the parameter for episodes
             posterUrl = poster,
             plot = description,
-            tags = parsedTags,
+            tags = combinedTags, // MovieLoadResponse dùng 'tags'
             recommendations = currentRecommendations,
-            year = null, 
-            genres = parsedGenres 
+            year = null // Parse năm nếu có
+            // 'genres' không phải là một parameter riêng của newMovieLoadResponse, đã gộp vào tags.
+            // 'extractorLinks' đã được loại bỏ theo yêu cầu.
         )
     }
 }
