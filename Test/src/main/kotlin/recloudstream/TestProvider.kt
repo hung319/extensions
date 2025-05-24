@@ -6,14 +6,14 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import org.jsoup.nodes.Element
 import java.util.regex.Pattern // Để dùng regex
 
-// Data class cho streamqq
+// Data class cho streamqq (giữ nguyên)
 data class StreamQQVideoData(
     @JsonProperty("sources") val sources: List<StreamQQSource>?
 )
 
 data class StreamQQSource(
     @JsonProperty("file") val file: String?,
-    @JsonProperty("type") val type: String?
+    @JsonProperty("type") val type: String? // Thường là "application/vnd.apple.mpegurl" cho HLS
 )
 
 // Data class cho item trong suggestions (giữ nguyên)
@@ -34,7 +34,7 @@ class HeoVLProvider : MainAPI() {
     override var lang = "vi"
     override val hasMainPage = true
 
-    // ... (các hàm toSearchResponse và getMainPage, search, load giữ nguyên như trước) ...
+    // ... (các hàm toSearchResponse, getMainPage, search, load giữ nguyên như trước) ...
     private fun Element.toSearchResponse(): SearchResponse? {
         val titleElement = this.selectFirst("h3.video-box__heading")
         val title = titleElement?.text()?.trim() ?: return null
@@ -162,8 +162,7 @@ class HeoVLProvider : MainAPI() {
         }
     }
 
-
-    // Hàm loadLinks được cập nhật
+    // Hàm loadLinks được cập nhật để sử dụng newExtractorLink theo signature mới
     override suspend fun loadLinks(
         data: String, // URL của trang video HeoVL
         isCasting: Boolean,
@@ -175,7 +174,7 @@ class HeoVLProvider : MainAPI() {
 
         val embedSources = heovlPageDocument.select("button.set-player-source").mapNotNull { button ->
             val embedUrl = button.attr("data-source")
-            val serverName = button.text().trim().ifBlank { name }
+            val serverName = button.text().trim().ifBlank { name } // Dùng tên provider nếu tên server rỗng
             if (embedUrl.isNotBlank()) Pair(serverName, embedUrl) else null
         }
 
@@ -184,103 +183,84 @@ class HeoVLProvider : MainAPI() {
                 println("Processing server: $serverName, embed URL: $embedUrl")
                 if (embedUrl.contains("streamqq.com")) {
                     val embedDocText = app.get(embedUrl, referer = data).text
-                    // Regex để tìm object window.videoData
-                    val videoDataRegex = Regex("""window\.videoData\s*=\s*(\{.+?\});""")
+                    val videoDataRegex = Regex("""window\.videoData\s*=\s*(\{[\s\S]+?\});""") // Regex rộng hơn để match JSON
                     val matchResult = videoDataRegex.find(embedDocText)
                     
                     if (matchResult != null) {
                         val videoDataJson = matchResult.groupValues[1]
-                        val videoData = parseJson<StreamQQVideoData>(videoDataJson)
-                        videoData.sources?.firstOrNull { it.type?.contains("hls", true) == true || it.type?.contains("mpegurl", true) == true }?.file?.let { m3u8RelativePath ->
-                            // Cần domain của streamqq, ví dụ: "https://e.streamqq.com"
-                            // Chúng ta có thể lấy từ embedUrl
-                            val domain = embedUrl.substringBefore("/videos/")
-                            val absoluteM3u8Url = if (m3u8RelativePath.startsWith("http")) m3u8RelativePath else domain + m3u8RelativePath.trimStart('/')
-                            
-                            callback(
-                                newExtractorLink(
-                                    source = serverName,
-                                    name = "$serverName (M3U8)",
-                                    url = absoluteM3u8Url,
-                                    referer = embedUrl,
-                                    quality = Qualities.Unknown.value,
-                                    isM3u8 = true
+                        try {
+                            val videoData = parseJson<StreamQQVideoData>(videoDataJson)
+                            videoData.sources?.firstOrNull { 
+                                it.type?.contains("hls", true) == true || it.type?.contains("mpegurl", true) == true 
+                            }?.file?.let { m3u8RelativePath ->
+                                val domain = if (embedUrl.startsWith("http")) embedUrl.substringBefore("/videos/") else "https://e.streamqq.com" // Cần domain chính xác
+                                val absoluteM3u8Url = if (m3u8RelativePath.startsWith("http")) m3u8RelativePath else domain + m3u8RelativePath.trimStart('/')
+                                
+                                callback(
+                                    newExtractorLink(
+                                        source = serverName, // Tên của server (StreamQQ)
+                                        name = "$serverName (M3U8)", // Tên hiển thị cho link
+                                        url = absoluteM3u8Url,
+                                        type = ExtractorLinkType.M3U8
+                                    ) {
+                                        this.referer = embedUrl // Referer là trang embed
+                                        this.quality = Qualities.Unknown.value // Hoặc parse từ label nếu có
+                                    }
                                 )
-                            )
+                                foundLinks = true
+                                println("Found M3U8 for StreamQQ: $absoluteM3u8Url")
+                            } ?: println("No M3U8 source found in StreamQQ videoData for $serverName")
+                        } catch (e: Exception) {
+                             println("Error parsing StreamQQ videoData JSON: ${e.message} for $embedUrl")
+                             // Fallback nếu parse JSON thất bại
+                            callback(newExtractorLink(serverName, "$serverName (Embed)", embedUrl, ExtractorLinkType.EMBED) {
+                                this.referer = data
+                                this.quality = Qualities.Unknown.value
+                            })
                             foundLinks = true
-                            println("Found M3U8 for StreamQQ: $absoluteM3u8Url")
                         }
                     } else {
                          println("Could not find window.videoData for StreamQQ: $embedUrl")
-                         // Fallback to embed if direct link extraction fails
-                        callback(newExtractorLink(serverName, "$serverName (Embed)", embedUrl, data, Qualities.Unknown.value, type = ExtractorLinkType.EMBED))
-                        foundLinks = true 
+                         callback(newExtractorLink(serverName, "$serverName (Embed)", embedUrl, ExtractorLinkType.EMBED) {
+                            this.referer = data
+                            this.quality = Qualities.Unknown.value
+                         })
+                         foundLinks = true 
                     }
-                } else if (embedUrl.contains("playheovl.xyz") || embedUrl.contains("vnstream.net")) { // playheovl.html có script từ vnstream.net
-                    // Logic cho playheovl.xyz / vnstream.net
-                    // Đây là phần phức tạp nhất vì có mã hóa và gọi API
-                    // Cần phân tích file playheovl.html kỹ hơn để tái tạo logic gọi API lấy link m3u8
-                    // Ví dụ: Tìm idfile_enc, idUser_enc, DOMAIN_API từ HTML/script của embedUrl
-                    // rồi giải mã và gọi API.
-                    // Đây là một placeholder, bạn cần thay thế bằng logic thực tế.
-                    
-                    val embedPageText = app.get(embedUrl, referer = data).text
-
-                    // Thử tìm các biến mã hóa và API endpoint từ script
-                    val idFileEncRegex = Regex("""const idfile_enc\s*=\s*["']([^"']+)["'];""")
-                    val domainApiRegex = Regex("""const DOMAIN_API\s*=\s*['"](https?://[^'"]+)['"];""")
-
-                    val idFileEnc = idFileEncRegex.find(embedPageText)?.groupValues?.get(1)
-                    val domainApi = domainApiRegex.find(embedPageText)?.groupValues?.get(1)
-                    // Tương tự cho idUser_enc và các key giải mã nếu có
-
-                    println("PlayHeoVL/VNStream Embed: idFileEnc=$idFileEnc, domainApi=$domainApi")
-
-                    if (idFileEnc != null && domainApi != null) {
-                        // **PHẦN NÀY CẦN LOGIC GIẢI MÃ VÀ GỌI API THỰC TẾ**
-                        // Đây chỉ là ví dụ, không phải code chạy được ngay cho việc giải mã.
-                        // Bạn cần nghiên cứu file playheovl.html và các file JS nó load
-                        // để hiểu cách f0001, f0002, LoadPlay hoạt động.
-                        // Ví dụ (giả định, cần thay thế):
-                        // val decryptedIdFile = someDecryptionFunction(idFileEnc, someKey)
-                        // val apiPayload = buildApiPayload(decryptedIdFile, ...)
-                        // val apiResponse = app.post(domainApi, requestBody = apiPayload.toRequestBody()).parsed<SomeApiResponse>()
-                        // val m3u8Link = apiResponse.m3u8link
-                        // if (m3u8Link != null) {
-                        //    callback(newExtractorLink(serverName, "$serverName (M3U8 - API)", m3u8Link, embedUrl, Qualities.Unknown.value, isM3u8 = true))
-                        //    foundLinks = true
-                        // } else {
-                        //    // Fallback
-                        //    callback(newExtractorLink(serverName, "$serverName (Embed)", embedUrl, data, Qualities.Unknown.value, type = ExtractorLinkType.EMBED))
-                        //    foundLinks = true
-                        // }
-                         println("PlayHeoVL extraction logic is complex and needs deobfuscation of its JS.")
-                         println("Falling back to embed for: $serverName - $embedUrl")
-                         callback(newExtractorLink(serverName, "$serverName (Embed)", embedUrl, data, Qualities.Unknown.value, type = ExtractorLinkType.EMBED))
-                         foundLinks = true // Cho CloudStream thử xử lý embed
-                    } else {
-                        println("Could not find necessary JS variables for PlayHeoVL: $embedUrl")
-                        callback(newExtractorLink(serverName, "$serverName (Embed)", embedUrl, data, Qualities.Unknown.value, type = ExtractorLinkType.EMBED))
-                        foundLinks = true 
-                    }
+                } else if (embedUrl.contains("playheovl.xyz") || embedUrl.contains("vnstream.net")) {
+                    println("PlayHeoVL/VNStream Embed: $embedUrl. Requires JS deobfuscation and API call logic.")
+                    // **PHẦN NÀY VẪN CẦN LOGIC GIẢI MÃ JAVASCRIPT VÀ GỌI API PHỨC TẠP**
+                    // Do sự phức tạp của việc tái tạo logic JS mã hóa, chúng ta sẽ tạm thời
+                    // chỉ gửi link embed để CloudStream thử xử lý bằng các extractor chung (nếu có).
+                    callback(
+                        newExtractorLink(
+                            source = serverName,
+                            name = "$serverName (Embed - Cần xử lý JS)",
+                            url = embedUrl,
+                            type = ExtractorLinkType.EMBED
+                        ) {
+                            this.referer = data 
+                            this.quality = Qualities.Unknown.value
+                        }
+                    )
+                    foundLinks = true 
                 } else {
-                    // Server không xác định, thử gửi link embed
                     println("Unknown server, trying embed URL: $embedUrl for server $serverName")
                     callback(
                         newExtractorLink(
                             source = serverName,
                             name = "$serverName (Embed)",
                             url = embedUrl,
-                            referer = data, 
-                            quality = Qualities.Unknown.value,
                             type = ExtractorLinkType.EMBED
-                        )
+                        ) {
+                            this.referer = data 
+                            this.quality = Qualities.Unknown.value
+                        }
                     )
-                    foundLinks = true // Cho CloudStream thử xử lý
+                    foundLinks = true
                 }
             } catch (e: Exception) {
                 println("Error in loadLinks for $embedUrl: ${e.message}")
-                // e.printStackTrace()
             }
         }
         return foundLinks
