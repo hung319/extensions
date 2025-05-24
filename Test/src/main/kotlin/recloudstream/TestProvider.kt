@@ -1,318 +1,194 @@
-package com.example.nangcucprovider // Hoặc package của bạn
+package com.heovl // Bạn có thể thay đổi package này
 
-import com.lagradost.cloudstream3.MainAPI
-import com.lagradost.cloudstream3.TvType // Sẽ thay đổi cách sử dụng TvType
-import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.MainPageRequest
-import com.lagradost.cloudstream3.HomePageList
-import com.lagradost.cloudstream3.SearchResponse
-import com.lagradost.cloudstream3.HomePageResponse
-import com.lagradost.cloudstream3.LoadResponse
-import com.lagradost.cloudstream3.newMovieSearchResponse // Đã đổi tên thành newSearchResponse trong các bản CS3 mới hơn, nhưng newMovieSearchResponse vẫn có thể dùng cho TvType.NSFW
-import com.lagradost.cloudstream3.newHomePageResponse
-import com.lagradost.cloudstream3.newMovieLoadResponse // Tương tự, newLoadResponse có thể là tên mới hơn
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.SubtitleFile
-import com.lagradost.cloudstream3.utils.JsUnpacker
+import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.utils.*
+import org.jsoup.nodes.Element
 
-import com.fasterxml.jackson.annotation.JsonProperty
-import com.lagradost.cloudstream3.mapper
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-
-import org.jsoup.nodes.Document
-// org.jsoup.Jsoup không cần import trực tiếp nếu chỉ dùng app.get().document
-
-// Data class để truyền thông tin cần thiết cho loadLinks
-data class LoadLinksHelperDataNangCuc( // Đổi tên để tránh trùng lặp nếu có class tương tự ở nơi khác
-    val apiUrl: String,
-    val moviePageUrl: String
-)
-
-// Data classes cho API response
-data class VideoApiResponseNangCuc( // Đổi tên
-    @JsonProperty("status") val status: Int?,
-    @JsonProperty("links") val links: List<VideoLinkNangCuc>?,
-    @JsonProperty("cache_header") val cacheHeader: String?
-)
-
-data class VideoLinkNangCuc( // Đổi tên
-    @JsonProperty("name") val name: String?,
-    @JsonProperty("link") val link: String?,
-    @JsonProperty("iframe") val iframe: Boolean? = null
-)
-
-class NangCucProvider : MainAPI() {
-    override var mainUrl = "https://nangcuc.cc"
-    override var name = "Nắng Cực TV"
-    override val supportedTypes = setOf(TvType.NSFW) // ĐỔI TvType THÀNH NSFW
+class HeoVLProvider : MainAPI() { // Hoặc tên provider bạn muốn
+    override var mainPageUrl = "https://heovl.fit"
+    override var name = "HeoVL"
+    override val supportedTypes = setOf(TvType.NSFW)
     override var lang = "vi"
     override val hasMainPage = true
+    override val hasChromecastSupport = true // Giả định
 
-    private fun extractSubtitlesFromHtmlAndCallback(document: Document, subtitleCallback: (SubtitleFile) -> Unit) {
-        var subtitlesCalledCount = 0
-        val allExtractedSubtitles = mutableListOf<SubtitleFile>()
+    // Hàm helper để parse một item video
+    private fun Element.toSearchResponse(): SearchResponse? {
+        val titleElement = this.selectFirst("h3.video-box__heading")
+        val title = titleElement?.text()?.trim() ?: return null
+        val href = this.selectFirst("a.video-box__thumbnail__link")?.attr("href") ?: return null
+        if (!href.startsWith(mainPageUrl)) return null // Đảm bảo href là link của trang
 
-        document.select("script").forEachIndexed { _, script ->
-            var scriptData = script.data()
-            if (scriptData.startsWith("eval(function(p,a,c,k,e,d)")) {
-                try {
-                    scriptData = JsUnpacker(scriptData).unpack() ?: scriptData
-                } catch (e: Exception) { /* Bỏ qua lỗi unpack */ }
-            }
+        val posterUrl = this.selectFirst("a.video-box__thumbnail__link img")?.attr("src")
+        // Đảm bảo posterUrl là URL đầy đủ
+        val absolutePosterUrl = posterUrl?.let { if (it.startsWith("/")) mainPageUrl + it else it }
 
-            if (scriptData.contains("subtitles", ignoreCase = true)) {
-                val arrayContentMatch = Regex("""["']?subtitles["']?\s*[:=]\s*(\[.*?\])""", RegexOption.DOT_MATCHES_ALL).find(scriptData)
-                if (arrayContentMatch != null) {
-                    val arrayContent = arrayContentMatch.groupValues[1]
-                    val subObjectRegex = Regex("""\{\s*(?:["']?hl["']?\s*:\s*["']([^"']+)["']|["']?label["']?\s*:\s*["']([^"']+)["'])\s*,\s*(?:["']?url["']?\s*:\s*["']([^"']+\.(?:srt|vtt))["'])\s*.*?\}""", RegexOption.IGNORE_CASE)
-                    val scriptSubtitles = subObjectRegex.findAll(arrayContent).mapNotNull { objMatchResult ->
-                        val langFromHl = objMatchResult.groupValues.getOrNull(1)?.trim()
-                        val langFromLabel = objMatchResult.groupValues.getOrNull(2)?.trim()
-                        val extractedLang = langFromHl?.takeIf { it.isNotEmpty() } ?: langFromLabel?.takeIf { it.isNotEmpty() }
-                        val subUrlValue = objMatchResult.groupValues.getOrNull(3)?.trim()
-
-                        if (extractedLang != null && subUrlValue != null && subUrlValue.startsWith("http")) {
-                            val finalLangCode = if (extractedLang.equals("VI", ignoreCase = true)) "vi" else extractedLang.lowercase()
-                            SubtitleFile(lang = finalLangCode, url = subUrlValue) // Bỏ `name` nếu SubtitleFile không hỗ trợ
-                        } else { null }
-                    }.toList()
-                    if (scriptSubtitles.isNotEmpty()) {
-                        allExtractedSubtitles.addAll(scriptSubtitles)
-                    }
-                }
-            }
-        }
-        allExtractedSubtitles.distinctBy { it.url }.forEach { subtitle ->
-            subtitleCallback(subtitle)
-            subtitlesCalledCount++
-        }
-        // Log cuối cùng có thể giữ lại nếu muốn theo dõi số lượng phụ đề được gọi
-        if (subtitlesCalledCount > 0 || allExtractedSubtitles.isNotEmpty()) {
-            println("NangCucProvider: Called subtitleCallback $subtitlesCalledCount times.")
+        return newMovieSearchResponse(title, href, TvType.NSFW) {
+            this.posterUrl = absolutePosterUrl
+            // Các thông tin khác có thể thêm ở đây nếu có, ví dụ: quality, year
         }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        val url = if (page > 1) "$mainUrl/moi-nhat/$page" else "$mainUrl/moi-nhat/"
-        try {
-            val document = app.get(url).document
-            val lists = mutableListOf<HomePageList>()
-            val newestSection = document.selectFirst("section.block_area_home.section-id-02")
-                ?: document.selectFirst(".block_area-content.block_area-list.film_list.film_list-grid")
+        val document = app.get(mainPageUrl).document
+        val homePageList = mutableListOf<HomePageList>()
 
-            newestSection?.let { section ->
-                val sectionTitle = section.selectFirst("h1.cat-heading")?.text() ?: "Phim Mới Cập Nhật"
-                val movies = section.select("div.flw-item").mapNotNull { item ->
-                    val filmPoster = item.selectFirst("div.film-poster")
-                    val movieName = filmPoster?.selectFirst("img.film-poster-img")?.attr("title")
-                    val movieHref = filmPoster?.selectFirst("a.film-poster-ahref")?.attr("href")
-                    var moviePosterUrl = filmPoster?.selectFirst("img.film-poster-img")?.attr("src")
-                    if (moviePosterUrl == "/images/1px.gif" || moviePosterUrl?.startsWith("data:image") == true) {
-                        moviePosterUrl = filmPoster?.selectFirst("img.film-poster-img")?.attr("data-src")
-                    }
-                    if (movieName.isNullOrBlank() || movieHref.isNullOrBlank() || moviePosterUrl.isNullOrBlank()) return@mapNotNull null
-                    
-                    newMovieSearchResponse( // Sử dụng newMovieSearchResponse cho TvType.NSFW vẫn được
-                        name = movieName,
-                        url = if (movieHref.startsWith("http")) movieHref else mainUrl + movieHref
-                    ) {
-                        this.posterUrl = moviePosterUrl
-                        this.type = TvType.NSFW // ĐỔI TvType THÀNH NSFW
-                    }
-                }
-                if (movies.isNotEmpty()) {
-                    lists.add(HomePageList(sectionTitle, movies))
+        // 1. Parse các mục video chính từ trang chủ (Việt Nam, Vietsub, etc.)
+        // Mỗi mục có dạng: <a href="{category_url}" title="Xem thêm {category_name}"> <h2 class="heading-2 mb-3">{category_name}</h2> </a> <div class="videos">...</div>
+        document.select("div.lg\\:col-span-3 > a[title^=Xem thêm]").forEach { sectionAnchor ->
+            val sectionTitle = sectionAnchor.selectFirst("h2.heading-2")?.text()?.trim()
+            val sectionUrl = sectionAnchor.attr("href")
+            if (sectionTitle != null && sectionUrl.isNotEmpty()) {
+                val videoElements = sectionAnchor.nextElementSibling()?.select("div.videos__box-wrapper")
+                val videos = videoElements?.mapNotNull { it.selectFirst("div.video-box")?.toSearchResponse() } ?: emptyList()
+                if (videos.isNotEmpty()) {
+                    homePageList.add(HomePageList(sectionTitle, videos, sectionUrl))
                 }
             }
-            if (lists.isEmpty()) return null
-            return newHomePageResponse(lists)
-        } catch (e: Exception) {
-            e.printStackTrace()
-            return null
         }
+
+        // 2. Parse mục "Thể loại" nổi bật
+        val featuredCategoriesHeading = document.select("h3.featured-list__desktop__heading").find { it.text().trim() == "Thể loại" }
+        featuredCategoriesHeading?.parent()?.select("li.featured-list__desktop__list__item")?.let { categoryElements ->
+            val categories = categoryElements.mapNotNull { catElement ->
+                val title = catElement.selectFirst("h3.featured-list__desktop__list__item__title")?.text()?.trim() ?: return@mapNotNull null
+                val href = catElement.selectFirst("a.featured-list__desktop__list__item__body")?.attr("href") ?: return@mapNotNull null
+                // Bỏ qua "Tất cả thể loại" nếu nó không phải link category thực sự hoặc xử lý riêng
+                if (href == "/trang/the-loai") return@mapNotNull null
+
+                val poster = catElement.selectFirst("img")?.attr("src")
+                val absolutePosterUrl = poster?.let { if (it.startsWith("/")) mainPageUrl + it else it }
+
+                newMovieSearchResponse(title, href, TvType.NSFW) {
+                    this.posterUrl = absolutePosterUrl
+                }
+            }
+            if (categories.isNotEmpty()) {
+                homePageList.add(HomePageList("Thể Loại Nổi Bật", categories))
+            }
+        }
+        
+        // 3. Parse các mục Top từ Sidebar (Đang HOT, Top ngày, Top tuần) - Yêu cầu gọi AJAX
+        // Đây là ví dụ cơ bản, cần kiểm tra định dạng JSON/HTML của các endpoint AJAX này
+        // Ví dụ cho "Đang HOT"
+        // try {
+        //     val hotVideosDoc = app.get("$mainPageUrl/ajax/top/1h").document // Giả sử trả về HTML, nếu JSON thì .text và parse JSON
+        //     // Cần selector đúng cho các item video từ response của /ajax/top/1h
+        //     // Ví dụ: hotVideosDoc.select("div.video-box") hoặc parse JSON
+        //     val hotVideos = hotVideosDoc.select("div.video-box").mapNotNull { it.toSearchResponse() } // Cần điều chỉnh selector
+        //     if (hotVideos.isNotEmpty()) {
+        //         homePageList.add(HomePageList("Đang HOT (Sidebar)", hotVideos))
+        //     }
+        // } catch (e: Exception) {
+        //     e.printStackTrace()
+        // }
+        // Tương tự cho Top Ngày, Top Tuần
+
+
+        if (homePageList.isEmpty()) {
+            // Fallback nếu không parse được gì, có thể lấy các mục categories từ navbar
+            document.select("nav#navbar div.hidden.md\\:flex a.navbar__link[href*=categories]").forEach { navLink ->
+                 val title = navLink.attr("title")
+                 val href = mainPageUrl + navLink.attr("href") // Đảm bảo href là URL đầy đủ
+                 // Tạo một HomePageList rỗng, CloudStream sẽ tự động gọi search(href) khi người dùng click vào
+                 homePageList.add(HomePageList(title, emptyList(), href))
+            }
+        }
+
+
+        return HomePageResponse(homePageList)
     }
 
     override suspend fun search(query: String): List<SearchResponse>? {
-        val searchUrl = "$mainUrl/tim-kiem/$query/"
-        try {
-            val document = app.get(searchUrl).document
-            return document.select("div.block_area-content div.flw-item").mapNotNull { item ->
-                val filmPoster = item.selectFirst("div.film-poster")
-                val movieName = filmPoster?.selectFirst("img.film-poster-img")?.attr("title")
-                val movieHref = filmPoster?.selectFirst("a.film-poster-ahref")?.attr("href")
-                var moviePosterUrl = filmPoster?.selectFirst("img.film-poster-img")?.attr("src")
-                if (moviePosterUrl == "/images/1px.gif" || moviePosterUrl?.startsWith("data:image") == true) {
-                    moviePosterUrl = filmPoster?.selectFirst("img.film-poster-img")?.attr("data-src")
-                }
-                if (movieName.isNullOrBlank() || movieHref.isNullOrBlank() || moviePosterUrl.isNullOrBlank()) return@mapNotNull null
-
-                newMovieSearchResponse(
-                    name = movieName,
-                    url = if (movieHref.startsWith("http")) movieHref else mainUrl + movieHref
-                ) {
-                    this.posterUrl = moviePosterUrl
-                    this.type = TvType.NSFW // ĐỔI TvType THÀNH NSFW
-                }
-            }.ifEmpty { null }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            return null
+        // Trang tìm kiếm có thể có URL dạng /search?q=keyword hoặc /search/keyword
+        // Ở đây dùng ?q= cho thống nhất và dễ xử lý page
+        // https://heovl.fit/search?q=keyword&page=2
+        // Tuy nhiên, search.html được cung cấp có URL /search/viet-nam?page=2
+        // Nếu query là một slug (như "viet-nam") thì nó có thể là link category, nếu là từ khóa thì là ?q=
+        // CloudStream có thể gọi search cho cả link category, cần phân biệt
+        
+        val searchUrl = if (query.startsWith("$mainPageUrl/categories/") || query.startsWith("$mainPageUrl/tag/")) {
+             query // Đây là URL category/tag đầy đủ, không cần thêm page
+        } else {
+            "$mainPageUrl/search?q=$query" // Đây là tìm kiếm từ khóa
         }
+        // Việc xử lý page cho searchUrl cần cẩn thận. CloudStream sẽ tự thêm &page= cho query.
+        // Nếu query là URL đầy đủ thì CloudStream sẽ không thêm.
+
+        val document = app.get(searchUrl).document // CloudStream tự xử lý &page=
+        val results = document.select("div.videos div.videos__box-wrapper").mapNotNull {
+            it.selectFirst("div.video-box")?.toSearchResponse()
+        }
+        return results
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        try {
-            val document = app.get(url).document
-            val title = document.selectFirst("h1.video-title")?.text()
-                ?: document.selectFirst("meta[property=\"og:title\"]")?.attr("content")
-            val poster = document.selectFirst("meta[property=\"og:image\"]")?.attr("content")
-            val plot = document.selectFirst("div.about span p")?.text()
-                ?: document.selectFirst("meta[property=\"og:description\"]")?.attr("content")
-            val genres = document.select("div.genres a")?.mapNotNull { it.text() }
-            var apiUrlFromScript: String? = null
+        val document = app.get(url).document
 
-            document.select("script").find { script ->
-                val scriptData = script.data()
-                if (scriptData.contains("api.nangdata.xyz")) {
-                    val fullUrlRegex = Regex("""["'](https?://api\.nangdata\.xyz/v2/[a-zA-Z0-9\-]+)["']""")
-                    apiUrlFromScript = fullUrlRegex.find(scriptData)?.groupValues?.getOrNull(1)
-                    if (apiUrlFromScript == null) {
-                        val idRegexV2 = Regex("""api\.nangdata\.xyz/v2/([a-zA-Z0-9\-]+)""")
-                        val idRegexShort = Regex("""api\.nangdata\.xyz/([a-zA-Z0-9\-]+)""")
-                        val videoApiIdFromScript = idRegexV2.find(scriptData)?.groupValues?.getOrNull(1)
-                            ?: idRegexShort.find(scriptData)?.groupValues?.getOrNull(1)
-                        if (videoApiIdFromScript != null && videoApiIdFromScript != "v2") {
-                            apiUrlFromScript = "https://api.nangdata.xyz/v2/$videoApiIdFromScript"
-                        }
-                    }
-                }
-                apiUrlFromScript != null // Điều kiện dừng cho find
+        val title = document.selectFirst("div#detail-page h1.heading-1")?.text()?.trim() ?: return null //
+        val posterUrl = document.selectFirst("meta[property=og:image]")?.attr("content") //
+        val description = document.selectFirst("article.detail-page__information__content")?.text()?.trim() //
+        
+        // Parse thể loại và tags từ trang load nếu cần
+        val genres = document.select("div.featured-list__desktop__list__item a[href*=categories]").mapNotNull { it.text() }.distinct()
+        val tags = document.select("div.featured-list__desktop__list__item a[href*=tag]").mapNotNull { it.text() }.distinct()
+
+
+        val episodes = mutableListOf<Episode>()
+        val sources = mutableListOf<ExtractorLink>()
+
+        // Lấy các nguồn video từ các nút server
+        document.select("button.set-player-source").forEach { button -> //
+            val sourceUrl = button.attr("data-source") //
+            val serverName = button.text().trim() // Ví dụ: "Server 1" //
+            if (sourceUrl.isNotBlank()) {
+                // CloudStream sẽ cố gắng dùng các extractor có sẵn cho các URL này
+                // Nếu là link trực tiếp (mp4, m3u8) thì cũng sẽ hoạt động
+                 sources.add(
+                    ExtractorLink(
+                        this.name, // Nguồn gốc của link này (tên provider)
+                        serverName, // Tên của server (ví dụ: StreamQQ, PlayHQ)
+                        sourceUrl,
+                        url, // Referer là URL của trang video
+                        Qualities.Unknown.value, // Chất lượng chưa rõ, CloudStream sẽ cố xác định
+                        isM3u8 = sourceUrl.contains(".m3u8", ignoreCase = true),
+                        // isDash = sourceUrl.contains(".mpd", ignoreCase = true) // Nếu có DASH
+                    )
+                )
             }
-
-            val recommendationsList = document.select("section.block_area-related div.flw-item").mapNotNull { item ->
-                val filmPosterRec = item.selectFirst("div.film-poster")
-                val nameRec = filmPosterRec?.selectFirst("img.film-poster-img")?.attr("title")
-                val hrefRec = filmPosterRec?.selectFirst("a.film-poster-ahref")?.attr("href")
-                var posterUrlRec = filmPosterRec?.selectFirst("img.film-poster-img")?.attr("data-src")
-                if (posterUrlRec == "/images/1px.gif" || posterUrlRec?.startsWith("data:image") == true) {
-                    posterUrlRec = filmPosterRec?.selectFirst("img.film-poster-img")?.attr("src")
-                }
-                if (nameRec.isNullOrBlank() || hrefRec.isNullOrBlank() || posterUrlRec.isNullOrBlank()) return@mapNotNull null
-                
-                newMovieSearchResponse(
-                    name = nameRec,
-                    url = if (hrefRec.startsWith("http")) hrefRec else mainUrl + hrefRec
-                ) {
-                    this.posterUrl = posterUrlRec
-                    this.type = TvType.NSFW // ĐỔI TvType THÀNH NSFW
-                }
-            }
-
-            if (title.isNullOrBlank() || apiUrlFromScript.isNullOrBlank()) {
-                return null
-            }
-
-            val loadLinksData = LoadLinksHelperDataNangCuc(
-                apiUrl = apiUrlFromScript!!,
-                moviePageUrl = url
-            )
-            val dataForLoadLinks = mapper.writeValueAsString(loadLinksData)
-
-            return newMovieLoadResponse( // Sử dụng newMovieLoadResponse cho TvType.NSFW vẫn được
-                name = title,
-                url = url,
-                type = TvType.NSFW, // ĐỔI TvType THÀNH NSFW
-                dataUrl = dataForLoadLinks
-            ) {
-                this.posterUrl = poster
-                this.plot = plot
-                this.tags = genres
-                this.recommendations = recommendationsList
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
+        }
+        
+        // Vì đây là phim lẻ, chỉ có 1 episode
+        if (sources.isNotEmpty()) {
+            episodes.add(Episode(
+                data = sources.joinToString(separator = "\n") { it.url }, // Lưu trữ các URL nguồn, hoặc chỉ 1 URL chính nếu dùng addলোডLinks
+                name = title, // Hoặc "Xem phim"
+                episode = 1,
+                season = 1,
+                posterUrl = posterUrl,
+                description = description,
+                // quan trọng: thêm các extractor links vào đây để CloudStream xử lý
+                extractorLinks = sources 
+            ))
+        } else {
+            // Xử lý trường hợp không tìm thấy nguồn video
+            // Có thể throw lỗi hoặc trả về null tùy theo logic mong muốn
             return null
         }
-    }
+        
 
-    override suspend fun loadLinks(
-        data: String, // JSON string của LoadLinksHelperDataNangCuc
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        try {
-            val helperData = parseJson<LoadLinksHelperDataNangCuc>(data)
-            val apiUrl = helperData.apiUrl
-            val moviePageUrl = helperData.moviePageUrl
+        // Lấy video đề xuất (related)
+        val recommendations = document.select("div[x-data*=list\\(\\'\\/ajax\\/suggestions\\/").firstOrNull()?.parent()
+            ?.select("div.video-box")?.mapNotNull { it.toSearchResponse() }
 
-            // Bước 1 (Phụ): Lấy phụ đề từ HTML của trang phim (moviePageUrl)
-            try {
-                val moviePageDocument = app.get(moviePageUrl).document
-                extractSubtitlesFromHtmlAndCallback(moviePageDocument, subtitleCallback)
-            } catch (e: Exception) {
-                // Không làm crash nếu lỗi lấy phụ đề, video vẫn có thể xem được
-                 e.printStackTrace() // Vẫn log lỗi để biết
-            }
 
-            // Bước 2: Lấy link video từ API
-            val apiResponseJson = app.get(apiUrl).text
-            val apiData = parseJson<VideoApiResponseNangCuc>(apiResponseJson)
-            var foundVideoLinks = false
-
-            if (apiData.status == 200) {
-                apiData.links?.forEach { videoLink ->
-                    val videoUrl = videoLink.link
-                    val serverName = videoLink.name ?: this.name // Mặc định là tên provider nếu server không có tên
-                    val isIframe = videoLink.iframe ?: false
-
-                    if (!videoUrl.isNullOrBlank()) {
-                        val quality = when {
-                            serverName.contains("1080") -> Qualities.P1080.value
-                            serverName.contains("720") -> Qualities.P720.value
-                            serverName.contains("480") -> Qualities.P480.value
-                            serverName.contains("360") -> Qualities.P360.value
-                            else -> Qualities.Unknown.value
-                        }
-                        val linkType = if (videoUrl.contains(".m3u8", ignoreCase = true)) {
-                            ExtractorLinkType.M3U8
-                        } else if (videoUrl.contains(".mp4", ignoreCase = true)) {
-                            ExtractorLinkType.VIDEO
-                        } else if (isIframe && videoUrl.contains(".m3u8", ignoreCase = true) ) { // iframe nhưng link là m3u8
-                            ExtractorLinkType.M3U8
-                        } else if (isIframe) { // iframe nhưng link không rõ ràng là media trực tiếp
-                            ExtractorLinkType.VIDEO // Hoặc có thể cần một ExtractorType nếu đây là link trang web
-                        }
-                        else { ExtractorLinkType.VIDEO }
-                        
-                        callback.invoke(
-                            ExtractorLink(
-                                source = serverName, name = serverName, url = videoUrl,
-                                referer = moviePageUrl, quality = quality, type = linkType,
-                                headers = mapOf(), extractorData = null
-                            )
-                        )
-                        foundVideoLinks = true
-                    }
-                }
-            }
-            return foundVideoLinks
-        } catch (e: Exception) {
-            e.printStackTrace()
-            return false
+        return newMovieLoadResponse(title, url, TvType.NSFW, episodes) {
+            this.posterUrl = posterUrl
+            this.plot = description
+            this.tags = tags
+            // this.year = year // Nếu có thể parse năm
+            this.recommendations = recommendations
+            // Thêm các thông tin khác nếu có thể parse được
         }
     }
 }
-
-// import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
-// import com.lagradost.cloudstream3.plugins.Plugin
-// import android.content.Context
-
-// @CloudstreamPlugin
-// class NangCucLoader : Plugin() {
-//    override fun load(context: Context) {
-//        registerMainAPI(NangCucProvider())
-//    }
-// }
