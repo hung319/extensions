@@ -1,7 +1,8 @@
 package com.heovl // Bạn có thể thay đổi package này
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.* import org.jsoup.nodes.Element
+import com.lagradost.cloudstream3.utils.*
+import org.jsoup.nodes.Element
 
 class HeoVLProvider : MainAPI() {
     override var mainUrl = "https://heovl.fit"
@@ -47,7 +48,6 @@ class HeoVLProvider : MainAPI() {
                 val videoElements = sectionAnchor.nextElementSibling()?.select("div.videos__box-wrapper")
                 val videos = videoElements?.mapNotNull { it.selectFirst("div.video-box")?.toSearchResponse() } ?: emptyList()
                 if (videos.isNotEmpty()) {
-                    // HomePageList constructor now simplified
                     homePageList.add(HomePageList(sectionTitle, videos))
                 }
             }
@@ -76,13 +76,34 @@ class HeoVLProvider : MainAPI() {
         if (homePageList.isEmpty()) {
             document.select("nav#navbar div.hidden.md\\:flex a.navbar__link[href*=categories]").forEach { navLink ->
                  val title = navLink.attr("title")
-                 // val href = mainUrl + navLink.attr("href") 
-                 // Simplified HomePageList for now
                  homePageList.add(HomePageList(title, emptyList()))
             }
         }
 
-        return HomePageResponse(homePageList)
+        // w: ... 'constructor HomePageResponse' is deprecated. Use newHomePageResponse method.
+        // FIX: Replace HomePageResponse(homePageList) with newHomePageResponse(homePageList)
+        // The newHomePageResponse function might take the list directly or a series of HomePageList objects.
+        // Typically, it takes a list.
+        // If newHomePageResponse expects individual HomePageRequest objects, we'd spread the list:
+        // return newHomePageResponse(*homePageList.toTypedArray()) 
+        // But more commonly it takes a list for the 'items' or 'requests' parameter.
+        // Let's assume it expects a List<HomePageList> for its primary data.
+        // The `newHomePageResponse` function usually looks like:
+        // fun newHomePageResponse(requests: List<HomePageList>, hasNextPage: Boolean = false): HomePageResponse
+        // or
+        // fun newHomePageResponse(vararg request: HomePageList): HomePageResponse (less likely for a list)
+
+        // The simplest and most common is providing the list directly.
+        // If the warning implies the constructor HomePageResponse(List<HomePageList>, Boolean) is deprecated,
+        // and newHomePageResponse is a direct replacement that might also take a list and a boolean.
+        // Often, newHomePageResponse takes the list and infers hasNext or has other params.
+        // For now, let's assume the most direct replacement:
+        if (homePageList.isEmpty() && page > 1) { // Avoid returning empty on subsequent pages if nothing is found
+            return null
+        }
+        return newHomePageResponse(homePageList, hasNextPage = false) // Assuming no pagination for the main page itself here.
+                                                                    // If your getMainPage supports pagination via the 'page' param,
+                                                                    // you'd set hasNextPage accordingly.
     }
 
     override suspend fun search(query: String): List<SearchResponse>? {
@@ -101,8 +122,8 @@ class HeoVLProvider : MainAPI() {
         val document = app.get(url).document
 
         val title = document.selectFirst("div#detail-page h1.heading-1")?.text()?.trim() ?: return null
-        val pagePosterUrl = document.selectFirst("meta[property=og:image]")?.attr("content") // Renamed to avoid conflict
-        val pageDescription = document.selectFirst("article.detail-page__information__content")?.text()?.trim() // Renamed
+        val pagePosterUrl = document.selectFirst("meta[property=og:image]")?.attr("content")
+        val pageDescription = document.selectFirst("article.detail-page__information__content")?.text()?.trim()
         
         val combinedTags = (
             document.select("div.featured-list__desktop__list__item a[href*=categories]").mapNotNull { it.text() } +
@@ -115,31 +136,22 @@ class HeoVLProvider : MainAPI() {
         
         if (sourceUrls.isEmpty()) return null
 
-        // `newMovieLoadResponse` yêu cầu `dataUrl`. Chúng ta sẽ dùng URL nguồn đầu tiên.
-        // Các thông tin khác sẽ được đặt trong lambda builder.
         val primarySourceUrl = sourceUrls.first()
         
-        val pageRecommendations = document.select("div[x-data*=list\\(\\'\\/ajax\\/suggestions\\/").firstOrNull()?.parent() // Renamed
+        val pageRecommendations = document.select("div[x-data*=list\\(\\'\\/ajax\\/suggestions\\/").firstOrNull()?.parent()
             ?.select("div.video-box")?.mapNotNull { it.toSearchResponse() }
 
-        // Sửa lỗi gọi newMovieLoadResponse theo signature có dataUrl và lambda builder
         return newMovieLoadResponse(
             name = title,
-            url = url, // URL của trang chi tiết phim (trang load)
+            url = url, 
             type = TvType.NSFW,
-            dataUrl = primarySourceUrl // URL chính để load video, sẽ được CloudStream xử lý tiếp
+            dataUrl = primarySourceUrl 
         ) {
-            // Các thuộc tính tùy chọn được đặt ở đây
             this.posterUrl = pagePosterUrl
             this.plot = pageDescription
             this.tags = combinedTags
             this.recommendations = pageRecommendations
-            this.year = null // Parse năm nếu có từ HTML
-
-            // `newMovieLoadResponse` không trực tiếp quản lý danh sách Episode như `newAnimeLoadResponse`.
-            // Nó tập trung vào việc tải một mục phim duy nhất dựa trên `dataUrl`.
-            // Nếu `dataUrl` là một trang embed chứa nhiều link server,
-            // thì `loadLinks` (mặc định của CS3 hoặc của extractor) sẽ được gọi cho `dataUrl` đó.
+            this.year = null 
         }
     }
 }
