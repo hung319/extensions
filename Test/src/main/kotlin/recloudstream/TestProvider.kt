@@ -2,7 +2,7 @@ package com.heovl // Bạn có thể thay đổi package này
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import org.jsoup.nodes.Element
+import org.jsoup.nodes.Element // Đảm bảo import Element
 
 class HeoVLProvider : MainAPI() {
     override var mainUrl = "https://heovl.fit"
@@ -83,7 +83,6 @@ class HeoVLProvider : MainAPI() {
         if (homePageList.isEmpty() && page > 1) { 
             return null
         }
-        // FIX: Match the parameter name 'hasNext' from the error message.
         return newHomePageResponse(list = homePageList, hasNext = false) 
     }
 
@@ -119,8 +118,11 @@ class HeoVLProvider : MainAPI() {
 
         val primarySourceUrl = sourceUrls.first()
         
-        val pageRecommendations = document.select("div[x-data*=list\\(\\'\\/ajax\\/suggestions\\/").firstOrNull()?.parent()
-            ?.select("div.video-box")?.mapNotNull { it.toSearchResponse() }
+        // Sửa lỗi selector CSS cho video đề xuất
+        val recommendationsContainer = document.select("div[x-data*=\"list('/ajax/suggestions/\"]").firstOrNull()
+        val pageRecommendations = recommendationsContainer?.select("div.videos div.video-box")?.mapNotNull { 
+            it.toSearchResponse() 
+        }
 
         return newMovieLoadResponse(
             name = title,
