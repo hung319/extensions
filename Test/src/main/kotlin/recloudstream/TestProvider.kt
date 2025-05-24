@@ -1,8 +1,7 @@
 package com.heovl // Bạn có thể thay đổi package này
 
 import com.lagradost.cloudstream3.*
-// Đảm bảo AppUtils được import đúng cách, thường thì utils.* sẽ bao gồm nó
-import com.lagradost.cloudstream3.utils.* // Hoặc import cụ thể nếu cần: import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.* // Bỏ import com.lagradost.cloudstream3.mapper vì sẽ thử dùng app.get().parsed<T>()
 import com.fasterxml.jackson.annotation.JsonProperty
 import org.jsoup.nodes.Element
 
@@ -10,7 +9,7 @@ import org.jsoup.nodes.Element
 data class RecommendationItem(
     @JsonProperty("title") val title: String?,
     @JsonProperty("url") val url: String?,
-    @JsonProperty("thumbnail_file_url") val thumbnailFileUrl: String?
+    @JsonProperty("thumbnail_file_url") val thumbnailFileUrl: String? // Đổi tên cho đúng chuẩn Kotlin
 )
 
 data class RecommendationResponse(
@@ -116,21 +115,22 @@ class HeoVLProvider : MainAPI() {
             val videoSlug = url.substringAfterLast("/videos/").substringBefore("?")
             if (videoSlug.isNotBlank()) {
                 val recommendationsAjaxUrl = "$mainUrl/ajax/suggestions/$videoSlug"
-                val recommendationsJsonText = app.get(recommendationsAjaxUrl).text
                 
-                // Sửa lại cách parse JSON sử dụng AppUtils.parseJson
-                // Cần import com.lagradost.cloudstream3.utils.AppUtils.parseJson hoặc đảm bảo nó trong scope
-                val recommendationResponse = parseJson<RecommendationResponse>(recommendationsJsonText) //
+                // Sửa lỗi parse JSON bằng cách dùng app.get(...).parsed<T>()
+                val recommendationResponse = app.get(recommendationsAjaxUrl).parsed<RecommendationResponse>() //
                 
-                pageRecommendations = recommendationResponse.data?.mapNotNull { item -> // Không cần chỉ định kiểu item: RecommendationItem nữa nếu parseJson hoạt động đúng
+                pageRecommendations = recommendationResponse.data?.mapNotNull { item: RecommendationItem -> // Chỉ định rõ kiểu cho item
                     val itemTitle = item.title 
                     val itemUrl = item.url
                     val itemThumbnail = item.thumbnailFileUrl
 
                     if (itemTitle == null || itemUrl == null) return@mapNotNull null
 
+                    // Đảm bảo itemUrl và itemThumbnail là String trước khi gọi startsWith/trimStart
                     val absoluteUrl = if (itemUrl.startsWith("http")) itemUrl else mainUrl + itemUrl.trimStart('/')
-                    val absolutePoster = itemThumbnail?.let { if (it.startsWith("http")) it else mainUrl + it.trimStart('/') }
+                    val absolutePoster = itemThumbnail?.let { thumb -> // Bây giờ thumb là String?
+                        if (thumb.startsWith("http")) thumb else mainUrl + thumb.trimStart('/') 
+                    }
                     
                     newMovieSearchResponse(itemTitle, absoluteUrl, TvType.NSFW) {
                         this.posterUrl = absolutePoster
@@ -139,7 +139,7 @@ class HeoVLProvider : MainAPI() {
             }
         } catch (e: Exception) {
             println("Error fetching or parsing recommendations: ${e.message}")
-            // e.printStackTrace() // Bỏ comment nếu muốn xem stack trace chi tiết khi debug
+            // e.printStackTrace() 
         }
 
         return newMovieLoadResponse(
