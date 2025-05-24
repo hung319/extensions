@@ -118,10 +118,10 @@ class HeoVLProvider : MainAPI() {
 
         val primarySourceUrl = sourceUrls.first()
         
-        // Sửa lỗi selector CSS cho video đề xuất
+        // Lấy danh sách video đề xuất
         val recommendationsContainer = document.select("div[x-data*=\"list('/ajax/suggestions/\"]").firstOrNull()
         val pageRecommendations = recommendationsContainer?.select("div.videos div.video-box")?.mapNotNull { 
-            it.toSearchResponse() 
+            it.toSearchResponse() // Sử dụng lại hàm helper toSearchResponse
         }
 
         return newMovieLoadResponse(
@@ -130,11 +130,13 @@ class HeoVLProvider : MainAPI() {
             type = TvType.NSFW,
             dataUrl = primarySourceUrl 
         ) {
+            // Thiết lập các thuộc tính cho LoadResponse
             this.posterUrl = pagePosterUrl
             this.plot = pageDescription
             this.tags = combinedTags
-            this.recommendations = pageRecommendations
-            this.year = null 
+            // Thêm danh sách video đề xuất vào đây
+            this.recommendations = pageRecommendations 
+            this.year = null // Parse năm nếu có từ HTML
         }
     }
 }
