@@ -2,7 +2,7 @@ package com.heovl // Bạn có thể thay đổi package này
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import org.jsoup.nodes.Element // Đảm bảo import Element
+import org.jsoup.nodes.Element
 
 class HeoVLProvider : MainAPI() {
     override var mainUrl = "https://heovl.fit"
@@ -21,7 +21,13 @@ class HeoVLProvider : MainAPI() {
         } else if (href.startsWith("/")) {
             href = mainUrl + href
         }
-        if (!href.startsWith("http")) return null
+        // Đảm bảo href là URL hợp lệ trước khi trả về
+        if (!href.startsWith("http")) {
+            // Log hoặc xử lý trường hợp href không hợp lệ nếu cần
+            // println("Invalid href found: $href")
+            return null
+        }
+
 
         val posterUrl = this.selectFirst("a.video-box__thumbnail__link img")?.attr("src")
         var absolutePosterUrl = posterUrl?.let {
@@ -39,50 +45,49 @@ class HeoVLProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+        // Trang chủ của heovl.fit dường như không có phân trang cho các mục lớn,
+        // chỉ tải các mục category chính một lần.
+        // Nếu page > 1, trả về null vì không có trang tiếp theo cho chính getMainPage.
+        if (page > 1) return null
+
         val document = app.get(mainUrl).document
         val homePageList = mutableListOf<HomePageList>()
 
+        // Parse các mục video chính từ trang chủ (Việt Nam, Vietsub, etc.)
         document.select("div.lg\\:col-span-3 > a[title^=Xem thêm]").forEach { sectionAnchor ->
             val sectionTitle = sectionAnchor.selectFirst("h2.heading-2")?.text()?.trim()
             if (sectionTitle != null) {
+                // URL để "Xem thêm" cho category này
+                val categoryUrl = sectionAnchor.attr("href")?.let { if (it.startsWith("/")) mainUrl + it else it }
+
                 val videoElements = sectionAnchor.nextElementSibling()?.select("div.videos__box-wrapper")
                 val videos = videoElements?.mapNotNull { it.selectFirst("div.video-box")?.toSearchResponse() } ?: emptyList()
+                
                 if (videos.isNotEmpty()) {
+                    // Thêm HomePageList với categoryUrl làm key để CloudStream có thể gọi search/loadPage
+                    // khi người dùng muốn xem thêm từ mục này (nếu UI hỗ trợ).
+                    // Hiện tại, HomePageList không có trường `key` hoặc `url` rõ ràng cho mục đích này
+                    // mà thường dựa vào việc các item là SearchResponse trỏ đến category,
+                    // hoặc provider implement loadPage và HomePageList có hasNext=true.
+                    // Vì chúng ta đã có video, chỉ hiển thị chúng.
                     homePageList.add(HomePageList(sectionTitle, videos))
                 }
             }
         }
-
-        val featuredCategoriesHeading = document.select("h3.featured-list__desktop__heading").find { it.text().trim() == "Thể loại" }
-        featuredCategoriesHeading?.parent()?.select("li.featured-list__desktop__list__item")?.let { categoryElements ->
-            val categories = categoryElements.mapNotNull { catElement ->
-                val title = catElement.selectFirst("h3.featured-list__desktop__list__item__title")?.text()?.trim() ?: return@mapNotNull null
-                var href = catElement.selectFirst("a.featured-list__desktop__list__item__body")?.attr("href") ?: return@mapNotNull null
-                if (href.startsWith("/")) href = mainUrl + href
-                if (title.equals("Tất cả thể loại", ignoreCase = true) && href.endsWith("/trang/the-loai")) return@mapNotNull null
-
-                val poster = catElement.selectFirst("img")?.attr("src")
-                val absolutePosterUrl = poster?.let { if (it.startsWith("/")) mainUrl + it else it }
-                
-                newMovieSearchResponse(title, href, TvType.NSFW) { 
-                    this.posterUrl = absolutePosterUrl
-                }
-            }
-            if (categories.isNotEmpty()) {
-                homePageList.add(HomePageList("Thể Loại Nổi Bật", categories))
-            }
-        }
         
+        // Đã bỏ mục "Thể loại nổi bật" theo yêu cầu
+
         if (homePageList.isEmpty()) {
+            // Fallback nếu không parse được section nào, thử lấy từ navbar
             document.select("nav#navbar div.hidden.md\\:flex a.navbar__link[href*=categories]").forEach { navLink ->
                  val title = navLink.attr("title")
-                 homePageList.add(HomePageList(title, emptyList()))
+                 // Tạo HomePageList rỗng, người dùng sẽ phải tự tìm kiếm category này
+                 homePageList.add(HomePageList(title, emptyList())) 
             }
         }
 
-        if (homePageList.isEmpty() && page > 1) { 
-            return null
-        }
+        // `hasNext` cho getMainPage: Vì trang chủ không có phân trang cho các mục lớn,
+        // nên sau khi tải trang 1, sẽ không có trang tiếp theo.
         return newHomePageResponse(list = homePageList, hasNext = false) 
     }
 
@@ -92,7 +97,8 @@ class HeoVLProvider : MainAPI() {
         } else {
             "$mainUrl/search?q=$query"
         }
-        val document = app.get(searchOrCategoryUrl).document
+        // CloudStream sẽ tự động thêm &page= vào URL nếu cần phân trang
+        val document = app.get(searchOrCategoryUrl).document 
         return document.select("div.videos div.videos__box-wrapper").mapNotNull {
             it.selectFirst("div.video-box")?.toSearchResponse()
         }
@@ -115,14 +121,31 @@ class HeoVLProvider : MainAPI() {
         }
         
         if (sourceUrls.isEmpty()) return null
-
         val primarySourceUrl = sourceUrls.first()
         
-        // Lấy danh sách video đề xuất
-        val recommendationsContainer = document.select("div[x-data*=\"list('/ajax/suggestions/\"]").firstOrNull()
-        val pageRecommendations = recommendationsContainer?.select("div.videos div.video-box")?.mapNotNull { 
-            it.toSearchResponse() // Sử dụng lại hàm helper toSearchResponse
+        var pageRecommendations: List<SearchResponse>? = null
+        try {
+            // Trích xuất slug video từ URL hiện tại để xây dựng URL AJAX recommendations
+            val videoSlug = url.substringAfterLast("/videos/").substringBefore("?")
+            if (videoSlug.isNotBlank()) {
+                val recommendationsAjaxUrl = "$mainUrl/ajax/suggestions/$videoSlug"
+                // Thực hiện request thứ hai để lấy HTML/JSON của recommendations
+                val recommendationsDoc = app.get(recommendationsAjaxUrl).document
+                // Parse các video items từ response AJAX này.
+                // Giả sử response là HTML chứa các div.video-box tương tự.
+                pageRecommendations = recommendationsDoc.select("div.video-box")?.mapNotNull {
+                    // Cần đảm bảo toSearchResponse xử lý đúng URL tương đối nếu có từ AJAX response
+                    // Nếu link trong AJAX response là tương đối, cần mainUrl
+                    // Tuy nhiên, toSearchResponse đã có logic prefix mainUrl nếu href bắt đầu bằng /
+                    it.toSearchResponse()
+                }
+            }
+        } catch (e: Exception) {
+            // Log lỗi nếu không lấy được recommendations, nhưng không làm dừng toàn bộ hàm load
+            println("Error fetching recommendations: ${e.message}")
+            e.printStackTrace()
         }
+
 
         return newMovieLoadResponse(
             name = title,
@@ -130,13 +153,11 @@ class HeoVLProvider : MainAPI() {
             type = TvType.NSFW,
             dataUrl = primarySourceUrl 
         ) {
-            // Thiết lập các thuộc tính cho LoadResponse
             this.posterUrl = pagePosterUrl
             this.plot = pageDescription
             this.tags = combinedTags
-            // Thêm danh sách video đề xuất vào đây
-            this.recommendations = pageRecommendations 
-            this.year = null // Parse năm nếu có từ HTML
+            this.recommendations = pageRecommendations // Gán recommendations đã parse (có thể null)
+            this.year = null 
         }
     }
 }
