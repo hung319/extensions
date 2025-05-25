@@ -63,13 +63,13 @@ class HHNinjaProvider : MainAPI() {
                 val currentEpisode = matchResult?.groupValues?.get(1)?.toIntOrNull()
 
                 val isDub = episodeStr.contains("Lồng tiếng", ignoreCase = true) || episodeStr.contains("Thuyết Minh", ignoreCase = true)
-                val isSub = episodeStr.contains("Vietsub", ignoreCase = true) || !isDub
+                val isSub = episodeStr.contains("Vietsub", ignoreCase = true) || !isDub 
 
                 addDubStatus(
                     dubExist = isDub,
                     subExist = isSub,
                     dubEpisodes = if (isDub) currentEpisode else null,
-                    subEpisodes = if (isSub) currentEpisode else null
+                    subEpisodes = if (isSub) currentEpisode else null 
                 )
             }
         }
@@ -91,7 +91,7 @@ class HHNinjaProvider : MainAPI() {
         val poster = document.selectFirst("div.info-movie div.head div.first img")?.attr("src")
             ?: document.selectFirst("div.info-movie div.head div.first img")?.attr("data-src")
         val plot = document.selectFirst("div.desc div[style*='overflow:auto'] p")?.text()?.trim()
-
+        
         val yearText = document.select("div.info-movie div.head div.last div.update_time > div:contains(Năm) + div")?.text()?.trim()
         val year = yearText?.toIntOrNull()
 
@@ -107,15 +107,15 @@ class HHNinjaProvider : MainAPI() {
             val epNumRegex = Regex("""Tập\s*(\S+)""")
             val epNumMatch = epNumRegex.find(epNameFull)
             val epNumString = epNumMatch?.groupValues?.get(1)
-
+            
             val epName = if (epNumString != null && !epNumString.contains("Trailer", ignoreCase = true) && !epNumString.contains("PV", ignoreCase = true) ) "Tập $epNumString" else epNameFull
 
             val epHref = el.attr("href")
             if (epName.contains("Trailer", ignoreCase = true) || epName.contains("PV", ignoreCase = true)) {
-                null
+                null 
             } else {
                 Episode(
-                    data = fixUrl(epHref),
+                    data = fixUrl(epHref), 
                     name = epName,
                     episode = epNumString?.replace(Regex("[^0-9]"), "")?.toIntOrNull()
                 )
@@ -127,11 +127,11 @@ class HHNinjaProvider : MainAPI() {
         } else {
             TvType.Movie
         }
-
+        
         val recommendations = document.select("div.list_episode_relate div.movies-list div.movie-item").mapNotNull {
             it.toSearchResult()
         }
-
+        
         val genres = document.select("div.info-movie div.head div.last div.list_cate > div:contains(Thể Loại) + div a").mapNotNull { it.text() }
 
         return if (tvType == TvType.TvSeries) {
@@ -166,8 +166,8 @@ class HHNinjaProvider : MainAPI() {
         @JsonProperty("src_fbk") val srcFbk: String?,
         @JsonProperty("src_vip_1") val srcVip1: String?,
         @JsonProperty("src_vip_2") val srcVip2: String?,
-        @JsonProperty("src_vip_3") val srcVip3: String?,
-        @JsonProperty("src_hyd") val srcHyd: String?,
+        @JsonProperty("src_vip_3") val srcVip3: String?, 
+        @JsonProperty("src_hyd") val srcHyd: String?,   
         @JsonProperty("src_dlm") val srcDlm: String? = null,
         @JsonProperty("src_vip_4") val srcVip4: String? = null,
         @JsonProperty("src_vip_5") val srcVip5: String? = null,
@@ -189,7 +189,7 @@ class HHNinjaProvider : MainAPI() {
     )
 
     override suspend fun loadLinks(
-        data: String,
+        data: String, 
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
@@ -205,7 +205,7 @@ class HHNinjaProvider : MainAPI() {
                 Regex("""(?:MovieID|movie_id):\s*(\d+)""").find(scriptText)?.groupValues?.get(1)
             }.firstOrNull()
             ?: return false
-
+        
         val ajaxUrl = "$mainUrl/server/ajax/player"
         val initialAjaxResponse = app.post(
             ajaxUrl,
@@ -234,61 +234,42 @@ class HHNinjaProvider : MainAPI() {
 
             if (videoUrl.endsWith(".m3u8", ignoreCase = true)) {
                 val hlsLinks = M3u8Helper.generateM3u8(
-                    name = "${this.name} - $serverName",
+                    name = "${this.name} - $serverName", 
                     streamUrl = videoUrl,
-                    referer = mainUrl
+                    referer = mainUrl 
                 )
                 hlsLinks.forEach { link ->
                     callback(
                         ExtractorLink(
-                            source = link.source,
-                            name = link.name,
-                            url = link.url,
-                            referer = link.referer,
-                            quality = link.quality,
-                            headers = link.headers ?: emptyMap(),
-                            extractorData = link.extractorData,
+                            source = link.source, name = link.name, url = link.url,
+                            referer = link.referer, quality = link.quality,
+                            headers = link.headers ?: emptyMap(), extractorData = link.extractorData,
                             type = ExtractorLinkType.M3U8
                         )
                     )
                     foundStream = true
                 }
-            } else if (videoUrl.endsWith(".mp4", ignoreCase = true)) {
-                // Lỗi ở dòng 241 (cũ) tương ứng với chỗ này (cho link MP4 từ initialAjaxResponse)
-                callback(
-                    ExtractorLink(
-                        source = "${this.name} - $serverName", // Đảm bảo có source
-                        name = "${this.name} - $serverName MP4",
-                        url = videoUrl,
-                        referer = mainUrl,
-                        quality = Qualities.Unknown.value,
-                        headers = emptyMap(), 
-                        extractorData = null, 
-                        type = ExtractorLinkType.VIDEO
-                    )
-                )
-                foundStream = true
             } else if (serverName == "VIP_2 (hh4d.site)" && videoUrl.contains("hh4d.site/v/")) {
                 Log.d(this.name, "Đang xử lý $serverName: $videoUrl")
                 try {
                     val hh4dPageDoc = app.get(videoUrl, referer = data).document
                     val hh4dVideoId = hh4dPageDoc.body().attr("data-video")
-
+                    
                     if (hh4dVideoId.isNotBlank()) {
                         val hh4dSourcesApiUrl = "https://hh4d.site/players/sources?videoId=$hh4dVideoId"
                         val hh4dApiResponse = app.post(hh4dSourcesApiUrl, referer = videoUrl).parsedSafe<Hh4dApiResponse>()
 
                         if (hh4dApiResponse?.status == true && hh4dApiResponse.message != null) {
-                            val messageData = hh4dApiResponse.message // Đổi tên biến để tránh nhầm lẫn
+                            val messageData = hh4dApiResponse.message
                             if (messageData.type == "direct" && messageData.source != null) {
                                 Log.d(this.name, "Nguồn JSON từ hh4d.site: ${messageData.source}")
                                 val videoSourcesList = tryParseJson<List<Hh4dVideoSource>>(messageData.source)
-
+                                
                                 videoSourcesList?.forEach { videoSource ->
                                     val streamUrl = videoSource.file ?: return@forEach
                                     val streamType = videoSource.type?.lowercase()
                                     val label = videoSource.label ?: Qualities.Unknown.name
-                                    val quality = qualityFromLabel(label) // Sửa lỗi: Gọi đúng tên hàm
+                                    val quality = qualityFromLabel(label)
 
                                     Log.d(this.name, "Đã parse source từ hh4d.site: file=${streamUrl}, type=${streamType}, label=${label}")
 
@@ -296,34 +277,20 @@ class HHNinjaProvider : MainAPI() {
                                         M3u8Helper.generateM3u8(
                                             name = "${this.name} - $serverName - $label",
                                             streamUrl = streamUrl,
-                                            referer = videoUrl
+                                            referer = videoUrl 
                                         ).forEach { link ->
                                             callback(
                                                 ExtractorLink(
                                                     source = link.source, name = link.name, url = link.url,
-                                                    referer = link.referer, quality = quality,
+                                                    referer = link.referer, quality = quality, 
                                                     headers = link.headers ?: emptyMap(), extractorData = link.extractorData,
                                                     type = ExtractorLinkType.M3U8
                                                 )
                                             )
                                             foundStream = true
                                         }
-                                    } else if (streamUrl.endsWith(".mp4", ignoreCase = true) || streamType == "mp4") {
-                                        // Lỗi ở dòng 298 (cũ) tương ứng với chỗ này
-                                        callback(
-                                            ExtractorLink(
-                                                source = "${this.name} - $serverName - $label", // Đã thêm source và label
-                                                name = "${this.name} - $serverName - $label MP4",
-                                                url = streamUrl,
-                                                referer = videoUrl,
-                                                quality = quality,
-                                                headers = emptyMap(),
-                                                extractorData = null,
-                                                type = ExtractorLinkType.VIDEO
-                                            )
-                                        )
-                                        foundStream = true
-                                    }
+                                    } 
+                                    // Đã loại bỏ nhánh else if cho MP4 từ hh4d.site direct source
                                 }
                             } else if (messageData.type == "embed" && messageData.source != null) {
                                 val embedUrl = messageData.source
@@ -340,21 +307,10 @@ class HHNinjaProvider : MainAPI() {
                                             callback(ExtractorLink(source = link.source, name = link.name, url = link.url, referer = link.referer, quality = link.quality, headers = link.headers ?: emptyMap(), extractorData = link.extractorData, type = ExtractorLinkType.M3U8))
                                             foundStream = true 
                                         }
-                                    } else if (finalEmbedUrl.endsWith(".mp4", ignoreCase = true)) {
-                                        // Lỗi ở dòng 336 (cũ) tương ứng với chỗ này
-                                        callback(ExtractorLink(
-                                            source = "${this.name} - $serverName (Embed Resolved)", // Đã thêm source
-                                            name = "${this.name} - $serverName MP4", 
-                                            url = finalEmbedUrl, 
-                                            referer = embedUrl, 
-                                            quality = Qualities.Unknown.value, 
-                                            headers = emptyMap(), 
-                                            extractorData = null, 
-                                            type = ExtractorLinkType.VIDEO
-                                        ))
-                                        foundStream = true
-                                    } else {
-                                         Log.d(this.name, "Link embed $embedUrl không giải quyết thành M3U8/MP4 trực tiếp.")
+                                    } 
+                                    // Đã loại bỏ nhánh else if cho MP4 từ resolved embed
+                                     else {
+                                         Log.d(this.name, "Link embed $embedUrl không giải quyết thành M3U8 trực tiếp.")
                                     }
                                 } catch (e: Exception) {
                                     Log.e(this.name, "Lỗi khi giải quyết link embed $embedUrl: $e")
@@ -369,8 +325,41 @@ class HHNinjaProvider : MainAPI() {
                 } catch (e: Exception) {
                     Log.e(this.name, "Lỗi khi xử lý link $serverName ($videoUrl): $e")
                 }
+            } else if (!videoUrl.endsWith(".m3u8", ignoreCase = true)) {
+                // Nếu không phải m3u8 trực tiếp và không phải VIP_2 đã xử lý ở trên
+                // thì thử GET và kiểm tra xem có redirect sang m3u8 không
+                 Log.d(this.name, "Đang thử giải quyết link gián tiếp cho $serverName (không phải VIP_2): $videoUrl")
+                try {
+                    val response = app.get(videoUrl, referer = data, allowRedirects = true)
+                    val finalUrl = response.url
+                    val contentType = response.headers["Content-Type"]?.lowercase() ?: ""
+                     Log.d(this.name, "Link $serverName ($videoUrl) giải quyết thành: $finalUrl (Content-Type: $contentType)")
+
+                    if (finalUrl.endsWith(".m3u8", ignoreCase = true) || contentType.contains("application/vnd.apple.mpegurl") || contentType.contains("application/x-mpegurl")) {
+                        val hlsLinks = M3u8Helper.generateM3u8(
+                            name = "${this.name} - $serverName (Resolved)",
+                            streamUrl = finalUrl,
+                            referer = videoUrl 
+                        )
+                        hlsLinks.forEach { link ->
+                             callback(
+                                ExtractorLink(
+                                    source = link.source, name = link.name, url = link.url,
+                                    referer = link.referer, quality = link.quality,
+                                    headers = link.headers ?: emptyMap(), extractorData = link.extractorData,
+                                    type = ExtractorLinkType.M3U8
+                                )
+                            )
+                            foundStream = true
+                        }
+                    } else {
+                        Log.d(this.name, "Server $serverName ($finalUrl) không phải M3U8 trực tiếp và cần extractor riêng hoặc logic khác.")
+                    }
+                } catch (e: Exception) {
+                    Log.e(this.name, "Lỗi khi giải quyết link $serverName ($videoUrl): $e")
+                }
             }
-            if (foundStream) break
+            if (foundStream) break 
         }
         return foundStream
     }
