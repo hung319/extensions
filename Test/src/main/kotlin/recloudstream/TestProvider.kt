@@ -14,7 +14,7 @@ import java.net.URLEncoder
 
 class Anime47Provider : MainAPI() {
     override var mainUrl = "https://anime47.fun"
-    override var name = "Anime47"
+    override var name = "Anime47" // Sẽ được dùng cho M3u8Helper(source = this.name)
     override val hasMainPage = true
     override var lang = "vi"
     override val hasDownloadSupport = true
@@ -233,7 +233,7 @@ class Anime47Provider : MainAPI() {
                     val videoUrl = masterPlaylistData?.masterPlaylistUrl
 
                     if (videoUrl != null && videoUrl.startsWith("http")) {
-                        println("Anime47Provider: Extracted M3U8 URL: $videoUrl. Processing with M3u8Helper instance.")
+                        println("Anime47Provider: Extracted M3U8 URL: $videoUrl. Processing with M3u8Helper instance with source.")
 
                         val requestHeadersForM3u8Helper = mapOf(
                             "Referer" to data,
@@ -241,9 +241,8 @@ class Anime47Provider : MainAPI() {
                             "Origin" to mainUrl
                         )
                         
-                        // 1. Tạo một instance của M3u8Helper
-                        // Nếu constructor M3u8Helper() không đủ, và cần M3u8Helper(source="..."), hãy thay đổi ở đây
-                        val m3u8HelperInstance = M3u8Helper() 
+                        // 1. Tạo một instance của M3u8Helper VỚI THAM SỐ `source`
+                        val m3u8HelperInstance = M3u8Helper(source = this.name) // Sử dụng this.name (ví dụ "Anime47")
 
                         // 2. Tạo đối tượng input cho m3u8Generation
                         val m3u8StreamInput = M3u8Helper.M3u8Stream(
@@ -260,11 +259,15 @@ class Anime47Provider : MainAPI() {
                         if (processedStreams.isNotEmpty()) {
                             println("Anime47Provider: M3u8Helper.m3u8Generation returned ${processedStreams.size} stream(s).")
                             processedStreams.forEach { processedStream ->
+                                val finalStreamUrl = processedStream.streamUrl
+                                println("Anime47Provider: M3U8 Helper generated stream URL: $finalStreamUrl")
+                                // Kiểm tra xem URL có phải là tương đối và thử thêm base nếu cần (tuy nhiên M3u8Helper thường trả về URL tuyệt đối cho local server)
+                                // Thông thường, finalStreamUrl đã là URL tuyệt đối dạng http://127.0.0.1:PORT/...
                                 callback(
                                     ExtractorLink(
                                         source = "$name $serverNameDisplay (M3U8 Helper)",
                                         name = "$name $serverNameDisplay HLS",
-                                        url = processedStream.streamUrl,
+                                        url = finalStreamUrl,
                                         referer = data,
                                         quality = processedStream.quality ?: Qualities.Unknown.value,
                                         type = ExtractorLinkType.M3U8,
