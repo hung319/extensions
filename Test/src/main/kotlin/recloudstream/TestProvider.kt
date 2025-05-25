@@ -8,13 +8,14 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.M3u8Helper
+import com.lagradost.cloudstream3.CommonActivity // << THÊM IMPORT NÀY
 import org.jsoup.nodes.Element
 import org.jsoup.Jsoup
 import java.net.URLEncoder
 
 class Anime47Provider : MainAPI() {
     override var mainUrl = "https://anime47.fun"
-    override var name = "Anime47" // Sẽ được dùng cho M3u8Helper(this.name)
+    override var name = "Anime47"
     override val hasMainPage = true
     override var lang = "vi"
     override val hasDownloadSupport = true
@@ -233,7 +234,7 @@ class Anime47Provider : MainAPI() {
                     val videoUrl = masterPlaylistData?.masterPlaylistUrl
 
                     if (videoUrl != null && videoUrl.startsWith("http")) {
-                        println("Anime47Provider: Extracted M3U8 URL: $videoUrl. Processing with M3u8Helper instance with source.")
+                        println("Anime47Provider: Extracted M3U8 URL: $videoUrl. Processing with M3u8Helper instance.")
 
                         val requestHeadersForM3u8Helper = mapOf(
                             "Referer" to data,
@@ -241,8 +242,8 @@ class Anime47Provider : MainAPI() {
                             "Origin" to mainUrl
                         )
                         
-                        // 1. Tạo một instance của M3u8Helper VỚI THAM SỐ `source` (truyền theo vị trí)
-                        val m3u8HelperInstance = M3u8Helper(this.name) // <<< THAY ĐỔI Ở ĐÂY
+                        // 1. Tạo một instance của M3u8Helper (sử dụng constructor không tham số)
+                        val m3u8HelperInstance = M3u8Helper() // <<< SỬA LẠI Ở ĐÂY
 
                         // 2. Tạo đối tượng input cho m3u8Generation
                         val m3u8StreamInput = M3u8Helper.M3u8Stream(
@@ -259,13 +260,27 @@ class Anime47Provider : MainAPI() {
                         if (processedStreams.isNotEmpty()) {
                             println("Anime47Provider: M3u8Helper.m3u8Generation returned ${processedStreams.size} stream(s).")
                             processedStreams.forEach { processedStream ->
-                                val finalStreamUrl = processedStream.streamUrl
-                                println("Anime47Provider: M3U8 Helper generated stream URL: $finalStreamUrl")
+                                var finalStreamUrl = processedStream.streamUrl
+                                println("Anime47Provider: M3U8 Helper generated raw stream URL: $finalStreamUrl")
+
+                                // Nếu URL trả về là tương đối (bắt đầu bằng /), ghép với IP server cục bộ
+                                if (finalStreamUrl.startsWith("/")) {
+                                    val localBaseUrl = CommonActivity.getIpAddress() // Ví dụ: "http://127.0.0.1:12345"
+                                    if (localBaseUrl != null) {
+                                        finalStreamUrl = "$localBaseUrl$finalStreamUrl"
+                                        println("Anime47Provider: Made local URL absolute: $finalStreamUrl")
+                                    } else {
+                                        println("Anime47Provider: ERROR - CommonActivity.getIpAddress() is null, cannot make URL absolute.")
+                                        // Cân nhắc không callback nếu URL không hoàn chỉnh
+                                        // hoặc callback với URL tương đối và hy vọng player xử lý được
+                                    }
+                                }
+                                
                                 callback(
                                     ExtractorLink(
                                         source = "$name $serverNameDisplay (M3U8 Helper)",
                                         name = "$name $serverNameDisplay HLS",
-                                        url = finalStreamUrl,
+                                        url = finalStreamUrl, // URL đã được làm tuyệt đối (nếu cần)
                                         referer = data,
                                         quality = processedStream.quality ?: Qualities.Unknown.value,
                                         type = ExtractorLinkType.M3U8,
