@@ -1,18 +1,16 @@
 package com.lagradost.cloudstream3.plugins.hhninjaprovider
 
-import com.fasterxml.jackson.annotation.JsonProperty // Giữ lại vì có thể dùng ở đâu đó khác, hoặc xóa nếu chắc chắn ko dùng
+import com.fasterxml.jackson.annotation.JsonProperty 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-// import com.lagradost.cloudstream3.network.CloudflareKiller
-// import com.lagradost.cloudstream3.syncproviders.AccountManager
 
 class HHNinjaProvider : MainAPI() {
     override var mainUrl = "https://hhninja25.tv"
     override var name = "HHNinja25"
     override val hasMainPage = true
     override var lang = "vi"
-    override val hasDownloadSupport = true // Giả định có, cần loadLinks để hoạt động
+    override val hasDownloadSupport = true 
     override val supportedTypes = setOf(
         TvType.Movie,
         TvType.TvSeries,
@@ -58,10 +56,15 @@ class HHNinjaProvider : MainAPI() {
                 val matchResult = epRegex.find(episodeStr)
                 val currentEpisode = matchResult?.groupValues?.get(1)?.toIntOrNull()
 
+                val isDub = episodeStr.contains("Lồng tiếng", ignoreCase = true) || episodeStr.contains("Thuyết Minh", ignoreCase = true)
+                val isSub = episodeStr.contains("Vietsub", ignoreCase = true) || !isDub 
+
+                // Sửa lỗi ở đây:
                 addDubStatus(
-                    dubExist = episodeStr.contains("Lồng tiếng", ignoreCase = true) || episodeStr.contains("Thuyết Minh", ignoreCase = true),
-                    subExist = episodeStr.contains("Vietsub", ignoreCase = true) || true,
-                    ep = currentEpisode
+                    dubExist = isDub,
+                    subExist = isSub,
+                    dubEpisodes = if (isDub) currentEpisode else null,
+                    subEpisodes = if (isSub) currentEpisode else null 
                 )
             }
         }
@@ -115,7 +118,8 @@ class HHNinjaProvider : MainAPI() {
             TvType.Movie
         }
         
-        val recommendations = document.select("div.list_episode_relate div.movies-list div.movie-item").mapNotNull { // Selector có thể cần điều chỉnh cho mục "Phim Liên Quan" nếu có
+        // Giả sử selector cho phim đề xuất là tương tự, nếu không có thì trả về list rỗng
+        val recommendations = document.select("div.list_episode_relate div.movies-list div.movie-item").mapNotNull {
             it.toSearchResult()
         }
         
@@ -147,8 +151,6 @@ class HHNinjaProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Sẽ triển khai sau theo yêu cầu
         throw NotImplementedError("loadLinks is not implemented yet for this provider.")
-        // return false // Hoặc trả về false nếu không muốn throw lỗi
     }
 }
