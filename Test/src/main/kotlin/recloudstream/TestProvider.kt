@@ -3,11 +3,9 @@ package com.lagradost.cloudstream3.plugins.hhninjaprovider
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.network.CloudflareKiller // Bỏ comment nếu cần
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
-import android.util.Log
+// import com.lagradost.cloudstream3.network.CloudflareKiller // Bỏ comment nếu cần CloudflareKiller
 
 class HHNinjaProvider : MainAPI() {
     override var mainUrl = "https://hhninja.top"
@@ -165,7 +163,7 @@ class HHNinjaProvider : MainAPI() {
         @JsonProperty("message") val message: String?,
         @JsonProperty("src_fbk") val srcFbk: String?,
         @JsonProperty("src_vip_1") val srcVip1: String?,
-        @JsonProperty("src_vip_2") val srcVip2: String?,
+        @JsonProperty("src_vip_2") val srcVip2: String?, // Sẽ được bỏ qua
         @JsonProperty("src_vip_3") val srcVip3: String?, 
         @JsonProperty("src_hyd") val srcHyd: String?,   
         @JsonProperty("src_dlm") val srcDlm: String? = null,
@@ -174,19 +172,10 @@ class HHNinjaProvider : MainAPI() {
         @JsonProperty("src_vip_6") val srcVip6: String? = null
     )
 
-    private data class Hh4dVideoSource(
-        @JsonProperty("file") val file: String?,
-        @JsonProperty("type") val type: String?,
-        @JsonProperty("label") val label: String?
-    )
-    private data class Hh4dMessage(
-        @JsonProperty("type") val type: String?,
-        @JsonProperty("source") val source: String?
-    )
-    private data class Hh4dApiResponse(
-        @JsonProperty("status") val status: Boolean?,
-        @JsonProperty("message") val message: Hh4dMessage?
-    )
+    // Data classes cho hh4d.site không còn cần thiết nữa
+    // private data class Hh4dVideoSource(...)
+    // private data class Hh4dMessage(...)
+    // private data class Hh4dApiResponse(...)
 
     override suspend fun loadLinks(
         data: String, 
@@ -218,11 +207,12 @@ class HHNinjaProvider : MainAPI() {
             return false
         }
 
-        var foundStream = false // Biến này dùng để xác định hàm loadLinks có thành công hay không
+        var foundStream = false
+        // Loại bỏ src_vip_2, src_vip_3, src_hyd khỏi danh sách xử lý chính
         val serverSources = listOfNotNull(
             initialAjaxResponse.srcFbk?.let { it to "FBK" },
             initialAjaxResponse.srcVip1?.let { it to "VIP_1" },
-            initialAjaxResponse.srcVip2?.let { it to "VIP_2 (hh4d.site)" },
+            // initialAjaxResponse.srcVip2 là của hh4d.site, đã loại bỏ
             initialAjaxResponse.srcDlm?.let { it to "DLM" },
             initialAjaxResponse.srcVip4?.let { it to "VIP_4" },
             initialAjaxResponse.srcVip5?.let { it to "VIP_5" },
@@ -230,8 +220,6 @@ class HHNinjaProvider : MainAPI() {
         ).filter { it.first.isNotBlank() }
 
         for ((videoUrl, serverName) in serverSources) {
-            Log.d(this.name, "Đang thử server $serverName với URL: $videoUrl")
-
             if (videoUrl.endsWith(".m3u8", ignoreCase = true)) {
                 callback(
                     ExtractorLink(
@@ -246,89 +234,13 @@ class HHNinjaProvider : MainAPI() {
                     )
                 )
                 foundStream = true
-            } else if (serverName == "VIP_2 (hh4d.site)" && videoUrl.contains("hh4d.site/v/")) {
-                Log.d(this.name, "Đang xử lý $serverName: $videoUrl")
-                try {
-                    val hh4dPageDoc = app.get(videoUrl, referer = data).document
-                    val hh4dVideoId = hh4dPageDoc.body().attr("data-video")
-                    
-                    if (hh4dVideoId.isNotBlank()) {
-                        val hh4dSourcesApiUrl = "https://hh4d.site/players/sources?videoId=$hh4dVideoId"
-                        val hh4dApiResponse = app.post(hh4dSourcesApiUrl, referer = videoUrl).parsedSafe<Hh4dApiResponse>()
-
-                        if (hh4dApiResponse?.status == true && hh4dApiResponse.message != null) {
-                            val messageData = hh4dApiResponse.message
-                            if (messageData.type == "direct" && messageData.source != null) {
-                                Log.d(this.name, "Nguồn JSON từ hh4d.site: ${messageData.source}")
-                                val videoSourcesList = tryParseJson<List<Hh4dVideoSource>>(messageData.source)
-                                
-                                videoSourcesList?.forEach { videoSource ->
-                                    val streamUrl = videoSource.file ?: return@forEach
-                                    val streamType = videoSource.type?.lowercase()
-                                    val label = videoSource.label ?: "M3U8"
-                                    val quality = qualityFromLabel(label)
-
-                                    Log.d(this.name, "Đã parse source từ hh4d.site: file=${streamUrl}, type=${streamType}, label=${label}")
-
-                                    if (streamUrl.endsWith(".m3u8", ignoreCase = true) || streamType == "hls") {
-                                        callback(
-                                            ExtractorLink(
-                                                source = "${this.name} - $serverName - $label",
-                                                name = "${this.name} - $serverName - $label", 
-                                                url = streamUrl,
-                                                referer = videoUrl, 
-                                                quality = quality, 
-                                                headers = emptyMap(), 
-                                                extractorData = null,
-                                                type = ExtractorLinkType.M3U8
-                                            )
-                                        )
-                                        foundStream = true
-                                    } else {
-                                         Log.d(this.name, "Nguồn từ hh4d.site không phải M3U8: $streamUrl (type: $streamType)")
-                                    }
-                                }
-                            } else if (messageData.type == "embed" && messageData.source != null) {
-                                val embedUrl = messageData.source
-                                Log.d(this.name, "$serverName là embed: $embedUrl. Thử giải quyết...")
-                                try {
-                                    val embedRes = app.get(embedUrl, referer = videoUrl, allowRedirects = true)
-                                    val finalEmbedUrl = embedRes.url
-                                     if (finalEmbedUrl.endsWith(".m3u8", ignoreCase = true)) {
-                                        callback(ExtractorLink(
-                                            source = "${this.name} - $serverName (Embed Resolved)",
-                                            name = "${this.name} - $serverName M3U8", 
-                                            url = finalEmbedUrl, 
-                                            referer = embedUrl, 
-                                            quality = Qualities.Unknown.value, 
-                                            headers = emptyMap(), 
-                                            extractorData = null, 
-                                            type = ExtractorLinkType.M3U8
-                                        ))
-                                        foundStream = true 
-                                    } else {
-                                         Log.d(this.name, "Link embed $embedUrl không giải quyết thành M3U8 trực tiếp.")
-                                    }
-                                } catch (e: Exception) {
-                                    Log.e(this.name, "Lỗi khi giải quyết link embed $embedUrl: $e")
-                                }
-                            }
-                        } else {
-                             Log.d(this.name, "API call tới hh4d.site thất bại hoặc status false. Chi tiết type: ${hh4dApiResponse?.message?.type} - source: ${hh4dApiResponse?.message?.source}")
-                        }
-                    } else {
-                        Log.d(this.name, "Không tìm thấy data-video ID trên trang: $videoUrl")
-                    }
-                } catch (e: Exception) {
-                    Log.e(this.name, "Lỗi khi xử lý link $serverName ($videoUrl): $e")
-                }
-            } else if (!videoUrl.endsWith(".m3u8", ignoreCase = true)) { 
-                Log.d(this.name, "Đang thử giải quyết link gián tiếp cho $serverName (không phải VIP_2): $videoUrl")
+            } else { 
+                // Nếu không phải M3U8 trực tiếp từ AJAX ban đầu, thử GET và kiểm tra
+                // (Giả định rằng tất cả các link cuối cùng đều là M3U8)
                 try {
                     val response = app.get(videoUrl, referer = data, allowRedirects = true)
                     val finalUrl = response.url
                     val contentType = response.headers["Content-Type"]?.lowercase() ?: ""
-                     Log.d(this.name, "Link $serverName ($videoUrl) giải quyết thành: $finalUrl (Content-Type: $contentType)")
 
                     if (finalUrl.endsWith(".m3u8", ignoreCase = true) || contentType.contains("application/vnd.apple.mpegurl") || contentType.contains("application/x-mpegurl")) {
                          callback(
@@ -336,7 +248,7 @@ class HHNinjaProvider : MainAPI() {
                                 source = "${this.name} - $serverName (Resolved)",
                                 name = "${this.name} - $serverName M3U8",
                                 url = finalUrl,
-                                referer = videoUrl,
+                                referer = videoUrl, // Link gốc trước khi redirect
                                 quality = Qualities.Unknown.value,
                                 headers = emptyMap(), 
                                 extractorData = null,
@@ -344,17 +256,13 @@ class HHNinjaProvider : MainAPI() {
                             )
                         )
                         foundStream = true
-                    } else {
-                        Log.d(this.name, "Server $serverName ($finalUrl) không phải M3U8 trực tiếp.")
                     }
                 } catch (e: Exception) {
-                    Log.e(this.name, "Lỗi khi giải quyết link $serverName ($videoUrl): $e")
+                    // Bỏ qua lỗi nếu không giải quyết được link
                 }
             }
-            // Đã loại bỏ: if (foundStream) break 
-            // Giờ đây, vòng lặp sẽ tiếp tục để thử tất cả các server
         }
-        return foundStream // Trả về true nếu ít nhất một link được tìm thấy
+        return foundStream 
     }
 
     private fun qualityFromLabel(label: String?): Int {
