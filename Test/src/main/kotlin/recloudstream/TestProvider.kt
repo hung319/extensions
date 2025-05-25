@@ -3,15 +3,15 @@ package com.lagradost.cloudstream3.plugins.hhninjaprovider
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-// import com.lagradost.cloudstream3.network.CloudflareKiller // Bỏ comment nếu cần CloudflareKiller
-// import com.lagradost.cloudstream3.syncproviders.AccountManager // Bỏ comment nếu cần AccountManager
+// import com.lagradost.cloudstream3.network.CloudflareKiller
+// import com.lagradost.cloudstream3.syncproviders.AccountManager
 
 class HHNinjaProvider : MainAPI() {
-    override var mainUrl = "https://hhninja.top" // Đã cập nhật mainUrl
-    override var name = "HHNinja.top" // Đổi tên cho phù hợp
+    override var mainUrl = "https://hhninja.top" 
+    override var name = "HHNinja.top"
     override val hasMainPage = true
     override var lang = "vi"
-    override val hasDownloadSupport = true
+    override val hasDownloadSupport = true 
     override val supportedTypes = setOf(
         TvType.Movie,
         TvType.TvSeries,
@@ -20,9 +20,8 @@ class HHNinjaProvider : MainAPI() {
         TvType.AsianDrama
     )
 
-    // Cập nhật các đường dẫn cho MainPage dựa trên main.html mới (ví dụ phim-moi-cap-nhap.html)
     override val mainPage = mainPageOf(
-        "$mainUrl/phim-moi-cap-nhap.html?p=" to "Mới Cập Nhật", // Cập nhật từ main.html
+        "$mainUrl/phim-moi-cap-nhap.html?p=" to "Mới Cập Nhật",
         "$mainUrl/the-loai/phim-2d.html?p=" to "Phim 2D",
         "$mainUrl/the-loai/phim-3d.html?p=" to "Phim 3D",
         "$mainUrl/loc-phim/W1tdLFtdLFsxXSxbXV0=?p=" to "Phim Lẻ",
@@ -34,8 +33,7 @@ class HHNinjaProvider : MainAPI() {
         request: MainPageRequest
     ): HomePageResponse {
         val url = request.data + page
-        // Log.d(name, "getMainPage URL: $url") // Bỏ comment để debug nếu cần
-        val document = app.get(url).document // Thử với app.get(url, allowRedirects = false).document nếu vẫn lỗi redirect
+        val document = app.get(url).document 
         val home = document.select("div.movies-list div.movie-item").mapNotNull {
             it.toSearchResult()
         }
@@ -45,12 +43,11 @@ class HHNinjaProvider : MainAPI() {
     private fun Element.toSearchResult(): SearchResponse? {
         val title = this.selectFirst("div.name-movie")?.text()?.trim() ?: return null
         var href = this.selectFirst("a")?.attr("href") ?: return null
-        // Đảm bảo href là tương đối (bắt đầu bằng /) hoặc tuyệt đối
         if (!href.startsWith("http") && !href.startsWith("/")) {
             href = "/$href"
         }
 
-        val posterUrl = this.selectFirst("img")?.attr("src") // Có thể là data-src nếu lazyload
+        val posterUrl = this.selectFirst("img")?.attr("src")
            ?: this.selectFirst("img")?.attr("data-src")
 
         val episodeStr = this.selectFirst("div.episode-latest span")?.text()?.trim()
@@ -112,7 +109,7 @@ class HHNinjaProvider : MainAPI() {
 
             val epHref = el.attr("href")
             if (epName.contains("Trailer", ignoreCase = true) || epName.contains("PV", ignoreCase = true)) {
-                null // Bỏ qua các tập là Trailer/PV
+                null 
             } else {
                 Episode(
                     data = fixUrl(epHref),
@@ -128,7 +125,7 @@ class HHNinjaProvider : MainAPI() {
             TvType.Movie
         }
         
-        // Selector cho "Phim liên quan" có thể cần kiểm tra lại dựa trên cấu trúc thực tế, nếu không có sẽ trả về list rỗng
+        // Đây là phần lấy recommendations
         val recommendations = document.select("div.list_episode_relate div.movies-list div.movie-item").mapNotNull {
             it.toSearchResult()
         }
@@ -140,7 +137,7 @@ class HHNinjaProvider : MainAPI() {
                 this.posterUrl = poster?.let { fixUrl(it) }
                 this.plot = plot
                 this.year = year
-                this.recommendations = recommendations
+                this.recommendations = recommendations // Truyền recommendations vào đây
                 this.showStatus = showStatus
                 this.tags = genres
             }
@@ -149,7 +146,7 @@ class HHNinjaProvider : MainAPI() {
                 this.posterUrl = poster?.let { fixUrl(it) }
                 this.plot = plot
                 this.year = year
-                this.recommendations = recommendations
+                this.recommendations = recommendations // Và vào đây
                 this.tags = genres
             }
         }
@@ -161,7 +158,6 @@ class HHNinjaProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Sẽ triển khai sau theo yêu cầu
         throw NotImplementedError("loadLinks is not implemented yet for this provider.")
     }
 }
