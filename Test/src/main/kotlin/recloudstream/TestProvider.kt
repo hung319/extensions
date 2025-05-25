@@ -8,7 +8,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.M3u8Helper
-import com.lagradost.cloudstream3.CommonActivity // << THÊM IMPORT NÀY
+// import com.lagradost.cloudstream3.CommonActivity // << KHÔNG CẦN IMPORT NÀY NỮA
 import org.jsoup.nodes.Element
 import org.jsoup.Jsoup
 import java.net.URLEncoder
@@ -242,17 +242,14 @@ class Anime47Provider : MainAPI() {
                             "Origin" to mainUrl
                         )
                         
-                        // 1. Tạo một instance của M3u8Helper (sử dụng constructor không tham số)
-                        val m3u8HelperInstance = M3u8Helper() // <<< SỬA LẠI Ở ĐÂY
+                        val m3u8HelperInstance = M3u8Helper() // Sử dụng constructor không tham số
 
-                        // 2. Tạo đối tượng input cho m3u8Generation
                         val m3u8StreamInput = M3u8Helper.M3u8Stream(
                             streamUrl = videoUrl,
                             quality = Qualities.Unknown.value,
                             headers = requestHeadersForM3u8Helper
                         )
 
-                        // 3. Gọi m3u8Generation trên instance của M3u8Helper
                         val processedStreams: List<M3u8Helper.M3u8Stream> = m3u8HelperInstance.m3u8Generation(
                             m3u8 = m3u8StreamInput
                         )
@@ -260,27 +257,16 @@ class Anime47Provider : MainAPI() {
                         if (processedStreams.isNotEmpty()) {
                             println("Anime47Provider: M3u8Helper.m3u8Generation returned ${processedStreams.size} stream(s).")
                             processedStreams.forEach { processedStream ->
-                                var finalStreamUrl = processedStream.streamUrl
-                                println("Anime47Provider: M3U8 Helper generated raw stream URL: $finalStreamUrl")
-
-                                // Nếu URL trả về là tương đối (bắt đầu bằng /), ghép với IP server cục bộ
-                                if (finalStreamUrl.startsWith("/")) {
-                                    val localBaseUrl = CommonActivity.getIpAddress() // Ví dụ: "http://127.0.0.1:12345"
-                                    if (localBaseUrl != null) {
-                                        finalStreamUrl = "$localBaseUrl$finalStreamUrl"
-                                        println("Anime47Provider: Made local URL absolute: $finalStreamUrl")
-                                    } else {
-                                        println("Anime47Provider: ERROR - CommonActivity.getIpAddress() is null, cannot make URL absolute.")
-                                        // Cân nhắc không callback nếu URL không hoàn chỉnh
-                                        // hoặc callback với URL tương đối và hy vọng player xử lý được
-                                    }
-                                }
+                                // Sử dụng trực tiếp processedStream.streamUrl
+                                // M3u8Helper thường trả về URL tuyệt đối dạng http://127.0.0.1:PORT/...
+                                val finalStreamUrl = processedStream.streamUrl
+                                println("Anime47Provider: M3U8 Helper generated stream URL for player: $finalStreamUrl")
                                 
                                 callback(
                                     ExtractorLink(
                                         source = "$name $serverNameDisplay (M3U8 Helper)",
                                         name = "$name $serverNameDisplay HLS",
-                                        url = finalStreamUrl, // URL đã được làm tuyệt đối (nếu cần)
+                                        url = finalStreamUrl, // URL này NÊN là tuyệt đối từ M3u8Helper
                                         referer = data,
                                         quality = processedStream.quality ?: Qualities.Unknown.value,
                                         type = ExtractorLinkType.M3U8,
