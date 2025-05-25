@@ -8,13 +8,12 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.M3u8Helper
-// import com.lagradost.cloudstream3.CommonActivity // << KHÔNG CẦN IMPORT NÀY NỮA
 import org.jsoup.nodes.Element
 import org.jsoup.Jsoup
 import java.net.URLEncoder
 
 class Anime47Provider : MainAPI() {
-    override var mainUrl = "https://anime47.fun"
+    override var mainUrl = "https://anime47.fun" // Giữ nguyên baseUrl này
     override var name = "Anime47"
     override val hasMainPage = true
     override var lang = "vi"
@@ -199,7 +198,11 @@ class Anime47Provider : MainAPI() {
         val preferredServerId = "4"
         val serverNameDisplay = "Fe"
 
-        val commonUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
+        // User-Agent dùng cho request player.php (có thể giữ nguyên hoặc đổi sang mobile nếu cần)
+        val desktopUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
+        // User-Agent dùng cho M3u8Helper khi tải segment (dựa theo curl)
+        val mobileSegmentUA = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36"
+
         val thanhhoaRegex = Regex("""var\s+thanhhoa\s*=\s*atob\(['"](.*?)['"]\)""")
         val externalDecryptApiBase = "https://m3u8.013666.xyz/anime47/link/"
 
@@ -208,7 +211,7 @@ class Anime47Provider : MainAPI() {
         try {
             val apiUrl = "$mainUrl/player/player.php"
             val apiHeaders = mapOf(
-                "X-Requested-With" to "XMLHttpRequest", "User-Agent" to commonUA,
+                "X-Requested-With" to "XMLHttpRequest", "User-Agent" to desktopUA, // Dùng desktopUA cho request này
                 "Origin" to mainUrl, "Referer" to data
             )
             val apiResponse = app.post(apiUrl, data = mapOf("ID" to episodeId, "SV" to preferredServerId), referer = data, headers = apiHeaders).document
@@ -236,13 +239,14 @@ class Anime47Provider : MainAPI() {
                     if (videoUrl != null && videoUrl.startsWith("http")) {
                         println("Anime47Provider: Extracted M3U8 URL: $videoUrl. Processing with M3u8Helper instance.")
 
+                        // Headers mà M3u8Helper sẽ sử dụng khi fetch segment từ `videoUrl`
                         val requestHeadersForM3u8Helper = mapOf(
-                            "Referer" to data,
-                            "User-Agent" to commonUA,
-                            "Origin" to mainUrl
+                            "Referer" to mainUrl,          // << ĐỔI THÀNH mainUrl (https://anime47.fun/) theo curl
+                            "User-Agent" to mobileSegmentUA // << SỬ DỤNG User-Agent Mobile
+                            // "Origin" đã được loại bỏ
                         )
                         
-                        val m3u8HelperInstance = M3u8Helper() // Sử dụng constructor không tham số
+                        val m3u8HelperInstance = M3u8Helper()
 
                         val m3u8StreamInput = M3u8Helper.M3u8Stream(
                             streamUrl = videoUrl,
@@ -257,8 +261,6 @@ class Anime47Provider : MainAPI() {
                         if (processedStreams.isNotEmpty()) {
                             println("Anime47Provider: M3u8Helper.m3u8Generation returned ${processedStreams.size} stream(s).")
                             processedStreams.forEach { processedStream ->
-                                // Sử dụng trực tiếp processedStream.streamUrl
-                                // M3u8Helper thường trả về URL tuyệt đối dạng http://127.0.0.1:PORT/...
                                 val finalStreamUrl = processedStream.streamUrl
                                 println("Anime47Provider: M3U8 Helper generated stream URL for player: $finalStreamUrl")
                                 
@@ -266,11 +268,11 @@ class Anime47Provider : MainAPI() {
                                     ExtractorLink(
                                         source = "$name $serverNameDisplay (M3U8 Helper)",
                                         name = "$name $serverNameDisplay HLS",
-                                        url = finalStreamUrl, // URL này NÊN là tuyệt đối từ M3u8Helper
-                                        referer = data,
+                                        url = finalStreamUrl, 
+                                        referer = data, // Vẫn giữ referer gốc của trang xem phim cho ExtractorLink
                                         quality = processedStream.quality ?: Qualities.Unknown.value,
                                         type = ExtractorLinkType.M3U8,
-                                        headers = processedStream.headers 
+                                        headers = processedStream.headers // Truyền headers từ processedStream nếu có (thường M3u8Helper đã xử lý)
                                     )
                                 )
                             }
@@ -301,6 +303,7 @@ class Anime47Provider : MainAPI() {
             e.printStackTrace()
         }
 
+        // Fallback logic giữ nguyên
         if (!sourceLoaded) {
             println("Anime47Provider: Primary methods failed. Trying iframe fallback on original page: $data")
             try {
@@ -318,6 +321,7 @@ class Anime47Provider : MainAPI() {
                 e.printStackTrace()
             }
         }
+
 
         if (!sourceLoaded) {
             println("Anime47Provider: Failed to load video link from any source for: $data")
