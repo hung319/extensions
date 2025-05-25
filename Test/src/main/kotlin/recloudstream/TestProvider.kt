@@ -1,16 +1,17 @@
 package com.lagradost.cloudstream3.plugins.hhninjaprovider
 
-import com.fasterxml.jackson.annotation.JsonProperty 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
+// import com.lagradost.cloudstream3.network.CloudflareKiller // Bỏ comment nếu cần CloudflareKiller
+// import com.lagradost.cloudstream3.syncproviders.AccountManager // Bỏ comment nếu cần AccountManager
 
 class HHNinjaProvider : MainAPI() {
-    override var mainUrl = "https://hhninja25.tv"
-    override var name = "HHNinja25"
+    override var mainUrl = "https://hhninja.top" // Đã cập nhật mainUrl
+    override var name = "HHNinja.top" // Đổi tên cho phù hợp
     override val hasMainPage = true
     override var lang = "vi"
-    override val hasDownloadSupport = true 
+    override val hasDownloadSupport = true
     override val supportedTypes = setOf(
         TvType.Movie,
         TvType.TvSeries,
@@ -19,8 +20,9 @@ class HHNinjaProvider : MainAPI() {
         TvType.AsianDrama
     )
 
+    // Cập nhật các đường dẫn cho MainPage dựa trên main.html mới (ví dụ phim-moi-cap-nhap.html)
     override val mainPage = mainPageOf(
-        "$mainUrl/phim-moi.html?p=" to "Phim Mới Cập Nhật",
+        "$mainUrl/phim-moi-cap-nhap.html?p=" to "Mới Cập Nhật", // Cập nhật từ main.html
         "$mainUrl/the-loai/phim-2d.html?p=" to "Phim 2D",
         "$mainUrl/the-loai/phim-3d.html?p=" to "Phim 3D",
         "$mainUrl/loc-phim/W1tdLFtdLFsxXSxbXV0=?p=" to "Phim Lẻ",
@@ -32,7 +34,8 @@ class HHNinjaProvider : MainAPI() {
         request: MainPageRequest
     ): HomePageResponse {
         val url = request.data + page
-        val document = app.get(url).document
+        // Log.d(name, "getMainPage URL: $url") // Bỏ comment để debug nếu cần
+        val document = app.get(url).document // Thử với app.get(url, allowRedirects = false).document nếu vẫn lỗi redirect
         val home = document.select("div.movies-list div.movie-item").mapNotNull {
             it.toSearchResult()
         }
@@ -42,24 +45,26 @@ class HHNinjaProvider : MainAPI() {
     private fun Element.toSearchResult(): SearchResponse? {
         val title = this.selectFirst("div.name-movie")?.text()?.trim() ?: return null
         var href = this.selectFirst("a")?.attr("href") ?: return null
+        // Đảm bảo href là tương đối (bắt đầu bằng /) hoặc tuyệt đối
         if (!href.startsWith("http") && !href.startsWith("/")) {
             href = "/$href"
         }
 
-        val posterUrl = this.selectFirst("img")?.attr("src")
+        val posterUrl = this.selectFirst("img")?.attr("src") // Có thể là data-src nếu lazyload
+           ?: this.selectFirst("img")?.attr("data-src")
+
         val episodeStr = this.selectFirst("div.episode-latest span")?.text()?.trim()
 
         return newAnimeSearchResponse(title, fixUrl(href)) {
-            this.posterUrl = fixUrl(posterUrl ?: "")
+            this.posterUrl = posterUrl?.let { fixUrl(it) }
             if (episodeStr != null) {
-                val epRegex = Regex("""(?:Tập\s*)?(\d+)(?:[/| ]\s*\d+\s*)?""")
+                val epRegex = Regex("""(?:Tập\s*)?(\d+)(?:(?:[/| ]\s*\d+\s*)?|$)""")
                 val matchResult = epRegex.find(episodeStr)
                 val currentEpisode = matchResult?.groupValues?.get(1)?.toIntOrNull()
 
                 val isDub = episodeStr.contains("Lồng tiếng", ignoreCase = true) || episodeStr.contains("Thuyết Minh", ignoreCase = true)
                 val isSub = episodeStr.contains("Vietsub", ignoreCase = true) || !isDub 
 
-                // Sửa lỗi ở đây:
                 addDubStatus(
                     dubExist = isDub,
                     subExist = isSub,
@@ -84,6 +89,7 @@ class HHNinjaProvider : MainAPI() {
 
         val title = document.selectFirst("h1.heading_movie")?.text()?.trim() ?: return null
         val poster = document.selectFirst("div.info-movie div.head div.first img")?.attr("src")
+            ?: document.selectFirst("div.info-movie div.head div.first img")?.attr("data-src")
         val plot = document.selectFirst("div.desc div[style*='overflow:auto'] p")?.text()?.trim()
         
         val yearText = document.select("div.info-movie div.head div.last div.update_time > div:contains(Năm) + div")?.text()?.trim()
@@ -92,7 +98,7 @@ class HHNinjaProvider : MainAPI() {
         val statusText = document.select("div.info-movie div.head div.last div.status > div:contains(Trạng Thái) + div")?.text()?.trim()
         val showStatus = when {
             statusText?.contains("Đang Cập Nhật", ignoreCase = true) == true -> ShowStatus.Ongoing
-            statusText?.contains("Hoàn Thành", ignoreCase = true) == true -> ShowStatus.Completed
+            statusText?.contains("Hoàn Thành", ignoreCase = true) == true || statusText?.contains("Full", ignoreCase = true) == true -> ShowStatus.Completed
             else -> null
         }
 
@@ -102,14 +108,18 @@ class HHNinjaProvider : MainAPI() {
             val epNumMatch = epNumRegex.find(epNameFull)
             val epNumString = epNumMatch?.groupValues?.get(1)
             
-            val epName = if (epNumString != null) "Tập $epNumString" else epNameFull
+            val epName = if (epNumString != null && !epNumString.contains("Trailer", ignoreCase = true) && !epNumString.contains("PV", ignoreCase = true) ) "Tập $epNumString" else epNameFull
 
             val epHref = el.attr("href")
-            Episode(
-                data = fixUrl(epHref),
-                name = epName,
-                episode = epNumString?.replace(Regex("[^0-9]"), "")?.toIntOrNull()
-            )
+            if (epName.contains("Trailer", ignoreCase = true) || epName.contains("PV", ignoreCase = true)) {
+                null // Bỏ qua các tập là Trailer/PV
+            } else {
+                Episode(
+                    data = fixUrl(epHref),
+                    name = epName,
+                    episode = epNumString?.replace(Regex("[^0-9]"), "")?.toIntOrNull()
+                )
+            }
         }.reversed()
 
         val tvType = if (episodes.size > 1 || episodes.any { it.name?.contains("Tập", ignoreCase = true) == true && it.name?.contains("Full", ignoreCase = true) == false}) {
@@ -118,7 +128,7 @@ class HHNinjaProvider : MainAPI() {
             TvType.Movie
         }
         
-        // Giả sử selector cho phim đề xuất là tương tự, nếu không có thì trả về list rỗng
+        // Selector cho "Phim liên quan" có thể cần kiểm tra lại dựa trên cấu trúc thực tế, nếu không có sẽ trả về list rỗng
         val recommendations = document.select("div.list_episode_relate div.movies-list div.movie-item").mapNotNull {
             it.toSearchResult()
         }
@@ -127,7 +137,7 @@ class HHNinjaProvider : MainAPI() {
 
         return if (tvType == TvType.TvSeries) {
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
-                this.posterUrl = fixUrl(poster ?: "")
+                this.posterUrl = poster?.let { fixUrl(it) }
                 this.plot = plot
                 this.year = year
                 this.recommendations = recommendations
@@ -136,7 +146,7 @@ class HHNinjaProvider : MainAPI() {
             }
         } else {
             newMovieLoadResponse(title, url, TvType.Movie, fixUrl(episodes.firstOrNull()?.data ?: "")) {
-                this.posterUrl = fixUrl(poster ?: "")
+                this.posterUrl = poster?.let { fixUrl(it) }
                 this.plot = plot
                 this.year = year
                 this.recommendations = recommendations
@@ -151,6 +161,7 @@ class HHNinjaProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // Sẽ triển khai sau theo yêu cầu
         throw NotImplementedError("loadLinks is not implemented yet for this provider.")
     }
 }
