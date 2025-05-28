@@ -16,8 +16,9 @@ import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 import java.security.Security
-import java.util.Base64
+import java.util.Base64 // Import cho Base64
 import org.bouncycastle.jce.provider.BouncyCastleProvider
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper // Import Jackson để tạo JSON string
 
 class MotChillProvider : MainAPI() {
     override var mainUrl = "https://www.motchill86.com"
@@ -35,6 +36,13 @@ class MotChillProvider : MainAPI() {
     }
 
     private val cfKiller = CloudflareKiller()
+    private val objectMapper = jacksonObjectMapper() // Jackson ObjectMapper
+    private val proxyBaseUrl = "https://proxy.h4rs.io.vn/proxy"
+
+
+    private fun base64Encode(input: String): String {
+        return Base64.getEncoder().encodeToString(input.toByteArray(Charsets.UTF_8))
+    }
 
     private data class EncryptedSourceJson(
         val ciphertext: String,
@@ -105,7 +113,6 @@ class MotChillProvider : MainAPI() {
         }
     }
 
-    // ... (getMainPage, search, load functions giữ nguyên)
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
@@ -255,6 +262,7 @@ class MotChillProvider : MainAPI() {
     }
 
     private suspend fun extractVideoFromPlay2Page(pageUrl: String, pageReferer: String): String? {
+        // ... (hàm này giữ nguyên)
         try {
             println("$name: Extracting video from play2 page: $pageUrl (Referer: $pageReferer)")
             val pageDocument = app.get(pageUrl, interceptor = cfKiller, referer = pageReferer).document
@@ -277,9 +285,17 @@ class MotChillProvider : MainAPI() {
             println("$name: No trailer function or encrypted JSON found in $pageUrl")
         } catch (e: Exception) {
             println("$name: Error fetching/parsing play2 page $pageUrl: ${e.message}")
-            // e.printStackTrace() // Uncomment for full stack trace
         }
         return null
+    }
+
+    // Hàm tiện ích để tạo URL proxy
+    private fun createProxyUrl(directM3u8Url: String, refererForM3u8: String): String {
+        val encodedM3u8Url = base64Encode(directM3u8Url)
+        val headersMap = mapOf("Referer" to refererForM3u8)
+        val headersJson = objectMapper.writeValueAsString(headersMap)
+        val encodedHeaders = base64Encode(headersJson)
+        return "$proxyBaseUrl?url=$encodedM3u8Url&headers=$encodedHeaders"
     }
 
     override suspend fun loadLinks(
@@ -290,7 +306,7 @@ class MotChillProvider : MainAPI() {
     ): Boolean {
         val initialPageDocument = app.get(data, interceptor = cfKiller, referer = mainUrl).document
         val scriptElementsInitial = initialPageDocument.select("script:containsData(CryptoJSAesDecrypt)")
-        var iframeUrlPlayerPage: String? = null 
+        var iframeUrlPlayerPage: String? = null
 
         for (scriptElement in scriptElementsInitial) {
             val scriptContent = scriptElement.html()
@@ -313,8 +329,13 @@ class MotChillProvider : MainAPI() {
                     val fileRegex = Regex("""file\s*:\s*["'](.*?)["']""")
                     fileRegex.find(sourceBlock)?.groupValues?.get(1)?.let { videoUrl ->
                         if (videoUrl.isNotBlank() && !videoUrl.contains("ads.mp4")) {
-                            val fixedVideoUrl = fixUrl(videoUrl)
-                            callback(ExtractorLink(this.name, "JWPlayer Fallback (Initial)", fixedVideoUrl, data, getQualityForLink(fixedVideoUrl), type = if (fixedVideoUrl.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO))
+                            var finalUrl = fixUrl(videoUrl)
+                            val originalReferer = data
+                            if (finalUrl.contains(".m3u8", ignoreCase = true)) {
+                                finalUrl = createProxyUrl(finalUrl, originalReferer)
+                                println("$name: JWPlayer Fallback M3U8 (Initial Page) proxied to: $finalUrl")
+                            }
+                            callback(ExtractorLink(this.name, "JWPlayer Fallback (Initial)", finalUrl, mainUrl, getQualityForLink(videoUrl), type = if (videoUrl.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO))
                             return true
                         }
                     }
@@ -328,9 +349,9 @@ class MotChillProvider : MainAPI() {
         val playerPageDocument = app.get(absoluteIframeUrlPlayerPage, interceptor = cfKiller, referer = data).document
         var foundAnyLink = false
 
-        // Xử lý Server S2 (link play2.php lấy từ trailer() của player.html)
         val scriptElementsPlayerPage = playerPageDocument.select("script:containsData(function trailer\\(\\))")
-        var serverS2Play2Url: String? = null
+        var serverS2TargetUrl: String? = null // Đây sẽ là URL play2.php hoặc link embed của S2
+
         for (scriptElement in scriptElementsPlayerPage) {
             val scriptContent = scriptElement.html()
             val trailerRegex = Regex("""function\s+trailer\s*\(\s*\)\s*\{\s*return\s+CryptoJSAesDecrypt\(\s*'Encrypt'\s*,\s*`([^`]*)`\s*\)\s*;\s*\}""")
@@ -338,40 +359,53 @@ class MotChillProvider : MainAPI() {
             if (matchResult != null) {
                 val encryptedJsonString = matchResult.groupValues[1]
                  if (encryptedJsonString.startsWith("{") && encryptedJsonString.endsWith("}")) {
-                    serverS2Play2Url = cryptoJSAesDecrypt("Encrypt", encryptedJsonString)
-                    if (serverS2Play2Url != null) break
+                    serverS2TargetUrl = cryptoJSAesDecrypt("Encrypt", encryptedJsonString)
+                    if (serverS2TargetUrl != null) break
                 }
             }
         }
         
-        if (!serverS2Play2Url.isNullOrBlank()) {
-            val s2Play2PageActualUrl = fixUrl(serverS2Play2Url) // Đây là URL play2.php của S2
-            println("$name: Server S2 play2.php URL: $s2Play2PageActualUrl")
-            val s2DirectVideoUrl = extractVideoFromPlay2Page(s2Play2PageActualUrl, absoluteIframeUrlPlayerPage) 
-            if (s2DirectVideoUrl != null) {
-                println("$name: Server S2 M3U8: $s2DirectVideoUrl")
-                callback(ExtractorLink(
-                    this.name, 
-                    "Server S2 (Chính)", 
-                    s2DirectVideoUrl, 
-                    referer = s2Play2PageActualUrl, // Referer là trang play2.php của S2
-                    quality = getQualityForLink(s2DirectVideoUrl), 
-                    type = if (s2DirectVideoUrl.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                ))
+        if (!serverS2TargetUrl.isNullOrBlank()) {
+            val s2Play2PageActualUrl = fixUrl(serverS2TargetUrl) 
+            println("$name: Server S2 Target URL (from player.html trailer): $s2Play2PageActualUrl")
+
+            // Kiểm tra xem s2Play2PageActualUrl có phải là link play2.php không
+            if (s2Play2PageActualUrl.contains("play2.php")) {
+                val s2DirectVideoUrl = extractVideoFromPlay2Page(s2Play2PageActualUrl, absoluteIframeUrlPlayerPage) 
+                if (s2DirectVideoUrl != null) {
+                    println("$name: Server S2 M3U8 (from play2.php): $s2DirectVideoUrl")
+                    var finalS2Url = s2DirectVideoUrl
+                    val refererForS2M3U8 = s2Play2PageActualUrl // Referer là trang play2.php
+                    if (finalS2Url.contains(".m3u8", ignoreCase = true)) {
+                        finalS2Url = createProxyUrl(finalS2Url, refererForS2M3U8)
+                        println("$name: Server S2 M3U8 proxied to: $finalS2Url")
+                    }
+                    callback(ExtractorLink(this.name, "Server S2 (Chính)", finalS2Url, mainUrl, getQualityForLink(s2DirectVideoUrl), type = if (s2DirectVideoUrl.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO))
+                    foundAnyLink = true
+                } else {
+                     println("$name: Failed to get direct video link for Server S2 from its play2.php page: $s2Play2PageActualUrl")
+                }
+            } else if (s2Play2PageActualUrl.startsWith("http") && (s2Play2PageActualUrl.contains(".m3u8", true) || s2Play2PageActualUrl.contains(".mp4", true))) {
+                // Trường hợp link từ trailer() của player.html là link trực tiếp (ít khả năng dựa trên thông tin mới)
+                println("$name: Server S2 (player.html trailer) is a direct link: $s2Play2PageActualUrl")
+                var finalS2Url = s2Play2PageActualUrl
+                val refererForS2M3U8 = absoluteIframeUrlPlayerPage // Referer là player.html
+                if (finalS2Url.contains(".m3u8", ignoreCase = true)) {
+                    finalS2Url = createProxyUrl(finalS2Url, refererForS2M3U8)
+                    println("$name: Server S2 Direct M3U8 proxied to: $finalS2Url")
+                }
+                callback(ExtractorLink(this.name, "Server S2 (Chính - Direct)", finalS2Url, mainUrl, getQualityForLink(s2Play2PageActualUrl), type = if (s2Play2PageActualUrl.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO))
                 foundAnyLink = true
             } else {
-                 println("$name: Failed to get direct video link for Server S2 from its play2.php page: $s2Play2PageActualUrl")
+                 println("$name: Server S2 link ($s2Play2PageActualUrl) is an unhandled embed or non-direct link.")
             }
         } else {
-            println("$name: Could not find the play2.php URL for Server S2 within player.html")
+            println("$name: Could not find the target URL for Server S2 within player.html's trailer function.")
         }
         
-        // Xử lý các server khác từ player.html (vb_server_list)
         playerPageDocument.select("div#vb_server_list span.vb_btnt-primary").forEach { button ->
             val serverName = button.text()?.trim() ?: "Unknown Server"
-            
-            // Nếu là nút "Server" hoặc "S2#" mà chúng ta đã xử lý qua serverS2Play2Url, thì bỏ qua
-            if ((serverName.equals("Server", ignoreCase = true) || serverName.equals("S2#", ignoreCase = true)) && !serverS2Play2Url.isNullOrBlank()) {
+            if ((button.classNames().contains("activelive") || serverName.equals("Server", ignoreCase = true) || serverName.equals("S2#", ignoreCase = true)) && !serverS2TargetUrl.isNullOrBlank() ) {
                 return@forEach
             }
             if (serverName.contains("HY3", ignoreCase = true)) { 
@@ -384,22 +418,20 @@ class MotChillProvider : MainAPI() {
             val serverUrlStringFromButton = urlRegex.find(onclickAttr)?.groupValues?.get(1)
 
             if (!serverUrlStringFromButton.isNullOrBlank()) {
-                val fullServerUrlTarget = fixUrl(serverUrlStringFromButton) 
-
+                val fullServerUrlTarget = fixUrl(serverUrlStringFromButton)
                 println("$name: Processing other server: $serverName with URL: $fullServerUrlTarget")
 
                 if (fullServerUrlTarget.contains("play2.php")) { 
                     val directVideoUrl = extractVideoFromPlay2Page(fullServerUrlTarget, absoluteIframeUrlPlayerPage) 
                     if (directVideoUrl != null) {
                         println("$name: Decrypted $serverName URL: $directVideoUrl")
-                        callback(ExtractorLink(
-                            this.name, 
-                            serverName, 
-                            directVideoUrl, 
-                            referer = fullServerUrlTarget, // Referer là trang play2.php của server này
-                            quality = getQualityForLink(directVideoUrl), 
-                            type = if (directVideoUrl.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                        ))
+                        var finalServerUrl = directVideoUrl
+                        val refererForM3U8 = fullServerUrlTarget // Referer là trang play2.php của server này
+                        if (finalServerUrl.contains(".m3u8", ignoreCase = true)) {
+                            finalServerUrl = createProxyUrl(finalServerUrl, refererForM3U8)
+                             println("$name: $serverName M3U8 proxied to: $finalServerUrl")
+                        }
+                        callback(ExtractorLink(this.name, serverName, finalServerUrl, mainUrl, getQualityForLink(directVideoUrl), type = if (directVideoUrl.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO))
                         foundAnyLink = true
                     } else {
                          println("$name: Could not decrypt video URL from $serverName ($fullServerUrlTarget)")
@@ -408,7 +440,13 @@ class MotChillProvider : MainAPI() {
                            (fullServerUrlTarget.contains(".m3u8", ignoreCase = true) || 
                             fullServerUrlTarget.contains(".mp4", ignoreCase = true))) { 
                      println("$name: Found direct link for $serverName: $fullServerUrlTarget")
-                     callback(ExtractorLink(this.name, serverName, fullServerUrlTarget, absoluteIframeUrlPlayerPage, getQualityForLink(fullServerUrlTarget), type = if (fullServerUrlTarget.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO))
+                     var finalServerUrl = fullServerUrlTarget
+                     val refererForM3U8 = absoluteIframeUrlPlayerPage // Referer là player.html
+                     if(finalServerUrl.contains(".m3u8", ignoreCase = true)) {
+                        finalServerUrl = createProxyUrl(finalServerUrl, refererForM3U8)
+                        println("$name: $serverName Direct M3U8 proxied to: $finalServerUrl")
+                     }
+                     callback(ExtractorLink(this.name, serverName, finalServerUrl, mainUrl, getQualityForLink(fullServerUrlTarget), type = if (fullServerUrlTarget.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO))
                     foundAnyLink = true
                 } else {
                      println("$name: Skipped non-direct or unhandled server link for $serverName: $fullServerUrlTarget")
