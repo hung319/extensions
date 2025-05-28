@@ -1,11 +1,11 @@
 package com.example.motchill // Make sure this matches your project structure
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.AppUtils // For parseJson and potentially other utilities
+import com.lagradost.cloudstream3.utils.AppUtils 
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.SubtitleFile
-import com.lagradost.cloudstream3.utils.Qualities // *** IMPORT FOR UTILS.QUALITIES ***
+import com.lagradost.cloudstream3.SubtitleFile 
+import com.lagradost.cloudstream3.utils.Qualities 
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.SearchQuality
@@ -17,9 +17,8 @@ import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 import java.security.Security
-// import java.security.spec.KeySpec // Not directly used, can be removed if PBEKeySpec is sufficient
 import java.util.Base64
-import org.bouncycastle.jce.provider.BouncyCastleProvider // *** CORRECT BOUNCY CASTLE IMPORT ***
+import org.bouncycastle.jce.provider.BouncyCastleProvider // This import is correct
 
 class MotChillProvider : MainAPI() {
     override var mainUrl = "https://www.motchill86.com"
@@ -33,7 +32,14 @@ class MotChillProvider : MainAPI() {
     )
 
     init {
-        Security.getProvider("BC") ?: Security.addProvider(BouncyCastleProvider()) // Add if not already present
+        // Try to add BouncyCastle provider. If it's already there, this won't harm.
+        // The unresolved reference error points to the library itself not being on the classpath
+        // for this module during compilation.
+        try {
+            Security.getProvider("BC") ?: Security.addProvider(BouncyCastleProvider())
+        } catch (e: Exception) {
+            println("MotChillProvider: Could not add BouncyCastleProvider. Ensure it's a dependency. $e")
+        }
     }
 
     private val cfKiller = CloudflareKiller()
@@ -63,7 +69,7 @@ class MotChillProvider : MainAPI() {
             val keySizeBits = 256 
             val iterations = 999 
             
-            val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA512", "BC")
+            val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA512", "BC") // "BC" is the BouncyCastle provider
             val spec = PBEKeySpec(passphrase.toCharArray(), saltBytes, iterations, keySizeBits)
             val secret = factory.generateSecret(spec)
             val keyBytes = secret.encoded
@@ -78,12 +84,14 @@ class MotChillProvider : MainAPI() {
             
             String(decryptedBytes, Charsets.UTF_8)
         } catch (e: Exception) {
-            AppUtils.logError(e) // *** Using AppUtils.logError or this.logError if available as extension ***
+            // Using basic println for error logging if logError is problematic
+            println("MotChillProvider Decryption Error: ${e.message}") 
+            e.printStackTrace() 
             null
         }
     }
 
-    private fun getQualityFromSearchString(qualityString: String?): SearchQuality? { // Renamed for clarity
+    private fun getQualityFromSearchString(qualityString: String?): SearchQuality? { 
         return when {
             qualityString == null -> null
             qualityString.contains("1080") -> SearchQuality.HD
@@ -99,7 +107,6 @@ class MotChillProvider : MainAPI() {
         }
     }
     
-    // Function to parse quality for ExtractorLink (returns Int)
     private fun getQualityForLink(url: String): Int {
         return when {
             url.contains("1080p", ignoreCase = true) -> Qualities.P1080.value
