@@ -1,9 +1,9 @@
 package com.example.motchill // Make sure this matches your project structure
 
 import com.lagradost.cloudstream3.*
-// import com.lagradost.cloudstream3.utils.AppUtils // Not needed for fixUrl/fixUrlNull if they are MainAPI extensions
+// import com.lagradost.cloudstream3.utils.AppUtils // Not strictly needed if fixUrl/fixUrlNull are MainAPI extensions
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.SubtitleFile // *** RESTORED AND ENSURING THIS IS THE CORRECT IMPORT ***
+// import com.lagradost.cloudstream3.SubtitleFile // Keep commented if still causing issues
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.SearchQuality
@@ -41,7 +41,7 @@ class MotChillProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        if (page > 1) return HomePageResponse(emptyList())
+        if (page > 1) return newHomePageResponse(emptyList(), false) // Use factory method
 
         val document = app.get(mainUrl, interceptor = cfKiller).document
         val homePageList = ArrayList<HomePageList>()
@@ -71,7 +71,8 @@ class MotChillProvider : MainAPI() {
                 val qualityText = item.selectFirst("div.HD")?.text()?.trim() ?: status
 
                 if (name != null && !name.startsWith("Advertisement") && movieUrl != null) {
-                    MovieSearchResponse(
+                    // Use factory method for MovieSearchResponse
+                    newMovieSearchResponse(
                         name = name,
                         url = movieUrl,
                         apiName = this.name,
@@ -79,6 +80,7 @@ class MotChillProvider : MainAPI() {
                         posterUrl = posterUrl,
                         year = yearText?.toIntOrNull(),
                         quality = getQualityFromString(qualityText)
+                        // posterHeaders = null // Add if needed
                     )
                 } else {
                     null
@@ -111,7 +113,7 @@ class MotChillProvider : MainAPI() {
                 val type = if (status?.contains("Tập") == true || (status?.contains("/") == true && !status.contains("Full", ignoreCase = true))) TvType.TvSeries else TvType.Movie
                 
                 if (name != null && movieUrl != null) {
-                    MovieSearchResponse(
+                    newMovieSearchResponse(
                         name = name,
                         url = movieUrl,
                         apiName = this.name,
@@ -145,8 +147,8 @@ class MotChillProvider : MainAPI() {
                 parseMovieListFromUl(movieListElement, sectionTitle)?.let { homePageList.add(it) }
             }
         }
-        
-        return HomePageResponse(homePageList.filter { it.list.isNotEmpty() })
+        // Use factory method for HomePageResponse
+        return newHomePageResponse(homePageList.filter { it.list.isNotEmpty() }, false)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -183,7 +185,7 @@ class MotChillProvider : MainAPI() {
             val type = if (statusText?.contains("Tập") == true || (statusText?.contains("/") == true && statusText != "Full")) TvType.TvSeries else TvType.Movie
             
             if (name != null && movieUrl != null) {
-                MovieSearchResponse(
+                newMovieSearchResponse( // Use factory method
                     name = name,
                     url = movieUrl,
                     apiName = this.name,
@@ -244,12 +246,13 @@ class MotChillProvider : MainAPI() {
              }
 
             if (recName != null && recUrl != null) {
-                MovieSearchResponse(
+                newMovieSearchResponse( // Use factory method
                     name = recName,
                     url = recUrl,
                     apiName = this.name,
                     type = TvType.Movie, 
                     posterUrl = recPosterUrl
+                    // No quality or year for recommendations is fine
                 )
             } else null
         }
@@ -266,17 +269,48 @@ class MotChillProvider : MainAPI() {
         if (episodeElements.isNotEmpty()) {
             episodeElements.forEachIndexed { index, element ->
                 val episodeLink = fixUrl(element.attr("href"))
-                var episodeName = element.selectFirst("span")?.text()?.trim() 
+                var episodeNameSource = element.selectFirst("span")?.text()?.trim() 
                                     ?: element.text().trim()
-                                    ?: "Tập ${index + 1}"
-                if (episodeName.isBlank()) episodeName = "Server ${index + 1}"
-                episodes.add(Episode(data = episodeLink, name = episodeName))
+                
+                var finalEpisodeName: String
+                if (episodeNameSource.isNullOrBlank()) {
+                    finalEpisodeName = "Server ${index + 1}"
+                } else {
+                    // Check if it's just a number, then prepend "Tập "
+                    if (episodeNameSource.toIntOrNull() != null) {
+                        finalEpisodeName = "Tập $episodeNameSource"
+                    } else if (!episodeNameSource.contains("Tập ", ignoreCase = true) && episodeNameSource.matches(Regex("""\d+"""))) {
+                         // Handles cases like "01", "12" if not caught by toIntOrNull (e.g. if it has leading zeros as string)
+                        finalEpisodeName = "Tập $episodeNameSource"
+                    }
+                    else {
+                        finalEpisodeName = episodeNameSource
+                    }
+                }
+                 // If it's a movie and has "Full" or "Thuyết Minh" but we want to keep it simple for single movie item
+                if (!isTvSeries && episodes.isEmpty() && (finalEpisodeName.contains("Full", ignoreCase = true) || finalEpisodeName.contains("Thuyết Minh", ignoreCase = true))) {
+                     // For a single movie entry, just use the movie title or a generic play button text
+                     // However, the current logic for 'episodes' list is for multiple entries generally
+                     // For single movie, dataUrl is used in MovieLoadResponse
+                }
+
+
+                episodes.add(
+                    newEpisode(data = episodeLink) { // Use factory method for Episode
+                        name = finalEpisodeName
+                        // episode = episodeNameSource.toIntOrNull() // Add episode number if parsable
+                    }
+                )
             }
         } else {
              document.selectFirst("a#btn-film-watch.btn-red[href]")?.let { watchButton ->
                 val movieWatchLink = fixUrl(watchButton.attr("href"))
                 if (movieWatchLink.isNotBlank()){
-                     episodes.add(Episode(data = movieWatchLink, name = title))
+                     episodes.add(
+                         newEpisode(data = movieWatchLink) {
+                             name = title // For a single movie button, use movie title
+                         }
+                     )
                 }
             }
         }
@@ -284,7 +318,8 @@ class MotChillProvider : MainAPI() {
         val currentSyncData = mutableMapOf("url" to url)
 
         if (isTvSeries || (episodes.size > 1 && !episodes.all { it.name == title })) {
-            return TvSeriesLoadResponse(
+            // Use factory method for TvSeriesLoadResponse
+            return newTvSeriesLoadResponse(
                 name = title,
                 url = url,
                 apiName = this.name,
@@ -296,10 +331,12 @@ class MotChillProvider : MainAPI() {
                 tags = genres.distinct().toList(),
                 recommendations = recommendations,
                 syncData = currentSyncData 
+                // Add other required params like contentRating if the factory method needs them
             )
         } else { 
             val movieDataUrl = episodes.firstOrNull()?.data ?: url 
-            return MovieLoadResponse(
+            // Use factory method for MovieLoadResponse
+            return newMovieLoadResponse(
                 name = title,
                 url = url,
                 apiName = this.name,
@@ -311,20 +348,18 @@ class MotChillProvider : MainAPI() {
                 tags = genres.distinct().toList(),
                 recommendations = recommendations,
                 syncData = currentSyncData
+                // Add other required params like contentRating if the factory method needs them
             )
         }
     }
 
-    // Signature now matches the expected one
     override suspend fun loadLinks(
         data: String, 
         isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit, // *** RESTORED TO SubtitleFile ***
+        subtitleCallback: (SubtitleFile) -> Unit, 
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         println("MotChillProvider: loadLinks for $data is not yet implemented.")
-        // If SubtitleFile import is still an issue, this function body won't be reached yet
-        // but the override signature will be correct.
         return false 
     }
 }
