@@ -4,27 +4,18 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.network.CloudflareKiller
-import com.lagradost.cloudstream3.Qualities // *** IMPORT ADDED HERE ***
-
-// BouncyCastle might be needed later for loadLinks if you implement decryption
-// import org.bouncycastle.jce.provider.BouncyCastleProvider
-// import java.security.Security
+import com.lagradost.cloudstream3.Qualities // *** ENSURE THIS IMPORT IS CORRECT ***
 
 class MotChillProvider : MainAPI() {
     override var mainUrl = "https://www.motchill86.com"
     override var name = "MotChill86"
     override val hasMainPage = true
     override var lang = "vi"
-    override val hasDownloadSupport = false // Enable when loadLinks is implemented
+    override val hasDownloadSupport = false
     override val supportedTypes = setOf(
         TvType.Movie,
         TvType.TvSeries
     )
-
-    // init {
-    //     // Security.removeProvider("BC") // Safety remove
-    //     // Security.addProvider(BouncyCastleProvider()) // Add for crypto
-    // }
 
     private val cfKiller = CloudflareKiller()
 
@@ -32,12 +23,11 @@ class MotChillProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        if (page > 1) return HomePageResponse(emptyList()) // Basic pagination guard
+        if (page > 1) return HomePageResponse(emptyList())
 
         val document = app.get(mainUrl, interceptor = cfKiller).document
         val homePageList = ArrayList<HomePageList>()
 
-        // Helper to parse movie lists from ul.list-film
         fun parseMovieListFromUl(element: Element?, title: String): HomePageList? {
             if (element == null) return null
             val movies = element.select("li").mapNotNull { item ->
@@ -69,7 +59,7 @@ class MotChillProvider : MainAPI() {
                         type = type,
                         posterUrl = posterUrl,
                         year = yearText?.toIntOrNull(),
-                        quality = if (item.selectFirst("div.HD") != null || status?.contains("HD", ignoreCase = true) == true || status?.contains("Bản Đẹp", ignoreCase = true) == true) Qualities.HD else null // *** FIXED HERE ***
+                        quality = if (item.selectFirst("div.HD") != null || status?.contains("HD", ignoreCase = true) == true || status?.contains("Bản Đẹp", ignoreCase = true) == true) Qualities.P720 else null // *** CHANGED TO P720 ***
                     )
                 } else {
                     null
@@ -78,7 +68,6 @@ class MotChillProvider : MainAPI() {
             return if (movies.isNotEmpty()) HomePageList(title, movies) else null
         }
 
-        // Parse "Phim Hot" Slider (owl-demo)
         document.selectFirst("#owl-demo.owl-carousel")?.let { owl ->
             val hotMovies = owl.select("div.item").mapNotNull { item ->
                 val linkTag = item.selectFirst("a")
@@ -110,7 +99,7 @@ class MotChillProvider : MainAPI() {
                         type = type,
                         posterUrl = posterUrl,
                         year = null, 
-                        quality = Qualities.HD // *** FIXED HERE ***
+                        quality = Qualities.P720 // *** CHANGED TO P720 ***
                     )
                 } else null
             }
@@ -119,7 +108,6 @@ class MotChillProvider : MainAPI() {
             }
         }
 
-        // Parse other sections
         document.select("div.heading-phim").forEach { sectionTitleElement ->
             val sectionTitle = sectionTitleElement.selectFirst("h2.title_h1_st1 a span")?.text() 
                 ?: sectionTitleElement.selectFirst("h2.title_h1_st1 a")?.text()
@@ -181,7 +169,7 @@ class MotChillProvider : MainAPI() {
                     type = type,
                     posterUrl = posterUrl,
                     year = year,
-                    quality = if (hdText == "Bản Đẹp" || hdText == "HD" || statusText?.contains("HD", ignoreCase = true) == true) Qualities.HD else null // *** FIXED HERE ***
+                    quality = if (hdText == "Bản Đẹp" || hdText == "HD" || statusText?.contains("HD", ignoreCase = true) == true) Qualities.P720 else null // *** CHANGED TO P720 ***
                 )
             } else {
                 null
@@ -272,7 +260,7 @@ class MotChillProvider : MainAPI() {
             }
         }
 
-        val currentSyncData = mutableMapOf("url" to url) // *** FIXED HERE: Changed to mutableMapOf ***
+        val currentSyncData = mutableMapOf("url" to url)
 
         if (isTvSeries || (episodes.size > 1 && !episodes.all {it.name == title})) {
             return TvSeriesLoadResponse(
