@@ -1,10 +1,14 @@
 package com.example.motchill // Make sure this matches your project structure
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.Qualities // This seems to be the correct path for the detailed enum
+import com.lagradost.cloudstream3.SearchQuality // **** TRY ADDING THIS IMPORT ****
+import com.lagradost.cloudstream3.utils.AppUtils
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.SubtitleFile
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.network.CloudflareKiller
-import com.lagradost.cloudstream3.Qualities // *** ENSURE THIS IMPORT IS CORRECT ***
+
 
 class MotChillProvider : MainAPI() {
     override var mainUrl = "https://www.motchill86.com"
@@ -19,13 +23,26 @@ class MotChillProvider : MainAPI() {
 
     private val cfKiller = CloudflareKiller()
 
+    private fun getQualityFromString(qualityString: String?): SearchQuality? {
+        return when {
+            qualityString == null -> null
+            qualityString.contains("720") -> SearchQuality.HD
+            qualityString.contains("1080") -> SearchQuality.FullHd
+            qualityString.contains("4K") || qualityString.contains("2160") -> SearchQuality.UHD
+            qualityString.contains("HD") -> SearchQuality.HD // General HD
+            qualityString.contains("Bản Đẹp") -> SearchQuality.HD // Treat "Bản Đẹp" as HD
+            else -> null // Or SearchQuality.SD if appropriate
+        }
+    }
+
+
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
         if (page > 1) return HomePageResponse(emptyList())
 
-        val document = app.get(mainUrl, interceptor = cfKiller).document
+        val document = AppUtils.parseHTML(app.get(mainUrl, interceptor = cfKiller).text)
         val homePageList = ArrayList<HomePageList>()
 
         fun parseMovieListFromUl(element: Element?, title: String): HomePageList? {
@@ -50,6 +67,7 @@ class MotChillProvider : MainAPI() {
 
                 val status = item.selectFirst("div.status")?.text()?.trim()
                 val type = if (status?.contains("Tập") == true || (status?.contains("/") == true && !status.contains("Full", ignoreCase = true))) TvType.TvSeries else TvType.Movie
+                val qualityText = item.selectFirst("div.HD")?.text()?.trim() ?: status
 
                 if (name != null && !name.startsWith("Advertisement") && movieUrl != null) {
                     MovieSearchResponse(
@@ -59,7 +77,7 @@ class MotChillProvider : MainAPI() {
                         type = type,
                         posterUrl = posterUrl,
                         year = yearText?.toIntOrNull(),
-                        quality = if (item.selectFirst("div.HD") != null || status?.contains("HD", ignoreCase = true) == true || status?.contains("Bản Đẹp", ignoreCase = true) == true) Qualities.P720 else null // *** CHANGED TO P720 ***
+                        quality = getQualityFromString(qualityText) // *** MAPPED HERE ***
                     )
                 } else {
                     null
@@ -99,7 +117,7 @@ class MotChillProvider : MainAPI() {
                         type = type,
                         posterUrl = posterUrl,
                         year = null, 
-                        quality = Qualities.P720 // *** CHANGED TO P720 ***
+                        quality = getQualityFromString(status) // *** MAPPED HERE ***
                     )
                 } else null
             }
@@ -133,7 +151,7 @@ class MotChillProvider : MainAPI() {
         val searchQuery = query.trim().replace(Regex("\\s+"), "-").lowercase()
         val searchUrl = "$mainUrl/search/$searchQuery/" 
         
-        val document = app.get(searchUrl, interceptor = cfKiller).document
+        val document = AppUtils.parseHTML(app.get(searchUrl, interceptor = cfKiller).text)
 
         return document.select("ul.list-film li").mapNotNull { item ->
             val titleElement = item.selectFirst("div.info div.name a")
@@ -158,6 +176,8 @@ class MotChillProvider : MainAPI() {
 
             val statusText = item.selectFirst("div.status")?.text()?.trim()
             val hdText = item.selectFirst("div.HD")?.text()?.trim()
+            val qualityString = hdText ?: statusText
+
 
             val type = if (statusText?.contains("Tập") == true || (statusText?.contains("/") == true && statusText != "Full")) TvType.TvSeries else TvType.Movie
             
@@ -169,7 +189,7 @@ class MotChillProvider : MainAPI() {
                     type = type,
                     posterUrl = posterUrl,
                     year = year,
-                    quality = if (hdText == "Bản Đẹp" || hdText == "HD" || statusText?.contains("HD", ignoreCase = true) == true) Qualities.P720 else null // *** CHANGED TO P720 ***
+                    quality = getQualityFromString(qualityString) // *** MAPPED HERE ***
                 )
             } else {
                 null
@@ -178,7 +198,7 @@ class MotChillProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url, interceptor = cfKiller).document
+        val document = AppUtils.parseHTML(app.get(url, interceptor = cfKiller).text)
 
         val title = document.selectFirst("h1.movie-title span.title-1")?.text()?.trim() ?: return null
         val yearText = document.selectFirst("h1.movie-title span.title-year")?.text()?.replace("(", "")?.replace(")", "")?.trim()
