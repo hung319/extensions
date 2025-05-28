@@ -86,6 +86,7 @@ subprojects {
         implementation("app.cash.quickjs:quickjs-android:0.9.2")
         implementation("com.github.vidstige:jadb:v1.2.1")
         implementation("io.karn:khttp-android:0.1.2")
+        implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
     }
 }
 
