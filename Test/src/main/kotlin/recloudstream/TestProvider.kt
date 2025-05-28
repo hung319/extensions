@@ -1,14 +1,12 @@
 package com.example.motchill // Make sure this matches your project structure
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.Qualities // This seems to be the correct path for the detailed enum
-import com.lagradost.cloudstream3.SearchQuality // **** TRY ADDING THIS IMPORT ****
-import com.lagradost.cloudstream3.utils.AppUtils
+import com.lagradost.cloudstream3.utils.AppUtils // Keep for fixUrlNull if needed, but parseHTML removed
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.SubtitleFile
+import com.lagradost.cloudstream3.utils.SubtitleFile // *** IMPORT ADDED ***
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.network.CloudflareKiller
-
+import com.lagradost.cloudstream3.SearchQuality // Ensure this is the correct import for SearchQuality
 
 class MotChillProvider : MainAPI() {
     override var mainUrl = "https://www.motchill86.com"
@@ -27,14 +25,13 @@ class MotChillProvider : MainAPI() {
         return when {
             qualityString == null -> null
             qualityString.contains("720") -> SearchQuality.HD
-            qualityString.contains("1080") -> SearchQuality.FullHd
-            qualityString.contains("4K") || qualityString.contains("2160") -> SearchQuality.UHD
-            qualityString.contains("HD") -> SearchQuality.HD // General HD
-            qualityString.contains("Bản Đẹp") -> SearchQuality.HD // Treat "Bản Đẹp" as HD
-            else -> null // Or SearchQuality.SD if appropriate
+            qualityString.contains("1080") -> SearchQuality.FullHd // *** FIXED: was FullHd, ensure this exists ***
+            qualityString.contains("4K", ignoreCase = true) || qualityString.contains("2160") -> SearchQuality.UHD
+            qualityString.contains("HD", ignoreCase = true) -> SearchQuality.HD // General HD
+            qualityString.contains("Bản Đẹp", ignoreCase = true) -> SearchQuality.HD
+            else -> null
         }
     }
-
 
     override suspend fun getMainPage(
         page: Int,
@@ -42,27 +39,27 @@ class MotChillProvider : MainAPI() {
     ): HomePageResponse {
         if (page > 1) return HomePageResponse(emptyList())
 
-        val document = AppUtils.parseHTML(app.get(mainUrl, interceptor = cfKiller).text)
+        val document = app.get(mainUrl, interceptor = cfKiller).document // *** REVERTED TO .document ***
         val homePageList = ArrayList<HomePageList>()
 
         fun parseMovieListFromUl(element: Element?, title: String): HomePageList? {
             if (element == null) return null
-            val movies = element.select("li").mapNotNull { item ->
+            val movies = element.select("li").mapNotNull { item -> // item should be Element
                 val titleElement = item.selectFirst("div.info h4.name a")
                 val nameText = titleElement?.text()
                 val yearText = item.selectFirst("div.info h4.name")?.ownText()?.trim()
                 val name = nameText?.substringBeforeLast(yearText ?: "")?.trim() ?: nameText
 
-                val movieUrl = fixUrlNull(titleElement?.attr("href"))
-                var posterUrl = fixUrlNull(item.selectFirst("img")?.attr("src"))
+                val movieUrl = AppUtils.fixUrlNull(titleElement?.attr("href")) // Use AppUtils for URL fixing
+                var posterUrl = AppUtils.fixUrlNull(item.selectFirst("img")?.attr("src"))
                 if (posterUrl.isNullOrEmpty() || posterUrl.contains("p21-ad-sg.ibyteimg.com")) {
                     val onerrorPoster = item.selectFirst("img")?.attr("onerror")
                     if (onerrorPoster?.contains("this.src=") == true) {
-                        posterUrl = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
+                        posterUrl = AppUtils.fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
                     }
                 }
                 if (posterUrl.isNullOrEmpty()) {
-                    posterUrl = fixUrlNull(item.selectFirst("img")?.attr("data-src"))
+                    posterUrl = AppUtils.fixUrlNull(item.selectFirst("img")?.attr("data-src"))
                 }
 
                 val status = item.selectFirst("div.status")?.text()?.trim()
@@ -77,7 +74,7 @@ class MotChillProvider : MainAPI() {
                         type = type,
                         posterUrl = posterUrl,
                         year = yearText?.toIntOrNull(),
-                        quality = getQualityFromString(qualityText) // *** MAPPED HERE ***
+                        quality = getQualityFromString(qualityText)
                     )
                 } else {
                     null
@@ -89,21 +86,21 @@ class MotChillProvider : MainAPI() {
         document.selectFirst("#owl-demo.owl-carousel")?.let { owl ->
             val hotMovies = owl.select("div.item").mapNotNull { item ->
                 val linkTag = item.selectFirst("a")
-                val movieUrl = fixUrlNull(linkTag?.attr("href"))
+                val movieUrl = AppUtils.fixUrlNull(linkTag?.attr("href"))
                 var name = linkTag?.attr("title")
                 if (name.isNullOrEmpty()) {
                     name = item.selectFirst("div.overlay h4.name a")?.text()?.trim()
                 }
 
-                var posterUrl = fixUrlNull(item.selectFirst("img")?.attr("src"))
+                var posterUrl = AppUtils.fixUrlNull(item.selectFirst("img")?.attr("src"))
                 if (posterUrl.isNullOrEmpty() || posterUrl.contains("p21-ad-sg.ibyteimg.com")) {
                     val onerrorPoster = item.selectFirst("img")?.attr("onerror")
                     if (onerrorPoster?.contains("this.src=") == true) {
-                        posterUrl = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
+                        posterUrl = AppUtils.fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
                     }
                 }
                 if (posterUrl.isNullOrEmpty()) {
-                    posterUrl = fixUrlNull(item.selectFirst("img")?.attr("data-src"))
+                    posterUrl = AppUtils.fixUrlNull(item.selectFirst("img")?.attr("data-src"))
                 }
 
                 val status = item.selectFirst("div.status")?.text()?.trim()
@@ -117,7 +114,7 @@ class MotChillProvider : MainAPI() {
                         type = type,
                         posterUrl = posterUrl,
                         year = null, 
-                        quality = getQualityFromString(status) // *** MAPPED HERE ***
+                        quality = getQualityFromString(status)
                     )
                 } else null
             }
@@ -127,7 +124,7 @@ class MotChillProvider : MainAPI() {
         }
 
         document.select("div.heading-phim").forEach { sectionTitleElement ->
-            val sectionTitle = sectionTitleElement.selectFirst("h2.title_h1_st1 a span")?.text() 
+            val sectionTitleText = sectionTitleElement.selectFirst("h2.title_h1_st1 a span")?.text() 
                 ?: sectionTitleElement.selectFirst("h2.title_h1_st1 a")?.text()
                 ?: sectionTitleElement.selectFirst("h2.title_h1_st1")?.text()
 
@@ -138,9 +135,10 @@ class MotChillProvider : MainAPI() {
                  movieListElementContainer = sectionTitleElement.parent()?.select("ul.list-film")?.first()
                  movieListElement = movieListElementContainer
             }
-
+            
+            val sectionTitle = sectionTitleText?.trim()
             if (sectionTitle != null && movieListElement != null) {
-                parseMovieListFromUl(movieListElement, sectionTitle.trim())?.let { homePageList.add(it) }
+                parseMovieListFromUl(movieListElement, sectionTitle)?.let { homePageList.add(it) }
             }
         }
         
@@ -151,33 +149,32 @@ class MotChillProvider : MainAPI() {
         val searchQuery = query.trim().replace(Regex("\\s+"), "-").lowercase()
         val searchUrl = "$mainUrl/search/$searchQuery/" 
         
-        val document = AppUtils.parseHTML(app.get(searchUrl, interceptor = cfKiller).text)
+        val document = app.get(searchUrl, interceptor = cfKiller).document // *** REVERTED TO .document ***
 
         return document.select("ul.list-film li").mapNotNull { item ->
             val titleElement = item.selectFirst("div.info div.name a")
             val nameText = titleElement?.text()
-            val movieUrl = fixUrlNull(titleElement?.attr("href"))
+            val movieUrl = AppUtils.fixUrlNull(titleElement?.attr("href"))
 
             val yearRegex = Regex("""\s+(\d{4})$""")
             val yearMatch = nameText?.let { yearRegex.find(it) }
             val year = yearMatch?.groupValues?.get(1)?.toIntOrNull()
             val name = yearMatch?.let { nameText.removeSuffix(it.value) }?.trim() ?: nameText?.trim()
 
-            var posterUrl = fixUrlNull(item.selectFirst("img")?.attr("src"))
+            var posterUrl = AppUtils.fixUrlNull(item.selectFirst("img")?.attr("src"))
             if (posterUrl.isNullOrEmpty() || posterUrl.contains("p21-ad-sg.ibyteimg.com")) { 
                 val onerrorPoster = item.selectFirst("img")?.attr("onerror")
                 if (onerrorPoster?.contains("this.src=") == true) {
-                     posterUrl = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
+                     posterUrl = AppUtils.fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
                 }
             }
             if (posterUrl.isNullOrEmpty()){
-                 posterUrl = fixUrlNull(item.selectFirst("img")?.attr("data-src"))
+                 posterUrl = AppUtils.fixUrlNull(item.selectFirst("img")?.attr("data-src"))
              }
 
             val statusText = item.selectFirst("div.status")?.text()?.trim()
             val hdText = item.selectFirst("div.HD")?.text()?.trim()
             val qualityString = hdText ?: statusText
-
 
             val type = if (statusText?.contains("Tập") == true || (statusText?.contains("/") == true && statusText != "Full")) TvType.TvSeries else TvType.Movie
             
@@ -189,7 +186,7 @@ class MotChillProvider : MainAPI() {
                     type = type,
                     posterUrl = posterUrl,
                     year = year,
-                    quality = getQualityFromString(qualityString) // *** MAPPED HERE ***
+                    quality = getQualityFromString(qualityString)
                 )
             } else {
                 null
@@ -198,21 +195,21 @@ class MotChillProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = AppUtils.parseHTML(app.get(url, interceptor = cfKiller).text)
+        val document = app.get(url, interceptor = cfKiller).document // *** REVERTED TO .document ***
 
         val title = document.selectFirst("h1.movie-title span.title-1")?.text()?.trim() ?: return null
         val yearText = document.selectFirst("h1.movie-title span.title-year")?.text()?.replace("(", "")?.replace(")", "")?.trim()
         val year = yearText?.toIntOrNull()
 
-        var poster = fixUrlNull(document.selectFirst("div.movie-image div.poster img")?.attr("src"))
+        var poster = AppUtils.fixUrlNull(document.selectFirst("div.movie-image div.poster img")?.attr("src"))
         if (poster.isNullOrEmpty() || poster.contains("p21-ad-sg.ibyteimg.com")) {
             val onerrorPoster = document.selectFirst("div.movie-image div.poster img")?.attr("onerror")
             if (onerrorPoster?.contains("this.src=") == true) {
-                 poster = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
+                 poster = AppUtils.fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
             }
         }
          if (poster.isNullOrEmpty()){
-             poster = fixUrlNull(document.selectFirst("div.movie-image div.poster img")?.attr("data-src"))
+             poster = AppUtils.fixUrlNull(document.selectFirst("div.movie-image div.poster img")?.attr("data-src"))
          }
 
         val plot = document.selectFirst("div#info-film div.detail-content-main")?.text()?.trim()
@@ -220,26 +217,26 @@ class MotChillProvider : MainAPI() {
         document.select("div#tags div.tag-list h3 a").forEach { tagElement ->
             val tagText = tagElement.text().trim()
             if (!genres.contains(tagText)) {
-                genres.add(tagText)
+                genres.add(tagText) // add is a standard method for MutableList
             }
         }
         
         val recommendations = document.select("div#movie-hot div.owl-carousel div.item").mapNotNull { item ->
             val recLinkTag = item.selectFirst("a")
-            val recUrl = fixUrlNull(recLinkTag?.attr("href"))
+            val recUrl = AppUtils.fixUrlNull(recLinkTag?.attr("href"))
             var recName = recLinkTag?.attr("title")
              if (recName.isNullOrEmpty()) {
                 recName = item.selectFirst("div.overlay h4.name a")?.text()?.trim()
             }
-            var recPosterUrl = fixUrlNull(item.selectFirst("img")?.attr("src"))
+            var recPosterUrl = AppUtils.fixUrlNull(item.selectFirst("img")?.attr("src"))
              if (recPosterUrl.isNullOrEmpty() || recPosterUrl.contains("p21-ad-sg.ibyteimg.com")) {
                 val onerrorPoster = item.selectFirst("img")?.attr("onerror")
                 if (onerrorPoster?.contains("this.src=") == true) {
-                     recPosterUrl = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
+                     recPosterUrl = AppUtils.fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
                 }
             }
              if (recPosterUrl.isNullOrEmpty()){
-                 recPosterUrl = fixUrlNull(item.selectFirst("img")?.attr("data-src"))
+                 recPosterUrl = AppUtils.fixUrlNull(item.selectFirst("img")?.attr("data-src"))
              }
 
             if (recName != null && recUrl != null) {
@@ -257,23 +254,23 @@ class MotChillProvider : MainAPI() {
         val episodeElements = document.select("div.page-tap ul li a")
         
         val isTvSeriesBasedOnNames = episodeElements.any {
-            val epName = it.selectFirst("span")?.text()?.trim() ?: it.text().trim()
+            val epName = it.selectFirst("span")?.text()?.trim() ?: it.text().trim() // it is Element here
             Regex("""Tập\s*\d+""", RegexOption.IGNORE_CASE).containsMatchIn(epName) && !epName.contains("Full", ignoreCase = true)
         }
         val isTvSeries = episodeElements.size > 1 || isTvSeriesBasedOnNames
         
         if (episodeElements.isNotEmpty()) {
-            episodeElements.forEachIndexed { index, element ->
-                val episodeLink = fixUrl(element.attr("href"))
+            episodeElements.forEachIndexed { index, element -> // element is Element
+                val episodeLink = AppUtils.fixUrl(element.attr("href"))
                 var episodeName = element.selectFirst("span")?.text()?.trim() 
-                                    ?: element.text().trim() 
+                                    ?: element.text()?.trim() // text() is a Jsoup Element method
                                     ?: "Tập ${index + 1}"
                 if (episodeName.isBlank()) episodeName = "Server ${index + 1}"
                 episodes.add(Episode(data = episodeLink, name = episodeName))
             }
         } else {
-             document.selectFirst("a#btn-film-watch.btn-red[href]")?.let { watchButton ->
-                val movieWatchLink = fixUrl(watchButton.attr("href"))
+             document.selectFirst("a#btn-film-watch.btn-red[href]")?.let { watchButton -> // watchButton is Element
+                val movieWatchLink = AppUtils.fixUrl(watchButton.attr("href"))
                 if (movieWatchLink.isNotBlank()){
                      episodes.add(Episode(data = movieWatchLink, name = title))
                 }
@@ -282,7 +279,7 @@ class MotChillProvider : MainAPI() {
 
         val currentSyncData = mutableMapOf("url" to url)
 
-        if (isTvSeries || (episodes.size > 1 && !episodes.all {it.name == title})) {
+        if (isTvSeries || (episodes.size > 1 && !episodes.all { it.name == title })) {
             return TvSeriesLoadResponse(
                 name = title,
                 url = url,
