@@ -1,10 +1,11 @@
 package com.example.motchill // Make sure this matches your project structure
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.AppUtils
+import com.lagradost.cloudstream3.utils.AppUtils // For parseJson and potentially other utilities
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType // *** IMPORT FOR ExtractorLinkType ***
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.SubtitleFile
+import com.lagradost.cloudstream3.utils.Qualities // *** IMPORT FOR UTILS.QUALITIES ***
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.SearchQuality
@@ -16,37 +17,33 @@ import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 import java.security.Security
-import java.security.spec.KeySpec
+// import java.security.spec.KeySpec // Not directly used, can be removed if PBEKeySpec is sufficient
 import java.util.Base64
-import org.bouncycastle.jce.provider.BouncyCastleProvider // *** IMPORT FOR BOUNCY CASTLE ***
+import org.bouncycastle.jce.provider.BouncyCastleProvider // *** CORRECT BOUNCY CASTLE IMPORT ***
 
 class MotChillProvider : MainAPI() {
     override var mainUrl = "https://www.motchill86.com"
     override var name = "MotChill86"
     override val hasMainPage = true
     override var lang = "vi"
-    override val hasDownloadSupport = true // Can set to true now
+    override val hasDownloadSupport = true
     override val supportedTypes = setOf(
         TvType.Movie,
         TvType.TvSeries
     )
 
-    // Initialize BouncyCastle for decryption
     init {
-        Security.removeProvider("BC") // Remove an old provider to prevent collision.
-        Security.addProvider(BouncyCastleProvider())
+        Security.getProvider("BC") ?: Security.addProvider(BouncyCastleProvider()) // Add if not already present
     }
 
     private val cfKiller = CloudflareKiller()
 
-    // Models for JSON parsing of encrypted data (as seen in loadlinks.html)
     private data class EncryptedSourceJson(
         val ciphertext: String,
         val salt: String,
         val iv: String
     )
 
-    // Helper to convert hex string to byte array
     private fun hexStringToByteArray(s: String): ByteArray {
         val len = s.length
         val data = ByteArray(len / 2)
@@ -57,18 +54,14 @@ class MotChillProvider : MainAPI() {
         return data
     }
 
-    // PBKDF2 and AES Decryption logic adapted from CryptoJS
     private fun cryptoJSAesDecrypt(passphrase: String, encryptedJsonString: String): String? {
         return try {
             val encryptedData = AppUtils.parseJson<EncryptedSourceJson>(encryptedJsonString)
-
             val saltBytes = hexStringToByteArray(encryptedData.salt)
             val ivBytes = hexStringToByteArray(encryptedData.iv)
             
-            // CryptoJS PBKDF2 with SHA512 and specific key size handling:
-            // keySize in CryptoJS PBKDF2 is in 32-bit words. 64/8 means 8 words = 32 bytes = 256 bits.
             val keySizeBits = 256 
-            val iterations = 999 // As per CryptoJS example (though site might use different)
+            val iterations = 999 
             
             val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA512", "BC")
             val spec = PBEKeySpec(passphrase.toCharArray(), saltBytes, iterations, keySizeBits)
@@ -76,7 +69,6 @@ class MotChillProvider : MainAPI() {
             val keyBytes = secret.encoded
 
             val secretKey = SecretKeySpec(keyBytes, "AES")
-            // AES/CBC/PKCS7Padding is common for CryptoJS. PKCS7Padding is often handled by PKCS5Padding in Java for AES.
             val cipher = Cipher.getInstance("AES/CBC/PKCS7Padding", "BC") 
             
             cipher.init(Cipher.DECRYPT_MODE, secretKey, IvParameterSpec(ivBytes))
@@ -86,14 +78,12 @@ class MotChillProvider : MainAPI() {
             
             String(decryptedBytes, Charsets.UTF_8)
         } catch (e: Exception) {
-            logError(e) // Log the error for debugging
+            AppUtils.logError(e) // *** Using AppUtils.logError or this.logError if available as extension ***
             null
         }
     }
 
-
-    private fun getQualityFromString(qualityString: String?): SearchQuality? {
-        // ... (keep the existing getQualityFromString function)
+    private fun getQualityFromSearchString(qualityString: String?): SearchQuality? { // Renamed for clarity
         return when {
             qualityString == null -> null
             qualityString.contains("1080") -> SearchQuality.HD
@@ -108,12 +98,22 @@ class MotChillProvider : MainAPI() {
             else -> null
         }
     }
+    
+    // Function to parse quality for ExtractorLink (returns Int)
+    private fun getQualityForLink(url: String): Int {
+        return when {
+            url.contains("1080p", ignoreCase = true) -> Qualities.P1080.value
+            url.contains("720p", ignoreCase = true) -> Qualities.P720.value
+            url.contains("480p", ignoreCase = true) -> Qualities.P480.value
+            url.contains("360p", ignoreCase = true) -> Qualities.P360.value
+            else -> Qualities.Unknown.value 
+        }
+    }
 
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        // ... (keep the existing getMainPage function)
         if (page > 1) return newHomePageResponse(emptyList(), false)
 
         val document = app.get(mainUrl, interceptor = cfKiller).document
@@ -148,7 +148,7 @@ class MotChillProvider : MainAPI() {
                         this.type = type
                         this.posterUrl = posterUrl
                         this.year = yearText?.toIntOrNull()
-                        this.quality = getQualityFromString(qualityText)
+                        this.quality = getQualityFromSearchString(qualityText)
                     }
                 } else {
                     null
@@ -185,7 +185,7 @@ class MotChillProvider : MainAPI() {
                         this.type = type
                         this.posterUrl = posterUrl
                         this.year = null 
-                        this.quality = getQualityFromString(status)
+                        this.quality = getQualityFromSearchString(status)
                     }
                 } else null
             }
@@ -216,7 +216,6 @@ class MotChillProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        // ... (keep the existing search function)
         val searchQuery = query.trim().replace(Regex("\\s+"), "-").lowercase()
         val searchUrl = "$mainUrl/search/$searchQuery/" 
         
@@ -254,7 +253,7 @@ class MotChillProvider : MainAPI() {
                     this.type = type
                     this.posterUrl = posterUrl
                     this.year = year
-                    this.quality = getQualityFromString(qualityString)
+                    this.quality = getQualityFromSearchString(qualityString)
                 }
             } else {
                 null
@@ -263,7 +262,6 @@ class MotChillProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        // ... (keep the existing load function, ensure factory methods are used correctly)
         val document = app.get(url, interceptor = cfKiller).document
 
         val title = document.selectFirst("h1.movie-title span.title-1")?.text()?.trim() ?: return null
@@ -347,8 +345,6 @@ class MotChillProvider : MainAPI() {
                 episodes.add(
                     newEpisode(episodeLink) { 
                         this.name = finalEpisodeName
-                        // Example: Extract episode number if possible
-                        // this.episode = Regex("""\d+""").find(finalEpisodeName)?.value?.toIntOrNull()
                     }
                 )
             }
@@ -380,7 +376,6 @@ class MotChillProvider : MainAPI() {
                 this.tags = genres.distinct().toList()
                 this.recommendations = recommendations
                 this.syncData = currentSyncData
-                // this.contentRating = ... 
             }
         } else { 
             val movieDataUrl = episodes.firstOrNull()?.data ?: url 
@@ -396,47 +391,31 @@ class MotChillProvider : MainAPI() {
                 this.tags = genres.distinct().toList()
                 this.recommendations = recommendations
                 this.syncData = currentSyncData
-                // this.contentRating = ... 
             }
         }
     }
 
-    // Function to parse quality from URL or name if available
-    private fun getQualityFromUrl(url: String): Int {
-        // Example: try to find 720p, 1080p in the url or name
-        return when {
-            url.contains("1080p", ignoreCase = true) -> 1080
-            url.contains("720p", ignoreCase = true) -> 720
-            url.contains("480p", ignoreCase = true) -> 480
-            url.contains("360p", ignoreCase = true) -> 360
-            else -> Qualities.Unknown.value // Default to Unknown quality from CloudStream's Qualities enum
-        }
-    }
-
     override suspend fun loadLinks(
-        data: String, // This is the episode URL (e.g., .../tap-full)
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit, 
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val document = app.get(data, interceptor = cfKiller).document
         
-        // Attempt to find the encrypted JSON string for CryptoJSAesDecrypt
         val scriptElements = document.select("script:containsData(CryptoJSAesDecrypt)")
         var decryptedUrl: String? = null
 
         for (scriptElement in scriptElements) {
             val scriptContent = scriptElement.html()
-            // Regex to find the encrypted JSON string: `{"ciphertext":"...", "iv":"...", "salt":"..."}`
             val regex = Regex("""CryptoJSAesDecrypt\(\s*'Encrypt'\s*,\s*`([^`]*)`\s*\)""")
             val matchResult = regex.find(scriptContent)
 
             if (matchResult != null) {
                 val encryptedJsonString = matchResult.groupValues[1]
-                // Ensure the JSON is valid before trying to parse
                 if (encryptedJsonString.startsWith("{") && encryptedJsonString.endsWith("}")) {
                     decryptedUrl = cryptoJSAesDecrypt("Encrypt", encryptedJsonString)
-                    if (decryptedUrl != null) break // Found and decrypted
+                    if (decryptedUrl != null) break 
                 } else {
                      println("MotChillProvider: Extracted encrypted string is not valid JSON: $encryptedJsonString")
                 }
@@ -444,23 +423,19 @@ class MotChillProvider : MainAPI() {
         }
 
         if (decryptedUrl != null) {
-            val quality = getQualityFromUrl(decryptedUrl) // Try to infer quality from URL
+            val quality = getQualityForLink(decryptedUrl) 
             callback(
                 ExtractorLink(
-                    source = this.name, // Source name
-                    name = "Server Decrypted", // Server name
+                    source = this.name,
+                    name = "Server Decrypted", 
                     url = decryptedUrl,
-                    referer = mainUrl, // Referer for the request
-                    quality = quality, // Quality as Int (e.g., 720, 1080)
-                    type = if (decryptedUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                    // headers = mapOf() // Add headers if needed
+                    referer = mainUrl,
+                    quality = quality, 
+                    type = if (decryptedUrl.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                 )
             )
             return true
         } else {
-            // Fallback: Try to get from JWPlayer sources if main decryption fails
-            // This often contains a placeholder or ad, but worth checking.
-            // Example from loadlinks.html: sources:[{file: "https://www.motchill86.com/3.mp4", label: "SD",...}]
             document.select("script:containsData(jwplayer('phim-media').setup)").firstOrNull()?.data()?.let { scriptData ->
                 val sourcesRegex = Regex("""sources\s*:\s*\[\s*(\{.*?file.*?\})\s*]""")
                 sourcesRegex.find(scriptData)?.groupValues?.get(1)?.let { sourceBlock ->
@@ -470,16 +445,16 @@ class MotChillProvider : MainAPI() {
                     val videoUrl = fileRegex.find(sourceBlock)?.groupValues?.get(1)
                     val label = labelRegex.find(sourceBlock)?.groupValues?.get(1) ?: "Fallback"
 
-                    if (!videoUrl.isNullOrBlank() && !videoUrl.contains("ads.mp4")) { // Avoid ad placeholders
-                        val quality = getQualityFromUrl(videoUrl)
+                    if (!videoUrl.isNullOrBlank() && !videoUrl.contains("ads.mp4")) {
+                        val quality = getQualityForLink(videoUrl)
                         callback(
                             ExtractorLink(
                                 source = this.name,
                                 name = "Server JWPlayer ($label)",
-                                url = fixUrl(videoUrl), // Use fixUrl here
+                                url = fixUrl(videoUrl),
                                 referer = mainUrl,
                                 quality = quality,
-                                type = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                                type = if (videoUrl.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                             )
                         )
                         return true
