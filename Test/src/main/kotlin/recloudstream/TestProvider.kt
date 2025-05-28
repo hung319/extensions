@@ -4,6 +4,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.network.CloudflareKiller
+import com.lagradost.cloudstream3.Qualities // *** IMPORT ADDED HERE ***
 
 // BouncyCastle might be needed later for loadLinks if you implement decryption
 // import org.bouncycastle.jce.provider.BouncyCastleProvider
@@ -57,7 +58,6 @@ class MotChillProvider : MainAPI() {
                     posterUrl = fixUrlNull(item.selectFirst("img")?.attr("data-src"))
                 }
 
-                // val name2 = item.selectFirst("div.info div.name2")?.text()?.trim() // 'otherName' was an issue
                 val status = item.selectFirst("div.status")?.text()?.trim()
                 val type = if (status?.contains("Tập") == true || (status?.contains("/") == true && !status.contains("Full", ignoreCase = true))) TvType.TvSeries else TvType.Movie
 
@@ -69,8 +69,7 @@ class MotChillProvider : MainAPI() {
                         type = type,
                         posterUrl = posterUrl,
                         year = yearText?.toIntOrNull(),
-                        // Removed otherName
-                        quality = if (item.selectFirst("div.HD") != null || status?.contains("HD", ignoreCase = true) == true || status?.contains("Bản Đẹp", ignoreCase = true) == true) Qualities.HD else null
+                        quality = if (item.selectFirst("div.HD") != null || status?.contains("HD", ignoreCase = true) == true || status?.contains("Bản Đẹp", ignoreCase = true) == true) Qualities.HD else null // *** FIXED HERE ***
                     )
                 } else {
                     null
@@ -100,7 +99,6 @@ class MotChillProvider : MainAPI() {
                     posterUrl = fixUrlNull(item.selectFirst("img")?.attr("data-src"))
                 }
 
-                // val name2 = item.selectFirst("div.overlay div.name2")?.text()?.trim() // 'otherName'
                 val status = item.selectFirst("div.status")?.text()?.trim()
                 val type = if (status?.contains("Tập") == true || (status?.contains("/") == true && !status.contains("Full", ignoreCase = true))) TvType.TvSeries else TvType.Movie
                 
@@ -111,9 +109,8 @@ class MotChillProvider : MainAPI() {
                         apiName = this.name,
                         type = type,
                         posterUrl = posterUrl,
-                        year = null, // Year usually not in sliders directly
-                        // Removed otherName
-                        quality = Qualities.HD // Assume HD for slider items or parse if available
+                        year = null, 
+                        quality = Qualities.HD // *** FIXED HERE ***
                     )
                 } else null
             }
@@ -171,7 +168,6 @@ class MotChillProvider : MainAPI() {
                  posterUrl = fixUrlNull(item.selectFirst("img")?.attr("data-src"))
              }
 
-            // val name2 = item.selectFirst("div.info div.name2")?.text()?.trim() // 'otherName'
             val statusText = item.selectFirst("div.status")?.text()?.trim()
             val hdText = item.selectFirst("div.HD")?.text()?.trim()
 
@@ -185,8 +181,7 @@ class MotChillProvider : MainAPI() {
                     type = type,
                     posterUrl = posterUrl,
                     year = year,
-                    // Removed otherName
-                    quality = if (hdText == "Bản Đẹp" || hdText == "HD" || statusText?.contains("HD", ignoreCase = true) == true) Qualities.HD else null
+                    quality = if (hdText == "Bản Đẹp" || hdText == "HD" || statusText?.contains("HD", ignoreCase = true) == true) Qualities.HD else null // *** FIXED HERE ***
                 )
             } else {
                 null
@@ -198,7 +193,6 @@ class MotChillProvider : MainAPI() {
         val document = app.get(url, interceptor = cfKiller).document
 
         val title = document.selectFirst("h1.movie-title span.title-1")?.text()?.trim() ?: return null
-        // val originalTitle = document.selectFirst("h1.movie-title span.title-2")?.text()?.trim() // 'otherName' for LoadResponse not standard
         val yearText = document.selectFirst("h1.movie-title span.title-year")?.text()?.replace("(", "")?.replace(")", "")?.trim()
         val year = yearText?.toIntOrNull()
 
@@ -241,13 +235,12 @@ class MotChillProvider : MainAPI() {
              }
 
             if (recName != null && recUrl != null) {
-                MovieSearchResponse( // Using MovieSearchResponse for recommendations is common
+                MovieSearchResponse(
                     name = recName,
                     url = recUrl,
                     apiName = this.name,
                     type = TvType.Movie, 
                     posterUrl = recPosterUrl
-                    // No quality or year typically for recommendation previews
                 )
             } else null
         }
@@ -255,7 +248,6 @@ class MotChillProvider : MainAPI() {
         val episodes = ArrayList<Episode>()
         val episodeElements = document.select("div.page-tap ul li a")
         
-        // Corrected Regex usage and logic for TvType determination
         val isTvSeriesBasedOnNames = episodeElements.any {
             val epName = it.selectFirst("span")?.text()?.trim() ?: it.text().trim()
             Regex("""Tập\s*\d+""", RegexOption.IGNORE_CASE).containsMatchIn(epName) && !epName.contains("Full", ignoreCase = true)
@@ -280,7 +272,7 @@ class MotChillProvider : MainAPI() {
             }
         }
 
-        val currentSyncData = mapOf("url" to url) // Corrected syncData
+        val currentSyncData = mutableMapOf("url" to url) // *** FIXED HERE: Changed to mutableMapOf ***
 
         if (isTvSeries || (episodes.size > 1 && !episodes.all {it.name == title})) {
             return TvSeriesLoadResponse(
@@ -320,7 +312,6 @@ class MotChillProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // loadLinks remains a placeholder as requested.
         println("MotChillProvider: loadLinks for $data is not yet implemented.")
         return false 
     }
