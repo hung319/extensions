@@ -1,11 +1,11 @@
-package com.example.motchill // Make sure this matches your project structure
+package com.example.motchill // Thay thế bằng package của bạn
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.AppUtils 
+import com.lagradost.cloudstream3.utils.AppUtils
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.SubtitleFile 
-import com.lagradost.cloudstream3.utils.Qualities 
+import com.lagradost.cloudstream3.SubtitleFile // Đảm bảo import này chính xác
+import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.SearchQuality
@@ -18,28 +18,22 @@ import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 import java.security.Security
 import java.util.Base64
-import org.bouncycastle.jce.provider.BouncyCastleProvider // This import is correct
+import org.bouncycastle.jce.provider.BouncyCastleProvider
 
 class MotChillProvider : MainAPI() {
     override var mainUrl = "https://www.motchill86.com"
-    override var name = "MotChill86"
+    override var name = "MotChill86" // CloudStream sẽ tự dùng đây làm apiName
     override val hasMainPage = true
     override var lang = "vi"
-    override val hasDownloadSupport = true
+    override val hasDownloadSupport = true // Vì chúng ta cố gắng lấy link trực tiếp
     override val supportedTypes = setOf(
         TvType.Movie,
         TvType.TvSeries
     )
 
     init {
-        // Try to add BouncyCastle provider. If it's already there, this won't harm.
-        // The unresolved reference error points to the library itself not being on the classpath
-        // for this module during compilation.
-        try {
-            Security.getProvider("BC") ?: Security.addProvider(BouncyCastleProvider())
-        } catch (e: Exception) {
-            println("MotChillProvider: Could not add BouncyCastleProvider. Ensure it's a dependency. $e")
-        }
+        // Thêm BouncyCastle provider một cách an toàn
+        Security.getProvider("BC") ?: Security.addProvider(BouncyCastleProvider())
     }
 
     private val cfKiller = CloudflareKiller()
@@ -62,14 +56,20 @@ class MotChillProvider : MainAPI() {
 
     private fun cryptoJSAesDecrypt(passphrase: String, encryptedJsonString: String): String? {
         return try {
-            val encryptedData = AppUtils.parseJson<EncryptedSourceJson>(encryptedJsonString)
+            val dataToParse = if (!encryptedJsonString.trimStart().startsWith("{")) {
+                 return null 
+            } else {
+                encryptedJsonString
+            }
+
+            val encryptedData = AppUtils.parseJson<EncryptedSourceJson>(dataToParse)
             val saltBytes = hexStringToByteArray(encryptedData.salt)
             val ivBytes = hexStringToByteArray(encryptedData.iv)
             
             val keySizeBits = 256 
             val iterations = 999 
             
-            val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA512", "BC") // "BC" is the BouncyCastle provider
+            val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA512", "BC")
             val spec = PBEKeySpec(passphrase.toCharArray(), saltBytes, iterations, keySizeBits)
             val secret = factory.generateSecret(spec)
             val keyBytes = secret.encoded
@@ -84,9 +84,13 @@ class MotChillProvider : MainAPI() {
             
             String(decryptedBytes, Charsets.UTF_8)
         } catch (e: Exception) {
-            // Using basic println for error logging if logError is problematic
-            println("MotChillProvider Decryption Error: ${e.message}") 
-            e.printStackTrace() 
+            // Sử dụng this.logError nếu nó có sẵn và hoạt động như một extension function
+            // this.logError(e) 
+            // Hoặc dùng AppUtils.logError(e) nếu thích hợp
+            // AppUtils.logError(e)
+            // Hoặc fallback về println
+            println("${this.name} Decryption Error: ${e.message}")
+            e.printStackTrace()
             null
         }
     }
@@ -107,7 +111,7 @@ class MotChillProvider : MainAPI() {
         }
     }
     
-    private fun getQualityForLink(url: String): Int {
+    private fun getQualityForLink(url: String): Int { // Trả về Int cho ExtractorLink.quality
         return when {
             url.contains("1080p", ignoreCase = true) -> Qualities.P1080.value
             url.contains("720p", ignoreCase = true) -> Qualities.P720.value
@@ -121,8 +125,7 @@ class MotChillProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        if (page > 1) return newHomePageResponse(emptyList(), false)
-
+        if (page > 1) return newHomePageResponse(listOf(), false)
         val document = app.get(mainUrl, interceptor = cfKiller).document
         val homePageList = ArrayList<HomePageList>()
 
@@ -133,7 +136,6 @@ class MotChillProvider : MainAPI() {
                 val nameText = titleElement?.text()
                 val yearText = item.selectFirst("div.info h4.name")?.ownText()?.trim()
                 val name = nameText?.substringBeforeLast(yearText ?: "")?.trim() ?: nameText
-
                 val movieUrl = fixUrlNull(titleElement?.attr("href"))
                 var posterUrl = fixUrlNull(item.selectFirst("img")?.attr("src"))
                 if (posterUrl.isNullOrEmpty() || posterUrl.contains("p21-ad-sg.ibyteimg.com")) {
@@ -145,330 +147,245 @@ class MotChillProvider : MainAPI() {
                 if (posterUrl.isNullOrEmpty()) {
                     posterUrl = fixUrlNull(item.selectFirst("img")?.attr("data-src"))
                 }
-
                 val status = item.selectFirst("div.status")?.text()?.trim()
                 val type = if (status?.contains("Tập") == true || (status?.contains("/") == true && !status.contains("Full", ignoreCase = true))) TvType.TvSeries else TvType.Movie
                 val qualityText = item.selectFirst("div.HD")?.text()?.trim() ?: status
-
                 if (name != null && !name.startsWith("Advertisement") && movieUrl != null) {
-                    newMovieSearchResponse(name, movieUrl) {
-                        this.type = type
-                        this.posterUrl = posterUrl
-                        this.year = yearText?.toIntOrNull()
-                        this.quality = getQualityFromSearchString(qualityText)
+                    newMovieSearchResponse(name, movieUrl) { // apiName is implicit
+                        this.type = type; this.posterUrl = posterUrl; this.year = yearText?.toIntOrNull(); this.quality = getQualityFromSearchString(qualityText)
                     }
-                } else {
-                    null
-                }
+                } else null
             }
             return if (movies.isNotEmpty()) HomePageList(title, movies) else null
         }
 
         document.selectFirst("#owl-demo.owl-carousel")?.let { owl ->
             val hotMovies = owl.select("div.item").mapNotNull { item ->
-                val linkTag = item.selectFirst("a")
-                val movieUrl = fixUrlNull(linkTag?.attr("href"))
-                var name = linkTag?.attr("title")
-                if (name.isNullOrEmpty()) {
-                    name = item.selectFirst("div.overlay h4.name a")?.text()?.trim()
-                }
-
+                val linkTag = item.selectFirst("a"); val movieUrl = fixUrlNull(linkTag?.attr("href")); var name = linkTag?.attr("title")
+                if (name.isNullOrEmpty()) name = item.selectFirst("div.overlay h4.name a")?.text()?.trim()
                 var posterUrl = fixUrlNull(item.selectFirst("img")?.attr("src"))
                 if (posterUrl.isNullOrEmpty() || posterUrl.contains("p21-ad-sg.ibyteimg.com")) {
                     val onerrorPoster = item.selectFirst("img")?.attr("onerror")
-                    if (onerrorPoster?.contains("this.src=") == true) {
-                        posterUrl = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
-                    }
+                    if (onerrorPoster?.contains("this.src=") == true) posterUrl = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
                 }
-                if (posterUrl.isNullOrEmpty()) {
-                    posterUrl = fixUrlNull(item.selectFirst("img")?.attr("data-src"))
-                }
-
+                if (posterUrl.isNullOrEmpty()) posterUrl = fixUrlNull(item.selectFirst("img")?.attr("data-src"))
                 val status = item.selectFirst("div.status")?.text()?.trim()
                 val type = if (status?.contains("Tập") == true || (status?.contains("/") == true && !status.contains("Full", ignoreCase = true))) TvType.TvSeries else TvType.Movie
-                
-                if (name != null && movieUrl != null) {
-                     newMovieSearchResponse(name, movieUrl) {
-                        this.type = type
-                        this.posterUrl = posterUrl
-                        this.year = null 
-                        this.quality = getQualityFromSearchString(status)
-                    }
-                } else null
+                if (name != null && movieUrl != null) newMovieSearchResponse(name, movieUrl) {this.type = type; this.posterUrl = posterUrl; this.quality = getQualityFromSearchString(status)} else null
             }
-            if (hotMovies.isNotEmpty()) {
-                homePageList.add(HomePageList("Phim Hot", hotMovies))
-            }
+            if (hotMovies.isNotEmpty()) homePageList.add(HomePageList("Phim Hot", hotMovies))
         }
 
         document.select("div.heading-phim").forEach { sectionTitleElement ->
-            val sectionTitleText = sectionTitleElement.selectFirst("h2.title_h1_st1 a span")?.text() 
-                ?: sectionTitleElement.selectFirst("h2.title_h1_st1 a")?.text()
-                ?: sectionTitleElement.selectFirst("h2.title_h1_st1")?.text()
-
-            var movieListElementContainer = sectionTitleElement.nextElementSibling()
-            var movieListElement = movieListElementContainer?.selectFirst("ul.list-film")
-            
-            if (movieListElement == null) {
-                 movieListElementContainer = sectionTitleElement.parent()?.select("ul.list-film")?.first()
-                 movieListElement = movieListElementContainer
-            }
-            
+            val sectionTitleText = sectionTitleElement.selectFirst("h2.title_h1_st1 a span")?.text() ?: sectionTitleElement.selectFirst("h2.title_h1_st1 a")?.text() ?: sectionTitleElement.selectFirst("h2.title_h1_st1")?.text()
+            var movieListElement = sectionTitleElement.nextElementSibling()?.selectFirst("ul.list-film")
+            if (movieListElement == null) movieListElement = sectionTitleElement.parent()?.select("ul.list-film")?.first()
             val sectionTitle = sectionTitleText?.trim()
-            if (sectionTitle != null && movieListElement != null) {
-                parseMovieListFromUl(movieListElement, sectionTitle)?.let { homePageList.add(it) }
-            }
+            if (sectionTitle != null && movieListElement != null) parseMovieListFromUl(movieListElement, sectionTitle)?.let { homePageList.add(it) }
         }
         return newHomePageResponse(homePageList.filter { it.list.isNotEmpty() }, false)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val searchQuery = query.trim().replace(Regex("\\s+"), "-").lowercase()
-        val searchUrl = "$mainUrl/search/$searchQuery/" 
-        
+        val searchUrl = "$mainUrl/search/$searchQuery/"
         val document = app.get(searchUrl, interceptor = cfKiller).document
-
         return document.select("ul.list-film li").mapNotNull { item ->
-            val titleElement = item.selectFirst("div.info div.name a")
-            val nameText = titleElement?.text()
-            val movieUrl = fixUrlNull(titleElement?.attr("href"))
-
-            val yearRegex = Regex("""\s+(\d{4})$""")
-            val yearMatch = nameText?.let { yearRegex.find(it) }
-            val year = yearMatch?.groupValues?.get(1)?.toIntOrNull()
+            val titleElement = item.selectFirst("div.info div.name a"); val nameText = titleElement?.text(); val movieUrl = fixUrlNull(titleElement?.attr("href"))
+            val yearRegex = Regex("""\s+(\d{4})$"""); val yearMatch = nameText?.let { yearRegex.find(it) }; val year = yearMatch?.groupValues?.get(1)?.toIntOrNull()
             val name = yearMatch?.let { nameText.removeSuffix(it.value) }?.trim() ?: nameText?.trim()
-
             var posterUrl = fixUrlNull(item.selectFirst("img")?.attr("src"))
-            if (posterUrl.isNullOrEmpty() || posterUrl.contains("p21-ad-sg.ibyteimg.com")) { 
+            if (posterUrl.isNullOrEmpty() || posterUrl.contains("p21-ad-sg.ibyteimg.com")) {
                 val onerrorPoster = item.selectFirst("img")?.attr("onerror")
-                if (onerrorPoster?.contains("this.src=") == true) {
-                     posterUrl = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
-                }
+                if (onerrorPoster?.contains("this.src=") == true) posterUrl = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
             }
-            if (posterUrl.isNullOrEmpty()){
-                 posterUrl = fixUrlNull(item.selectFirst("img")?.attr("data-src"))
-             }
-
-            val statusText = item.selectFirst("div.status")?.text()?.trim()
-            val hdText = item.selectFirst("div.HD")?.text()?.trim()
-            val qualityString = hdText ?: statusText
-
+            if (posterUrl.isNullOrEmpty()) posterUrl = fixUrlNull(item.selectFirst("img")?.attr("data-src"))
+            val statusText = item.selectFirst("div.status")?.text()?.trim(); val hdText = item.selectFirst("div.HD")?.text()?.trim(); val qualityString = hdText ?: statusText
             val type = if (statusText?.contains("Tập") == true || (statusText?.contains("/") == true && statusText != "Full")) TvType.TvSeries else TvType.Movie
-            
-            if (name != null && movieUrl != null) {
-                newMovieSearchResponse(name, movieUrl) {
-                    this.type = type
-                    this.posterUrl = posterUrl
-                    this.year = year
-                    this.quality = getQualityFromSearchString(qualityString)
-                }
-            } else {
-                null
-            }
+            if (name != null && movieUrl != null) newMovieSearchResponse(name, movieUrl) {this.type = type; this.posterUrl = posterUrl; this.year = year; this.quality = getQualityFromSearchString(qualityString)} else null
         }
     }
 
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, interceptor = cfKiller).document
-
         val title = document.selectFirst("h1.movie-title span.title-1")?.text()?.trim() ?: return null
-        val yearText = document.selectFirst("h1.movie-title span.title-year")?.text()?.replace("(", "")?.replace(")", "")?.trim()
-        val year = yearText?.toIntOrNull()
-
+        val year = document.selectFirst("h1.movie-title span.title-year")?.text()?.replace("(", "")?.replace(")", "")?.trim()?.toIntOrNull()
         var poster = fixUrlNull(document.selectFirst("div.movie-image div.poster img")?.attr("src"))
         if (poster.isNullOrEmpty() || poster.contains("p21-ad-sg.ibyteimg.com")) {
             val onerrorPoster = document.selectFirst("div.movie-image div.poster img")?.attr("onerror")
-            if (onerrorPoster?.contains("this.src=") == true) {
-                 poster = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
-            }
+            if (onerrorPoster?.contains("this.src=") == true) poster = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
         }
-         if (poster.isNullOrEmpty()){
-             poster = fixUrlNull(document.selectFirst("div.movie-image div.poster img")?.attr("data-src"))
-         }
-
+        if (poster.isNullOrEmpty()) poster = fixUrlNull(document.selectFirst("div.movie-image div.poster img")?.attr("data-src"))
         val plot = document.selectFirst("div#info-film div.detail-content-main")?.text()?.trim()
         val genres = document.select("dl.movie-dl dd.movie-dd.dd-cat a").mapNotNull { it.text().trim() }.toMutableList()
-        document.select("div#tags div.tag-list h3 a").forEach { tagElement ->
-            val tagText = tagElement.text().trim()
-            if (!genres.contains(tagText)) {
-                genres.add(tagText)
-            }
-        }
-        
+        document.select("div#tags div.tag-list h3 a").forEach { tagElement -> val tagText = tagElement.text().trim(); if (!genres.contains(tagText)) genres.add(tagText) }
         val recommendations = document.select("div#movie-hot div.owl-carousel div.item").mapNotNull { item ->
-            val recLinkTag = item.selectFirst("a")
-            val recUrl = fixUrlNull(recLinkTag?.attr("href"))
-            var recName = recLinkTag?.attr("title")
-             if (recName.isNullOrEmpty()) {
-                recName = item.selectFirst("div.overlay h4.name a")?.text()?.trim()
-            }
+            val recLinkTag = item.selectFirst("a"); val recUrl = fixUrlNull(recLinkTag?.attr("href")); var recName = recLinkTag?.attr("title")
+            if (recName.isNullOrEmpty()) recName = item.selectFirst("div.overlay h4.name a")?.text()?.trim()
             var recPosterUrl = fixUrlNull(item.selectFirst("img")?.attr("src"))
-             if (recPosterUrl.isNullOrEmpty() || recPosterUrl.contains("p21-ad-sg.ibyteimg.com")) {
+            if (recPosterUrl.isNullOrEmpty() || recPosterUrl.contains("p21-ad-sg.ibyteimg.com")) {
                 val onerrorPoster = item.selectFirst("img")?.attr("onerror")
-                if (onerrorPoster?.contains("this.src=") == true) {
-                     recPosterUrl = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
-                }
+                if (onerrorPoster?.contains("this.src=") == true) recPosterUrl = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
             }
-             if (recPosterUrl.isNullOrEmpty()){
-                 recPosterUrl = fixUrlNull(item.selectFirst("img")?.attr("data-src"))
-             }
-
-            if (recName != null && recUrl != null) {
-                newMovieSearchResponse(recName, recUrl) {
-                    this.type = TvType.Movie 
-                    this.posterUrl = recPosterUrl
-                }
-            } else null
+            if (recPosterUrl.isNullOrEmpty()) recPosterUrl = fixUrlNull(item.selectFirst("img")?.attr("data-src"))
+            if (recName != null && recUrl != null) newMovieSearchResponse(recName, recUrl) {this.type = TvType.Movie; this.posterUrl = recPosterUrl} else null
         }
-
         val episodes = ArrayList<Episode>()
         val episodeElements = document.select("div.page-tap ul li a")
-        
-        val isTvSeriesBasedOnNames = episodeElements.any {
-            val epName = it.selectFirst("span")?.text()?.trim() ?: it.text().trim()
-            Regex("""Tập\s*\d+""", RegexOption.IGNORE_CASE).containsMatchIn(epName) && !epName.contains("Full", ignoreCase = true)
-        }
+        val isTvSeriesBasedOnNames = episodeElements.any { val epName = it.selectFirst("span")?.text()?.trim() ?: it.text().trim(); Regex("""Tập\s*\d+""", RegexOption.IGNORE_CASE).containsMatchIn(epName) && !epName.contains("Full", ignoreCase = true) }
         val isTvSeries = episodeElements.size > 1 || isTvSeriesBasedOnNames
-        
         if (episodeElements.isNotEmpty()) {
             episodeElements.forEachIndexed { index, element ->
-                val episodeLink = fixUrl(element.attr("href"))
-                var episodeNameSource = element.selectFirst("span")?.text()?.trim() 
-                                    ?: element.text().trim()
-                
+                val episodeLink = fixUrl(element.attr("href")); var episodeNameSource = element.selectFirst("span")?.text()?.trim() ?: element.text().trim()
                 var finalEpisodeName: String
-                if (episodeNameSource.isNullOrBlank()) {
-                    finalEpisodeName = "Server ${index + 1}"
-                } else {
-                    if (episodeNameSource.toIntOrNull() != null) {
-                        finalEpisodeName = "Tập $episodeNameSource"
-                    } else if (!episodeNameSource.contains("Tập ", ignoreCase = true) && episodeNameSource.matches(Regex("""\d+"""))) {
-                        finalEpisodeName = "Tập $episodeNameSource"
-                    }
-                    else {
-                        finalEpisodeName = episodeNameSource
-                    }
+                if (episodeNameSource.isNullOrBlank()) finalEpisodeName = "Server ${index + 1}"
+                else {
+                    if (episodeNameSource.toIntOrNull() != null || (!episodeNameSource.contains("Tập ", ignoreCase = true) && episodeNameSource.matches(Regex("""\d+""")))) finalEpisodeName = "Tập $episodeNameSource"
+                    else finalEpisodeName = episodeNameSource
                 }
-                episodes.add(
-                    newEpisode(episodeLink) { 
-                        this.name = finalEpisodeName
-                    }
-                )
+                episodes.add(newEpisode(episodeLink) {this.name = finalEpisodeName; /*this.runtime = 0 // Add if required */})
             }
         } else {
-             document.selectFirst("a#btn-film-watch.btn-red[href]")?.let { watchButton ->
-                val movieWatchLink = fixUrl(watchButton.attr("href"))
-                if (movieWatchLink.isNotBlank()){
-                     episodes.add(
-                         newEpisode(movieWatchLink) {
-                             this.name = title 
-                         }
-                     )
-                }
+            document.selectFirst("a#btn-film-watch.btn-red[href]")?.let { watchButton ->
+                val movieWatchLink = fixUrl(watchButton.attr("href")); if (movieWatchLink.isNotBlank()) episodes.add(newEpisode(movieWatchLink) {this.name = title; /*this.runtime = 0*/})
             }
         }
-
         val currentSyncData = mutableMapOf("url" to url)
-
         if (isTvSeries || (episodes.size > 1 && !episodes.all { it.name == title })) {
-            return newTvSeriesLoadResponse(
-                title,
-                url,
-                TvType.TvSeries,
-                episodes.distinctBy { it.data }.toList()
-            ) {
-                this.posterUrl = poster
-                this.year = year
-                this.plot = plot
-                this.tags = genres.distinct().toList()
-                this.recommendations = recommendations
-                this.syncData = currentSyncData
+            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes.distinctBy { it.data }.toList()) {
+                this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = genres.distinct().toList(); this.recommendations = recommendations; this.syncData = currentSyncData; /*this.contentRating = null // Add if required */
             }
-        } else { 
-            val movieDataUrl = episodes.firstOrNull()?.data ?: url 
-            return newMovieLoadResponse(
-                title,
-                url,
-                TvType.Movie,
-                movieDataUrl
-            ) {
-                this.posterUrl = poster
-                this.year = year
-                this.plot = plot
-                this.tags = genres.distinct().toList()
-                this.recommendations = recommendations
-                this.syncData = currentSyncData
+        } else {
+            val movieDataUrl = episodes.firstOrNull()?.data ?: url
+            return newMovieLoadResponse(title, url, TvType.Movie, movieDataUrl) {
+                this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = genres.distinct().toList(); this.recommendations = recommendations; this.syncData = currentSyncData; /*this.contentRating = null // Add if required */
             }
         }
     }
 
     override suspend fun loadLinks(
-        data: String,
+        data: String, 
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit, 
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data, interceptor = cfKiller).document
-        
-        val scriptElements = document.select("script:containsData(CryptoJSAesDecrypt)")
-        var decryptedUrl: String? = null
+        val initialPageDocument = app.get(data, interceptor = cfKiller, referer = mainUrl).document
+        val scriptElementsInitial = initialPageDocument.select("script:containsData(CryptoJSAesDecrypt)")
+        var iframeUrlPlayerPage: String? = null
 
-        for (scriptElement in scriptElements) {
+        for (scriptElement in scriptElementsInitial) {
             val scriptContent = scriptElement.html()
-            val regex = Regex("""CryptoJSAesDecrypt\(\s*'Encrypt'\s*,\s*`([^`]*)`\s*\)""")
+            val regex = Regex("""function\s+trailer\s*\(\s*\)\s*\{\s*return\s+CryptoJSAesDecrypt\(\s*'Encrypt'\s*,\s*`([^`]*)`\s*\)\s*;\s*\}""")
             val matchResult = regex.find(scriptContent)
-
             if (matchResult != null) {
                 val encryptedJsonString = matchResult.groupValues[1]
                 if (encryptedJsonString.startsWith("{") && encryptedJsonString.endsWith("}")) {
-                    decryptedUrl = cryptoJSAesDecrypt("Encrypt", encryptedJsonString)
-                    if (decryptedUrl != null) break 
-                } else {
-                     println("MotChillProvider: Extracted encrypted string is not valid JSON: $encryptedJsonString")
+                    iframeUrlPlayerPage = cryptoJSAesDecrypt("Encrypt", encryptedJsonString)
+                    if (iframeUrlPlayerPage != null) break
                 }
             }
         }
 
-        if (decryptedUrl != null) {
-            val quality = getQualityForLink(decryptedUrl) 
-            callback(
-                ExtractorLink(
-                    source = this.name,
-                    name = "Server Decrypted", 
-                    url = decryptedUrl,
-                    referer = mainUrl,
-                    quality = quality, 
-                    type = if (decryptedUrl.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                )
-            )
-            return true
-        } else {
-            document.select("script:containsData(jwplayer('phim-media').setup)").firstOrNull()?.data()?.let { scriptData ->
+        if (iframeUrlPlayerPage.isNullOrBlank()) {
+            println("$name: Could not get iframeUrlPlayerPage (URL for player.html) from initial data: $data")
+            initialPageDocument.select("script:containsData(jwplayer('phim-media').setup)").firstOrNull()?.data()?.let { scriptData ->
                 val sourcesRegex = Regex("""sources\s*:\s*\[\s*(\{.*?file.*?\})\s*]""")
                 sourcesRegex.find(scriptData)?.groupValues?.get(1)?.let { sourceBlock ->
                     val fileRegex = Regex("""file\s*:\s*["'](.*?)["']""")
-                    val labelRegex = Regex("""label\s*:\s*["'](.*?)["']""")
-                    
-                    val videoUrl = fileRegex.find(sourceBlock)?.groupValues?.get(1)
-                    val label = labelRegex.find(sourceBlock)?.groupValues?.get(1) ?: "Fallback"
+                    fileRegex.find(sourceBlock)?.groupValues?.get(1)?.let { videoUrl ->
+                        if (videoUrl.isNotBlank() && !videoUrl.contains("ads.mp4")) {
+                            callback(ExtractorLink(this.name, "JWPlayer Fallback (Initial Page)", fixUrl(videoUrl), data, getQualityForLink(videoUrl), type = if (videoUrl.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO))
+                            return true
+                        }
+                    }
+                }
+            }
+            return false
+        }
+        
+        val absoluteIframeUrlPlayerPage = fixUrl(iframeUrlPlayerPage, data)
+        val playerPageDocument = app.get(absoluteIframeUrlPlayerPage, interceptor = cfKiller, referer = data).document
+        var foundAnyLink = false
 
-                    if (!videoUrl.isNullOrBlank() && !videoUrl.contains("ads.mp4")) {
-                        val quality = getQualityForLink(videoUrl)
-                        callback(
-                            ExtractorLink(
-                                source = this.name,
-                                name = "Server JWPlayer ($label)",
-                                url = fixUrl(videoUrl),
-                                referer = mainUrl,
-                                quality = quality,
-                                type = if (videoUrl.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                            )
-                        )
-                        return true
+        val scriptElementsPlayerPage = playerPageDocument.select("script:containsData(function trailer\\(\\))")
+        var finalVideoUrlFromPlayerPageS2: String? = null
+
+        for (scriptElement in scriptElementsPlayerPage) {
+            val scriptContent = scriptElement.html()
+            val trailerRegex = Regex("""function\s+trailer\s*\(\s*\)\s*\{\s*return\s+CryptoJSAesDecrypt\(\s*'Encrypt'\s*,\s*`([^`]*)`\s*\)\s*;\s*\}""")
+            val matchResult = trailerRegex.find(scriptContent)
+            if (matchResult != null) {
+                val encryptedJsonString = matchResult.groupValues[1]
+                 if (encryptedJsonString.startsWith("{") && encryptedJsonString.endsWith("}")) {
+                    finalVideoUrlFromPlayerPageS2 = cryptoJSAesDecrypt("Encrypt", encryptedJsonString)
+                    if (finalVideoUrlFromPlayerPageS2 != null) {
+                        callback(ExtractorLink(this.name, "Server S2 (Chính)", finalVideoUrlFromPlayerPageS2, absoluteIframeUrlPlayerPage, getQualityForLink(finalVideoUrlFromPlayerPageS2), type = if (finalVideoUrlFromPlayerPageS2.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO))
+                        foundAnyLink = true
+                        break 
                     }
                 }
             }
         }
-        return false 
+        
+        playerPageDocument.select("div#vb_server_list span.vb_btnt-primary").forEach { button ->
+            val serverName = button.text()?.trim() ?: "Unknown Server"
+            if ((button.classNames().contains("activelive") || serverName.equals("Server", ignoreCase = true) || serverName.equals("S2#", ignoreCase = true)) && finalVideoUrlFromPlayerPageS2 != null) {
+                return@forEach
+            }
+            if (serverName.contains("HY3", ignoreCase = true)) { // Bỏ qua server HY3#
+                 println("$name: Skipping server $serverName as requested.")
+                return@forEach
+            }
+
+            val onclickAttr = button.attr("onclick")
+            val urlRegex = Regex("""vb_load_player\(\s*this\s*,\s*['"]([^'"]+)['"]\s*\)""")
+            val serverUrlStringFromButton = urlRegex.find(onclickAttr)?.groupValues?.get(1)
+
+            if (!serverUrlStringFromButton.isNullOrBlank()) {
+                val fullServerUrlPlayer = fixUrl(serverUrlStringFromButton, absoluteIframeUrlPlayerPage)
+
+                if (fullServerUrlPlayer.contains("play2.php")) {
+                    try {
+                        val play2PageDocument = app.get(fullServerUrlPlayer, interceptor = cfKiller, referer = absoluteIframeUrlPlayerPage).document
+                        val scriptElementsPlay2 = play2PageDocument.select("script:containsData(CryptoJSAesDecrypt)")
+                        var finalVideoUrlFromServer: String? = null
+
+                        for (scriptElementPlay2 in scriptElementsPlay2) {
+                            val scriptContentPlay2 = scriptElementPlay2.html()
+                            val trailerRegexPlay2 = Regex("""function\s+trailer\s*\(\s*\)\s*\{\s*return\s+CryptoJSAesDecrypt\(\s*'Encrypt'\s*,\s*`([^`]*)`\s*\)\s*;\s*\}""")
+                            val matchResultPlay2 = trailerRegexPlay2.find(scriptContentPlay2)
+                            if (matchResultPlay2 != null) {
+                                val encryptedJsonStringPlay2 = matchResultPlay2.groupValues[1]
+                                if (encryptedJsonStringPlay2.startsWith("{") && encryptedJsonStringPlay2.endsWith("}")) {
+                                    finalVideoUrlFromServer = cryptoJSAesDecrypt("Encrypt", encryptedJsonStringPlay2)
+                                    if (finalVideoUrlFromServer != null) break
+                                }
+                            }
+                        }
+
+                        if (finalVideoUrlFromServer != null) {
+                            callback(ExtractorLink(this.name, serverName, finalVideoUrlFromServer, fullServerUrlPlayer, getQualityForLink(finalVideoUrlFromServer), type = if (finalVideoUrlFromServer.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO))
+                            foundAnyLink = true
+                        } else {
+                             println("$name: Could not decrypt video URL from $serverName ($fullServerUrlPlayer)")
+                        }
+                    } catch (e: Exception) {
+                        println("$name: Error fetching/parsing $serverName ($fullServerUrlPlayer): ${e.message}")
+                    }
+                } else if (fullServerUrlPlayer.startsWith("http") && 
+                           (fullServerUrlPlayer.contains(".m3u8", ignoreCase = true) || 
+                            fullServerUrlPlayer.contains(".mp4", ignoreCase = true) ||
+                            fullServerUrlPlayer.contains(".mkv", ignoreCase = true) ||
+                            fullServerUrlPlayer.contains(".webm", ignoreCase = true) ||
+                            fullServerUrlPlayer.contains("googlevideo.com/videoplayback"))
+                          ) { 
+                     callback(ExtractorLink(this.name, serverName, fullServerUrlPlayer, absoluteIframeUrlPlayerPage, getQualityForLink(fullServerUrlPlayer), type = if (fullServerUrlPlayer.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO))
+                    foundAnyLink = true
+                } else {
+                     println("$name: Skipped non-direct or unhandled server link for $serverName: $fullServerUrlPlayer")
+                }
+            }
+        }
+        return foundAnyLink
     }
 }
