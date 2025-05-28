@@ -3,12 +3,12 @@ package com.example.motchill // Make sure this matches your project structure
 import com.lagradost.cloudstream3.*
 // import com.lagradost.cloudstream3.utils.AppUtils // Not needed for fixUrl/fixUrlNull if they are MainAPI extensions
 import com.lagradost.cloudstream3.utils.ExtractorLink
-// import com.lagradost.cloudstream3.SubtitleFile // *** COMMENTED OUT FOR NOW ***
+import com.lagradost.cloudstream3.SubtitleFile // *** RESTORED AND ENSURING THIS IS THE CORRECT IMPORT ***
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.SearchQuality
 
-class MotChillProvider : MainAPI() { // this is a MainAPI instance
+class MotChillProvider : MainAPI() {
     override var mainUrl = "https://www.motchill86.com"
     override var name = "MotChill86"
     override val hasMainPage = true
@@ -54,7 +54,6 @@ class MotChillProvider : MainAPI() { // this is a MainAPI instance
                 val yearText = item.selectFirst("div.info h4.name")?.ownText()?.trim()
                 val name = nameText?.substringBeforeLast(yearText ?: "")?.trim() ?: nameText
 
-                // Calling as extension function, which is correct based on docs.
                 val movieUrl = fixUrlNull(titleElement?.attr("href"))
                 var posterUrl = fixUrlNull(item.selectFirst("img")?.attr("src"))
                 if (posterUrl.isNullOrEmpty() || posterUrl.contains("p21-ad-sg.ibyteimg.com")) {
@@ -266,7 +265,7 @@ class MotChillProvider : MainAPI() { // this is a MainAPI instance
         
         if (episodeElements.isNotEmpty()) {
             episodeElements.forEachIndexed { index, element ->
-                val episodeLink = fixUrl(element.attr("href")) // Called as extension
+                val episodeLink = fixUrl(element.attr("href"))
                 var episodeName = element.selectFirst("span")?.text()?.trim() 
                                     ?: element.text().trim()
                                     ?: "Tập ${index + 1}"
@@ -275,7 +274,7 @@ class MotChillProvider : MainAPI() { // this is a MainAPI instance
             }
         } else {
              document.selectFirst("a#btn-film-watch.btn-red[href]")?.let { watchButton ->
-                val movieWatchLink = fixUrl(watchButton.attr("href")) // Called as extension
+                val movieWatchLink = fixUrl(watchButton.attr("href"))
                 if (movieWatchLink.isNotBlank()){
                      episodes.add(Episode(data = movieWatchLink, name = title))
                 }
@@ -316,14 +315,16 @@ class MotChillProvider : MainAPI() { // this is a MainAPI instance
         }
     }
 
+    // Signature now matches the expected one
     override suspend fun loadLinks(
         data: String, 
         isCasting: Boolean,
-        subtitleCallback: (Any) -> Unit, // Kept as Any for now to avoid SubtitleFile issue
-        // subtitleCallback: (SubtitleFile) -> Unit, 
+        subtitleCallback: (SubtitleFile) -> Unit, // *** RESTORED TO SubtitleFile ***
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         println("MotChillProvider: loadLinks for $data is not yet implemented.")
+        // If SubtitleFile import is still an issue, this function body won't be reached yet
+        // but the override signature will be correct.
         return false 
     }
 }
