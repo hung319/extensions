@@ -1,10 +1,10 @@
 package com.example.motchill // Thay thế bằng package của bạn
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.AppUtils
+// import com.lagradost.cloudstream3.utils.AppUtils // Tạm thời comment để kiểm tra fixUrl/fixUrlNull
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.SubtitleFile // Đảm bảo import này chính xác
+import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.network.CloudflareKiller
@@ -22,17 +22,16 @@ import org.bouncycastle.jce.provider.BouncyCastleProvider
 
 class MotChillProvider : MainAPI() {
     override var mainUrl = "https://www.motchill86.com"
-    override var name = "MotChill86" // CloudStream sẽ tự dùng đây làm apiName
+    override var name = "MotChill86"
     override val hasMainPage = true
     override var lang = "vi"
-    override val hasDownloadSupport = true // Vì chúng ta cố gắng lấy link trực tiếp
+    override val hasDownloadSupport = true
     override val supportedTypes = setOf(
         TvType.Movie,
         TvType.TvSeries
     )
 
     init {
-        // Thêm BouncyCastle provider một cách an toàn
         Security.getProvider("BC") ?: Security.addProvider(BouncyCastleProvider())
     }
 
@@ -57,45 +56,40 @@ class MotChillProvider : MainAPI() {
     private fun cryptoJSAesDecrypt(passphrase: String, encryptedJsonString: String): String? {
         return try {
             val dataToParse = if (!encryptedJsonString.trimStart().startsWith("{")) {
-                 return null 
+                 return null
             } else {
                 encryptedJsonString
             }
 
-            val encryptedData = AppUtils.parseJson<EncryptedSourceJson>(dataToParse)
+            val encryptedData = AppUtils.parseJson<EncryptedSourceJson>(dataToParse) // AppUtils vẫn có thể cần cho parseJson
             val saltBytes = hexStringToByteArray(encryptedData.salt)
             val ivBytes = hexStringToByteArray(encryptedData.iv)
-            
-            val keySizeBits = 256 
-            val iterations = 999 
-            
+
+            val keySizeBits = 256
+            val iterations = 999
+
             val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA512", "BC")
             val spec = PBEKeySpec(passphrase.toCharArray(), saltBytes, iterations, keySizeBits)
             val secret = factory.generateSecret(spec)
             val keyBytes = secret.encoded
 
             val secretKey = SecretKeySpec(keyBytes, "AES")
-            val cipher = Cipher.getInstance("AES/CBC/PKCS7Padding", "BC") 
-            
+            val cipher = Cipher.getInstance("AES/CBC/PKCS7Padding", "BC")
+
             cipher.init(Cipher.DECRYPT_MODE, secretKey, IvParameterSpec(ivBytes))
-            
+
             val ciphertextBytes = Base64.getDecoder().decode(encryptedData.ciphertext)
             val decryptedBytes = cipher.doFinal(ciphertextBytes)
-            
+
             String(decryptedBytes, Charsets.UTF_8)
         } catch (e: Exception) {
-            // Sử dụng this.logError nếu nó có sẵn và hoạt động như một extension function
-            // this.logError(e) 
-            // Hoặc dùng AppUtils.logError(e) nếu thích hợp
-            // AppUtils.logError(e)
-            // Hoặc fallback về println
-            println("${this.name} Decryption Error: ${e.message}")
+            println("$name Decryption Error: ${e.message}")
             e.printStackTrace()
             null
         }
     }
 
-    private fun getQualityFromSearchString(qualityString: String?): SearchQuality? { 
+    private fun getQualityFromSearchString(qualityString: String?): SearchQuality? {
         return when {
             qualityString == null -> null
             qualityString.contains("1080") -> SearchQuality.HD
@@ -110,14 +104,14 @@ class MotChillProvider : MainAPI() {
             else -> null
         }
     }
-    
-    private fun getQualityForLink(url: String): Int { // Trả về Int cho ExtractorLink.quality
+
+    private fun getQualityForLink(url: String): Int {
         return when {
             url.contains("1080p", ignoreCase = true) -> Qualities.P1080.value
             url.contains("720p", ignoreCase = true) -> Qualities.P720.value
             url.contains("480p", ignoreCase = true) -> Qualities.P480.value
             url.contains("360p", ignoreCase = true) -> Qualities.P360.value
-            else -> Qualities.Unknown.value 
+            else -> Qualities.Unknown.value
         }
     }
 
@@ -136,22 +130,22 @@ class MotChillProvider : MainAPI() {
                 val nameText = titleElement?.text()
                 val yearText = item.selectFirst("div.info h4.name")?.ownText()?.trim()
                 val name = nameText?.substringBeforeLast(yearText ?: "")?.trim() ?: nameText
-                val movieUrl = fixUrlNull(titleElement?.attr("href"))
-                var posterUrl = fixUrlNull(item.selectFirst("img")?.attr("src"))
+                val movieUrl = fixUrlNull(titleElement?.attr("href")) // Gọi như extension function
+                var posterUrl = fixUrlNull(item.selectFirst("img")?.attr("src")) // Gọi như extension function
                 if (posterUrl.isNullOrEmpty() || posterUrl.contains("p21-ad-sg.ibyteimg.com")) {
                     val onerrorPoster = item.selectFirst("img")?.attr("onerror")
                     if (onerrorPoster?.contains("this.src=") == true) {
-                        posterUrl = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
+                        posterUrl = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';")) // Gọi như extension function
                     }
                 }
                 if (posterUrl.isNullOrEmpty()) {
-                    posterUrl = fixUrlNull(item.selectFirst("img")?.attr("data-src"))
+                    posterUrl = fixUrlNull(item.selectFirst("img")?.attr("data-src")) // Gọi như extension function
                 }
                 val status = item.selectFirst("div.status")?.text()?.trim()
                 val type = if (status?.contains("Tập") == true || (status?.contains("/") == true && !status.contains("Full", ignoreCase = true))) TvType.TvSeries else TvType.Movie
                 val qualityText = item.selectFirst("div.HD")?.text()?.trim() ?: status
                 if (name != null && !name.startsWith("Advertisement") && movieUrl != null) {
-                    newMovieSearchResponse(name, movieUrl) { // apiName is implicit
+                    newMovieSearchResponse(name, movieUrl) {
                         this.type = type; this.posterUrl = posterUrl; this.year = yearText?.toIntOrNull(); this.quality = getQualityFromSearchString(qualityText)
                     }
                 } else null
@@ -236,37 +230,43 @@ class MotChillProvider : MainAPI() {
         val isTvSeries = episodeElements.size > 1 || isTvSeriesBasedOnNames
         if (episodeElements.isNotEmpty()) {
             episodeElements.forEachIndexed { index, element ->
-                val episodeLink = fixUrl(element.attr("href")); var episodeNameSource = element.selectFirst("span")?.text()?.trim() ?: element.text().trim()
+                val attrHref = element.attr("href") // Get href value
+                val episodeLink = if (attrHref.isNullOrBlank()) "" else fixUrl(attrHref) // Call fixUrl only if href is not blank
+                var episodeNameSource = element.selectFirst("span")?.text()?.trim() ?: element.text().trim()
                 var finalEpisodeName: String
                 if (episodeNameSource.isNullOrBlank()) finalEpisodeName = "Server ${index + 1}"
                 else {
                     if (episodeNameSource.toIntOrNull() != null || (!episodeNameSource.contains("Tập ", ignoreCase = true) && episodeNameSource.matches(Regex("""\d+""")))) finalEpisodeName = "Tập $episodeNameSource"
                     else finalEpisodeName = episodeNameSource
                 }
-                episodes.add(newEpisode(episodeLink) {this.name = finalEpisodeName; /*this.runtime = 0 // Add if required */})
+                if (episodeLink.isNotBlank()) { // Only add episode if link is valid
+                    episodes.add(newEpisode(episodeLink) {this.name = finalEpisodeName})
+                }
             }
         } else {
             document.selectFirst("a#btn-film-watch.btn-red[href]")?.let { watchButton ->
-                val movieWatchLink = fixUrl(watchButton.attr("href")); if (movieWatchLink.isNotBlank()) episodes.add(newEpisode(movieWatchLink) {this.name = title; /*this.runtime = 0*/})
+                 val attrHref = watchButton.attr("href")
+                val movieWatchLink = if(attrHref.isNullOrBlank()) "" else fixUrl(attrHref)
+                if (movieWatchLink.isNotBlank()) episodes.add(newEpisode(movieWatchLink) {this.name = title})
             }
         }
         val currentSyncData = mutableMapOf("url" to url)
         if (isTvSeries || (episodes.size > 1 && !episodes.all { it.name == title })) {
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes.distinctBy { it.data }.toList()) {
-                this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = genres.distinct().toList(); this.recommendations = recommendations; this.syncData = currentSyncData; /*this.contentRating = null // Add if required */
+                this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = genres.distinct().toList(); this.recommendations = recommendations; this.syncData = currentSyncData
             }
         } else {
             val movieDataUrl = episodes.firstOrNull()?.data ?: url
             return newMovieLoadResponse(title, url, TvType.Movie, movieDataUrl) {
-                this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = genres.distinct().toList(); this.recommendations = recommendations; this.syncData = currentSyncData; /*this.contentRating = null // Add if required */
+                this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = genres.distinct().toList(); this.recommendations = recommendations; this.syncData = currentSyncData
             }
         }
     }
 
     override suspend fun loadLinks(
-        data: String, 
+        data: String,
         isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit, 
+        subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val initialPageDocument = app.get(data, interceptor = cfKiller, referer = mainUrl).document
@@ -294,7 +294,8 @@ class MotChillProvider : MainAPI() {
                     val fileRegex = Regex("""file\s*:\s*["'](.*?)["']""")
                     fileRegex.find(sourceBlock)?.groupValues?.get(1)?.let { videoUrl ->
                         if (videoUrl.isNotBlank() && !videoUrl.contains("ads.mp4")) {
-                            callback(ExtractorLink(this.name, "JWPlayer Fallback (Initial Page)", fixUrl(videoUrl), data, getQualityForLink(videoUrl), type = if (videoUrl.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO))
+                            val fixedVideoUrl = fixUrl(videoUrl) // Call fixUrl with one argument
+                            callback(ExtractorLink(this.name, "JWPlayer Fallback (Initial Page)", fixedVideoUrl, data, getQualityForLink(fixedVideoUrl), type = if (fixedVideoUrl.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO))
                             return true
                         }
                     }
@@ -303,7 +304,7 @@ class MotChillProvider : MainAPI() {
             return false
         }
         
-        val absoluteIframeUrlPlayerPage = fixUrl(iframeUrlPlayerPage, data)
+        val absoluteIframeUrlPlayerPage = fixUrl(iframeUrlPlayerPage) // Call fixUrl with one argument
         val playerPageDocument = app.get(absoluteIframeUrlPlayerPage, interceptor = cfKiller, referer = data).document
         var foundAnyLink = false
 
@@ -332,7 +333,7 @@ class MotChillProvider : MainAPI() {
             if ((button.classNames().contains("activelive") || serverName.equals("Server", ignoreCase = true) || serverName.equals("S2#", ignoreCase = true)) && finalVideoUrlFromPlayerPageS2 != null) {
                 return@forEach
             }
-            if (serverName.contains("HY3", ignoreCase = true)) { // Bỏ qua server HY3#
+            if (serverName.contains("HY3", ignoreCase = true)) {
                  println("$name: Skipping server $serverName as requested.")
                 return@forEach
             }
@@ -342,7 +343,7 @@ class MotChillProvider : MainAPI() {
             val serverUrlStringFromButton = urlRegex.find(onclickAttr)?.groupValues?.get(1)
 
             if (!serverUrlStringFromButton.isNullOrBlank()) {
-                val fullServerUrlPlayer = fixUrl(serverUrlStringFromButton, absoluteIframeUrlPlayerPage)
+                val fullServerUrlPlayer = fixUrl(serverUrlStringFromButton) // Call fixUrl with one argument
 
                 if (fullServerUrlPlayer.contains("play2.php")) {
                     try {
@@ -371,6 +372,7 @@ class MotChillProvider : MainAPI() {
                         }
                     } catch (e: Exception) {
                         println("$name: Error fetching/parsing $serverName ($fullServerUrlPlayer): ${e.message}")
+                        e.printStackTrace()
                     }
                 } else if (fullServerUrlPlayer.startsWith("http") && 
                            (fullServerUrlPlayer.contains(".m3u8", ignoreCase = true) || 
