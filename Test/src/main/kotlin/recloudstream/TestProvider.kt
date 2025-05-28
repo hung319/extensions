@@ -1,14 +1,14 @@
 package com.example.motchill // Make sure this matches your project structure
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.AppUtils
+// import com.lagradost.cloudstream3.utils.AppUtils // Not needed for fixUrl/fixUrlNull if they are MainAPI extensions
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.SubtitleFile // Corrected import path hopefully
+// import com.lagradost.cloudstream3.SubtitleFile // *** COMMENTED OUT FOR NOW ***
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.SearchQuality
 
-class MotChillProvider : MainAPI() {
+class MotChillProvider : MainAPI() { // this is a MainAPI instance
     override var mainUrl = "https://www.motchill86.com"
     override var name = "MotChill86"
     override val hasMainPage = true
@@ -21,22 +21,18 @@ class MotChillProvider : MainAPI() {
 
     private val cfKiller = CloudflareKiller()
 
-    // Updated based on the provided SearchQuality enum members
     private fun getQualityFromString(qualityString: String?): SearchQuality? {
         return when {
             qualityString == null -> null
-            qualityString.contains("1080") -> SearchQuality.HD // Mapping 1080p to HD, as FullHd is not a direct member.
-                                                            // Alternatively, if there's a site indicator for BluRay or WebRip 1080p,
-                                                            // you might choose SearchQuality.BlueRay or SearchQuality.WebRip.
+            qualityString.contains("1080") -> SearchQuality.HD
             qualityString.contains("720") -> SearchQuality.HD
-            qualityString.contains("4K", ignoreCase = true) || qualityString.contains("2160") -> SearchQuality.FourK // Or SearchQuality.UHD
+            qualityString.contains("4K", ignoreCase = true) || qualityString.contains("2160") -> SearchQuality.FourK
             qualityString.contains("HD", ignoreCase = true) -> SearchQuality.HD
-            qualityString.contains("Bản Đẹp", ignoreCase = true) -> SearchQuality.HD // Treat "Bản Đẹp" as HD
+            qualityString.contains("Bản Đẹp", ignoreCase = true) -> SearchQuality.HD
             qualityString.contains("SD", ignoreCase = true) -> SearchQuality.SD
-            // Add more specific mappings if needed, e.g., CAM, DVD
-            qualityString.contains("CAM", ignoreCase = true) -> SearchQuality.CamRip // Or SearchQuality.Cam
+            qualityString.contains("CAM", ignoreCase = true) -> SearchQuality.CamRip
             qualityString.contains("DVD", ignoreCase = true) -> SearchQuality.DVD
-            qualityString.contains("WEB", ignoreCase = true) -> SearchQuality.WebRip // Added WebRip
+            qualityString.contains("WEB", ignoreCase = true) -> SearchQuality.WebRip
             else -> null
         }
     }
@@ -58,16 +54,17 @@ class MotChillProvider : MainAPI() {
                 val yearText = item.selectFirst("div.info h4.name")?.ownText()?.trim()
                 val name = nameText?.substringBeforeLast(yearText ?: "")?.trim() ?: nameText
 
-                val movieUrl = AppUtils.fixUrlNull(titleElement?.attr("href"), mainUrl)
-                var posterUrl = AppUtils.fixUrlNull(item.selectFirst("img")?.attr("src"), mainUrl)
+                // Calling as extension function, which is correct based on docs.
+                val movieUrl = fixUrlNull(titleElement?.attr("href"))
+                var posterUrl = fixUrlNull(item.selectFirst("img")?.attr("src"))
                 if (posterUrl.isNullOrEmpty() || posterUrl.contains("p21-ad-sg.ibyteimg.com")) {
                     val onerrorPoster = item.selectFirst("img")?.attr("onerror")
                     if (onerrorPoster?.contains("this.src=") == true) {
-                        posterUrl = AppUtils.fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"), mainUrl)
+                        posterUrl = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
                     }
                 }
                 if (posterUrl.isNullOrEmpty()) {
-                    posterUrl = AppUtils.fixUrlNull(item.selectFirst("img")?.attr("data-src"), mainUrl)
+                    posterUrl = fixUrlNull(item.selectFirst("img")?.attr("data-src"))
                 }
 
                 val status = item.selectFirst("div.status")?.text()?.trim()
@@ -94,21 +91,21 @@ class MotChillProvider : MainAPI() {
         document.selectFirst("#owl-demo.owl-carousel")?.let { owl ->
             val hotMovies = owl.select("div.item").mapNotNull { item ->
                 val linkTag = item.selectFirst("a")
-                val movieUrl = AppUtils.fixUrlNull(linkTag?.attr("href"), mainUrl)
+                val movieUrl = fixUrlNull(linkTag?.attr("href"))
                 var name = linkTag?.attr("title")
                 if (name.isNullOrEmpty()) {
                     name = item.selectFirst("div.overlay h4.name a")?.text()?.trim()
                 }
 
-                var posterUrl = AppUtils.fixUrlNull(item.selectFirst("img")?.attr("src"), mainUrl)
+                var posterUrl = fixUrlNull(item.selectFirst("img")?.attr("src"))
                 if (posterUrl.isNullOrEmpty() || posterUrl.contains("p21-ad-sg.ibyteimg.com")) {
                     val onerrorPoster = item.selectFirst("img")?.attr("onerror")
                     if (onerrorPoster?.contains("this.src=") == true) {
-                        posterUrl = AppUtils.fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"), mainUrl)
+                        posterUrl = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
                     }
                 }
                 if (posterUrl.isNullOrEmpty()) {
-                    posterUrl = AppUtils.fixUrlNull(item.selectFirst("img")?.attr("data-src"), mainUrl)
+                    posterUrl = fixUrlNull(item.selectFirst("img")?.attr("data-src"))
                 }
 
                 val status = item.selectFirst("div.status")?.text()?.trim()
@@ -155,7 +152,6 @@ class MotChillProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val searchQuery = query.trim().replace(Regex("\\s+"), "-").lowercase()
-        // The search URL is /search/keyword/ based on search.html
         val searchUrl = "$mainUrl/search/$searchQuery/" 
         
         val document = app.get(searchUrl, interceptor = cfKiller).document
@@ -163,28 +159,27 @@ class MotChillProvider : MainAPI() {
         return document.select("ul.list-film li").mapNotNull { item ->
             val titleElement = item.selectFirst("div.info div.name a")
             val nameText = titleElement?.text()
-            val movieUrl = AppUtils.fixUrlNull(titleElement?.attr("href"), mainUrl)
+            val movieUrl = fixUrlNull(titleElement?.attr("href"))
 
             val yearRegex = Regex("""\s+(\d{4})$""")
             val yearMatch = nameText?.let { yearRegex.find(it) }
             val year = yearMatch?.groupValues?.get(1)?.toIntOrNull()
             val name = yearMatch?.let { nameText.removeSuffix(it.value) }?.trim() ?: nameText?.trim()
 
-            var posterUrl = AppUtils.fixUrlNull(item.selectFirst("img")?.attr("src"), mainUrl)
+            var posterUrl = fixUrlNull(item.selectFirst("img")?.attr("src"))
             if (posterUrl.isNullOrEmpty() || posterUrl.contains("p21-ad-sg.ibyteimg.com")) { 
                 val onerrorPoster = item.selectFirst("img")?.attr("onerror")
                 if (onerrorPoster?.contains("this.src=") == true) {
-                     posterUrl = AppUtils.fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"), mainUrl)
+                     posterUrl = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
                 }
             }
             if (posterUrl.isNullOrEmpty()){
-                 posterUrl = AppUtils.fixUrlNull(item.selectFirst("img")?.attr("data-src"), mainUrl)
+                 posterUrl = fixUrlNull(item.selectFirst("img")?.attr("data-src"))
              }
 
             val statusText = item.selectFirst("div.status")?.text()?.trim()
             val hdText = item.selectFirst("div.HD")?.text()?.trim()
             val qualityString = hdText ?: statusText
-
 
             val type = if (statusText?.contains("Tập") == true || (statusText?.contains("/") == true && statusText != "Full")) TvType.TvSeries else TvType.Movie
             
@@ -211,15 +206,15 @@ class MotChillProvider : MainAPI() {
         val yearText = document.selectFirst("h1.movie-title span.title-year")?.text()?.replace("(", "")?.replace(")", "")?.trim()
         val year = yearText?.toIntOrNull()
 
-        var poster = AppUtils.fixUrlNull(document.selectFirst("div.movie-image div.poster img")?.attr("src"), mainUrl)
+        var poster = fixUrlNull(document.selectFirst("div.movie-image div.poster img")?.attr("src"))
         if (poster.isNullOrEmpty() || poster.contains("p21-ad-sg.ibyteimg.com")) {
             val onerrorPoster = document.selectFirst("div.movie-image div.poster img")?.attr("onerror")
             if (onerrorPoster?.contains("this.src=") == true) {
-                 poster = AppUtils.fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"), mainUrl)
+                 poster = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
             }
         }
          if (poster.isNullOrEmpty()){
-             poster = AppUtils.fixUrlNull(document.selectFirst("div.movie-image div.poster img")?.attr("data-src"), mainUrl)
+             poster = fixUrlNull(document.selectFirst("div.movie-image div.poster img")?.attr("data-src"))
          }
 
         val plot = document.selectFirst("div#info-film div.detail-content-main")?.text()?.trim()
@@ -233,20 +228,20 @@ class MotChillProvider : MainAPI() {
         
         val recommendations = document.select("div#movie-hot div.owl-carousel div.item").mapNotNull { item ->
             val recLinkTag = item.selectFirst("a")
-            val recUrl = AppUtils.fixUrlNull(recLinkTag?.attr("href"), mainUrl)
+            val recUrl = fixUrlNull(recLinkTag?.attr("href"))
             var recName = recLinkTag?.attr("title")
              if (recName.isNullOrEmpty()) {
                 recName = item.selectFirst("div.overlay h4.name a")?.text()?.trim()
             }
-            var recPosterUrl = AppUtils.fixUrlNull(item.selectFirst("img")?.attr("src"), mainUrl)
+            var recPosterUrl = fixUrlNull(item.selectFirst("img")?.attr("src"))
              if (recPosterUrl.isNullOrEmpty() || recPosterUrl.contains("p21-ad-sg.ibyteimg.com")) {
                 val onerrorPoster = item.selectFirst("img")?.attr("onerror")
                 if (onerrorPoster?.contains("this.src=") == true) {
-                     recPosterUrl = AppUtils.fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"), mainUrl)
+                     recPosterUrl = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
                 }
             }
              if (recPosterUrl.isNullOrEmpty()){
-                 recPosterUrl = AppUtils.fixUrlNull(item.selectFirst("img")?.attr("data-src"), mainUrl)
+                 recPosterUrl = fixUrlNull(item.selectFirst("img")?.attr("data-src"))
              }
 
             if (recName != null && recUrl != null) {
@@ -271,7 +266,7 @@ class MotChillProvider : MainAPI() {
         
         if (episodeElements.isNotEmpty()) {
             episodeElements.forEachIndexed { index, element ->
-                val episodeLink = AppUtils.fixUrl(element.attr("href"), mainUrl)
+                val episodeLink = fixUrl(element.attr("href")) // Called as extension
                 var episodeName = element.selectFirst("span")?.text()?.trim() 
                                     ?: element.text().trim()
                                     ?: "Tập ${index + 1}"
@@ -280,7 +275,7 @@ class MotChillProvider : MainAPI() {
             }
         } else {
              document.selectFirst("a#btn-film-watch.btn-red[href]")?.let { watchButton ->
-                val movieWatchLink = AppUtils.fixUrl(watchButton.attr("href"), mainUrl)
+                val movieWatchLink = fixUrl(watchButton.attr("href")) // Called as extension
                 if (movieWatchLink.isNotBlank()){
                      episodes.add(Episode(data = movieWatchLink, name = title))
                 }
@@ -324,7 +319,8 @@ class MotChillProvider : MainAPI() {
     override suspend fun loadLinks(
         data: String, 
         isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
+        subtitleCallback: (Any) -> Unit, // Kept as Any for now to avoid SubtitleFile issue
+        // subtitleCallback: (SubtitleFile) -> Unit, 
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         println("MotChillProvider: loadLinks for $data is not yet implemented.")
