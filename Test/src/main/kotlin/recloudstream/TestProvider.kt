@@ -18,7 +18,7 @@ import javax.crypto.spec.SecretKeySpec
 import java.security.Security
 import java.util.Base64
 import org.bouncycastle.jce.provider.BouncyCastleProvider
-import java.net.URLEncoder
+// Bỏ java.net.URLEncoder vì không dùng proxy nữa
 
 class MotChillProvider : MainAPI() {
     override var mainUrl = "https://www.motchill86.com"
@@ -36,17 +36,9 @@ class MotChillProvider : MainAPI() {
     }
 
     private val cfKiller = CloudflareKiller()
-    private val proxyBaseUrl = "https://proxy.h4rs.io.vn/proxy?url="
+    // Bỏ proxyBaseUrl
 
-    private fun encodeURIComponent(s: String): String {
-        return URLEncoder.encode(s, "UTF-8")
-            .replace("\\+".toRegex(), "%20")
-            .replace("\\%21".toRegex(), "!")
-            .replace("\\%27".toRegex(), "'")
-            .replace("\\%28".toRegex(), "(")
-            .replace("\\%29".toRegex(), ")")
-            .replace("\\%7E".toRegex(), "~")
-    }
+    // Bỏ encodeURIComponent
 
     private data class EncryptedSourceJson(
         val ciphertext: String,
@@ -266,6 +258,7 @@ class MotChillProvider : MainAPI() {
         }
     }
 
+
     private suspend fun extractVideoFromPlay2Page(pageUrl: String, pageRefererForGet: String): String? {
         try {
             println("$name: Extracting video from play2 page: $pageUrl (GET Referer: $pageRefererForGet)")
@@ -299,10 +292,9 @@ class MotChillProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit, 
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // `data` is the URL of loadlinks.html equivalent
         val initialPageDocument = app.get(data, interceptor = cfKiller, referer = mainUrl).document
         val scriptElementsInitial = initialPageDocument.select("script:containsData(CryptoJSAesDecrypt)")
-        var iframeUrlPlayerPage: String? = null // This will be the URL of player.html
+        var iframeUrlPlayerPage: String? = null 
 
         for (scriptElement in scriptElementsInitial) {
             val scriptContent = scriptElement.html()
@@ -325,17 +317,13 @@ class MotChillProvider : MainAPI() {
                     val fileRegex = Regex("""file\s*:\s*["'](.*?)["']""")
                     fileRegex.find(sourceBlock)?.groupValues?.get(1)?.let { videoUrl ->
                         if (videoUrl.isNotBlank() && !videoUrl.contains("ads.mp4")) {
-                            var finalUrl = fixUrl(videoUrl) // URL video gốc
-                            val qualityForLink = getQualityForLink(finalUrl) // Lấy quality từ URL gốc
-                            if (finalUrl.contains(".m3u8", ignoreCase = true)) {
-                                finalUrl = "$proxyBaseUrl${encodeURIComponent(finalUrl)}&headers={}"
-                            }
+                            val finalUrl = fixUrl(videoUrl) // Không dùng proxy nữa
                             callback(ExtractorLink(
                                 source = this.name, 
                                 name = "JWPlayer Fallback (Initial)", 
                                 url = finalUrl, 
-                                referer = mainUrl, // *** Referer đặt là mainUrl ***
-                                quality = qualityForLink, 
+                                referer = data, // Referer là trang loadlinks.html (data)
+                                quality = getQualityForLink(finalUrl), 
                                 type = ExtractorLinkType.M3U8, 
                                 headers = emptyMap() 
                             ))
@@ -347,14 +335,11 @@ class MotChillProvider : MainAPI() {
             return false
         }
         
-        // URL của player.html
         val absoluteIframeUrlPlayerPage = fixUrl(iframeUrlPlayerPage) 
         println("$name: Player Page URL (player.html): $absoluteIframeUrlPlayerPage")
-        // Referer khi GET player.html là `data` (URL của loadlinks.html)
         val playerPageDocument = app.get(absoluteIframeUrlPlayerPage, interceptor = cfKiller, referer = data).document
         var foundAnyLink = false
 
-        // Xử lý Server S2 (link play2.php lấy từ trailer() của player.html)
         val scriptElementsPlayerPage = playerPageDocument.select("script:containsData(function trailer\\(\\))")
         var serverS2Play2UrlFromPlayerHtml: String? = null
         for (scriptElement in scriptElementsPlayerPage) {
@@ -373,21 +358,15 @@ class MotChillProvider : MainAPI() {
         if (!serverS2Play2UrlFromPlayerHtml.isNullOrBlank()) {
             val s2Play2PageActualUrl = fixUrl(serverS2Play2UrlFromPlayerHtml) 
             println("$name: Server S2 play2.php URL: $s2Play2PageActualUrl")
-            // Referer khi GET s2Play2PageActualUrl là absoluteIframeUrlPlayerPage (URL của player.html)
             val s2DirectVideoUrl = extractVideoFromPlay2Page(s2Play2PageActualUrl, absoluteIframeUrlPlayerPage) 
             if (s2DirectVideoUrl != null) {
                 println("$name: Server S2 M3U8: $s2DirectVideoUrl")
-                var finalS2UrlForPlayer = s2DirectVideoUrl
-                val qualityForS2 = getQualityForLink(s2DirectVideoUrl) // Lấy quality từ URL gốc
-                if (finalS2UrlForPlayer.contains(".m3u8", ignoreCase = true)) {
-                    finalS2UrlForPlayer = "$proxyBaseUrl${encodeURIComponent(finalS2UrlForPlayer)}&headers={}"
-                }
                 callback(ExtractorLink(
                     this.name, 
                     "Server S2 (Chính)", 
-                    finalS2UrlForPlayer, 
-                    referer = mainUrl, // *** Referer đặt là mainUrl ***
-                    quality = qualityForS2, 
+                    s2DirectVideoUrl, // Không dùng proxy
+                    referer = s2Play2PageActualUrl, // Referer là trang play2.php của S2
+                    quality = getQualityForLink(s2DirectVideoUrl), 
                     type = ExtractorLinkType.M3U8, 
                     headers = emptyMap() 
                 ))
@@ -399,7 +378,6 @@ class MotChillProvider : MainAPI() {
             println("$name: Could not find the play2.php URL for Server S2 within player.html's own trailer script.")
         }
         
-        // Xử lý các server khác từ player.html (vb_server_list)
         playerPageDocument.select("div#vb_server_list span.vb_btnt-primary").forEach { button ->
             val serverName = button.text()?.trim() ?: "Unknown Server"
             
@@ -416,26 +394,20 @@ class MotChillProvider : MainAPI() {
             val serverUrlStringFromButton = urlRegex.find(onclickAttr)?.groupValues?.get(1)
 
             if (!serverUrlStringFromButton.isNullOrBlank()) {
-                val fullServerUrlTarget = fixUrl(serverUrlStringFromButton) // Đây là URL của play2.php hoặc embed khác
+                val fullServerUrlTarget = fixUrl(serverUrlStringFromButton)
 
                 println("$name: Processing other server: $serverName with URL: $fullServerUrlTarget")
 
                 if (fullServerUrlTarget.contains("play2.php")) { 
-                    // Referer khi GET fullServerUrlTarget (play2.php) là absoluteIframeUrlPlayerPage (URL của player.html)
                     val directVideoUrl = extractVideoFromPlay2Page(fullServerUrlTarget, absoluteIframeUrlPlayerPage) 
                     if (directVideoUrl != null) {
                         println("$name: Decrypted $serverName URL: $directVideoUrl")
-                        var finalServerUrlForPlayer = directVideoUrl
-                        val qualityForServer = getQualityForLink(directVideoUrl) // Lấy quality từ URL gốc
-                        if (finalServerUrlForPlayer.contains(".m3u8", ignoreCase = true)) {
-                            finalServerUrlForPlayer = "$proxyBaseUrl${encodeURIComponent(finalServerUrlForPlayer)}&headers={}"
-                        }
                         callback(ExtractorLink(
                             this.name, 
                             serverName, 
-                            finalServerUrlForPlayer, 
-                            referer = mainUrl, // *** Referer đặt là mainUrl ***
-                            quality = qualityForServer, 
+                            directVideoUrl, // Không dùng proxy
+                            referer = fullServerUrlTarget, // Referer là trang play2.php của server này
+                            quality = getQualityForLink(directVideoUrl), 
                             type = ExtractorLinkType.M3U8, 
                             headers = emptyMap() 
                         ))
@@ -447,23 +419,18 @@ class MotChillProvider : MainAPI() {
                            (fullServerUrlTarget.contains(".m3u8", ignoreCase = true) || 
                             fullServerUrlTarget.contains(".mp4", ignoreCase = true))) { 
                      println("$name: Found direct link for $serverName: $fullServerUrlTarget")
-                     var finalDirectUrl = fullServerUrlTarget
-                     val qualityForDirectLink = getQualityForLink(finalDirectUrl) // Lấy quality từ URL gốc
-                     if (finalDirectUrl.contains(".m3u8", ignoreCase = true)) {
-                         finalDirectUrl = "$proxyBaseUrl${encodeURIComponent(finalDirectUrl)}&headers={}"
-                     }
                      callback(ExtractorLink(
                          this.name, 
                          serverName, 
-                         finalDirectUrl, 
-                         referer = mainUrl, // *** Referer đặt là mainUrl ***
-                         quality = qualityForDirectLink, 
+                         fullServerUrlTarget, // Không dùng proxy
+                         referer = absoluteIframeUrlPlayerPage, // Referer là player.html
+                         quality = getQualityForLink(fullServerUrlTarget), 
                          type = ExtractorLinkType.M3U8, 
                          headers = emptyMap()
                         ))
                     foundAnyLink = true
                 } else {
-                     println("$name: Skipped non-direct or unhandled server link for $serverName: $fullServerUrlTarget (e.g. player-cdn.com)")
+                     println("$name: Skipped non-direct or unhandled server link for $serverName: $fullServerUrlTarget")
                 }
             }
         }
