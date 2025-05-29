@@ -18,7 +18,7 @@ import javax.crypto.spec.SecretKeySpec
 import java.security.Security
 import java.util.Base64
 import org.bouncycastle.jce.provider.BouncyCastleProvider
-// Bỏ java.net.URLEncoder vì không dùng proxy nữa
+// Bỏ java.net.URLEncoder nếu không dùng proxy
 
 class MotChillProvider : MainAPI() {
     override var mainUrl = "https://www.motchill86.com"
@@ -38,7 +38,10 @@ class MotChillProvider : MainAPI() {
     private val cfKiller = CloudflareKiller()
     // Bỏ proxyBaseUrl
 
-    // Bỏ encodeURIComponent
+    private val defaultHeaders = mapOf(
+        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36",
+        "Origin" to mainUrl // Đặt Origin là domain chính
+    )
 
     private data class EncryptedSourceJson(
         val ciphertext: String,
@@ -258,7 +261,6 @@ class MotChillProvider : MainAPI() {
         }
     }
 
-
     private suspend fun extractVideoFromPlay2Page(pageUrl: String, pageRefererForGet: String): String? {
         try {
             println("$name: Extracting video from play2 page: $pageUrl (GET Referer: $pageRefererForGet)")
@@ -317,7 +319,7 @@ class MotChillProvider : MainAPI() {
                     val fileRegex = Regex("""file\s*:\s*["'](.*?)["']""")
                     fileRegex.find(sourceBlock)?.groupValues?.get(1)?.let { videoUrl ->
                         if (videoUrl.isNotBlank() && !videoUrl.contains("ads.mp4")) {
-                            val finalUrl = fixUrl(videoUrl) // Không dùng proxy nữa
+                            val finalUrl = fixUrl(videoUrl) // Không dùng proxy
                             callback(ExtractorLink(
                                 source = this.name, 
                                 name = "JWPlayer Fallback (Initial)", 
@@ -325,7 +327,7 @@ class MotChillProvider : MainAPI() {
                                 referer = data, // Referer là trang loadlinks.html (data)
                                 quality = getQualityForLink(finalUrl), 
                                 type = ExtractorLinkType.M3U8, 
-                                headers = emptyMap() 
+                                headers = defaultHeaders // *** Thêm defaultHeaders ***
                             ))
                             return true
                         }
@@ -365,10 +367,10 @@ class MotChillProvider : MainAPI() {
                     this.name, 
                     "Server S2 (Chính)", 
                     s2DirectVideoUrl, // Không dùng proxy
-                    referer = s2Play2PageActualUrl, // Referer là trang play2.php của S2
+                    referer = s2Play2PageActualUrl, // *** Referer là trang play2.php của S2 ***
                     quality = getQualityForLink(s2DirectVideoUrl), 
                     type = ExtractorLinkType.M3U8, 
-                    headers = emptyMap() 
+                    headers = defaultHeaders // *** Thêm defaultHeaders ***
                 ))
                 foundAnyLink = true
             } else {
@@ -406,10 +408,10 @@ class MotChillProvider : MainAPI() {
                             this.name, 
                             serverName, 
                             directVideoUrl, // Không dùng proxy
-                            referer = fullServerUrlTarget, // Referer là trang play2.php của server này
+                            referer = fullServerUrlTarget, // *** Referer là trang play2.php của server này ***
                             quality = getQualityForLink(directVideoUrl), 
                             type = ExtractorLinkType.M3U8, 
-                            headers = emptyMap() 
+                            headers = defaultHeaders // *** Thêm defaultHeaders ***
                         ))
                         foundAnyLink = true
                     } else {
@@ -423,10 +425,10 @@ class MotChillProvider : MainAPI() {
                          this.name, 
                          serverName, 
                          fullServerUrlTarget, // Không dùng proxy
-                         referer = absoluteIframeUrlPlayerPage, // Referer là player.html
+                         referer = absoluteIframeUrlPlayerPage, // *** Referer là player.html ***
                          quality = getQualityForLink(fullServerUrlTarget), 
                          type = ExtractorLinkType.M3U8, 
-                         headers = emptyMap()
+                         headers = defaultHeaders // *** Thêm defaultHeaders ***
                         ))
                     foundAnyLink = true
                 } else {
