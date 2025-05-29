@@ -36,7 +36,7 @@ class MotChillProvider : MainAPI() {
     }
 
     private val cfKiller = CloudflareKiller()
-    private val proxyBaseUrl = "https://proxy.h4rs.io.vn/proxy?url=" // Giữ nguyên base proxy
+    private val proxyBaseUrl = "https://slave.nopile6577.workers.dev/proxy?url=" // Giữ nguyên base proxy
 
     private fun encodeURIComponent(s: String): String {
         return URLEncoder.encode(s, "UTF-8")
