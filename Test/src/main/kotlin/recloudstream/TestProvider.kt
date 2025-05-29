@@ -18,13 +18,14 @@ import javax.crypto.spec.SecretKeySpec
 import java.security.Security
 import java.util.Base64
 import org.bouncycastle.jce.provider.BouncyCastleProvider
+import java.net.URLEncoder // *** IMPORT FOR URL ENCODING ***
 
 class MotChillProvider : MainAPI() {
     override var mainUrl = "https://www.motchill86.com"
     override var name = "MotChill86"
     override val hasMainPage = true
     override var lang = "vi"
-    override val hasDownloadSupport = true
+    override val hasDownloadSupport = true 
     override val supportedTypes = setOf(
         TvType.Movie,
         TvType.TvSeries
@@ -35,12 +36,18 @@ class MotChillProvider : MainAPI() {
     }
 
     private val cfKiller = CloudflareKiller()
+    private val proxyUrl = "https://proxy.h4rs.io.vn/proxy?url="
 
-    // Common headers to be used for ExtractorLinks if needed
-    private val commonHeaders = mapOf(
-        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        // "Origin" to mainUrl, // Thêm Origin nếu server yêu cầu
-    )
+    private fun encodeURIComponent(s: String): String {
+        return URLEncoder.encode(s, "UTF-8")
+            .replace("\\+".toRegex(), "%20")
+            .replace("\\%21".toRegex(), "!")
+            .replace("\\%27".toRegex(), "'")
+            .replace("\\%28".toRegex(), "(")
+            .replace("\\%29".toRegex(), ")")
+            .replace("\\%7E".toRegex(), "~")
+    }
+
 
     private data class EncryptedSourceJson(
         val ciphertext: String,
@@ -142,7 +149,7 @@ class MotChillProvider : MainAPI() {
                 val type = if (status?.contains("Tập") == true || (status?.contains("/") == true && !status.contains("Full", ignoreCase = true))) TvType.TvSeries else TvType.Movie
                 val qualityText = item.selectFirst("div.HD")?.text()?.trim() ?: status
                 if (name != null && !name.startsWith("Advertisement") && movieUrl != null) {
-                    newMovieSearchResponse(name, movieUrl) { 
+                    newMovieSearchResponse(name, movieUrl) {
                         this.type = type; this.posterUrl = posterUrl; this.year = yearText?.toIntOrNull(); this.quality = getQualityFromSearchString(qualityText)
                     }
                 } else null
@@ -237,7 +244,7 @@ class MotChillProvider : MainAPI() {
                     else finalEpisodeName = episodeNameSource
                 }
                 if (episodeLink.isNotBlank()) {
-                    episodes.add(newEpisode(episodeLink) {this.name = finalEpisodeName; /*this.runtime = 0 // Add if required and available */})
+                    episodes.add(newEpisode(episodeLink) {this.name = finalEpisodeName; /*this.runtime = 0 */})
                 }
             }
         } else {
@@ -250,12 +257,12 @@ class MotChillProvider : MainAPI() {
         val currentSyncData = mutableMapOf("url" to url)
         if (isTvSeries || (episodes.size > 1 && !episodes.all { it.name == title })) {
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes.distinctBy { it.data }.toList()) {
-                this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = genres.distinct().toList(); this.recommendations = recommendations; this.syncData = currentSyncData; /*this.contentRating = null // Add if required */
+                this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = genres.distinct().toList(); this.recommendations = recommendations; this.syncData = currentSyncData; /*this.contentRating = null */
             }
         } else {
             val movieDataUrl = episodes.firstOrNull()?.data ?: url
             return newMovieLoadResponse(title, url, TvType.Movie, movieDataUrl) {
-                this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = genres.distinct().toList(); this.recommendations = recommendations; this.syncData = currentSyncData; /*this.contentRating = null // Add if required */
+                this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = genres.distinct().toList(); this.recommendations = recommendations; this.syncData = currentSyncData; /*this.contentRating = null */
             }
         }
     }
@@ -318,15 +325,18 @@ class MotChillProvider : MainAPI() {
                     val fileRegex = Regex("""file\s*:\s*["'](.*?)["']""")
                     fileRegex.find(sourceBlock)?.groupValues?.get(1)?.let { videoUrl ->
                         if (videoUrl.isNotBlank() && !videoUrl.contains("ads.mp4")) {
-                            val fixedVideoUrl = fixUrl(videoUrl)
+                            var finalUrl = fixUrl(videoUrl)
+                            if (finalUrl.contains(".m3u8", ignoreCase = true)) {
+                                finalUrl = "$proxyUrl${encodeURIComponent(finalUrl)}"
+                            }
                             callback(ExtractorLink(
                                 source = this.name, 
                                 name = "JWPlayer Fallback (Initial)", 
-                                url = fixedVideoUrl, 
-                                referer = mainUrl, // *** Referer set to mainUrl ***
-                                quality = getQualityForLink(fixedVideoUrl), 
-                                type = ExtractorLinkType.M3U8, // *** Type set to M3U8 ***
-                                headers = commonHeaders // *** Added commonHeaders ***
+                                url = finalUrl, 
+                                referer = "", // *** Bỏ Referer ***
+                                quality = getQualityForLink(videoUrl), // Chất lượng từ URL gốc
+                                type = ExtractorLinkType.M3U8, // *** Set cứng M3U8 ***
+                                headers = emptyMap() // *** Bỏ Headers ***
                             ))
                             return true
                         }
@@ -362,14 +372,18 @@ class MotChillProvider : MainAPI() {
             val s2DirectVideoUrl = extractVideoFromPlay2Page(s2Play2PageActualUrl, absoluteIframeUrlPlayerPage) 
             if (s2DirectVideoUrl != null) {
                 println("$name: Server S2 M3U8: $s2DirectVideoUrl")
+                var finalS2Url = s2DirectVideoUrl
+                if (finalS2Url.contains(".m3u8", ignoreCase = true)) {
+                    finalS2Url = "$proxyUrl${encodeURIComponent(finalS2Url)}"
+                }
                 callback(ExtractorLink(
                     this.name, 
                     "Server S2 (Chính)", 
-                    s2DirectVideoUrl, 
-                    referer = mainUrl, // *** Referer set to mainUrl ***
-                    quality = getQualityForLink(s2DirectVideoUrl), 
-                    type = ExtractorLinkType.M3U8, // *** Type set to M3U8 ***
-                    headers = commonHeaders // *** Added commonHeaders ***
+                    finalS2Url, 
+                    referer = "", // *** Bỏ Referer ***
+                    quality = getQualityForLink(s2DirectVideoUrl), // Chất lượng từ URL gốc
+                    type = ExtractorLinkType.M3U8, // *** Set cứng M3U8 ***
+                    headers = emptyMap() // *** Bỏ Headers ***
                 ))
                 foundAnyLink = true
             } else {
@@ -403,14 +417,18 @@ class MotChillProvider : MainAPI() {
                     val directVideoUrl = extractVideoFromPlay2Page(fullServerUrlTarget, absoluteIframeUrlPlayerPage) 
                     if (directVideoUrl != null) {
                         println("$name: Decrypted $serverName URL: $directVideoUrl")
+                        var finalServerUrl = directVideoUrl
+                        if (finalServerUrl.contains(".m3u8", ignoreCase = true)) {
+                            finalServerUrl = "$proxyUrl${encodeURIComponent(finalServerUrl)}"
+                        }
                         callback(ExtractorLink(
                             this.name, 
                             serverName, 
-                            directVideoUrl, 
-                            referer = mainUrl, // *** Referer set to mainUrl ***
-                            quality = getQualityForLink(directVideoUrl), 
-                            type = ExtractorLinkType.M3U8, // *** Type set to M3U8 ***
-                            headers = commonHeaders // *** Added commonHeaders ***
+                            finalServerUrl, 
+                            referer = "", // *** Bỏ Referer ***
+                            quality = getQualityForLink(directVideoUrl), // Chất lượng từ URL gốc
+                            type = ExtractorLinkType.M3U8, // *** Set cứng M3U8 ***
+                            headers = emptyMap() // *** Bỏ Headers ***
                         ))
                         foundAnyLink = true
                     } else {
@@ -420,14 +438,18 @@ class MotChillProvider : MainAPI() {
                            (fullServerUrlTarget.contains(".m3u8", ignoreCase = true) || 
                             fullServerUrlTarget.contains(".mp4", ignoreCase = true))) { 
                      println("$name: Found direct link for $serverName: $fullServerUrlTarget")
+                     var finalDirectUrl = fullServerUrlTarget
+                     if (finalDirectUrl.contains(".m3u8", ignoreCase = true)) {
+                         finalDirectUrl = "$proxyUrl${encodeURIComponent(finalDirectUrl)}"
+                     }
                      callback(ExtractorLink(
                          this.name, 
                          serverName, 
-                         fullServerUrlTarget, 
-                         referer = mainUrl, // *** Referer set to mainUrl ***
-                         quality = getQualityForLink(fullServerUrlTarget), 
-                         type = ExtractorLinkType.M3U8, // *** Type set to M3U8 ***
-                         headers = commonHeaders // *** Added commonHeaders ***
+                         finalDirectUrl, 
+                         referer = "", // *** Bỏ Referer ***
+                         quality = getQualityForLink(fullServerUrlTarget), // Chất lượng từ URL gốc
+                         type = ExtractorLinkType.M3U8, // *** Set cứng M3U8 ***
+                         headers = emptyMap() // *** Bỏ Headers ***
                         ))
                     foundAnyLink = true
                 } else {
