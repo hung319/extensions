@@ -18,14 +18,14 @@ import javax.crypto.spec.SecretKeySpec
 import java.security.Security
 import java.util.Base64
 import org.bouncycastle.jce.provider.BouncyCastleProvider
-import java.net.URLEncoder // *** IMPORT FOR URL ENCODING ***
+import java.net.URLEncoder
 
 class MotChillProvider : MainAPI() {
     override var mainUrl = "https://www.motchill86.com"
     override var name = "MotChill86"
     override val hasMainPage = true
     override var lang = "vi"
-    override val hasDownloadSupport = true 
+    override val hasDownloadSupport = true
     override val supportedTypes = setOf(
         TvType.Movie,
         TvType.TvSeries
@@ -36,7 +36,7 @@ class MotChillProvider : MainAPI() {
     }
 
     private val cfKiller = CloudflareKiller()
-    private val proxyUrl = "https://proxy.h4rs.io.vn/proxy?url="
+    private val proxyBaseUrl = "https://proxy.h4rs.io.vn/proxy?url=" // Giữ nguyên base proxy
 
     private fun encodeURIComponent(s: String): String {
         return URLEncoder.encode(s, "UTF-8")
@@ -47,7 +47,6 @@ class MotChillProvider : MainAPI() {
             .replace("\\%29".toRegex(), ")")
             .replace("\\%7E".toRegex(), "~")
     }
-
 
     private data class EncryptedSourceJson(
         val ciphertext: String,
@@ -118,7 +117,7 @@ class MotChillProvider : MainAPI() {
         }
     }
 
-    // ... (getMainPage, search, load functions giữ nguyên)
+    // ... (getMainPage, search, load functions giữ nguyên y hệt như trước)
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
@@ -267,6 +266,7 @@ class MotChillProvider : MainAPI() {
         }
     }
 
+
     private suspend fun extractVideoFromPlay2Page(pageUrl: String, pageReferer: String): String? {
         try {
             println("$name: Extracting video from play2 page: $pageUrl (Referer: $pageReferer)")
@@ -274,6 +274,7 @@ class MotChillProvider : MainAPI() {
             val scriptElements = pageDocument.select("script:containsData(CryptoJSAesDecrypt)")
             for (scriptElement in scriptElements) {
                 val scriptContent = scriptElement.html()
+                // Regex to find the specific trailer function and its encrypted data
                 val trailerRegex = Regex("""function\s+trailer\s*\(\s*\)\s*\{\s*return\s+CryptoJSAesDecrypt\(\s*'Encrypt'\s*,\s*`([^`]*)`\s*\)\s*;\s*\}""")
                 val matchResult = trailerRegex.find(scriptContent)
                 if (matchResult != null) {
@@ -327,16 +328,16 @@ class MotChillProvider : MainAPI() {
                         if (videoUrl.isNotBlank() && !videoUrl.contains("ads.mp4")) {
                             var finalUrl = fixUrl(videoUrl)
                             if (finalUrl.contains(".m3u8", ignoreCase = true)) {
-                                finalUrl = "$proxyUrl${encodeURIComponent(finalUrl)}"
+                                finalUrl = "$proxyBaseUrl${encodeURIComponent(finalUrl)}&headers={}" // *** Added &headers={} ***
                             }
                             callback(ExtractorLink(
                                 source = this.name, 
                                 name = "JWPlayer Fallback (Initial)", 
                                 url = finalUrl, 
-                                referer = "", // *** Bỏ Referer ***
-                                quality = getQualityForLink(videoUrl), // Chất lượng từ URL gốc
-                                type = ExtractorLinkType.M3U8, // *** Set cứng M3U8 ***
-                                headers = emptyMap() // *** Bỏ Headers ***
+                                referer = "", 
+                                quality = getQualityForLink(videoUrl), 
+                                type = ExtractorLinkType.M3U8, 
+                                headers = emptyMap() 
                             ))
                             return true
                         }
@@ -374,16 +375,16 @@ class MotChillProvider : MainAPI() {
                 println("$name: Server S2 M3U8: $s2DirectVideoUrl")
                 var finalS2Url = s2DirectVideoUrl
                 if (finalS2Url.contains(".m3u8", ignoreCase = true)) {
-                    finalS2Url = "$proxyUrl${encodeURIComponent(finalS2Url)}"
+                    finalS2Url = "$proxyBaseUrl${encodeURIComponent(finalS2Url)}&headers={}" // *** Added &headers={} ***
                 }
                 callback(ExtractorLink(
                     this.name, 
                     "Server S2 (Chính)", 
                     finalS2Url, 
-                    referer = "", // *** Bỏ Referer ***
-                    quality = getQualityForLink(s2DirectVideoUrl), // Chất lượng từ URL gốc
-                    type = ExtractorLinkType.M3U8, // *** Set cứng M3U8 ***
-                    headers = emptyMap() // *** Bỏ Headers ***
+                    referer = "", 
+                    quality = getQualityForLink(s2DirectVideoUrl), 
+                    type = ExtractorLinkType.M3U8, 
+                    headers = emptyMap() 
                 ))
                 foundAnyLink = true
             } else {
@@ -419,16 +420,16 @@ class MotChillProvider : MainAPI() {
                         println("$name: Decrypted $serverName URL: $directVideoUrl")
                         var finalServerUrl = directVideoUrl
                         if (finalServerUrl.contains(".m3u8", ignoreCase = true)) {
-                            finalServerUrl = "$proxyUrl${encodeURIComponent(finalServerUrl)}"
+                            finalServerUrl = "$proxyBaseUrl${encodeURIComponent(finalServerUrl)}&headers={}" // *** Added &headers={} ***
                         }
                         callback(ExtractorLink(
                             this.name, 
                             serverName, 
                             finalServerUrl, 
-                            referer = "", // *** Bỏ Referer ***
-                            quality = getQualityForLink(directVideoUrl), // Chất lượng từ URL gốc
-                            type = ExtractorLinkType.M3U8, // *** Set cứng M3U8 ***
-                            headers = emptyMap() // *** Bỏ Headers ***
+                            referer = "", 
+                            quality = getQualityForLink(directVideoUrl), 
+                            type = ExtractorLinkType.M3U8, 
+                            headers = emptyMap() 
                         ))
                         foundAnyLink = true
                     } else {
@@ -440,16 +441,16 @@ class MotChillProvider : MainAPI() {
                      println("$name: Found direct link for $serverName: $fullServerUrlTarget")
                      var finalDirectUrl = fullServerUrlTarget
                      if (finalDirectUrl.contains(".m3u8", ignoreCase = true)) {
-                         finalDirectUrl = "$proxyUrl${encodeURIComponent(finalDirectUrl)}"
+                         finalDirectUrl = "$proxyBaseUrl${encodeURIComponent(finalDirectUrl)}&headers={}" // *** Added &headers={} ***
                      }
                      callback(ExtractorLink(
                          this.name, 
                          serverName, 
                          finalDirectUrl, 
-                         referer = "", // *** Bỏ Referer ***
-                         quality = getQualityForLink(fullServerUrlTarget), // Chất lượng từ URL gốc
-                         type = ExtractorLinkType.M3U8, // *** Set cứng M3U8 ***
-                         headers = emptyMap() // *** Bỏ Headers ***
+                         referer = "", 
+                         quality = getQualityForLink(fullServerUrlTarget), 
+                         type = ExtractorLinkType.M3U8, 
+                         headers = emptyMap()
                         ))
                     foundAnyLink = true
                 } else {
