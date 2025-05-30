@@ -12,16 +12,17 @@ class TestProvider : MainAPI() {
     override var supportedTypes = setOf(TvType.Others)
 
     override val hasMainPage = true
-    // No 'hasSearch' override needed if you don't implement search
 
+    // This is line 41 or around it, leading to the call at ~line 48
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
         val items = listOf(
-            newMovieSearchResponse(
+            // Ensure this call includes 'url = MAIN_URL'
+            newMovieSearchResponse( // This call is likely where line 48 error occurs
                 name = "Test Cloudflare Page",
-                url = MAIN_URL, // FIX: Explicitly named the 'url' parameter
+                url = MAIN_URL, // <--- THIS LINE IS CRUCIAL
                 TvType.Movie
             ) {
                 // this.posterUrl = "your_poster_url_here"
