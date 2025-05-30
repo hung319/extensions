@@ -1,136 +1,89 @@
-// Đảm bảo package này khớp với cấu trúc thư mục plugin của bạn
-package com.lagradost.cloudstream3.plugins.exampleplugin // Ví dụ: com.lagradost.cloudstream3.plugins.test
+package com.lagradost.cloudstream3.plugins.exampleplugin // Hoặc package của bạn
 
-// Các import cần thiết
-import com.lagradost.cloudstream3.* // API chính của Cloudstream
-import com.lagradost.cloudstream3.utils.* // Các tiện ích (nếu có sử dụng)
-import org.jsoup.nodes.Document // Để parse HTML (nếu bạn lấy nội dung từ web)
-import android.util.Log // Để ghi log gỡ lỗi
+import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.utils.*
+import org.jsoup.nodes.Document
+import android.util.Log
 
-// URL mục tiêu của trang web bạn muốn thử nghiệm
+// Giả sử NeedsWebViewException được định nghĩa trong Cloudstream như sau:
+// import com.lagradost.cloudstream3.NeedsWebViewException
+// Nếu không có sẵn, bạn cần tìm Exception tương đương hoặc cấu hình Cloudstream của bạn hỗ trợ nó.
+// Trong nhiều trường hợp, Cloudstream đã có sẵn các Exception như thế này.
+
 private const val MAIN_URL = "https://www.scrapingcourse.com/cloudflare-challenge"
+// Một đoạn text đặc trưng có trên trang nội dung THỰC SỰ (sau khi vượt qua Cloudflare)
+// của trang https://www.scrapingcourse.com/cloudflare-challenge
+private const val ACTUAL_CONTENT_TEXT_INDICATOR = "This is the actual content of the page protected by Cloudflare."
 
 class TestProvider : MainAPI() {
-    // Tên của Provider, sẽ hiển thị trong ứng dụng
     override var name = "Cloudflare Test"
-
-    // URL chính của trang web (có thể không quá quan trọng nếu chỉ test một trang)
     override var mainUrl = MAIN_URL
-
-    // Các loại nội dung mà provider này hỗ trợ (ví dụ: Movies, TVSeries, Anime, Others)
     override var supportedTypes = setOf(TvType.Others)
-
-    // Provider này có trang chính để hiển thị danh sách các mục
     override val hasMainPage = true
 
-    // Hàm được gọi để tải nội dung cho trang chính của provider
     override suspend fun getMainPage(
-        page: Int, // Số trang (nếu có phân trang)
-        request: MainPageRequest // Thông tin request cho trang chính
+        page: Int,
+        request: MainPageRequest
     ): HomePageResponse {
-        // Tạo một danh sách các mục sẽ hiển thị trên trang chính
-        // Ở đây, chúng ta tạo một mục duy nhất để test trang Cloudflare
         val items = listOf(
-            // Sử dụng trực tiếp constructor của MovieSearchResponse
-            // MovieSearchResponse thường đã được định nghĩa trong Cloudstream core.
-            // Bạn cần đảm bảo các tham số bắt buộc (name, url, apiName) được cung cấp.
             MovieSearchResponse(
-                name = "Test Cloudflare Page",  // Tên hiển thị cho mục này
-                url = MAIN_URL,                 // URL sẽ được truyền vào hàm load() khi mục này được chọn
-                apiName = this.name,            // Tên của provider này ( quan trọng cho Cloudstream)
-                type = TvType.Movie,            // Phân loại mục này là Movie (hoặc TvType.Others nếu chung chung)
-                // Các trường tùy chọn khác có thể thêm vào nếu cần:
-                // posterUrl = "https://link.den.anh_poster.jpg",
-                // year = 2025,
-                // quality = SearchQuality.HD, // Ví dụ về chất lượng
+                name = "Test Cloudflare Page",
+                url = MAIN_URL,
+                apiName = this.name,
+                type = TvType.Movie,
             )
         )
-
-        // Trả về một HomePageResponse, chứa tiêu đề cho nhóm mục và danh sách các mục
         return HomePageResponse(listOf(HomePageList("Cloudflare Challenge Test", items)))
     }
 
-    // Hàm được gọi khi người dùng chọn một mục từ trang chính (hoặc kết quả tìm kiếm)
-    // để xem thông tin chi tiết.
     override suspend fun load(url: String): LoadResponse? {
-        // Tham số 'url' ở đây là URL được truyền từ MovieSearchResponse (MAIN_URL trong trường hợp này)
-        if (url != MAIN_URL) {
-            // Nếu URL không phải là URL chúng ta mong đợi, bỏ qua
-            return null
+        if (url != MAIN_URL) return null
+
+        Log.d("TestProvider", "Bắt đầu tải URL (Lần thử đầu hoặc sau WebView): $url")
+        val document: Document = app.get(url).document
+        Log.d("TestProvider", "Tiêu đề trang nhận được: ${document.title()}")
+
+        // Kiểm tra xem nội dung thực sự đã được tải hay chưa
+        // bằng cách tìm một đoạn text đặc trưng của trang đích (sau khi qua Cloudflare)
+        val actualContentElement = document.select("p:contains($ACTUAL_CONTENT_TEXT_INDICATOR)")
+
+        if (actualContentElement.isEmpty()) {
+            // Nếu KHÔNG tìm thấy đoạn text đặc trưng của nội dung thực sự,
+            // có nghĩa là chúng ta vẫn đang ở trang Cloudflare challenge hoặc một trang trung gian.
+            // Yêu cầu mở WebView.
+            Log.w("TestProvider", "Không tìm thấy chỉ báo nội dung thực tế. Yêu cầu WebView cho: $url")
+            // Ném Exception để báo cho Cloudstream mở WebView
+            // Đảm bảo rằng Cloudstream của bạn hỗ trợ xử lý Exception này.
+            // Nếu NeedsWebViewException không đúng, bạn cần tìm Exception phù hợp
+            // mà phiên bản Cloudstream của bạn sử dụng (ví dụ: CloudflareChallengeException, CaptchaException)
+            throw NeedsWebViewException(url)
+        } else {
+            // Nếu TÌM THẤY đoạn text đặc trưng, có nghĩa là Cloudflare đã được vượt qua
+            // và chúng ta đã có nội dung thực sự của trang.
+            Log.i("TestProvider", "Đã tìm thấy chỉ báo nội dung thực tế. Trích xuất nội dung...")
+
+            val title = document.selectFirst("h1")?.text() ?: "Không tìm thấy tiêu đề H1 (trang nội dung)"
+            // Lấy chính đoạn text đặc trưng đó làm body cho đơn giản, hoặc bạn có thể chọn lọc kỹ hơn
+            val bodyText = actualContentElement.first()?.text() ?: "Không tìm thấy nội dung đoạn văn (trang nội dung)."
+
+            Log.d("TestProvider", "Tiêu đề trích xuất (trang nội dung): $title")
+            Log.d("TestProvider", "Nội dung body (trang nội dung): $bodyText")
+
+            return MovieLoadResponse(
+                name = title,
+                url = url,
+                apiName = this.name,
+                type = TvType.Movie,
+                dataUrl = url,
+                plot = "Nội dung đã vượt qua Cloudflare: $bodyText",
+            )
         }
-
-        Log.d("TestProvider", "Bắt đầu tải URL: $url")
-
-        // Sử dụng app.get() để Cloudstream thực hiện request.
-        // Cloudstream (thông qua OkHttp và các interceptor) sẽ cố gắng xử lý Cloudflare.
-        // Nếu cần, nó có thể kích hoạt WebView để người dùng tương tác.
-        val document: Document = app.get(url).document // Lấy nội dung HTML và parse bằng Jsoup
-
-        Log.d("TestProvider", "Nội dung trang sau khi app.get (500 ký tự đầu): ${document.html().take(500)}")
-
-        // Trích xuất thông tin từ trang đã tải (ví dụ: tiêu đề, mô tả)
-        val title = document.selectFirst("h1")?.text() ?: "Không tìm thấy tiêu đề H1"
-        val bodyText = document.selectFirst("body p")?.text() ?: "Không tìm thấy nội dung đoạn văn."
-
-        Log.d("TestProvider", "Tiêu đề trích xuất được: $title")
-        Log.d("TestProvider", "Nội dung body trích xuất được: $bodyText")
-
-        // Tạo và trả về một đối tượng LoadResponse (ví dụ: MovieLoadResponse)
-        // chứa thông tin chi tiết đã trích xuất.
-        return MovieLoadResponse(
-            name = title,                   // Tên của nội dung (ví dụ: tên phim/tập)
-            url = url,                      // URL gốc của nội dung này (cũng là dataUrl)
-            apiName = this.name,            // Tên của provider
-            type = TvType.Movie,            // Loại nội dung
-            dataUrl = url,                  // URL dữ liệu (thường giống url chính)
-            plot = "Nội dung trang: $bodyText\n\nĐây là thử nghiệm tải trang được bảo vệ bởi Cloudflare. Nếu bạn thấy nội dung thực tế của trang, điều đó có nghĩa là Cloudflare đã được vượt qua.",
-            // Các trường tùy chọn khác:
-            // year = 2025,
-            // posterUrl = "https://link.den.anh_poster_chi_tiet.jpg",
-            // recommendations = listOf(...) // Danh sách đề xuất (nếu có)
-        )
     }
-
-    // Bạn có thể thêm hàm search nếu muốn provider hỗ trợ tìm kiếm:
-    // override suspend fun search(query: String): List<SearchResponse> {
-    // // Logic tìm kiếm của bạn ở đây
-    // return listOf<SearchResponse>()
-    // }
 }
 
-/*
-LƯU Ý QUAN TRỌNG:
-Data class `MovieSearchResponse` và `MovieLoadResponse` (cũng như các `SearchResponse`, `LoadResponse` khác)
-thường đã được định nghĩa sẵn trong thư viện cốt lõi của Cloudstream (ví dụ: trong package `com.lagradost.cloudstream3`).
-Bạn KHÔNG CẦN định nghĩa lại chúng trong file plugin này.
-Chỉ cần đảm bảo bạn đã import chúng đúng cách nếu cần thiết (thường thì Kotlin tự động gợi ý import).
-Ví dụ về khai báo có thể có trong Cloudstream (bạn không cần thêm vào đây):
-
-data class MovieSearchResponse(
-    override val name: String,
-    override val url: String,
-    override val apiName: String,
-    override var type: TvType? = null,
-    override var posterUrl: String? = null,
-    override var id: Int? = null,
-    var year: Int? = null,
-    var quality: SearchQuality? = null,
-    var posterHeaders: Map<String, String>? = null
-) : SearchResponse() // Kế thừa từ SearchResponse hoặc một lớp cơ sở tương tự
-
-data class MovieLoadResponse(
-    override val name: String,
-    override val url: String,
-    override val apiName: String,
-    override val type: TvType,
-    override val dataUrl: String, // Thường là URL để lấy dữ liệu stream
-    var plot: String? = null,
-    var year: Int? = null,
-    var posterUrl: String? = null,
-    var rating: Int? = null, // 0-10000
-    var recommendations: List<SearchResponse>? = null,
-    var duration: Long? = null, // milliseconds
-    var actors: List<ActorData>? = null,
-    var tags: List<String>? = null
-) : LoadResponse() // Kế thừa từ LoadResponse hoặc một lớp cơ sở tương tự
-*/
+// QUAN TRỌNG:
+// Lớp NeedsWebViewException thường là một phần của Cloudstream. Ví dụ:
+// package com.lagradost.cloudstream3 // Hoặc một package tiện ích
+// class NeedsWebViewException(val url: String, val reason: String = "Page requires WebView interaction") : Exception(reason)
+// Bạn không cần định nghĩa lại nếu nó đã tồnTAIN trong Cloudstream bạn dùng.
+// Nếu không, bạn sẽ cần một cơ chế tương tự để báo hiệu cho app mở WebView.
