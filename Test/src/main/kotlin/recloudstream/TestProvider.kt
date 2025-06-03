@@ -1,668 +1,605 @@
-package recloudstream
+package recloudstream // Giữ nguyên package gốc của file AnimeHay
 
+// === Imports ===
+import android.util.Log
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.LoadResponse.Companion.addDuration
+import com.lagradost.cloudstream3.mvvm.normalSafeApiCall // Cho parsedSafe nếu nó là extension
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson // Cho parsedSafe nếu nó dùng parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import android.util.Log
-import com.fasterxml.jackson.annotation.JsonProperty
-import com.google.gson.Gson
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import java.net.MalformedURLException
+import java.net.URL
 import java.net.URLEncoder
-import java.net.URL // Đảm bảo import này có mặt
 import kotlin.math.roundToInt
-import kotlin.text.Regex
+// import com.lagradost.cloudstream3.plugins.CloudstreamPlugin // Bỏ comment nếu đây là plugin độc lập
+// import com.lagradost.cloudstream3.plugins.Plugin // Bỏ comment nếu đây là plugin độc lập
+// import android.content.Context // Có thể không cần thiết trực tiếp (đã comment trong code gốc)
+// import com.lagradost.cloudstream3.mvvm.logError // Cho hàm logError nếu cần (đã comment trong code gốc)
 
-import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.MediaType.Companion.toMediaTypeOrNull
 
-class AnimeVietsubProvider : MainAPI() {
+// *** THÊM KITSU DATA CLASSES ***
+// Dùng để phân tích phản hồi từ Kitsu API
+data class KitsuMain(val data: List<KitsuData>?)
+data class KitsuData(val attributes: KitsuAttributes?)
+data class KitsuAttributes(
+    val canonicalTitle: String?, // Tiêu đề chuẩn hóa trên Kitsu
+    val posterImage: KitsuPoster? // Đối tượng chứa các URL poster
+)
+data class KitsuPoster(
+    val original: String?, // URL chất lượng gốc (ưu tiên)
+    val large: String?,    // URL lớn
+    val medium: String?,   // URL trung bình
+    val small: String?,    // URL nhỏ
+    val tiny: String?      // URL siêu nhỏ
+)
 
-    private val gson = Gson()
-    override var mainUrl = "https://bit.ly/animevietsubtv" // mainUrl sẽ giữ giá trị này trừ khi được thay đổi ở nơi khác
-    override var name = "AnimeVietsub"
-    override val supportedTypes = setOf(
-        TvType.Anime,
-        TvType.Cartoon,
-        TvType.Movie
-    )
-    override var lang = "vi"
-    override val hasMainPage = true
-    private val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36"
+// === Provider Class ===
+class AnimeHayProvider : MainAPI() {
 
-    private val bitlyResolverUrl = "https://bit.ly/animevietsubtv"
-    private val ultimateFallbackDomain = "https://animevietsub.lol"
-    private var currentActiveUrl = bitlyResolverUrl // Biến này sẽ lưu trữ URL động đã được phân giải
-    private var domainResolutionAttempted = false
+    // === Thuộc tính Provider ===
+    override var mainUrl = "https://ahay.in" // URL gốc để kiểm tra domain, không phải URL hoạt động chính
+    override var name = "AnimeHay"
+    override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA, TvType.Cartoon) // Các loại nội dung hỗ trợ
+    override var lang = "vi" // Ngôn ngữ chính của provider
+    override val hasMainPage = true // Provider có trang chủ
 
-    // Hàm getBaseUrl đã được chỉnh sửa
+    // --- Phần xử lý domain động ---
+    private var currentActiveUrl = "https://animehay.bid" // URL mặc định hoặc đã biết là đang hoạt động
+    private var domainCheckPerformed = false // Cờ đánh dấu đã kiểm tra domain hay chưa
+    private val domainCheckUrl = mainUrl // URL dùng để kiểm tra domain mới (thường là domain gốc .tv)
+
+    /**
+     * Lấy URL hoạt động hiện tại của AnimeHay.
+     * Sẽ kiểm tra domain mới từ `domainCheckUrl` nếu chưa kiểm tra.
+     * Ưu tiên link từ nội dung trang (thẻ a, script), sau đó là URL sau khi redirect.
+     * Cập nhật `currentActiveUrl` nếu tìm thấy domain mới hợp lệ.
+     * @return URL String của domain đang hoạt động.
+     */
     private suspend fun getBaseUrl(): String {
-        // Nếu đã thử phân giải và URL hiện tại không phải là bit.ly nữa, trả về luôn
-        if (domainResolutionAttempted && !currentActiveUrl.contains("bit.ly")) {
+        if (domainCheckPerformed) {
             return currentActiveUrl
         }
 
-        var resolvedDomain: String? = null
-        // Quyết định URL nào sẽ được thử phân giải
-        val urlToAttemptResolution = if (currentActiveUrl.contains("bit.ly") || !domainResolutionAttempted) {
-            bitlyResolverUrl
-        } else {
-            currentActiveUrl
-        }
+        var finalNewDomain: String? = null
+        Log.d("AnimeHayProvider", "Starting domain check. Current active: $currentActiveUrl, Initial check URL: $domainCheckUrl")
 
         try {
-            // Log.d("AnimeVietsubProvider", "Attempting to resolve domain for: $urlToAttemptResolution") // Optional: for debugging
-            val response = app.get(urlToAttemptResolution, allowRedirects = true, timeout = 15_000)
-            val finalUrlString = response.url // URL cuối cùng sau khi theo dõi chuyển hướng
-            
-            if (finalUrlString.startsWith("http") && !finalUrlString.contains("bit.ly")) {
-                val urlObject = URL(finalUrlString)
-                resolvedDomain = "${urlObject.protocol}://${urlObject.host}"
-                // Log.i("AnimeVietsubProvider", "Successfully resolved domain: $resolvedDomain from $urlToAttemptResolution") // Optional: for debugging
-            } else {
-                Log.w("AnimeVietsubProvider", "Bitly resolution did not lead to a valid different domain. Final URL: $finalUrlString")
+            // Step 1: Fetch the page from domainCheckUrl, allowing redirects to get to an announcement page or the new site.
+            val response = app.get(domainCheckUrl, allowRedirects = true)
+            val landedUrl = response.url // The URL we actually landed on.
+            val document = response.document
+            Log.d("AnimeHayProvider", "Fetched from $domainCheckUrl, landed on: $landedUrl. HTML length: ${document.html().length}")
+
+            // Step 2: Try to parse an explicit new domain link from the content of the landed page.
+            var hrefFromContent: String? = null
+            // Prioritized selectors for <a> tags based on provided HTML
+            val linkSelectors = listOf("a.bt-link", "a.bt-link-1")
+            for (selector in linkSelectors) {
+                hrefFromContent = document.selectFirst(selector)?.attr("href")
+                if (!hrefFromContent.isNullOrBlank()) {
+                    Log.d("AnimeHayProvider", "Found href '$hrefFromContent' using selector '$selector'")
+                    break // Found a link, no need to check other <a> selectors
+                }
             }
+
+            // Try parsing from script if <a> tags failed or didn't yield a link
+            if (hrefFromContent.isNullOrBlank()) {
+                val scriptElements = document.select("script")
+                val newDomainRegex = Regex("""var\s+new_domain\s*=\s*["'](https?://[^"']+)["']""")
+                for (scriptElement in scriptElements) {
+                    if (!scriptElement.hasAttr("src")) { // Only process inline scripts
+                        val scriptContent = scriptElement.html()
+                        val match = newDomainRegex.find(scriptContent)
+                        if (match != null && match.groups.size > 1) {
+                            hrefFromContent = match.groups[1]?.value
+                            Log.d("AnimeHayProvider", "Found new_domain '$hrefFromContent' in script.")
+                            break // Found in script, stop searching scripts
+                        }
+                    }
+                }
+            }
+
+            if (!hrefFromContent.isNullOrBlank()) {
+                try {
+                    val urlObject = URL(hrefFromContent) // href should be an absolute URL like "https://animehay.tax/"
+                    val extractedBase = "${urlObject.protocol}://${urlObject.host}"
+                    if (extractedBase.startsWith("http")) {
+                        finalNewDomain = extractedBase
+                        Log.i("AnimeHayProvider", "Method 1: New domain from parsed content link: $finalNewDomain")
+                    } else {
+                        Log.w("AnimeHayProvider", "Parsed href '$hrefFromContent' did not result in a valid http base URL.")
+                    }
+                } catch (e: MalformedURLException) {
+                    Log.e("AnimeHayProvider", "Malformed URL from parsed content link: '$hrefFromContent'", e)
+                }
+            } else {
+                Log.d("AnimeHayProvider", "No explicit link found in <a> tags or script variable.")
+            }
+
+            // Step 3: If parsing content did not yield a new domain,
+            // consider the base URL of where we landed (landedUrl),
+            // IF its host is different from the original domainCheckUrl's host.
+            // This covers cases where domainCheckUrl directly redirects to the new *working* site
+            // which might not have the announcement structure.
+            if (finalNewDomain.isNullOrBlank()) {
+                val landedUrlBase = try {
+                    val landedObj = URL(landedUrl)
+                    "${landedObj.protocol}://${landedObj.host}"
+                } catch (e: Exception) { null }
+
+                val initialCheckUrlHost = try { URL(domainCheckUrl).host } catch (e: Exception) { null }
+                val landedUrlHost = try { URL(landedUrl).host } catch (e: Exception) { null }
+
+
+                if (landedUrlBase != null && landedUrlBase.startsWith("http") && landedUrlHost != initialCheckUrlHost) {
+                    finalNewDomain = landedUrlBase
+                    Log.i("AnimeHayProvider", "Method 2: Using domain from redirection: $finalNewDomain (landed on $landedUrl from $domainCheckUrl)")
+                } else {
+                    Log.d("AnimeHayProvider", "Method 2: Redirected URL's base ($landedUrlBase) not suitable or same host as initial check URL ($initialCheckUrlHost).")
+                }
+            }
+
+            // Step 4: Update currentActiveUrl if a new, valid, and different domain was found.
+            if (!finalNewDomain.isNullOrBlank() && finalNewDomain != currentActiveUrl) {
+                // Sanity checks (e.g., against "archive.org")
+                if (finalNewDomain!!.contains("archive.org", ignoreCase = true) ||
+                    finalNewDomain!!.contains("web.archive.org", ignoreCase = true)) { // Check for web.archive.org specifically
+                    Log.w("AnimeHayProvider", "Potential new domain '$finalNewDomain' is an archive link. Not updating.")
+                } else {
+                    Log.i("AnimeHayProvider", "Domain will be updated: $currentActiveUrl -> $finalNewDomain")
+                    currentActiveUrl = finalNewDomain!!
+                }
+            } else if (finalNewDomain.isNullOrBlank()) {
+                Log.w("AnimeHayProvider", "No new valid domain found by any method. Using previous active URL: $currentActiveUrl")
+            } else { // finalNewDomain == currentActiveUrl
+                Log.i("AnimeHayProvider", "Found domain '$finalNewDomain' is same as current active URL. No change needed.")
+            }
+
         } catch (e: Exception) {
-            Log.e("AnimeVietsubProvider", "Error resolving domain link '$urlToAttemptResolution': ${e.message}", e)
+            Log.e("AnimeHayProvider", "Critical error during domain check. Using previous active URL: $currentActiveUrl", e)
+        } finally {
+            domainCheckPerformed = true
         }
-
-        domainResolutionAttempted = true // Đánh dấu đã thử phân giải
-
-        if (resolvedDomain != null) {
-            // Nếu phân giải thành công
-            if (currentActiveUrl != resolvedDomain) {
-                Log.i("AnimeVietsubProvider", "Domain updated: $currentActiveUrl -> $resolvedDomain")
-            }
-            currentActiveUrl = resolvedDomain
-            // KHÔNG CẬP NHẬT this.mainUrl ở đây nữa
-            // this.mainUrl = resolvedDomain 
-        } else {
-            // Nếu phân giải thất bại
-            // Chỉ sử dụng fallback nếu URL hiện tại là bit.ly hoặc chưa từng thử fallback trước đó (và currentActiveUrl chưa phải là fallback)
-            if (currentActiveUrl.contains("bit.ly") || (urlToAttemptResolution != ultimateFallbackDomain && currentActiveUrl != ultimateFallbackDomain)) {
-                Log.w("AnimeVietsubProvider", "Domain resolution failed for '$urlToAttemptResolution'. Using fallback: $ultimateFallbackDomain")
-                currentActiveUrl = ultimateFallbackDomain
-                // KHÔNG CẬP NHẬT this.mainUrl ở đây nữa
-                // this.mainUrl = ultimateFallbackDomain
-            } else {
-                // Nếu đã thử fallback mà vẫn lỗi, hoặc currentActiveUrl không phải bit.ly và đã lỗi
-                Log.e("AnimeVietsubProvider", "All domain resolution attempts failed. Sticking with last known: $currentActiveUrl")
-            }
-        }
-        // Log.d("AnimeVietsubProvider", "getBaseUrl returning: $currentActiveUrl") // Optional: for debugging
-        return currentActiveUrl // Trả về URL đã được phân giải (hoặc fallback)
+        Log.i("AnimeHayProvider", "getBaseUrl ultimately returning: $currentActiveUrl")
+        return currentActiveUrl
     }
+
+    /**
+     * Lấy URL poster từ Kitsu API dựa trên tiêu đề anime.
+     * @param title Tiêu đề anime cần tìm kiếm.
+     * @return URL String của poster tìm được (ưu tiên chất lượng cao nhất) hoặc null nếu không tìm thấy/lỗi.
+     */
+    private suspend fun getKitsuPoster(title: String): String? {
+        Log.d("AnimeHayProvider", "Searching Kitsu for: \"$title\"")
+        return try {
+            val encodedTitle = URLEncoder.encode(title, "UTF-8")
+            val searchUrl = "https://kitsu.io/api/edge/anime?filter[text]=$encodedTitle&page[limit]=1"
+            Log.d("AnimeHayProvider", "Kitsu search URL: $searchUrl")
+
+            val response = app.get(searchUrl).parsedSafe<KitsuMain>()
+            val poster = response?.data?.firstOrNull()?.attributes?.posterImage
+            val kitsuPosterUrl = poster?.original ?: poster?.large ?: poster?.medium ?: poster?.small ?: poster?.tiny
+
+            if (!kitsuPosterUrl.isNullOrBlank()) {
+                Log.d("AnimeHayProvider", "Found Kitsu poster: $kitsuPosterUrl")
+            } else {
+                Log.w("AnimeHayProvider", "Kitsu poster not found for title '$title'")
+            }
+            kitsuPosterUrl
+        } catch (e: Exception) {
+            Log.e("AnimeHayProvider", "Kitsu API Error for title '$title': ${e.message}", e)
+            null
+        }
+    }
+
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         if (page > 1) return newHomePageResponse(emptyList(), false)
-        val lists = mutableListOf<HomePageList>()
         try {
             val baseUrl = getBaseUrl()
             val document = app.get(baseUrl).document
-            document.select("section#single-home ul.MovieList.Rows li.TPostMv")
-                .mapNotNull { it.toSearchResponse(this, baseUrl) }
-                .takeIf { it.isNotEmpty() }?.let { lists.add(HomePageList("Mới cập nhật", it)) }
-            document.select("section#new-home ul.MovieList.Rows li.TPostMv")
-                .mapNotNull { it.toSearchResponse(this, baseUrl) }
-                .takeIf { it.isNotEmpty() }?.let { lists.add(HomePageList("Sắp chiếu", it)) }
-            document.select("section#hot-home ul.MovieList.Rows li.TPostMv")
-                .mapNotNull { it.toSearchResponse(this, baseUrl) }
-                .takeIf { it.isNotEmpty() }?.let {
-                    val hotListName = document.selectFirst("section#hot-home div.Top a.STPb.Current")?.text() ?: "Đề cử"
-                    lists.add(HomePageList(hotListName, it))
+            val homePageItems = document.select("div.movies-list div.movie-item")
+                .mapNotNull { element ->
+                    element.toSearchResponse(this, baseUrl)
                 }
-            if (lists.isEmpty()) throw ErrorLoadingException("No lists found on homepage.")
-            return newHomePageResponse(lists, hasNext = false)
+            return newHomePageResponse(listOf(HomePageList("Mới cập nhật", homePageItems)), hasNext = false)
         } catch (e: Exception) {
-            Log.e("AnimeVietsubProvider", "Error in getMainPage: ${e.message}", e)
-            if (e is ErrorLoadingException) throw e
-            throw RuntimeException("Unknown error loading main page: ${e.message}")
+            Log.e("AnimeHayProvider", "Error in getMainPage", e)
+            return newHomePageResponse(emptyList(), false)
         }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         try {
             val baseUrl = getBaseUrl()
-            val searchUrl = "$baseUrl/tim-kiem/${query.encodeUri()}/"
+            val encodedQuery = query.encodeUri()
+            val searchUrl = "$baseUrl/tim-kiem/$encodedQuery.html"
+            Log.i("AnimeHayProvider", "Searching URL: $searchUrl")
+
             val document = app.get(searchUrl).document
-            return document.selectFirst("ul.MovieList.Rows")?.select("li.TPostMv")
-                ?.mapNotNull { it.toSearchResponse(this, baseUrl) } ?: emptyList()
+            val moviesListContainer = document.selectFirst("div.movies-list")
+            if (moviesListContainer == null) {
+                Log.w("AnimeHayProvider", "Search found no 'div.movies-list' container on $searchUrl")
+                return emptyList()
+            }
+            val movieItems = moviesListContainer.select("div.movie-item")
+            Log.d("AnimeHayProvider", "Found ${movieItems.size} potential 'div.movie-item' elements.")
+
+            val searchResults = movieItems.mapNotNull { element ->
+                element.toSearchResponse(this, baseUrl)
+            }
+
+            if (searchResults.isEmpty() && movieItems.isNotEmpty()) {
+                Log.w("AnimeHayProvider", "Search found ${movieItems.size} items but failed to parse any.")
+            } else if (searchResults.isNotEmpty()) {
+                Log.i("AnimeHayProvider", "Search successful for query '$query', parsed ${searchResults.size} items.")
+            } else {
+                Log.w("AnimeHayProvider", "Search found no 'div.movie-item' elements for query '$query'")
+            }
+            return searchResults
         } catch (e: Exception) {
-            Log.e("AnimeVietsubProvider", "Error in search for query '$query': ${e.message}", e)
+            Log.e("AnimeHayProvider", "Error in search for query '$query'", e)
             return emptyList()
         }
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val baseUrl = getBaseUrl() // Lấy baseUrl động
-        val infoUrl = url // infoUrl là url được truyền vào, đã được fix từ search/mainpage
-        val watchPageUrl = if (infoUrl.endsWith("/")) "${infoUrl}xem-phim.html" else "$infoUrl/xem-phim.html"
         try {
-            val infoDocument = app.get(infoUrl, headers = mapOf("Referer" to baseUrl)).document // Referer là baseUrl động
-            var watchPageDocument: Document? = null
-            try {
-                watchPageDocument = app.get(watchPageUrl, referer = infoUrl).document
-            } catch (e: Exception) {
-                Log.w("AnimeVietsubProvider", "Failed to load watch page ($watchPageUrl). Error: ${e.message}")
-            }
-            return infoDocument.toLoadResponse(this, infoUrl, baseUrl, watchPageDocument)
+            Log.d("AnimeHayProvider", "Loading details for URL: $url")
+            val document = app.get(url).document
+            return document.toLoadResponse(this, url, getBaseUrl())
         } catch (e: Exception) {
-            Log.e("AnimeVietsubProvider", "FATAL Error loading main info page ($infoUrl): ${e.message}", e)
+            Log.e("AnimeHayProvider", "Error in load for $url", e)
             return null
         }
     }
 
-    private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): SearchResponse? {
-        return try {
-            val linkElement = this.selectFirst("article.TPost > a") ?: return null
-            val href = fixUrl(linkElement.attr("href"), baseUrl) ?: return null
-            val titleFromElement = linkElement.selectFirst("h2.Title")?.text()?.trim()?.takeIf { it.isNotBlank() } ?: return null
-            val posterUrlRaw = linkElement.selectFirst("div.Image img")?.let { img ->
-                img.attr("data-src").ifBlank { img.attr("src") }
-            }
-            val posterUrl = fixUrl(posterUrlRaw, baseUrl)
-            var finalTvType: TvType? = null
-            val hasEpisodeSpan = this.selectFirst("span.mli-eps") != null
-            val statusSpanText = this.selectFirst("span.mli-st")?.text() ?: ""
-
-            if (titleFromElement.contains("OVA", ignoreCase = true) ||
-                titleFromElement.contains("ONA", ignoreCase = true) ||
-                titleFromElement.contains("Movie", ignoreCase = true) ||
-                titleFromElement.contains("Phim Lẻ", ignoreCase = true) ||
-                (!hasEpisodeSpan && statusSpanText.contains("Full", ignoreCase = true)) ||
-                (!hasEpisodeSpan && statusSpanText.contains("Hoàn Tất", ignoreCase = true) && !hasEpisodeSpan)
-            ) {
-                finalTvType = if (provider.name.contains("Anime", ignoreCase = true) ||
-                                (titleFromElement.contains("Anime", ignoreCase = true) &&
-                                !titleFromElement.contains("Trung Quốc", ignoreCase = true) && 
-                                !titleFromElement.contains("Donghua", ignoreCase = true)) ) {
-                    TvType.Anime
-                } else {
-                    TvType.Movie
-                }
-            } else if (hasEpisodeSpan) {
-                finalTvType = if (provider.name.contains("Anime", ignoreCase = true) || titleFromElement.contains("Anime", ignoreCase = true)) {
-                    TvType.Anime
-                } else {
-                    TvType.TvSeries 
-                }
-            }
-            // Fallback type determination if still null
-            if (finalTvType == null) {
-                // Heuristic: if it has episode span or no quality span (often for series), assume Anime/TV. Otherwise Movie.
-                // This is a broad fallback, specific title/genre keywords are more reliable.
-                finalTvType = if (hasEpisodeSpan || this.selectFirst("span.mli-quality") == null) TvType.Anime else TvType.Movie
-            }
-            provider.newMovieSearchResponse(titleFromElement, href, finalTvType ?: TvType.Anime) { // Default Anime nếu null
-                this.posterUrl = posterUrl
-            }
-        } catch (e: Exception) {
-            Log.e("AnimeVietsubProvider", "Error parsing search result item: ${this.html().take(100)}", e)
-            null
-        }
-    }
-
-    data class EpisodeData(
-        val url: String, // URL của trang chứa tập phim hoặc trang thông tin chính nếu là movie
-        val dataId: String?, // ID của tập phim/movie để gọi API player
-        val duHash: String?  // Hash (nếu có) để gọi API player
-    )
-
-    private fun Document.getCountry(): String? {
-        return this.selectFirst("div.mvici-left li.AAIco-adjust:contains(Quốc gia) a, ul.InfoList li:has(strong:containsOwn(Quốc gia)) a")
-            ?.attr("title")?.trim()?.takeIf { it.isNotBlank() }
-            ?: this.selectFirst("div.mvici-left li.AAIco-adjust:contains(Quốc gia) a, ul.InfoList li:has(strong:containsOwn(Quốc gia)) a")
-                ?.text()?.trim()?.takeIf { it.isNotBlank() }
-    }
-    
-    private suspend fun Document.toLoadResponse(
-        provider: MainAPI,
-        infoUrl: String, // URL của trang thông tin (đã được fix)
-        baseUrl: String, // Base URL động đã được resolve
-        watchPageDoc: Document? // Document của trang xem phim (nếu có)
-    ): LoadResponse? {
-        val infoDoc = this // Document của trang thông tin
-        try {
-            val title = infoDoc.selectFirst("div.TPost.Single div.Title")?.text()?.trim()
-                ?: infoDoc.selectFirst("meta[property=og:title]")?.attr("content")?.substringBefore(" Tập")?.trim()
-                ?: run { Log.e("AnimeVietsubProvider", "Could not find title on info page $infoUrl"); return null }
-
-            // Logic lấy poster ưu tiên banner lớn, rồi poster trong figure, rồi ảnh từ meta tags
-            var posterUrlForResponse: String? = null
-            var rawPosterUrl: String?
-            
-            // 1. Ưu tiên meta tag og:image hoặc itemprop:image có chứa /data/big_banner/
-            val metaBigBanner = infoDoc.select("meta[property=og:image], meta[itemprop=image]")
-                .mapNotNull { it.attr("content").takeIf { c -> c.isNotBlank() && c.contains("/data/big_banner/", ignoreCase = true) } }
-                .firstOrNull()
-            if (!metaBigBanner.isNullOrBlank()) {
-                posterUrlForResponse = fixUrl(metaBigBanner, baseUrl)
-            }
-
-            // 2. Nếu không có, thử lấy từ div.TPostBg img (thường là banner lớn)
-            if (posterUrlForResponse.isNullOrBlank()) {
-                rawPosterUrl = infoDoc.selectFirst("div.TPostBg.Objf img.TPostBg")?.attr("src")
-                // Chỉ chấp nhận nếu nó là big_banner, tránh lấy ảnh nền nhỏ lặp lại
-                if (!rawPosterUrl.isNullOrBlank() && rawPosterUrl.contains("/data/big_banner/", ignoreCase = true)) {
-                    posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
-                } else if (!rawPosterUrl.isNullOrBlank()) {
-                    // Log.d("AnimeVietsubProvider", "Found poster in TPostBg but not a big_banner: $rawPosterUrl") // Optional
-                }
-            }
-            
-            // 3. Nếu vẫn không có, thử lấy từ div.Image figure img (poster chính)
-            if (posterUrlForResponse.isNullOrBlank()) {
-                rawPosterUrl = infoDoc.selectFirst("div.TPost.Single div.Image figure.Objf img")?.attr("src")
-                if (!rawPosterUrl.isNullOrBlank()) {
-                    posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
-                }
-            }
-            // 4. Fallback cuối cho poster: div.Image img (ít cụ thể hơn)
-             if (posterUrlForResponse.isNullOrBlank()) { 
-                rawPosterUrl = infoDoc.selectFirst("div.TPost.Single div.Image img")?.attr("src")
-                if (!rawPosterUrl.isNullOrBlank()) {
-                    posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
-                }
-            }
-
-            // 5. Nếu vẫn rỗng, thử lại meta tags nhưng ưu tiên cái nào có /poster/, rồi đến cái nào không phải big_banner, cuối cùng là bất kỳ cái nào.
-            if (posterUrlForResponse.isNullOrBlank()) {
-                val metaImages = infoDoc.select("meta[property=og:image], meta[itemprop=image]")
-                    .mapNotNull { it.attr("content").takeIf { c -> c.isNotBlank() } }
-                    .distinct()
-
-                if (metaImages.isNotEmpty()) {
-                    // Ưu tiên URL chứa /poster/
-                    rawPosterUrl = metaImages.firstOrNull { it.contains("/poster/", ignoreCase = true) }
-                    if (!rawPosterUrl.isNullOrBlank()) {
-                        posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
-                    } else {
-                        // Nếu không, lấy URL đầu tiên không phải là big_banner (để tránh lặp lại nếu đã thử ở trên)
-                        // Hoặc lấy cái đầu tiên nếu chỉ có 1 ảnh meta
-                        rawPosterUrl = metaImages.firstOrNull { !it.contains("/data/big_banner/", ignoreCase = true) } ?: metaImages.firstOrNull()
-                        if (!rawPosterUrl.isNullOrBlank()) {
-                            posterUrlForResponse = fixUrl(rawPosterUrl, baseUrl)
-                        }
-                    }
-                }
-            }
-            
-            // Log nếu không tìm thấy poster
-            if (posterUrlForResponse.isNullOrBlank()){
-                // Log.w("AnimeVietsubProvider", "Poster not found for '$title' on $infoUrl") // Optional
-            } else {
-                // Log.d("AnimeVietsubProvider", "Using poster: $posterUrlForResponse for '$title'") // Optional
-            }
-
-            val descriptionFromDiv = infoDoc.selectFirst("article.TPost.Single div.Description")?.text()?.trim()
-            val description = if (!descriptionFromDiv.isNullOrBlank()) descriptionFromDiv 
-                                else infoDoc.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
-
-            val infoSection = infoDoc.selectFirst("div.Info") ?: infoDoc // Fallback to infoDoc if div.Info not found
-            val genres = infoSection.select("li:has(strong:containsOwn(Thể loại)) a[href*=the-loai], div.mvici-left li.AAIco-adjust:contains(Thể loại) a")
-                .mapNotNull { it.text()?.trim() }.distinct()
-            val yearText = infoSection.select("li:has(strong:containsOwn(Năm))")?.firstOrNull()?.ownText()?.trim()
-                ?: infoDoc.selectFirst("p.Info span.Date a")?.text()?.trim() // Thử selector khác cho năm
-            val year = yearText?.filter { it.isDigit() }?.toIntOrNull()
-
-            val ratingTextRaw = infoSection.select("li:has(strong:containsOwn(Điểm))")?.firstOrNull()?.ownText()?.trim()?.substringBefore("/")
-                ?: infoDoc.selectFirst("div#star[data-score]")?.attr("data-score")?.trim() // Từ script rating
-                ?: infoDoc.selectFirst("input#score_current[value]")?.attr("value")?.trim() // Từ input ẩn
-                ?: infoDoc.selectFirst("div.VotesCn div.post-ratings strong#average_score")?.text()?.trim() // Từ schema/rating khác
-
-            var ratingValue: Int? = null
-            if (ratingTextRaw != null) {
-                val normalizedRatingText = ratingTextRaw.replace(",", ".") // Chuẩn hóa dấu phẩy thành chấm
-                val ratingDouble = normalizedRatingText.toDoubleOrNull()
-                if (ratingDouble != null) {
-                    // Chuyển đổi sang thang điểm 10000 (ví dụ: 8.5 -> 8500)
-                    ratingValue = (ratingDouble * 1000).roundToInt().coerceIn(0, 10000)
-                }
-            }
-            
-            val statusTextOriginal = infoSection.select("li:has(strong:containsOwn(Trạng thái))")?.firstOrNull()?.ownText()?.trim()
-                ?: infoDoc.select("div.mvici-left li.AAIco-adjust:contains(Trạng thái)")
-                    .firstOrNull()?.textNodes()?.lastOrNull()?.text()?.trim()?.replace("Trạng thái:", "")?.trim()
-            
-            // Phân tích danh sách tập phim từ watchPageDoc (nếu có)
-            val parsedEpisodes = if (watchPageDoc != null) {
-                watchPageDoc.select("div.server ul.list-episode li a.btn-episode").mapNotNull { epLink ->
-                    val epUrl = fixUrl(epLink.attr("href"), baseUrl) // Url của tập, có thể là trang info + hash hoặc trang xem phim riêng
-                    val epNameFull = epLink.attr("title").ifBlank { epLink.text() }.trim()
-                    val dataId = epLink.attr("data-id").ifBlank { null } // data-id quan trọng để load link
-                    val duHash = epLink.attr("data-hash").ifBlank { null } // data-hash nếu có
-
-                    // Tạo EpisodeData để truyền vào loadLinks
-                    val episodeInfoForLoadLinks = EpisodeData(url = epUrl ?: infoUrl, dataId = dataId, duHash = duHash)
-
-                    val episodeNumberString = epNameFull.replace(Regex("""[^\d]"""), "") // Lấy số từ tên tập
-                    val episodeNumber = episodeNumberString.toIntOrNull()
-                    
-                    // Xóa "Tập X - ", "X - ", "Tập X " khỏi tên tập để lấy tên riêng (nếu có)
-                    val cleanEpName = epNameFull.replace(Regex("""^(Tập\s*\d+\s*-\s*|\d+\s*-\s*|\s*Tập\s*\d+\s*|\s*\d+\s*)""", RegexOption.IGNORE_CASE), "").trim()
-                    
-                    var displayEpNumPart = episodeNumber?.toString()?.padStart(2,'0') // "01", "02", ...
-                    if (displayEpNumPart.isNullOrEmpty()) { displayEpNumPart = episodeNumberString.padStart(2,'0') }
-
-                    if (displayEpNumPart.isEmpty() && epNameFull.equals("Full", ignoreCase = true)) {
-                        displayEpNumPart = "Full" // Xử lý trường hợp tên tập là "Full"
-                    } else if (displayEpNumPart.isEmpty()) {
-                        // Nếu không có số, thử lấy toàn bộ tên đã lọc ký tự đặc biệt
-                        displayEpNumPart = epNameFull.filter { it.isLetterOrDigit() || it.isWhitespace() }.trim().ifEmpty { epNameFull }
-                    }
-                    
-                    val finalEpNameBase = if (displayEpNumPart.equals("Full", ignoreCase = true)) "Tập Full" else "Tập $displayEpNumPart"
-
-                    if (dataId != null && !epNameFull.isNullOrBlank() && epUrl != null) { // Cần data-id và epUrl
-                        newEpisode(data = gson.toJson(episodeInfoForLoadLinks)) {
-                            this.name = if (cleanEpName.isNotBlank() && cleanEpName.lowercase() != "full" && cleanEpName.lowercase() != displayEpNumPart.lowercase() && !finalEpNameBase.contains(cleanEpName, ignoreCase = true) && epNameFull.lowercase() != "full") {
-                                "$finalEpNameBase: $cleanEpName"
-                            } else {
-                                finalEpNameBase
-                            }
-                            this.episode = null
-                        }
-                    } else {
-                        // Log.w("AnimeVietsubProvider", "Skipping episode due to missing data-id or epUrl: $epNameFull") // Optional
-                        null
-                    }
-                }.sortedBy { it.episode ?: Int.MAX_VALUE } // Sắp xếp theo số tập
-            } else {
-                // Log.w("AnimeVietsubProvider", "Watch page document is null for $infoUrl. No episodes parsed.") // Optional
-                emptyList<Episode>()
-            }
-
-            val episodesCount = parsedEpisodes.size
-            val firstEpisodeOrNull = parsedEpisodes.firstOrNull()
-
-            val currentShowStatus = when {
-                statusTextOriginal?.contains("Đang chiếu", ignoreCase = true) == true ||
-                statusTextOriginal?.contains("Đang tiến hành", ignoreCase = true) == true ||
-                (statusTextOriginal?.matches(Regex("""Tập\s*\d+\s*/\s*\?""")) == true && episodesCount > 0) // "Tập X/?"
-                -> ShowStatus.Ongoing
-
-                statusTextOriginal?.contains("Hoàn thành", ignoreCase = true) == true ||
-                statusTextOriginal?.contains("Full", ignoreCase = true) == true ||
-                (statusTextOriginal?.matches(Regex("""Tập\s*\d+\s*/\s*\d+""")) == true && // "Tập X/Y"
-                    statusTextOriginal.substringBefore("/").filter { it.isDigit() } == statusTextOriginal.substringAfterLast("/").filter { it.isDigit() } && episodesCount > 0 ) ||
-                (episodesCount == 1 && (firstEpisodeOrNull?.name?.contains("Full", ignoreCase = true) == true || firstEpisodeOrNull?.name?.contains("Movie", ignoreCase = true) == true))
-                -> ShowStatus.Completed
-                
-                else -> if (episodesCount > 0 && parsedEpisodes.any { it.episode != null }) null else ShowStatus.Completed // Mặc định là Completed nếu không có manh mối rõ ràng hoặc chỉ có 1 tập "Full"
-            }
-            
-            // Lấy thông tin diễn viên/nhân vật
-            val actorsDataList = infoDoc.select("div#MvTb-Cast ul.ListCast li a").mapNotNull { actorLinkElement ->
-                val name = actorLinkElement.attr("title").removePrefix("Nhân vật ").trim() // Loại bỏ "Nhân vật "
-                val imageUrl = fixUrl(actorLinkElement.selectFirst("img")?.attr("src"), baseUrl)
-                if (name.isNotBlank()) { ActorData(Actor(name, image = imageUrl), roleString = null) } else { null }
-            }
-            
-            // Lấy phim đề cử
-            val recommendations = mutableListOf<SearchResponse>()
-            infoDoc.select("div.Wdgt div.MovieListRelated.owl-carousel div.TPostMv").forEach { item ->
-                try {
-                    val linkElement = item.selectFirst("div.TPost > a") ?: return@forEach
-                    val recHref = fixUrl(linkElement.attr("href"), baseUrl)
-                    val recTitle = linkElement.selectFirst("div.Title")?.text()?.trim()
-                    val recPosterUrl = fixUrl(linkElement.selectFirst("div.Image img")?.attr("src"), baseUrl)
-
-                    if (recHref != null && recTitle != null) {
-                        val isTvSeriesRec = linkElement.selectFirst("span.mli-eps") != null || recTitle.contains("tập", ignoreCase = true) || linkElement.selectFirst("span.mli-quality") == null
-                        val recTvType = if (isTvSeriesRec) TvType.TvSeries else TvType.Movie // Ước lượng type cho recommendation
-                        recommendations.add(provider.newMovieSearchResponse(recTitle, recHref, recTvType) { this.posterUrl = recPosterUrl })
-                    }
-                } catch (e: Exception) { 
-                    // Log.e("AnimeVietsubProvider", "Error parsing recommendation item for $title: ${item.html().take(50)}", e) // Optional
-                }
-            }
-            // if (recommendations.isEmpty()) Log.w("AnimeVietsubProvider", "No recommendations found for '$title'") // Optional
-
-            // Logic xác định TvType cho trang load
-            var finalTvType: TvType? = null
-            val country = infoDoc.getCountry()?.lowercase() // "nhật bản", "trung quốc", ...
-            val hasAnimeLeTag = genres.any { it.equals("Anime lẻ", ignoreCase = true) } || statusTextOriginal?.contains("Anime lẻ", ignoreCase = true) == true
-            
-            val firstEpisodeNameLower = firstEpisodeOrNull?.name?.lowercase()
-            // Kiểm tra xem có phải là movie trá hình 1 tập không (ví dụ: "Tập 1", "Tập Full", "Full")
-            val isSingleEpisodeActuallyMovie = episodesCount == 1 &&
-                (firstEpisodeNameLower == "tập 1" || firstEpisodeNameLower == "tập full" || firstEpisodeNameLower == "full" || firstEpisodeNameLower?.matches(Regex("""^(tập\s*)?0*1$""")) == true ||
-                 (firstEpisodeNameLower?.matches(Regex("""^(tập\s*)?\d+$""")) == true && firstEpisodeNameLower.filter { it.isDigit() }.toIntOrNull() == 1))
-
-            val isMovieHintFromTitle = title.contains("Movie", ignoreCase = true) || title.contains("Phim Lẻ", ignoreCase = true)
-            
-            // Xác định bối cảnh Nhật Bản (Anime)
-            val isJapaneseContext = country == "nhật bản" || country == "japan" ||
-                                  (country == null && (title.contains("Anime", ignoreCase = true) || genres.any{ it.contains("Anime", ignoreCase = true) && !it.contains("Trung Quốc", ignoreCase = true)} ))
-
-            if (title.contains("OVA", ignoreCase = true) || title.contains("ONA", ignoreCase = true) || (hasAnimeLeTag && episodesCount > 1 && isJapaneseContext) ) {
-                finalTvType = TvType.Anime // OVA, ONA, hoặc "Anime lẻ" có nhiều tập => Anime Series
-            }
-            // Movie/Anime Movie
-            else if (isMovieHintFromTitle || (hasAnimeLeTag && episodesCount <= 1) || isSingleEpisodeActuallyMovie) {
-                finalTvType = if (isJapaneseContext) TvType.Anime // Movie/Anime Lẻ của Nhật => Anime (Movie)
-                              else if (country == "trung quốc" || country == "china") TvType.Movie // Donghua Movie => Movie
-                              else TvType.Movie // Các trường hợp movie khác
-            }
-            // Series
-            else { 
-                finalTvType = when {
-                    isJapaneseContext -> TvType.Anime // Anime Series
-                    country == "trung quốc" || country == "china" -> TvType.Cartoon // Donghua Series => Cartoon
-                    genres.any {g -> g.contains("Hoạt Hình", ignoreCase = true) || g.contains("Animation", ignoreCase = true)} -> TvType.Cartoon // Hoạt hình khác
-                    else -> TvType.TvSeries // Live action series
-                }
-            }
-
-            // Fallback cuối cùng nếu finalTvType vẫn null
-            if (finalTvType == null) {
-                finalTvType = if (episodesCount > 1 || statusTextOriginal?.contains("Anime bộ", ignoreCase = true) == true) { // Có nhiều tập hoặc ghi là "Anime bộ"
-                    when { isJapaneseContext -> TvType.Anime; country == "trung quốc" || country == "china" -> TvType.Cartoon; else -> TvType.TvSeries }
-                } else { // Mặc định là Movie hoặc Anime (movie) nếu chỉ có 1 tập hoặc không rõ ràng
-                     when { isJapaneseContext && (isMovieHintFromTitle || isSingleEpisodeActuallyMovie || hasAnimeLeTag) -> TvType.Anime; isJapaneseContext -> TvType.Anime; else -> TvType.Movie }
-                }
-            }
-            Log.i("AnimeVietsubProvider", "Final TvType for '$title' ($infoUrl): $finalTvType. Country: $country, Episodes: $episodesCount, Status: $statusTextOriginal, Genres: $genres")
-
-
-            // Xác định cấu trúc là series hay movie để gọi đúng hàm new...LoadResponse
-            val isSeriesStructure = episodesCount > 1 || 
-                                    finalTvType == TvType.TvSeries || 
-                                    finalTvType == TvType.Cartoon ||
-                                    (finalTvType == TvType.Anime && episodesCount > 1 && !isSingleEpisodeActuallyMovie && !hasAnimeLeTag) // Anime series
-
-            return if (isSeriesStructure) {
-                provider.newTvSeriesLoadResponse(title, infoUrl, finalTvType ?: TvType.Anime, episodes = parsedEpisodes) { // Mặc định Anime nếu type vẫn null
-                    this.posterUrl = posterUrlForResponse; this.plot = description; this.tags = genres; this.year = year; this.rating = ratingValue; this.showStatus = currentShowStatus;
-                    this.actors = actorsDataList; this.recommendations = recommendations
-                }
-            } else { // Là Movie hoặc Anime (Movie)
-                val actualMovieTvType = finalTvType ?: if(isJapaneseContext && (isMovieHintFromTitle || isSingleEpisodeActuallyMovie || hasAnimeLeTag)) TvType.Anime else TvType.Movie
-                
-                val durationText = infoSection.select("li:has(strong:containsOwn(Thời lượng))")?.firstOrNull()?.ownText()?.trim()
-                    ?: infoDoc.select("ul.InfoList li.AAIco-adjust:contains(Thời lượng)") // Selector khác cho thời lượng
-                        .firstOrNull()?.ownText()?.trim() 
-                val durationMinutes = durationText?.filter { it.isDigit() }?.toIntOrNull()
-
-                // Đối với movie, data cho loadLinks sẽ là thông tin của "tập" duy nhất (nếu có) hoặc thông tin chung của movie
-                val movieDataForLoadLinks = if (parsedEpisodes.isNotEmpty()) {
-                    // Nếu có parsedEpisodes (ví dụ: trang xem phim có nút "Full" hoặc "Tập 1" cho movie)
-                    val firstEpisode = parsedEpisodes.first() // Lấy tập đầu tiên (và duy nhất)
-                    val firstEpisodeDataString = firstEpisode.data // Đây là JSON của EpisodeData
-                        try {
-                            // Kiểm tra xem dataId có hợp lệ không
-                            val parsedEpisodeData = gson.fromJson(firstEpisodeDataString, EpisodeData::class.java)
-                            if (parsedEpisodeData.dataId != null) { firstEpisodeDataString } // Sử dụng data từ episode nếu dataId tồn tại
-                            else { // Nếu dataId null, thử tạo lại từ infoUrl
-                                val idAttempt = infoDoc.selectFirst("a.watch_button_more[href*=xem-phim]")?.attr("href")?.substringAfterLast("a")?.substringBefore("/") ?: infoUrl.substringAfterLast("/").substringBefore("-").filter{it.isDigit()}.ifEmpty { infoUrl.substringAfterLast("-").filter{it.isDigit()} }
-                                gson.toJson(EpisodeData(url = infoUrl, dataId = idAttempt.ifBlank { null }, duHash = null))
-                            }
-                        } catch (e: Exception) { // Lỗi parse JSON, tạo data mới
-                             val idAttempt = infoDoc.selectFirst("a.watch_button_more[href*=xem-phim]")?.attr("href")?.substringAfterLast("a")?.substringBefore("/") ?: infoUrl.substringAfterLast("/").substringBefore("-").filter{it.isDigit()}.ifEmpty { infoUrl.substringAfterLast("-").filter{it.isDigit()} }
-                             gson.toJson(EpisodeData(url = infoUrl, dataId = idAttempt.ifBlank { null }, duHash = null))
-                        }
-                } else {
-                    // Nếu không có parsedEpisodes (trang xem phim không load được hoặc movie không có cấu trúc tập riêng)
-                    // Cố gắng lấy data-id từ nút "Xem phim" trên trang info
-                    val idAttempt = infoDoc.selectFirst("a.watch_button_more[href*=xem-phim]")?.attr("href")?.substringAfterLast("a")?.substringBefore("/") ?: infoUrl.substringAfterLast("/").substringBefore("-").filter{it.isDigit()}.ifEmpty { infoUrl.substringAfterLast("-").filter{it.isDigit()} }
-                    gson.toJson(EpisodeData(url = infoUrl, dataId = idAttempt.ifBlank { null }, duHash = null))
-                }
-
-                provider.newMovieLoadResponse(title, infoUrl, actualMovieTvType, movieDataForLoadLinks) {
-                    this.posterUrl = posterUrlForResponse; this.plot = description; this.tags = genres; this.year = year; this.rating = ratingValue; durationMinutes?.let { addDuration(it.toString()) };
-                    this.actors = actorsDataList; this.recommendations = recommendations
-                }
-            }
-
-        } catch (e: Exception) {
-            Log.e("AnimeVietsubProvider", "Lỗi trong toLoadResponse xử lý cho url: $infoUrl", e); return null
-        }
-    }
-
-    // Data class cho response từ ajax/player
-    private data class AjaxPlayerResponse(
-        @JsonProperty("success") val success: Int? = null,
-        @JsonProperty("link") val link: List<LinkSource>? = null // Có thể là một list các source
-    )
-
-    // Data class cho mỗi source link trong AjaxPlayerResponse
-    private data class LinkSource(
-        @JsonProperty("file") val file: String? = null,    // Chứa link m3u8 (đã mã hóa hoặc trực tiếp)
-        @JsonProperty("type") val type: String? = null,    // Ví dụ: "hls", "mp4"
-        @JsonProperty("label") val label: String? = null   // Ví dụ: "FULLHD", "HD", "SD"
-    )
-
     override suspend fun loadLinks(
-        data: String, // JSON string của EpisodeData
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         var foundLinks = false
-        val baseUrl = getBaseUrl() // Lấy baseUrl động
-        val ajaxUrl = "$baseUrl/ajax/player?v=2019a" // Endpoint API của AnimeVietsub
-        val decryptApiUrl = "https://m3u8.013666.xyz/animevietsub/decrypt" // Endpoint giải mã (nếu cần)
-        val textPlainMediaType = "text/plain".toMediaTypeOrNull()
-
-        val episodeData = try {
-            gson.fromJson(data, EpisodeData::class.java)
+        Log.d("AnimeHayProvider", "loadLinks called for: $data")
+        val document: Document? = try {
+            app.get(data, headers = mapOf(
+                "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+                "Referer" to getBaseUrl()
+            )).document
         } catch (e: Exception) {
-            Log.e("AnimeVietsubProvider", "Không thể parse EpisodeData JSON: '$data'", e); return false
+            Log.e("AnimeHayProvider", "Failed to GET document in loadLinks for: $data", e)
+            null
         }
 
-        val episodePageUrl = episodeData.url // URL của trang chứa tập phim (dùng làm referer)
-        val episodeId = episodeData.dataId       // data-id của tập phim
-        val episodeHash = episodeData.duHash     // data-hash (nếu có)
-
-        if (episodeId == null || episodePageUrl.isBlank()) {
-            Log.e("AnimeVietsubProvider", "Thiếu ID tập phim (dataId) hoặc URL trang (episodeData.url): $data"); return false
+        if (document == null) {
+            Log.e("AnimeHayProvider", "Document is null in loadLinks for $data. Cannot proceed.")
+            return false
         }
 
         try {
-            // Chuẩn bị data cho POST request
-            val postData = mutableMapOf("id" to episodeId, "play" to "api")
-            if (!episodeHash.isNullOrBlank()) {
-                postData["link"] = episodeHash // Thêm 'link' (hash) nếu có
-            }
-
-            val headers = mapOf(
-                "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8",
-                "Accept" to "application/json, text/javascript, */*; q=0.01",
-                "X-Requested-With" to "XMLHttpRequest",
-                "User-Agent" to USER_AGENT,
-                "Referer" to episodePageUrl // Referer là URL của trang tập phim
-            )
-
-            // Gọi API ajax/player
-            val ajaxResponse = app.post(ajaxUrl, data = postData, headers = headers, referer = episodePageUrl)
-            val playerResponse = try {
-                gson.fromJson(ajaxResponse.text, AjaxPlayerResponse::class.java)
-            } catch (e: Exception) {
-                Log.e("AnimeVietsubProvider", "Lỗi parse JSON từ ajax/player: ${ajaxResponse.text}", e); null
-            }
-
-            if (playerResponse?.success != 1 || playerResponse.link.isNullOrEmpty()) {
-                Log.e("AnimeVietsubProvider", "Request ajax/player thất bại hoặc không có link: ${ajaxResponse.text}"); return false
-            }
-
-            // Xử lý từng link source từ response
-            playerResponse.link.forEach { linkSource ->
-                val dataEncOrDirectLink = linkSource.file // Đây có thể là link đã mã hóa hoặc link m3u8/mp4 trực tiếp
-                if (dataEncOrDirectLink.isNullOrBlank()) {
-                    Log.w("AnimeVietsubProvider", "Link source 'file' rỗng cho ID $episodeId, label ${linkSource.label}")
-                    return@forEach // Bỏ qua source này nếu link rỗng
+            val scriptElements = document.select("script")
+            var combinedScript = ""
+            scriptElements.forEach { script ->
+                if (!script.hasAttr("src")) {
+                    combinedScript += script.html() + "\n"
                 }
+            }
+            val pageHtml = document.html()
+            val baseUrl = getBaseUrl()
 
-                val finalStreamUrl: String = if (dataEncOrDirectLink.startsWith("http") && (dataEncOrDirectLink.contains(".m3u8") || dataEncOrDirectLink.contains(".mp4"))) {
-                    // Nếu đã là link trực tiếp m3u8/mp4
-                    dataEncOrDirectLink
-                } else {
-                    // Nếu là dữ liệu mã hóa, gửi đến API giải mã
-                    // Log.d("AnimeVietsubProvider", "Link is encrypted, attempting to decrypt: $dataEncOrDirectLink") // Optional
-                    val decryptHeaders = mapOf("User-Agent" to USER_AGENT, "Referer" to episodePageUrl) // Thêm Referer cho API giải mã
-                    val decryptResponse = app.post(decryptApiUrl, headers = decryptHeaders, requestBody = dataEncOrDirectLink.toRequestBody(textPlainMediaType))
-                    decryptResponse.text.trim() // API giải mã trả về link m3u8
-                }
+            Log.d("AnimeHayProvider", "Combined inline script length: ${combinedScript.length}")
 
-                if (finalStreamUrl.startsWith("http") && (finalStreamUrl.endsWith(".m3u8") || finalStreamUrl.contains(".mp4")) ) {
-                    val streamType = if (finalStreamUrl.endsWith(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                    val streamHeaders = mapOf(
-                        "User-Agent" to USER_AGENT,
-                        "Origin" to baseUrl, // Origin có thể là baseUrl đã phân giải
-                        "Referer" to episodePageUrl // Referer quan trọng để stream
+            // 1. Server TOK
+            val m3u8Regex = Regex("""tik:\s*['"]([^'"]+)['"]""")
+            val m3u8Match = m3u8Regex.find(combinedScript)
+            val m3u8Link = m3u8Match?.groups?.get(1)?.value?.trim()
+
+            if (!m3u8Link.isNullOrEmpty()) {
+                Log.i("AnimeHayProvider", "Found TOK M3U8 link: $m3u8Link")
+                try {
+                    callback(
+                        newExtractorLink(source = m3u8Link, name = "Server TOK", url = m3u8Link, type = ExtractorLinkType.M3U8) {
+                            this.quality = Qualities.Unknown.value
+                            this.referer = data
+                        }
                     )
-                    
-                    val extractorLink = newExtractorLink(
-                        source = this.name, // Tên provider
-                        name = "AnimeVietsub" + (linkSource.label?.let { " - $it" } ?: ""), // Tên link + label (FULLHD, HD,...)
-                        url = finalStreamUrl,
-                        type = streamType // M3U8 hoặc VIDEO
-                    ) {
-                        this.referer = episodePageUrl // Referer cho player
-                        this.quality = Qualities.Unknown.value // Chất lượng chưa xác định rõ từ label, để Unknown
-                        this.headers = streamHeaders // Headers cần thiết để stream
-                    }
-                    callback(extractorLink)
                     foundLinks = true
-                } else {
-                    Log.e("AnimeVietsubProvider", "API giải mã không trả về URL M3U8/MP4 hợp lệ hoặc link không hợp lệ. Response/Link: '$finalStreamUrl'")
+                    Log.d("AnimeHayProvider", "TOK M3U8 link submitted.")
+                } catch (e: Exception) { Log.e("AnimeHayProvider", "Error calling callback for TOK M3U8", e) }
+            } else { Log.w("AnimeHayProvider", "TOK M3U8 link not found in script for $data") }
+
+            // 2. Server GUN
+            val gunRegexScript = Regex("""src=["'](https?://[^"']*gun\.php\?id=([^&"']+)&[^"']*)["']""")
+            val gunMatchScript = gunRegexScript.find(combinedScript) ?: gunRegexScript.find(pageHtml)
+            var gunLink = gunMatchScript?.groups?.get(1)?.value?.let{ fixUrl(it, baseUrl) }
+            var gunId = gunMatchScript?.groups?.get(2)?.value
+
+            if (gunLink.isNullOrEmpty() || gunId.isNullOrEmpty()) {
+                Log.d("AnimeHayProvider", "GUN link not found in script/HTML, checking iframe#gun_if...")
+                val gunIframe = document.selectFirst("iframe#gun_if[src*=gun.php]")
+                gunLink = gunIframe?.attr("src")?.let{ fixUrl(it, baseUrl) }
+                if (!gunLink.isNullOrEmpty()) {
+                    val gunIdRegexIframe = Regex(""".*gun\.php\?id=([^&"']+)""")
+                    gunId = gunIdRegexIframe.find(gunLink)?.groups?.get(1)?.value
+                    if (gunId.isNullOrEmpty()) gunLink = null
                 }
             }
+
+            if (!gunLink.isNullOrEmpty() && !gunId.isNullOrEmpty()) {
+                Log.i("AnimeHayProvider", "Processing GUN link ID: $gunId (from: $gunLink)")
+                try {
+                    val finalM3u8Link = "https://pt.rapovideo.xyz/playlist/v2/$gunId/master.m3u8"
+                    Log.d("AnimeHayProvider", "Constructed GUN M3U8 link: $finalM3u8Link")
+                    callback(
+                        newExtractorLink(source = finalM3u8Link, name = "Server GUN", url = finalM3u8Link, type = ExtractorLinkType.M3U8) {
+                            this.quality = Qualities.Unknown.value
+                            this.referer = gunLink
+                        }
+                    )
+                    foundLinks = true
+                    Log.d("AnimeHayProvider", "GUN M3U8 link submitted.")
+                } catch (e: Exception) { Log.e("AnimeHayProvider", "Error calling callback for GUN M3U8", e) }
+            } else { Log.w("AnimeHayProvider", "GUN link/ID not found for $data") }
+
+            // 3. Server PHO
+            val phoRegexScript = Regex("""src=["'](https?://[^"']*pho\.php\?id=([^&"']+)&[^"']*)["']""")
+            val phoMatchScript = phoRegexScript.find(combinedScript) ?: phoRegexScript.find(pageHtml)
+            var phoLink = phoMatchScript?.groups?.get(1)?.value?.let{ fixUrl(it, baseUrl) }
+            var phoId = phoMatchScript?.groups?.get(2)?.value
+
+            if (phoLink.isNullOrEmpty() || phoId.isNullOrEmpty()) {
+                Log.d("AnimeHayProvider", "PHO link not found in script/HTML, checking iframe#pho_if...")
+                val phoIframe = document.selectFirst("iframe#pho_if[src*=pho.php]")
+                phoLink = phoIframe?.attr("src")?.let{ fixUrl(it, baseUrl) }
+                if (!phoLink.isNullOrEmpty()) {
+                    val phoIdRegexIframe = Regex(""".*pho\.php\?id=([^&"']+)""")
+                    phoId = phoIdRegexIframe.find(phoLink)?.groups?.get(1)?.value
+                    if (phoId.isNullOrEmpty()) phoLink = null
+                }
+            }
+
+            if (!phoLink.isNullOrEmpty() && !phoId.isNullOrEmpty()) {
+                Log.i("AnimeHayProvider", "Processing PHO link ID: $phoId (from: $phoLink)")
+                try {
+                    val finalPhoM3u8Link = "https://pt.rapovideo.xyz/playlist/$phoId/master.m3u8"
+                    Log.d("AnimeHayProvider", "Constructed PHO M3U8 link: $finalPhoM3u8Link")
+                    callback(
+                        newExtractorLink(source = finalPhoM3u8Link, name = "Server PHO", url = finalPhoM3u8Link, type = ExtractorLinkType.M3U8) {
+                            this.quality = Qualities.Unknown.value
+                            this.referer = phoLink
+                        }
+                    )
+                    foundLinks = true
+                    Log.d("AnimeHayProvider", "PHO M3U8 link submitted.")
+                } catch (e: Exception) { Log.e("AnimeHayProvider", "Error calling callback for PHO M3U8", e) }
+            } else { Log.w("AnimeHayProvider", "PHO link/ID not found for $data") }
+
+            // 4. Server HY (Hydrax)
+            val hyRegexScript = Regex("""src=["']([^"']*playhydrax\.com[^"']*)["']""")
+            val hyMatchScript = hyRegexScript.find(combinedScript) ?: hyRegexScript.find(pageHtml)
+            var hyLink = hyMatchScript?.groups?.get(1)?.value?.let{ fixUrl(it, baseUrl) }
+
+            if (hyLink.isNullOrEmpty()) {
+                Log.d("AnimeHayProvider", "HY link not found in script/HTML, checking iframe...")
+                hyLink = document.selectFirst("iframe[src*=playhydrax.com]")?.attr("src")?.let{ fixUrl(it, baseUrl) }
+            }
+
+            if (!hyLink.isNullOrEmpty()) {
+                Log.i("AnimeHayProvider", "Processing HY (Hydrax) link: $hyLink")
+                try {
+                    loadExtractor(hyLink, data, subtitleCallback, callback)
+                    foundLinks = true // Assume loadExtractor attempts submission
+                    Log.d("AnimeHayProvider", "Hydrax extractor called (asynchronously).")
+                } catch (e: Exception) {
+                    Log.e("AnimeHayProvider", "Error calling loadExtractor for HY: $hyLink", e)
+                }
+            } else { Log.w("AnimeHayProvider", "HY (Hydrax) link not found for $data") }
+
         } catch (e: Exception) {
-            Log.e("AnimeVietsubProvider", "Lỗi trích xuất link API cho ID $episodeId (Data: $data)", e)
+            Log.e("AnimeHayProvider", "General error during link extraction in loadLinks for $data", e)
+        }
+
+        if (!foundLinks) {
+            Log.e("AnimeHayProvider", "No stream links were successfully found or submitted for $data")
+        } else {
+            Log.i("AnimeHayProvider", "Finished loadLinks for $data. Link submission attempted: $foundLinks")
         }
         return foundLinks
     }
 
-    // Hàm tiện ích để encode URI
-    private fun String?.encodeUri(): String {
-        if (this == null) return ""
-        return try { URLEncoder.encode(this, "UTF-8").replace("+", "%20") }
-        catch (e: Exception) { Log.e("AnimeVietsubProvider", "Lỗi URL encode: $this", e); this /* Trả về chuỗi gốc nếu lỗi */ }
-    }
-    
-    // Hàm tiện ích chuyển đổi rating (không còn dùng trực tiếp trong toLoadResponse nhưng có thể hữu ích)
-    private fun Double?.toAnimeVietsubRatingInt(): Int? = this?.takeIf { !it.isNaN() }?.let { (it * 1000).roundToInt().coerceIn(0, 10000) }
 
-    // Hàm tiện ích để sửa lỗi URL (tương đối, scheme-less, v.v.)
+    private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): SearchResponse? {
+        try {
+            var linkElement = this.selectFirst("> a[href]")
+            if (linkElement == null) {
+                linkElement = this.selectFirst("a[href*=thong-tin-phim]")
+            }
+
+            if (linkElement == null) {
+                Log.w("AnimeHayProvider", "toSearchResponse: Could not find suitable link element in item: ${this.html().take(100)}")
+                return null
+            }
+
+            val hrefRaw = linkElement.attr("href")
+            val href = fixUrl(hrefRaw, baseUrl)
+            if (href.isNullOrBlank()) {
+                Log.w("AnimeHayProvider", "toSearchResponse: Invalid or unfixable href '$hrefRaw'")
+                return null
+            }
+
+            val titleFromName = this.selectFirst("div.name-movie")?.text()?.trim()
+            val titleFromAttr = linkElement.attr("title")?.trim()
+            val title = titleFromName?.takeIf { it.isNotBlank() } ?: titleFromAttr
+            if (title.isNullOrBlank()) {
+                Log.w("AnimeHayProvider", "toSearchResponse: Could not find title for href: $href")
+                return null
+            }
+
+            val posterUrl = this.selectFirst("img")?.let { it.attr("src").ifBlank { it.attr("data-src") } }
+            val fixedPosterUrl = fixUrl(posterUrl, baseUrl)
+
+            val tvType = when {
+                href.contains("/phim/", ignoreCase = true) -> TvType.AnimeMovie
+                else -> TvType.Anime
+            }
+
+            return provider.newMovieSearchResponse(title, href, tvType) {
+                this.posterUrl = fixedPosterUrl
+            }
+        } catch (e: Exception) {
+            Log.e("AnimeHayProvider", "Error in toSearchResponse for element: ${this.html().take(100)}", e)
+            return null
+        }
+    }
+
+    private suspend fun Document.toLoadResponse(provider: MainAPI, url: String, baseUrl: String): LoadResponse? {
+        try {
+            val titleElement = this.selectFirst("h1.heading_movie")
+            val title = titleElement?.text()?.trim() ?: run {
+                Log.e("AnimeHayProvider", "Title (h1.heading_movie) not found for $url")
+                return null
+            }
+            Log.d("AnimeHayProvider", "Parsing LoadResponse for: \"$title\"")
+
+            val genres = this.select("div.list_cate a")?.mapNotNull { it.text()?.trim() } ?: emptyList()
+            val isChineseAnimation = genres.any { it.contains("CN Animation", ignoreCase = true) }
+            val hasEpisodes = this.selectFirst("div.list-item-episode a") != null
+
+            val mainTvType = when {
+                hasEpisodes && isChineseAnimation -> TvType.Cartoon
+                hasEpisodes && !isChineseAnimation -> TvType.Anime
+                !hasEpisodes && isChineseAnimation -> TvType.Cartoon // Phim lẻ TQ
+                !hasEpisodes && !isChineseAnimation -> TvType.AnimeMovie
+                else -> TvType.Anime
+            }
+            Log.d("AnimeHayProvider", "Determined mainTvType: $mainTvType (IsCN: $isChineseAnimation, HasEps: $hasEpisodes)")
+
+            val animehayPoster = this.selectFirst("div.head div.first img")?.attr("src")
+            val animehayFinalPosterUrl = fixUrl(animehayPoster, baseUrl)
+            Log.d("AnimeHayProvider", "AnimeHay Poster URL (fixed): $animehayFinalPosterUrl")
+
+            val finalPosterUrl = if (mainTvType == TvType.Anime || mainTvType == TvType.AnimeMovie || mainTvType == TvType.OVA) {
+                Log.d("AnimeHayProvider", "Attempting to fetch Kitsu poster for '$title' (Type: $mainTvType)")
+                val kitsuPoster = getKitsuPoster(title)
+                kitsuPoster ?: animehayFinalPosterUrl
+            } else {
+                Log.d("AnimeHayProvider", "Skipping Kitsu search for type $mainTvType")
+                animehayFinalPosterUrl
+            }
+
+            if (finalPosterUrl.isNullOrBlank()) {
+                Log.e("AnimeHayProvider", "Failed to get any valid poster for $title (AnimeHay fallback: $animehayFinalPosterUrl)")
+            } else if (finalPosterUrl != animehayFinalPosterUrl) {
+                Log.i("AnimeHayProvider", "Using Kitsu poster for \"$title\": $finalPosterUrl")
+            } else {
+                Log.i("AnimeHayProvider", "Using AnimeHay poster for \"$title\": $finalPosterUrl")
+            }
+
+            val description = this.selectFirst("div.desc > div:last-child")?.text()?.trim()
+            val yearText = this.selectFirst("div.update_time div:nth-child(2)")?.text()?.trim()
+            val year = yearText?.filter { it.isDigit() }?.toIntOrNull()
+            Log.d("AnimeHayProvider", "Parsed Year: $year (from text: '$yearText')")
+
+            val ratingText = this.selectFirst("div.score div:nth-child(2)")?.text()?.trim()
+            val rating = ratingText?.split("||")?.getOrNull(0)?.trim()?.toDoubleOrNull()?.takeIf { !it.isNaN() }?.toAnimeHayRatingInt()
+            Log.d("AnimeHayProvider", "Parsed Rating (0-10000): $rating (from text: '$ratingText')")
+
+            val statusText = this.selectFirst("div.status div:nth-child(2)")?.text()?.trim()
+            val status = when {
+                statusText?.contains("Hoàn thành", ignoreCase = true) == true -> ShowStatus.Completed
+                statusText?.contains("Đang tiến hành", ignoreCase = true) == true -> ShowStatus.Ongoing
+                statusText?.contains("Đang cập nhật", ignoreCase = true) == true -> ShowStatus.Ongoing
+                else -> null
+            }
+            Log.d("AnimeHayProvider", "Parsed Status: $status (from text: '$statusText')")
+
+            val episodes = this.select("div.list-item-episode a")?.mapNotNull { episodeLink ->
+                val epUrl = fixUrl(episodeLink.attr("href"), baseUrl)
+                val epNameSpan = episodeLink.selectFirst("span")?.text()?.trim()
+                val epTitleAttr = episodeLink.attr("title")?.trim()
+                val epNum = epNameSpan?.filter { it.isDigit() }?.toIntOrNull()
+                val finalEpName = epTitleAttr?.takeIf { it.isNotBlank() } ?: epNameSpan?.takeIf { it.isNotBlank() } ?: epNum?.let { "Tập $it" }
+
+                if (!finalEpName.isNullOrEmpty() && !epUrl.isNullOrEmpty()) {
+                    newEpisode(data = epUrl) {
+                        this.name = finalEpName
+                        this.episode = null
+                    }
+                } else { null }
+            }?.reversed() ?: emptyList()
+            Log.d("AnimeHayProvider", "Parsed ${episodes.size} episodes.")
+
+            val recommendations = this.select("div.movie-recommend div.movie-item")?.mapNotNull {
+                it.toSearchResponse(provider, baseUrl)
+            } ?: emptyList()
+            Log.d("AnimeHayProvider", "Parsed ${recommendations.size} recommendations.")
+
+            return if (hasEpisodes) {
+                Log.i("AnimeHayProvider", "Creating TvSeriesLoadResponse for \"$title\"")
+                provider.newTvSeriesLoadResponse(title, url, mainTvType, episodes = episodes) {
+                    this.posterUrl = finalPosterUrl
+                    this.plot = description
+                    this.tags = genres
+                    this.year = year
+                    this.rating = rating
+                    this.showStatus = status
+                    this.recommendations = recommendations
+                }
+            } else {
+                Log.i("AnimeHayProvider", "Creating MovieLoadResponse for \"$title\"")
+                val movieData = url
+                val durationText = this.selectFirst("div.duration div:nth-child(2)")?.text()?.trim()
+                val durationMinutes = durationText?.filter { it.isDigit() }?.toIntOrNull()
+                Log.d("AnimeHayProvider", "Parsed Duration (minutes): $durationMinutes (from text: '$durationText')")
+
+                provider.newMovieLoadResponse(title, url, mainTvType, movieData) {
+                    this.posterUrl = finalPosterUrl
+                    this.plot = description
+                    this.tags = genres
+                    this.year = year
+                    this.rating = rating
+                    durationMinutes?.let { addDuration(it.toString()) }
+                    this.recommendations = recommendations
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("AnimeHayProvider", "Error in toLoadResponse for url: $url", e)
+            return null
+        }
+    }
+
+    private fun String?.encodeUri(): String {
+        return try {
+            URLEncoder.encode(this ?: "", "UTF-8")
+        } catch (e: Exception) {
+            Log.e("AnimeHayProvider", "Failed to encode URI: $this", e)
+            this ?: ""
+        }
+    }
+
+    private fun Double?.toAnimeHayRatingInt(): Int? {
+        return this?.takeIf { !it.isNaN() }?.let { (it * 1000).roundToInt().coerceIn(0, 10000) }
+    }
+
     private fun fixUrl(url: String?, baseUrl: String): String? {
         if (url.isNullOrBlank()) return null
         return try {
             when {
-                url.startsWith("http") -> url // Đã là URL đầy đủ
-                url.startsWith("//") -> "https:$url" // Scheme-less URL
-                url.startsWith("/") -> URL(URL(baseUrl), url).toString() // URL tương đối từ root
-                else -> URL(URL(baseUrl), "/$url".removePrefix("//")).toString() // URL tương đối từ thư mục hiện tại (thêm / nếu thiếu)
+                url.startsWith("http") -> url
+                url.startsWith("//") -> "https:$url"
+                url.startsWith("/") -> baseUrl.trimEnd('/') + url // Ensure baseUrl doesn't end with / before appending
+                else -> URL(URL(baseUrl), url).toString()
             }
-        } catch (e: java.net.MalformedURLException) {
-            Log.e("AnimeVietsubProvider", "URL không hợp lệ khi fix: base='$baseUrl', url='$url'", e)
-            if (url.startsWith("http")) return url; null // Nếu đã là http mà vẫn lỗi, trả về gốc hoặc null
         } catch (e: Exception) {
-            Log.e("AnimeVietsubProvider", "Lỗi không xác định khi fix URL: base='$baseUrl', url='$url'", e); null
+            Log.e("AnimeHayProvider", "Failed to fix URL: base='$baseUrl', url='$url'", e)
+            if(url.startsWith("http")) url else null
         }
     }
-}
+} // Kết thúc class AnimeHayProvider
