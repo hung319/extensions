@@ -369,7 +369,7 @@ class AnimetProvider : MainAPI() {
                            Log.v(name, "Found episode: Name='$epName', Num=$epNum, URL='$epHref'")
                            newEpisode(epHref) {
                                this.name = epName
-                               this.episode = epNum
+                               this.episode = null
                            }
                       }.reversed()
                       Log.d(name, "Successfully fetched ${episodes.size} episodes.")
