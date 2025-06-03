@@ -200,19 +200,21 @@ class AnimeHayProvider : MainAPI() {
 
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Hàm getMainPage này, theo thiết kế gốc, chủ yếu tải trang đầu tiên (page = 1)
-        // của danh sách "Mới cập nhật". Nếu page > 1, nó trả về danh sách rỗng.
+        Log.d("AnimeHayProvider", "getMainPage called with page: $page, request.name: ${request.name}")
+
+        // Theo thiết kế gốc của provider này cho danh sách chính "Mới cập nhật",
+        // chỉ page = 1 mới có dữ liệu.
         if (page > 1) {
+            Log.d("AnimeHayProvider", "Page > 1, returning empty list and hasNext=false by design for this main list.")
             return newHomePageResponse(emptyList(), false)
         }
 
         // Xử lý cho page == 1:
         try {
             val baseUrl = getBaseUrl()
-            // Document được fetch là trang chính (ví dụ: https://animehay.ceo/),
-            // tương ứng với file main.html được cung cấp.
+            Log.d("AnimeHayProvider", "Attempting to fetch document for getMainPage (page 1) from effective baseUrl: $baseUrl")
             val document = app.get(baseUrl).document
-            Log.d("AnimeHayProvider", "Fetched document for getMainPage (page 1) from $baseUrl")
+            Log.d("AnimeHayProvider", "Document fetched successfully. Title: ${document.title()}")
 
             val homePageItems = document.select("div.movies-list div.movie-item")
                 .mapNotNull { element ->
@@ -220,59 +222,17 @@ class AnimeHayProvider : MainAPI() {
                 }
             Log.d("AnimeHayProvider", "Found ${homePageItems.size} items for 'Mới cập nhật'")
 
-            // Xác định hasNext dựa trên các phần tử phân trang trong document (nội dung của page 1).
-            // Mục tiêu là xem page 1 có chỉ dấu nào cho thấy page 2 (hoặc xa hơn) tồn tại không.
-            var calculatedHasNext = false
-            val pagination = document.selectFirst("div.pagination") // [1]
-            if (pagination != null) {
-                // Kiểm tra sự tồn tại của link đến trang 2 "/trang-2.html" [1]
-                val nextPageLink = pagination.selectFirst("a[href*=/trang-2.html]")
-                // Kiểm tra sự tồn tại của link "Cuối" [1]
-                val lastPageLink = pagination.selectFirst("a:contains(Cuối)")
+            // Đặt hasNext luôn là true cho page 1 theo yêu cầu.
+            Log.i("AnimeHayProvider", "For page $page, hasNext is hardcoded to: true")
 
-                if (nextPageLink != null) {
-                    calculatedHasNext = true
-                    Log.d("AnimeHayProvider", "hasNext=true due to presence of a link to page 2.")
-                } else if (lastPageLink != null) {
-                    // Đảm bảo link "Cuối" trỏ đến một trang lớn hơn 1
-                    val lastPageHref = lastPageLink.attr("href")
-                    val pageNumRegex = Regex("/trang-(\\d+)\\.html")
-                    val match = pageNumRegex.find(lastPageHref)
-                    if (match != null) {
-                        val lastPageNum = match.groupValues[1].toIntOrNull()
-                        if (lastPageNum != null && lastPageNum > 1) {
-                            calculatedHasNext = true
-                            Log.d("AnimeHayProvider", "hasNext=true due to 'Cuối' link to page $lastPageNum.")
-                        }
-                    }
-                }
-                // Một kiểm tra dự phòng: nếu trang hiện tại là "1" (active) và có bất kỳ link nào đến trang có số lớn hơn 1
-                if (!calculatedHasNext) {
-                    val activePageIsOne = pagination.selectFirst("a.active_page")?.text() == "1" // [1]
-                    val hasLinkToPageGreaterThanOne = pagination.select("a").any {
-                        val pageNumText = it.text()
-                        // Cố gắng chuyển đổi text của link thành số nguyên
-                        // và kiểm tra xem nó có phải là số lớn hơn 1 không
-                        val pageNum = pageNumText.toIntOrNull()
-                        pageNum != null && pageNum > 1
-                    }
-                    if (activePageIsOne && hasLinkToPageGreaterThanOne) {
-                         calculatedHasNext = true
-                         Log.d("AnimeHayProvider", "hasNext=true due to active page 1 and a link to a page > 1.")
-                    }
-                }
-
-            } else {
-                Log.d("AnimeHayProvider", "No div.pagination found on main page. Assuming hasNext=false.")
-            }
-
-            // Sử dụng tên danh sách "Mới cập nhật" như trong code gốc.
             val homeList = HomePageList("Mới cập nhật", homePageItems)
-            return newHomePageResponse(listOf(homeList), hasNext = calculatedHasNext)
+            // Sử dụng trực tiếp hasNext = true
+            return newHomePageResponse(listOf(homeList), hasNext = true)
 
         } catch (e: Exception) {
             Log.e("AnimeHayProvider", "Error in getMainPage for page $page: ${e.message}", e)
-            return newHomePageResponse(emptyList(), false)
+            e.printStackTrace() // In chi tiết lỗi ra logcat
+            return newHomePageResponse(emptyList(), false) // Trả về false nếu có lỗi
         }
     }
 
