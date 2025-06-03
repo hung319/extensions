@@ -397,8 +397,8 @@ class AnimeVietsubProvider : MainAPI() {
                     if (dataId != null && epUrl != null && episodeStringForDisplay.isNotBlank()) {
                         Log.d("AnimeVietsubProvider", "All conditions met. Creating newEpisode for: name='${episodeStringForDisplay}', dataId='$dataId', episodeSortKey=$episodeIntForSort")
                         newEpisode(data = gson.toJson(episodeInfoForLoadLinks)) {
-                            this.name = "TÊN TẬP TEST" // Gán tên ĐÚNG (ví dụ "Tập 09")
-                            this.episode = episodeIntForSort    // Gán số sắp xếp (ví dụ 900)
+                            this.name = episodeStringForDisplay  // Gán tên ĐÚNG (ví dụ "Tập 09")
+                            this.episode = null    // Gán số sắp xếp (ví dụ 900)
                         }
                     } else {
                         Log.w("AnimeVietsubProvider", "Skipping episode due to unmet conditions: dataId=$dataId, epUrl=$epUrl, episodeStringForDisplay='$episodeStringForDisplay' (isNotBlank=${episodeStringForDisplay.isNotBlank()})")
