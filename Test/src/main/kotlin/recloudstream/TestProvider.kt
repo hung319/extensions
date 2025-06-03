@@ -328,7 +328,6 @@ class AnimeVietsubProvider : MainAPI() {
                 ?: infoDoc.select("div.mvici-left li.AAIco-adjust:contains(Trạng thái)")
                     .firstOrNull()?.textNodes()?.lastOrNull()?.text()?.trim()?.replace("Trạng thái:", "")?.trim()
             
-            // =================== START OF MODIFIED EPISODE PARSING ===================
             // Phân tích danh sách tập phim từ watchPageDoc (nếu có)
             val parsedEpisodes = if (watchPageDoc != null) {
                 Log.d("AnimeVietsubProvider", "Watch page document is not null. Processing episodes...")
@@ -346,7 +345,7 @@ class AnimeVietsubProvider : MainAPI() {
                     val episodeInfoForLoadLinks = EpisodeData(url = epUrl ?: infoUrl, dataId = dataId, duHash = duHash)
 
                     var episodeIntForSort: Int? = null
-                    var episodeStringForDisplay: String = epNameFull
+                    var episodeStringForDisplay: String = epNameFull // QUAN TRỌNG: Khởi tạo bằng tên gốc
 
                     val numMatch = Regex("""(?:Tập\s+)?(\d+(?:\.\d+)?)""").find(epNameFull)
 
@@ -354,29 +353,25 @@ class AnimeVietsubProvider : MainAPI() {
                         val numberStr = numMatch.groupValues[1] // Ví dụ: "9.5", "9", "09"
                         Log.d("AnimeVietsubProvider", "Found numberStr: '$numberStr' in epNameFull: '$epNameFull'")
 
-                        // === BẮT ĐẦU LOGIC MỚI CHO episodeIntForSort ===
-                        val parts = numberStr.split('.') // Tách phần nguyên và phần thập phân (nếu có)
+                        val parts = numberStr.split('.')
                         val mainEpisodeNum = parts.getOrNull(0)?.toIntOrNull()
                         
                         if (mainEpisodeNum != null) {
                             var subEpisodeNum = 0
                             if (parts.size > 1) {
-                                // Lấy tối đa 2 chữ số cho phần phụ để tránh số quá lớn, ví dụ ".5" -> 5, ".25" -> 25
                                 subEpisodeNum = parts.getOrNull(1)?.take(2)?.toIntOrNull() ?: 0
                             }
-                            // Tạo số thứ tự kết hợp: tập chính * 100 + phần phụ
-                            // Ví dụ: Tập 9 -> 900; Tập 9.5 -> 905; Tập 9.25 -> 925
-                            episodeIntForSort = mainEpisodeNum * 100 + subEpisodeNum
+                            episodeIntForSort = mainEpisodeNum * 100 + subEpisodeNum // Ví dụ: 900, 905
                         } else {
-                            episodeIntForSort = null // Không parse được số tập chính
+                            episodeIntForSort = null
                         }
-                        // === KẾT THÚC LOGIC MỚI CHO episodeIntForSort ===
 
                         val titlePart = epNameFull.replaceFirst(Regex("""^(?:.*?[\s-])?${Regex.escape(numberStr)}\s*(?:-\s*)?""", RegexOption.IGNORE_CASE), "").trim()
                         Log.d("AnimeVietsubProvider", "Parsed titlePart: '$titlePart'")
                         
-                        var prefix = "Tập $numberStr" // Giữ nguyên numberStr (ví dụ: "9.5") cho tiền tố hiển thị
-                        if (epNameFull.startsWith("OVA", ignoreCase = true) && mainEpisodeNum != null) { // Sử dụng mainEpisodeNum ở đây nếu numberStr đã được xử lý
+                        // QUAN TRỌNG: prefix sử dụng numberStr ("09", "9.5"), KHÔNG phải episodeIntForSort (900, 905)
+                        var prefix = "Tập $numberStr" 
+                        if (epNameFull.startsWith("OVA", ignoreCase = true) && mainEpisodeNum != null) {
                             prefix = "OVA $numberStr"
                         } else if (epNameFull.startsWith("Special", ignoreCase = true) && mainEpisodeNum != null) {
                             prefix = "Special $numberStr"
@@ -387,12 +382,14 @@ class AnimeVietsubProvider : MainAPI() {
                         } else {
                             prefix
                         }
+                        // Ở đây, episodeStringForDisplay NÊN LÀ "Tập 09", "Tập 9.5", etc.
                     } else if (epNameFull.equals("Full", ignoreCase = true) || epNameFull.equals("Tập Full", ignoreCase = true)) {
                         Log.d("AnimeVietsubProvider", "epNameFull is 'Full' or 'Tập Full': '$epNameFull'")
                         episodeStringForDisplay = "Tập Full"
-                        episodeIntForSort = 1 // Hoặc một giá trị lớn đặc biệt nếu muốn "Full" ở cuối, ví dụ 99999
+                        episodeIntForSort = 1 
                     } else {
                         Log.d("AnimeVietsubProvider", "No standard number pattern found for epNameFull: '$epNameFull'. Using full name for display.")
+                        // episodeStringForDisplay giữ nguyên giá trị epNameFull (ví dụ: "Đặc Biệt")
                     }
 
                     Log.d("AnimeVietsubProvider", "Final parsed values: episodeIntForSort=$episodeIntForSort, episodeStringForDisplay='$episodeStringForDisplay'")
@@ -400,8 +397,8 @@ class AnimeVietsubProvider : MainAPI() {
                     if (dataId != null && epUrl != null && episodeStringForDisplay.isNotBlank()) {
                         Log.d("AnimeVietsubProvider", "All conditions met. Creating newEpisode for: name='${episodeStringForDisplay}', dataId='$dataId', episodeSortKey=$episodeIntForSort")
                         newEpisode(data = gson.toJson(episodeInfoForLoadLinks)) {
-                            this.name = episodeStringForDisplay
-                            this.episode = episodeIntForSort
+                            this.name = episodeStringForDisplay // Gán tên ĐÚNG (ví dụ "Tập 09")
+                            this.episode = episodeIntForSort    // Gán số sắp xếp (ví dụ 900)
                         }
                     } else {
                         Log.w("AnimeVietsubProvider", "Skipping episode due to unmet conditions: dataId=$dataId, epUrl=$epUrl, episodeStringForDisplay='$episodeStringForDisplay' (isNotBlank=${episodeStringForDisplay.isNotBlank()})")
@@ -412,7 +409,6 @@ class AnimeVietsubProvider : MainAPI() {
                 Log.w("AnimeVietsubProvider", "Watch page document is NULL. No episodes will be parsed.")
                 emptyList<Episode>()
             }
-            // =================== END OF MODIFIED EPISODE PARSING ===================
 
             val episodesCount = parsedEpisodes.size
             val firstEpisodeOrNull = parsedEpisodes.firstOrNull()
