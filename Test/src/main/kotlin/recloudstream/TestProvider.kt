@@ -333,7 +333,7 @@ class AnimeVietsubProvider : MainAPI() {
             val parsedEpisodes = if (watchPageDoc != null) {
                 Log.d("AnimeVietsubProvider", "Watch page document is not null. Processing episodes...")
                 watchPageDoc.select("div.server ul.list-episode li a.btn-episode").mapNotNull { epLink ->
-                    val epLinkHtml = epLink.outerHtml() // Lấy HTML để log
+                    val epLinkHtml = epLink.outerHtml()
                     Log.d("AnimeVietsubProvider", "Processing epLink HTML: $epLinkHtml")
 
                     val epUrl = fixUrl(epLink.attr("href"), baseUrl)
@@ -346,22 +346,39 @@ class AnimeVietsubProvider : MainAPI() {
                     val episodeInfoForLoadLinks = EpisodeData(url = epUrl ?: infoUrl, dataId = dataId, duHash = duHash)
 
                     var episodeIntForSort: Int? = null
-                    var episodeStringForDisplay: String = epNameFull // Mặc định là tên đầy đủ
+                    var episodeStringForDisplay: String = epNameFull
 
                     val numMatch = Regex("""(?:Tập\s+)?(\d+(?:\.\d+)?)""").find(epNameFull)
 
                     if (numMatch != null) {
-                        val numberStr = numMatch.groupValues[1]
+                        val numberStr = numMatch.groupValues[1] // Ví dụ: "9.5", "9", "09"
                         Log.d("AnimeVietsubProvider", "Found numberStr: '$numberStr' in epNameFull: '$epNameFull'")
-                        episodeIntForSort = numberStr.toDoubleOrNull()?.toInt()
+
+                        // === BẮT ĐẦU LOGIC MỚI CHO episodeIntForSort ===
+                        val parts = numberStr.split('.') // Tách phần nguyên và phần thập phân (nếu có)
+                        val mainEpisodeNum = parts.getOrNull(0)?.toIntOrNull()
+                        
+                        if (mainEpisodeNum != null) {
+                            var subEpisodeNum = 0
+                            if (parts.size > 1) {
+                                // Lấy tối đa 2 chữ số cho phần phụ để tránh số quá lớn, ví dụ ".5" -> 5, ".25" -> 25
+                                subEpisodeNum = parts.getOrNull(1)?.take(2)?.toIntOrNull() ?: 0
+                            }
+                            // Tạo số thứ tự kết hợp: tập chính * 100 + phần phụ
+                            // Ví dụ: Tập 9 -> 900; Tập 9.5 -> 905; Tập 9.25 -> 925
+                            episodeIntForSort = mainEpisodeNum * 100 + subEpisodeNum
+                        } else {
+                            episodeIntForSort = null // Không parse được số tập chính
+                        }
+                        // === KẾT THÚC LOGIC MỚI CHO episodeIntForSort ===
 
                         val titlePart = epNameFull.replaceFirst(Regex("""^(?:.*?[\s-])?${Regex.escape(numberStr)}\s*(?:-\s*)?""", RegexOption.IGNORE_CASE), "").trim()
                         Log.d("AnimeVietsubProvider", "Parsed titlePart: '$titlePart'")
                         
-                        var prefix = "Tập $numberStr"
-                        if (epNameFull.startsWith("OVA", ignoreCase = true) && episodeIntForSort != null) {
+                        var prefix = "Tập $numberStr" // Giữ nguyên numberStr (ví dụ: "9.5") cho tiền tố hiển thị
+                        if (epNameFull.startsWith("OVA", ignoreCase = true) && mainEpisodeNum != null) { // Sử dụng mainEpisodeNum ở đây nếu numberStr đã được xử lý
                             prefix = "OVA $numberStr"
-                        } else if (epNameFull.startsWith("Special", ignoreCase = true) && episodeIntForSort != null) {
+                        } else if (epNameFull.startsWith("Special", ignoreCase = true) && mainEpisodeNum != null) {
                             prefix = "Special $numberStr"
                         }
 
@@ -373,17 +390,15 @@ class AnimeVietsubProvider : MainAPI() {
                     } else if (epNameFull.equals("Full", ignoreCase = true) || epNameFull.equals("Tập Full", ignoreCase = true)) {
                         Log.d("AnimeVietsubProvider", "epNameFull is 'Full' or 'Tập Full': '$epNameFull'")
                         episodeStringForDisplay = "Tập Full"
-                        episodeIntForSort = 1 
+                        episodeIntForSort = 1 // Hoặc một giá trị lớn đặc biệt nếu muốn "Full" ở cuối, ví dụ 99999
                     } else {
                         Log.d("AnimeVietsubProvider", "No standard number pattern found for epNameFull: '$epNameFull'. Using full name for display.")
-                        // episodeStringForDisplay giữ nguyên giá trị epNameFull đã gán ban đầu
                     }
 
-                    Log.d("AnimeVietsubProvider", "Final parsed numbers: episodeIntForSort=$episodeIntForSort, episodeStringForDisplay='$episodeStringForDisplay'")
+                    Log.d("AnimeVietsubProvider", "Final parsed values: episodeIntForSort=$episodeIntForSort, episodeStringForDisplay='$episodeStringForDisplay'")
 
-                    // Điều kiện quan trọng: cần dataId, epUrl và tên hiển thị không được trống
                     if (dataId != null && epUrl != null && episodeStringForDisplay.isNotBlank()) {
-                        Log.d("AnimeVietsubProvider", "All conditions met. Creating newEpisode for: name='${episodeStringForDisplay}', dataId='$dataId'")
+                        Log.d("AnimeVietsubProvider", "All conditions met. Creating newEpisode for: name='${episodeStringForDisplay}', dataId='$dataId', episodeSortKey=$episodeIntForSort")
                         newEpisode(data = gson.toJson(episodeInfoForLoadLinks)) {
                             this.name = episodeStringForDisplay
                             this.episode = episodeIntForSort
