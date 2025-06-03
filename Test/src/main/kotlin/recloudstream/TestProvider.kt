@@ -371,7 +371,7 @@ class AnimetProvider : MainAPI() {
                                this.name = epName
                                this.episode = null
                            }
-                      }.reversed()
+                      }
                       Log.d(name, "Successfully fetched ${episodes.size} episodes.")
                       if (episodes.isEmpty()) {
                           val listHtml = episodeListPageDocument.select("ul.list-episode")?.html()?.take(500) ?: "ul.list-episode not found"
