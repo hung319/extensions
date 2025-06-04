@@ -143,12 +143,12 @@ class AnimeVietsubProvider : MainAPI() {
                 
                 if (items.isEmpty() && pageToLoadForList > 1) {
                      Log.w(name, "No items found on $listName page $pageToLoadForList ($urlToLoad)")
-                     return HomePageResponse(listOf(HomePageList(listName, emptyList(), nextUrl = null))) // *** Sửa: nextKey -> nextUrl ***
+                     return HomePageResponse(listOf(HomePageList(listName, emptyList(), nextKey = null))) // *** Sửa: nextKey -> nextUrl ***
                 }
                 val hasNext = document.parseHasNext(pageToLoadForList)
                 val nextUrlValue = if (hasNext) (pageToLoadForList + 1).toString() else null
                 
-                return HomePageResponse(listOf(HomePageList(listName, items, nextUrl = nextUrlValue))) // *** Sửa: nextKey -> nextUrl ***
+                return HomePageResponse(listOf(HomePageList(listName, items, nextKey = nextUrlValue))) // *** Sửa: nextKey -> nextUrl ***
             } catch (e: Exception) {
                 Log.e(name, "Error loading page $pageToLoadForList for $listName from $urlToLoad: ${e.message}", e)
                 return HomePageResponse(emptyList())
@@ -163,7 +163,7 @@ class AnimeVietsubProvider : MainAPI() {
                 .mapNotNull { it.toSearchResponse(this, baseUrl) }
             if (moiCapNhatItems.isNotEmpty()) {
                 val hasNext = moiCapNhatDoc.parseHasNext(1)
-                lists.add(HomePageList("Mới cập nhật", moiCapNhatItems, nextUrl = if (hasNext) "2" else null)) // *** Sửa: nextKey -> nextUrl ***
+                lists.add(HomePageList("Mới cập nhật", moiCapNhatItems, nextKey = if (hasNext) "2" else null)) // *** Sửa: nextKey -> nextUrl ***
             } else {
                  Log.w(name, "No items found for 'Mới cập nhật' on $moiCapNhatUrl")
             }
@@ -179,7 +179,7 @@ class AnimeVietsubProvider : MainAPI() {
                 .mapNotNull { it.toSearchResponse(this, baseUrl) }
             if (sapChieuItems.isNotEmpty()) {
                 val hasNext = sapChieuDoc.parseHasNext(1)
-                lists.add(HomePageList("Sắp chiếu", sapChieuItems, nextUrl = if (hasNext) "2" else null)) // *** Sửa: nextKey -> nextUrl ***
+                lists.add(HomePageList("Sắp chiếu", sapChieuItems, nextKey = if (hasNext) "2" else null)) // *** Sửa: nextKey -> nextUrl ***
             } else {
                 Log.w(name, "No items found for 'Sắp chiếu' on $sapChieuUrl")
             }
@@ -194,7 +194,7 @@ class AnimeVietsubProvider : MainAPI() {
                 .mapNotNull { it.toSearchResponse(this, baseUrl) }
             if (hotItems.isNotEmpty()) {
                 val hotListName = mainDocumentForHot.selectFirst("section#hot-home div.Top a.STPb.Current")?.text() ?: "Đề cử"
-                lists.add(HomePageList(hotListName, hotItems, nextUrl = null)) // *** Sửa: nextKey -> nextUrl ***
+                lists.add(HomePageList(hotListName, hotItems, nextKey = null)) // *** Sửa: nextKey -> nextUrl ***
             } else {
                  Log.w(name, "No items found for 'Đề cử' on main page.")
             }
