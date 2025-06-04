@@ -9,7 +9,7 @@ import java.net.URLEncoder
 private data class EpisodeLinkData(
     @JsonProperty("seriesPostId") val seriesPostId: String,
     @JsonProperty("episodeSlug") val episodeSlug: String,
-    @JsonProperty("defaultSubSvid") val defaultSubSvid: String,
+    @JsonProperty("defaultSubSvid") val defaultSubSvid: String, // Có thể rỗng
     @JsonProperty("episodePageUrl") val episodePageUrl: String
 )
 
@@ -163,12 +163,11 @@ class HoatHinh3DProvider : MainAPI() {
 
             val spanInsideA = epA.selectFirst("span.halim-btn")
             val episodeSpecificPostId = spanInsideA?.attr("data-post-id") 
-            val defaultSubSvidForThisLink = spanInsideA?.attr("data-server") 
+            val defaultSubSvidForThisLink = spanInsideA?.attr("data-server") ?: "" // Mặc định là chuỗi rỗng nếu null
             val currentEpisodeSlug = spanInsideA?.attr("data-episode-slug")
             val finalSeriesPostId = seriesPostIdFromCfg ?: episodeSpecificPostId
 
-            if (finalSeriesPostId != null && defaultSubSvidForThisLink != null && currentEpisodeSlug != null) {
-                // SỬA LỖI: Tạo JSON string thủ công thay vì .toJson()
+            if (finalSeriesPostId != null && currentEpisodeSlug != null) { // defaultSubSvidForThisLink có thể rỗng
                 val episodeDataJsonString = """
                     {
                         "seriesPostId": "$finalSeriesPostId",
@@ -180,8 +179,7 @@ class HoatHinh3DProvider : MainAPI() {
 
                 newEpisode(episodeDataJsonString) {
                     this.name = epName
-                    // SỬA LỖI: Bỏ this.episode nếu gây lỗi, hoặc đảm bảo nó đúng cách
-                    // this.episode = epName.replace(Regex("[^0-9]"), "").toIntOrNull() // Tạm thời comment out nếu đây là dòng 188
+                    // this.episode = epName.replace(Regex("[^0-9]"), "").toIntOrNull() // Bỏ comment nếu cần và hoạt động
                 }
             } else {
                 null
@@ -231,30 +229,48 @@ class HoatHinh3DProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // println("HoatHinh3DProvider: loadLinks called with data string: '$data'") 
+
         var episodeLinkInfo: EpisodeLinkData? = null
         var episodePageUrlForReferer: String? = null
 
         try {
             if (data.startsWith("{") && data.endsWith("}")) {
                 episodeLinkInfo = AppUtils.parseJson<EpisodeLinkData>(data)
-                if (episodeLinkInfo.seriesPostId.isBlank() || episodeLinkInfo.episodeSlug.isBlank() || 
-                    episodeLinkInfo.defaultSubSvid.isBlank() || episodeLinkInfo.episodePageUrl.isBlank()) {
-                    // println("HoatHinh3DProvider: Parsed EpisodeLinkData has blank critical fields: $episodeLinkInfo")    
+                // SỬA LỖI KIỂM TRA: defaultSubSvid được phép rỗng (isBlank() sẽ true cho chuỗi rỗng)
+                // Chỉ kiểm tra các trường thực sự quan trọng không được rỗng/trống
+                if (episodeLinkInfo.seriesPostId.isBlank() || 
+                    episodeLinkInfo.episodeSlug.isBlank() ||
+                    episodeLinkInfo.episodePageUrl.isBlank()) {
+                    // defaultSubSvid có thể là "" (rỗng) nên không kiểm tra isBlank() cho nó ở đây
+                    // println("HoatHinh3DProvider: Parsed EpisodeLinkData is missing critical fields (seriesPostId, episodeSlug, or episodePageUrl): $episodeLinkInfo")    
                     return false
                 }
                 episodePageUrlForReferer = episodeLinkInfo.episodePageUrl
-            } else { return false }
-        } catch (e: Exception) { return false }
+            } else { 
+                // println("HoatHinh3DProvider: loadLinks received non-JSON data: '$data'")
+                return false 
+            }
+        } catch (e: Exception) { 
+            // println("HoatHinh3DProvider: Error parsing EpisodeLinkData JSON: ${e.message}")
+            return false 
+        }
 
-        // Sửa lỗi: Dòng 186 (cũ) `Argument type mismatch` liên quan đến việc `episodeInfo` có thể null sau catch.
-        // Với logic mới, nếu parsing lỗi hoặc field trống thì đã return false.
-        // Nên `episodeLinkInfo` ở đây sẽ không null. Sử dụng !! hoặc một biến local non-null.
+        // episodeLinkInfo ở đây chắc chắn không null và có các trường cần thiết (ngoại trừ defaultSubSvid có thể rỗng)
         val currentEpisodeInfo = episodeLinkInfo!!
 
 
         val targetSubServerIds = listOf("1", "2", "3") 
+        // Nếu server mặc định (VIP 1) yêu cầu subsv_id rỗng, bạn có thể thêm "" vào danh sách này
+        // val targetSubServerIds = listOf("", "1", "2", "3") // Hoặc chỉ dùng ("1", "2", "3") nếu subsv_id="" tương đương subsv_id="1"
+        
         var atLeastOneLinkFound = false
-        val serverDisplayNames = mapOf("1" to "VIP 1", "2" to "VIP 2 (Rumble)", "3" to "VIP 3 (Cache)")
+        val serverDisplayNames = mapOf(
+            "" to "VIP 1 (Mặc định)", // Thêm entry cho subsv_id rỗng nếu cần
+            "1" to "VIP 1", 
+            "2" to "VIP 2 (Rumble)", 
+            "3" to "VIP 3 (Cache)"
+        )
         val playerPhpUrlBase = "https://hoathinh3d.name/wp-content/themes/halimmovies/player.php"
         val fixedServerIdQueryParam = "1" 
 
