@@ -1,4 +1,4 @@
-package recloudstream
+package recloudstream 
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
@@ -90,31 +90,81 @@ class AnimeVietsubProvider : MainAPI() {
         return currentActiveUrl 
     }
 
+    // Helper function to parse anime items from a list page Document
+    private fun Document.parseAnimeListPageItems(provider: MainAPI, baseUrl: String): List<SearchResponse> {
+        // Selector based on moicapnhap.html and sapchieu.html
+        return this.select("ul.MovieList.Rows.AX.A06.B04.C03.E20 li.TPostMv")
+            .mapNotNull { it.toSearchResponse(provider, baseUrl) }
+    }
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        if (page > 1) return newHomePageResponse(emptyList(), false)
+        // If page > 1, it means CloudStream is trying to paginate the main page itself for more categories.
+        // Your existing logic correctly states that there are no more categories beyond what's loaded on page 1.
+        if (page > 1) return HomePageResponse(emptyList(), false)
+
+        val baseUrl = getBaseUrl()
         val lists = mutableListOf<HomePageList>()
+
+        // 1. "Anime Mới Cập Nhật" - Sourced from /anime-moi/
         try {
-            val baseUrl = getBaseUrl()
-            val document = app.get(baseUrl).document
-            document.select("section#single-home ul.MovieList.Rows li.TPostMv")
-                .mapNotNull { it.toSearchResponse(this, baseUrl) }
-                .takeIf { it.isNotEmpty() }?.let { lists.add(HomePageList("Mới cập nhật", it)) }
-            document.select("section#new-home ul.MovieList.Rows li.TPostMv")
-                .mapNotNull { it.toSearchResponse(this, baseUrl) }
-                .takeIf { it.isNotEmpty() }?.let { lists.add(HomePageList("Sắp chiếu", it)) }
-            document.select("section#hot-home ul.MovieList.Rows li.TPostMv")
-                .mapNotNull { it.toSearchResponse(this, baseUrl) }
-                .takeIf { it.isNotEmpty() }?.let {
-                    val hotListName = document.selectFirst("section#hot-home div.Top a.STPb.Current")?.text() ?: "Đề cử"
-                    lists.add(HomePageList(hotListName, it))
-                }
-            if (lists.isEmpty()) throw ErrorLoadingException("No lists found on homepage.")
-            return newHomePageResponse(lists, hasNext = false)
+            val animeMoiUrl = "$baseUrl/anime-moi/"
+            Log.d("AnimeVietsubProvider", "Fetching Mới Cập Nhật from: $animeMoiUrl")
+            val animeMoiDoc = app.get(animeMoiUrl).document
+            val animeMoiItems = animeMoiDoc.parseAnimeListPageItems(this, baseUrl)
+            if (animeMoiItems.isNotEmpty()) {
+                lists.add(HomePageList("Anime Mới Cập Nhật", animeMoiItems))
+                Log.d("AnimeVietsubProvider", "Added ${animeMoiItems.size} items for Mới Cập Nhật")
+            } else {
+                Log.d("AnimeVietsubProvider", "No items found for Mới Cập Nhật at $animeMoiUrl")
+            }
         } catch (e: Exception) {
-            Log.e("AnimeVietsubProvider", "Error in getMainPage: ${e.message}", e)
-            if (e is ErrorLoadingException) throw e
-            throw RuntimeException("Unknown error loading main page: ${e.message}")
+            Log.e("AnimeVietsubProvider", "Error loading /anime-moi/ for getMainPage: ${e.message}", e)
         }
+
+        // 2. "Anime Sắp Chiếu" - Sourced from /anime-sap-chieu/
+        try {
+            val sapChieuUrl = "$baseUrl/anime-sap-chieu/"
+            Log.d("AnimeVietsubProvider", "Fetching Sắp Chiếu from: $sapChieuUrl")
+            val sapChieuDoc = app.get(sapChieuUrl).document
+            val sapChieuItems = sapChieuDoc.parseAnimeListPageItems(this, baseUrl)
+            if (sapChieuItems.isNotEmpty()) {
+                lists.add(HomePageList("Anime Sắp Chiếu", sapChieuItems))
+                Log.d("AnimeVietsubProvider", "Added ${sapChieuItems.size} items for Sắp Chiếu")
+            } else {
+                Log.d("AnimeVietsubProvider", "No items found for Sắp Chiếu at $sapChieuUrl")
+            }
+        } catch (e: Exception) {
+            Log.e("AnimeVietsubProvider", "Error loading /anime-sap-chieu/ for getMainPage: ${e.message}", e)
+        }
+
+        // 3. "Đề cử" (Hot) - Sourced from the main page (baseUrl) as per original logic
+        try {
+            Log.d("AnimeVietsubProvider", "Fetching Đề cử from main page: $baseUrl")
+            val mainPageDoc = app.get(baseUrl).document // Fetch main page for this section
+            val hotItems = mainPageDoc.select("section#hot-home ul.MovieList.Rows li.TPostMv") // Original selector
+                .mapNotNull { it.toSearchResponse(this, baseUrl) }
+            if (hotItems.isNotEmpty()) {
+                val hotListName = mainPageDoc.selectFirst("section#hot-home div.Top a.STPb.Current")?.text() ?: "Đề cử"
+                lists.add(HomePageList(hotListName, hotItems))
+                Log.d("AnimeVietsubProvider", "Added ${hotItems.size} items for $hotListName")
+            } else {
+                Log.d("AnimeVietsubProvider", "No items found for Đề cử on main page")
+            }
+        } catch (e: Exception) {
+            Log.e("AnimeVietsubProvider", "Error loading #hot-home from main page for getMainPage: ${e.message}", e)
+        }
+        
+        if (lists.isEmpty()) {
+             Log.w("AnimeVietsubProvider", "No lists were populated for the homepage.")
+            // Consider if throwing an error is desired or returning an empty response.
+            // Original code threw: throw ErrorLoadingException("No lists found on homepage.")
+            // Let's return empty with hasNext = false to avoid crashing if some sections fail.
+            return HomePageResponse(emptyList(), false)
+        }
+
+        // hasNext is false because if page > 1, we've already returned.
+        // This means the getMainPage itself doesn't have more "pages" of categories.
+        return HomePageResponse(lists, hasNext = false)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -159,35 +209,44 @@ class AnimeVietsubProvider : MainAPI() {
             }
             val posterUrl = fixUrl(posterUrlRaw, baseUrl)
             var finalTvType: TvType? = null
+            
+            // Check for episode span first, common for series
             val hasEpisodeSpan = this.selectFirst("span.mli-eps") != null
+            // Check for "SẮP CHIẾU" span, common on sapchieu.html
+            val isUpcoming = this.selectFirst("span.mli-timeschedule:contains(SẮP CHIẾU)") != null
+            
             val statusSpanText = this.selectFirst("span.mli-st")?.text() ?: ""
 
             if (titleFromElement.contains("OVA", ignoreCase = true) ||
                 titleFromElement.contains("ONA", ignoreCase = true) ||
                 titleFromElement.contains("Movie", ignoreCase = true) ||
                 titleFromElement.contains("Phim Lẻ", ignoreCase = true) ||
-                (!hasEpisodeSpan && statusSpanText.contains("Full", ignoreCase = true)) ||
-                (!hasEpisodeSpan && statusSpanText.contains("Hoàn Tất", ignoreCase = true) && !hasEpisodeSpan)
+                (!hasEpisodeSpan && !isUpcoming && statusSpanText.contains("Full", ignoreCase = true)) ||
+                (!hasEpisodeSpan && !isUpcoming && statusSpanText.contains("Hoàn Tất", ignoreCase = true))
             ) {
                 finalTvType = if (provider.name.contains("Anime", ignoreCase = true) ||
                                 (titleFromElement.contains("Anime", ignoreCase = true) &&
                                 !titleFromElement.contains("Trung Quốc", ignoreCase = true) && 
                                 !titleFromElement.contains("Donghua", ignoreCase = true)) ) {
-                    TvType.Anime
+                    TvType.Anime // Anime Movie/OVA/ONA
                 } else {
                     TvType.Movie
                 }
-            } else if (hasEpisodeSpan) {
+            } else if (hasEpisodeSpan || isUpcoming) { // isUpcoming also implies it's likely a series
                 finalTvType = if (provider.name.contains("Anime", ignoreCase = true) || titleFromElement.contains("Anime", ignoreCase = true)) {
-                    TvType.Anime
+                    TvType.Anime // Anime Series (ongoing, completed, or upcoming)
                 } else {
                     TvType.TvSeries 
                 }
             }
             
+            // Fallback if type is still not determined
             if (finalTvType == null) {
-                finalTvType = if (hasEpisodeSpan || this.selectFirst("span.mli-quality") == null) TvType.Anime else TvType.Movie
+                // If it has episode info or is upcoming, or no quality tag (often for series), assume series-like (Anime/TvSeries).
+                // Otherwise, assume movie-like.
+                finalTvType = if (hasEpisodeSpan || isUpcoming || this.selectFirst("span.mli-quality") == null) TvType.Anime else TvType.Movie
             }
+            
             provider.newMovieSearchResponse(titleFromElement, href, finalTvType ?: TvType.Anime) { 
                 this.posterUrl = posterUrl
             }
@@ -200,7 +259,7 @@ class AnimeVietsubProvider : MainAPI() {
     data class EpisodeData(
         val url: String, 
         val dataId: String?, 
-        val duHash: String?  
+        val duHash: String? 
     )
 
     private fun Document.getCountry(): String? {
@@ -514,9 +573,9 @@ class AnimeVietsubProvider : MainAPI() {
     )
 
     private data class LinkSource(
-        @JsonProperty("file") val file: String? = null,    
-        @JsonProperty("type") val type: String? = null,    
-        @JsonProperty("label") val label: String? = null    
+        @JsonProperty("file") val file: String? = null,   
+        @JsonProperty("type") val type: String? = null,   
+        @JsonProperty("label") val label: String? = null   
     )
 
     override suspend fun loadLinks(
@@ -538,8 +597,8 @@ class AnimeVietsubProvider : MainAPI() {
         }
 
         val episodePageUrl = episodeData.url 
-        val episodeId = episodeData.dataId     
-        val episodeHash = episodeData.duHash     
+        val episodeId = episodeData.dataId      
+        val episodeHash = episodeData.duHash      
 
         if (episodeId == null || episodePageUrl.isBlank()) {
             Log.e("AnimeVietsubProvider", "Thiếu ID tập phim (dataId) hoặc URL trang (episodeData.url): $data"); return false
