@@ -56,7 +56,6 @@ class HoatHinh3DProvider : MainAPI() {
         val document = app.get(effectiveUrl).document
         val homePageList = ArrayList<HomePageList>()
 
-        // Lấy mục "Mới Cập Nhật"
         val newUpdateSection = document.selectFirst("div#sticky-sidebar div#-ajax-box div.halim_box")
                                 ?: document.selectFirst("div#-ajax-box div.halim_box") 
         
@@ -70,7 +69,6 @@ class HoatHinh3DProvider : MainAPI() {
             }
         }
         
-        // Thêm section "Đang thịnh hành"
         val trendingSection = document.selectFirst("div.halim-trending-slider")
         trendingSection?.let { section ->
             val sectionTitle = section.selectFirst("div.section-bar h3.section-title span")?.text()?.trim() ?: "Đang Thịnh Hành"
@@ -92,7 +90,6 @@ class HoatHinh3DProvider : MainAPI() {
                 }
             }
             if (movies.isNotEmpty()) {
-                // Đã bỏ isHorizontal = true không hợp lệ
                 homePageList.add(HomePageList(sectionTitle, movies)) 
             }
         }
@@ -169,11 +166,26 @@ class HoatHinh3DProvider : MainAPI() {
             )
         }.reversed()
 
-        // Logic lấy recommendations
-        val recommendationsList = document.select("section.related-movies article.thumb.grid-item").mapNotNull { element ->
-            element.toSearchResponse() 
-        }.take(10) // Giới hạn 10 phim đề xuất
-        // Kết thúc logic recommendations
+        // --- CẬP NHẬT LOGIC LẤY RECOMMENDATIONS TỪ DANH SÁCH PHẦN ---
+        val partsListAsRecommendations = document.select("ul#list-movies-part li.movies-part a").mapNotNull { linkElement ->
+            val partUrl = fixUrl(linkElement.attr("href"))
+            // Ưu tiên title attribute, nếu không có hoặc rỗng thì lấy text của thẻ a
+            var partTitle = linkElement.attr("title")?.trim()
+            if (partTitle.isNullOrEmpty()) {
+                partTitle = linkElement.text()?.trim()
+            }
+
+            if (partUrl.isNotBlank() && !partTitle.isNullOrEmpty()) {
+                // Sử dụng poster của phim/phần hiện tại cho các phần khác này
+                // vì HTML không cung cấp poster riêng cho từng phần trong danh sách này.
+                newAnimeSearchResponse(partTitle, partUrl, TvType.Cartoon) {
+                    this.posterUrl = poster // 'poster' là poster của phim đang load
+                }
+            } else {
+                null
+            }
+        }.take(10) // Giới hạn số lượng phần hiển thị (tùy chọn)
+        // --- KẾT THÚC LOGIC RECOMMENDATIONS ---
 
         return newTvSeriesLoadResponse(title, url, TvType.Cartoon, episodes) {
             this.posterUrl = poster
@@ -181,7 +193,7 @@ class HoatHinh3DProvider : MainAPI() {
             this.plot = description
             this.tags = tags
             this.rating = rating
-            this.recommendations = recommendationsList // Gán danh sách đề xuất
+            this.recommendations = partsListAsRecommendations // Gán danh sách các phần vào recommendations
         }
     }
 
@@ -191,59 +203,7 @@ class HoatHinh3DProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Hàm này sẽ được triển khai sau theo yêu cầu của bạn.
         println("HoatHinh3DProvider: loadLinks function called with data: $data - NOT IMPLEMENTED YET")
-        
-        // // Ví dụ cơ bản về cách parse data JSON nếu bạn đã chuẩn bị nó trong `load()`
-        // try {
-        //     if (data.startsWith("{") && data.endsWith("}")) {
-        //         val json = AppUtils.parseJson<Map<String, String>>(data)
-        //         val postId = json["postId"]
-        //         val episodeSlug = json["slug"]
-        //         val serverId = json["server"]
-        //         val episodePageUrl = json["episodePageUrl"] // URL của trang xem tập phim
-
-        //         // TODO: Thực hiện AJAX request tại đây với thông tin trên
-        //         // val ajaxUrl = "$mainUrl/wp-content/themes/halimmovies/halim-ajax.php"
-        //         // val postData = mapOf(
-        //         //     "action" to "halim_player_ajax", // Cần xác minh action này
-        //         //     "post_id" to postId,
-        //         //     "episode_slug" to episodeSlug,
-        //         //     "server" to serverId
-        //         // )
-        //         // val headers = mapOf("X-Requested-With" to "XMLHttpRequest", "Referer" to episodePageUrl)
-        //         // val response = app.post(ajaxUrl, data = postData, headers = headers).parsedSafe<VideoSourceResponse>()
-
-        //         // if (response?.status == true && response.link != null) {
-        //         //     val videoUrl = response.link
-        //         //     val sourceName = "HoatHinh3D Server $serverId"
-        //         //     if (response.type == "iframe" && videoUrl.isNotBlank()) {
-        //         //         ExtractorApi.loadExtractor(videoUrl, episodePageUrl, subtitleCallback, callback)
-        //         //     } else if (videoUrl.isNotBlank()) {
-        //         //         callback.invoke(
-        //         //             ExtractorLink(
-        //         //                 source = sourceName,
-        //         //                 name = sourceName,
-        //         //                 url = videoUrl,
-        //         //                 referer = episodePageUrl, 
-        //         //                 quality = Qualities.Unknown.value,
-        //         //                 isM3u8 = videoUrl.contains(".m3u8")
-        //         //             )
-        //         //         )
-        //         //     }
-        //         //     response.subs?.forEach { sub ->
-        //         //         if (sub.file.isNotBlank()) {
-        //         //             subtitleCallback(SubtitleFile(sub.label ?: "Phụ đề", sub.file))
-        //         //         }
-        //         //     }
-        //         //     return true
-        //         // }
-        //     } else {
-        //          // Data là URL (fallback), cần fetch trang `data` (chính là episodePageUrl)
-        //     }
-        // } catch (e: Exception) {
-        //     e.printStackTrace()
-        // }
         return false
     }
 }
