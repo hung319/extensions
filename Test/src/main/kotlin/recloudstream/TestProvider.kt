@@ -1,18 +1,16 @@
 package com.example.HoatHinh3DProvider
 
-import com.fasterxml.jackson.annotation.JsonProperty
+// Không cần @JsonProperty nữa vì không dùng JSON cho EpisodeLinkData trực tiếp trong data string
+// import com.fasterxml.jackson.annotation.JsonProperty 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
 
-private data class EpisodeLinkData(
-    @JsonProperty("seriesPostId") val seriesPostId: String,
-    @JsonProperty("episodeSlug") val episodeSlug: String,
-    @JsonProperty("defaultSubSvid") val defaultSubSvid: String, 
-    @JsonProperty("episodePageUrl") val episodePageUrl: String
-)
+// Bỏ data class EpisodeLinkData vì sẽ parse thủ công từ string
+// private data class EpisodeLinkData(...)
 
+// Data class cho JSON response từ player.php (vẫn cần thiết)
 private data class PlayerApiResponse(
     @JsonProperty("status") val status: Boolean?,
     @JsonProperty("file") val file: String?,
@@ -29,6 +27,9 @@ class HoatHinh3DProvider : MainAPI() {
     override val hasMainPage = true
     override val hasChromecastSupport = true
     override val hasDownloadSupport = true
+
+    // Ký tự phân cách cho Episode.data
+    private val episodeDataDelimiter = "Ψ★Ψ"
 
     private fun Element.toSearchResponse(): SearchResponse? {
         val thumbLink = this.selectFirst("a.halim-thumb") ?: return null
@@ -148,7 +149,7 @@ class HoatHinh3DProvider : MainAPI() {
                 if (seriesPostIdFromCfg != null) return@forEach 
             }
         }
-        println("HoatHinh3DProvider [load]: Extracted seriesPostIdFromCfg for '$title': $seriesPostIdFromCfg")
+        // println("HoatHinh3DProvider [load]: Extracted seriesPostIdFromCfg for '$title': $seriesPostIdFromCfg")
 
         val episodeLinkRegex = Regex("""/([^/]+)-sv(\d+)\.html$""")
 
@@ -156,7 +157,7 @@ class HoatHinh3DProvider : MainAPI() {
             val epA = epElement.selectFirst("a") ?: return@mapNotNull null
             var originalHref = epA.attr("href") ?: ""
             var epLink = fixUrl(originalHref) 
-            epLink = epLink.replace(" ", "") // Làm sạch khoảng trắng khỏi epLink
+            epLink = epLink.replace(" ", "") 
             
             val epNameCandidate = epA.attr("title")?.takeIf { it.isNotBlank() } 
                 ?: epA.selectFirst("span")?.text()?.trim()
@@ -174,16 +175,16 @@ class HoatHinh3DProvider : MainAPI() {
             var defaultSubSvidForThisLink = spanInsideA?.attr("data-server")
             val episodeSpecificPostId = spanInsideA?.attr("data-post-id")
 
-            // Fallback logic
-            if (currentEpisodeSlug.isNullOrBlank()) {
-                val matchResult = episodeLinkRegex.find(epLink) // Dùng epLink đã fixUrl và replace
-                currentEpisodeSlug = matchResult?.groupValues?.getOrNull(1)
-                println("HoatHinh3DProvider [load]: Fallback for epSLUG: '$currentEpisodeSlug' from href: '$epLink' (Original href: '$originalHref')")
-            }
-            if (defaultSubSvidForThisLink.isNullOrBlank()) {
-                 val matchResult = episodeLinkRegex.find(epLink) // Dùng epLink đã fixUrl và replace
-                defaultSubSvidForThisLink = matchResult?.groupValues?.getOrNull(2)
-                 println("HoatHinh3DProvider [load]: Fallback for defSUBVID: '$defaultSubSvidForThisLink' from href: '$epLink' (Original href: '$originalHref')")
+            if (currentEpisodeSlug.isNullOrBlank() || defaultSubSvidForThisLink.isNullOrBlank()) {
+                val matchResult = episodeLinkRegex.find(epLink) 
+                if (matchResult != null) {
+                    if (currentEpisodeSlug.isNullOrBlank()) {
+                        currentEpisodeSlug = matchResult.groupValues.getOrNull(1)
+                    }
+                    if (defaultSubSvidForThisLink.isNullOrBlank()) {
+                        defaultSubSvidForThisLink = matchResult.groupValues.getOrNull(2)
+                    }
+                }
             }
             
             if (defaultSubSvidForThisLink == null) { 
@@ -192,40 +193,30 @@ class HoatHinh3DProvider : MainAPI() {
 
             val finalSeriesPostId = seriesPostIdFromCfg ?: episodeSpecificPostId
 
-            // Debug values
             val slugForDebug = currentEpisodeSlug ?: "NULL_SLUG"
             val subSvidForDebug = defaultSubSvidForThisLink 
             val epLinkForDebug = epLink ?: "NULL_EPLINK"
             val finalPostIdForDebug = finalSeriesPostId ?: "NULL_POSTID"
 
-            println("HoatHinh3DProvider [load] PRE-JSON values for episode $epName:")
-            println("  - finalSeriesPostId: '$finalPostIdForDebug'")
-            println("  - currentEpisodeSlug: '$slugForDebug'")
-            println("  - defaultSubSvidForThisLink: '$subSvidForDebug'")
-            println("  - epLink (for episodePageUrl): '$epLinkForDebug'")
-
-
-            if (finalSeriesPostId != null && !currentEpisodeSlug.isNullOrBlank()) { 
-                val episodeDataJsonString = """
-                    {
-                        "seriesPostId": "$finalSeriesPostId",
-                        "episodeSlug": "$currentEpisodeSlug",
-                        "defaultSubSvid": "$defaultSubSvidForThisLink",
-                        "episodePageUrl": "$epLink" 
-                    }
-                """.trimIndent()
+            if (finalSeriesPostId != null && !currentEpisodeSlug.isNullOrBlank() && epLink.isNotBlank()) { 
+                // THAY ĐỔI: Tạo chuỗi data bằng ký tự phân cách
+                val episodeDataString = listOfNotNull(
+                    finalSeriesPostId,
+                    currentEpisodeSlug,
+                    defaultSubSvidForThisLink, // Có thể rỗng
+                    epLink // episodePageUrl
+                ).joinToString(episodeDataDelimiter)
                 
-                println("HoatHinh3DProvider [load]: Generated EpisodeData JSON for $epName: $episodeDataJsonString")
+                // println("HoatHinh3DProvider [load]: Generated EpisodeData String for $epName: $episodeDataString")
                 
                 epName = "$epName || sPID:$finalPostIdForDebug || epSLUG:$slugForDebug || defSUBVID:$subSvidForDebug || epURL:$epLinkForDebug"
 
-                newEpisode(episodeDataJsonString) {
+                newEpisode(episodeDataString) { // Truyền chuỗi đã được join
                     this.name = epName 
                 }
             } else {
-                println("HoatHinh3DProvider [load]: SKIPPING episode $epName due to missing critical data before JSON creation. FinalPostId: $finalPostIdForDebug, Slug: $slugForDebug")
                 epName = "$epName || SKIPPED_DATA || sPID:$finalPostIdForDebug || epSLUG:$slugForDebug"
-                newEpisode("{}") { 
+                newEpisode("") { // Data rỗng nếu thiếu thông tin quan trọng
                     this.name = epName
                 }
             }
@@ -269,46 +260,35 @@ class HoatHinh3DProvider : MainAPI() {
         }
     }
 
-    // --- PHIÊN BẢN LOADLINKS ĐỘNG (TRẢ VỀ LINK API ĐỂ KIỂM TRA) ---
+    // --- HÀM LOADLINKS ĐƯỢC CẬP NHẬT ĐỂ PARSE CHUỖI DATA MỚI ---
     override suspend fun loadLinks(
         data: String, 
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        println("HoatHinh3DProvider: [loadLinks] Called with data string: '$data'") 
+        // println("HoatHinh3DProvider: [loadLinks] Called with data string: '$data'") 
 
-        var episodeLinkInfo: EpisodeLinkData? = null
-        var episodePageUrlForReferer: String? = null
-
-        try {
-            if (data.startsWith("{") && data.endsWith("}")) {
-                episodeLinkInfo = AppUtils.parseJson<EpisodeLinkData>(data)
-                println("HoatHinh3DProvider: [loadLinks] Attempted to parse JSON. Result: $episodeLinkInfo")
-                if (episodeLinkInfo.seriesPostId.isBlank() || 
-                    episodeLinkInfo.episodeSlug.isBlank() ||
-                    episodeLinkInfo.episodePageUrl.isBlank()) { 
-                    println("HoatHinh3DProvider: [loadLinks] Parsed EpisodeLinkData has blank critical fields. sPID: '${episodeLinkInfo.seriesPostId}', epSLUG: '${episodeLinkInfo.episodeSlug}', epURL: '${episodeLinkInfo.episodePageUrl}'")    
-                    return false 
-                }
-                episodePageUrlForReferer = episodeLinkInfo.episodePageUrl
-                println("HoatHinh3DProvider: [loadLinks] Successfully parsed EpisodeLinkData. Referer: $episodePageUrlForReferer")
-            } else { 
-                println("HoatHinh3DProvider: [loadLinks] Data received is not JSON: '$data'")
-                return false 
-            }
-        } catch (e: Exception) { 
-            println("HoatHinh3DProvider: [loadLinks] Error parsing EpisodeLinkData JSON: ${e.message}")
-            e.printStackTrace() 
-            return false 
+        // Tách chuỗi data bằng ký tự phân cách
+        val parts = data.split(episodeDataDelimiter)
+        if (parts.size < 4) { // Cần ít nhất 4 phần: seriesPostId, episodeSlug, defaultSubSvid, episodePageUrl
+            // println("HoatHinh3DProvider: [loadLinks] Invalid data string format. Expected 4 parts, got ${parts.size}. Data: '$data'")
+            return false
         }
 
-        val currentEpisodeInfo = episodeLinkInfo ?: run {
-             println("HoatHinh3DProvider: [loadLinks] episodeLinkInfo is null after try-catch, though this path should ideally not be hit due to prior returns.")
-             return false
+        val seriesPostId = parts[0]
+        val episodeSlug = parts[1]
+        val defaultSubSvid = parts[2] // Có thể rỗng
+        val episodePageUrl = parts[3]
+
+        // println("HoatHinh3DProvider: [loadLinks] Parsed data parts: sPID='$seriesPostId', epSLUG='$episodeSlug', defSUBVID='$defaultSubSvid', epURL='$episodePageUrl'")
+
+        // Kiểm tra các trường quan trọng không được rỗng (defaultSubSvid được phép rỗng)
+        if (seriesPostId.isBlank() || episodeSlug.isBlank() || episodePageUrl.isBlank()) {
+            // println("HoatHinh3DProvider: [loadLinks] Critical parsed parts are blank. sPID: '$seriesPostId', epSLUG: '$episodeSlug', epURL: '$episodePageUrl'")
+            return false
         }
-
-
+        
         val targetSubServerIdsWithNames = listOf(
             ""    to "VIP 1 (Default/subsv_id rỗng)", 
             "1"   to "VIP 1 (subsv_id 1)",
@@ -320,32 +300,33 @@ class HoatHinh3DProvider : MainAPI() {
         val playerPhpUrlBase = "https://hoathinh3d.name/wp-content/themes/halimmovies/player.php"
         val fixedServerIdQueryParam = "1" 
 
-        println("HoatHinh3DProvider: [loadLinks] Proceeding to loop through servers with currentEpisodeInfo: $currentEpisodeInfo")
+        // println("HoatHinh3DProvider: [loadLinks] Proceeding to loop through servers...")
 
         for ((currentSubSvid, serverDisplayName) in targetSubServerIdsWithNames) {
-            println("HoatHinh3DProvider: [loadLinks] Preparing API link for subsv_id: '$currentSubSvid' (Name: $serverDisplayName)")
+            // println("HoatHinh3DProvider: [loadLinks] Preparing API link for subsv_id: '$currentSubSvid' (Name: $serverDisplayName)")
 
             val queryParams = try {
                 listOf(
-                    "episode_slug" to currentEpisodeInfo.episodeSlug,
+                    "episode_slug" to episodeSlug, // Từ `parts`
                     "server_id" to fixedServerIdQueryParam, 
                     "subsv_id" to currentSubSvid,          
-                    "post_id" to currentEpisodeInfo.seriesPostId 
+                    "post_id" to seriesPostId // Từ `parts`
                 ).joinToString("&") { (key, value) -> "$key=$value" }
             } catch (e: Exception) { 
-                println("HoatHinh3DProvider: [loadLinks] Error building query for subsv_id '$currentSubSvid': ${e.message}")
+                // println("HoatHinh3DProvider: [loadLinks] Error building query for subsv_id '$currentSubSvid': ${e.message}")
                 continue 
             }
 
             val urlToFetch = "$playerPhpUrlBase?$queryParams"
-            println("HoatHinh3DProvider: [loadLinks] Generated API URL for $serverDisplayName: $urlToFetch")
+            // println("HoatHinh3DProvider: [loadLinks] Generated API URL for $serverDisplayName: $urlToFetch")
 
+            // Vẫn đặt link API vào ExtractorLink.url để bạn kiểm tra
             callback.invoke(
                 ExtractorLink(
                     source = serverDisplayName, 
                     name = "$serverDisplayName - Kiểm tra Link API", 
                     url = urlToFetch, 
-                    referer = episodePageUrlForReferer ?: mainUrl, 
+                    referer = episodePageUrl, // Từ `parts`
                     quality = Qualities.Unknown.value, 
                     type = ExtractorLinkType.VIDEO, 
                     headers = emptyMap() 
@@ -354,11 +335,11 @@ class HoatHinh3DProvider : MainAPI() {
             atLeastOneLinkGenerated = true
         } 
         
-        if (!atLeastOneLinkGenerated) {
-            println("HoatHinh3DProvider: [loadLinks] Loop completed but no API links were generated/callbacked.")
-        } else {
-            println("HoatHinh3DProvider: [loadLinks] Finished. atLeastOneLinkGenerated is true.")
-        }
+        // if (!atLeastOneLinkGenerated) {
+        //     println("HoatHinh3DProvider: [loadLinks] Loop completed but no API links were generated/callbacked.")
+        // } else {
+        //     println("HoatHinh3DProvider: [loadLinks] Finished. atLeastOneLinkGenerated is true.")
+        // }
         return atLeastOneLinkGenerated
     }
 }
