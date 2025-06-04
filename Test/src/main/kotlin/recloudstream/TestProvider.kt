@@ -10,7 +10,7 @@ import java.net.URLEncoder // Import cho trường hợp cần encode URL
 private data class EpisodeDataInput(
     @JsonProperty("postId") val postId: String,
     @JsonProperty("slug") val episodeSlug: String,
-    @JsonProperty("server") val serverId: String, // ServerId mặc định từ Episode.data
+    @JsonProperty("server") val initialServerIdOrSubSvid: String, // Giá trị này có thể là server_id ban đầu hoặc subsv_id ban đầu
     @JsonProperty("episodePageUrl") val episodePageUrl: String
 )
 
@@ -19,12 +19,13 @@ private data class PlayerApiResponse(
     @JsonProperty("status") val status: Boolean?,
     @JsonProperty("file") val file: String?,    // Video URL
     @JsonProperty("label") val label: String?,  // Ví dụ: "1080"
-    @JsonProperty("type") val type: String?     // Ví dụ: "hls"
+    @JsonProperty("type") val type: String?,     // Ví dụ: "hls"
+    @JsonProperty("server_used") val serverUsed: String? // Ví dụ: "tiktok1_cache", "rum"
 )
 
 class HoatHinh3DProvider : MainAPI() {
     override var mainUrl = "https://hoathinh3d.name"
-    override var name = "HoatHinh3D" // Tên provider, sẽ được dùng trong tên nguồn link
+    override var name = "HoatHinh3D" // Tên provider
     override val supportedTypes = setOf(TvType.Cartoon)
     override var lang = "vi"
     override val hasMainPage = true
@@ -158,7 +159,7 @@ class HoatHinh3DProvider : MainAPI() {
 
             val spanInsideA = epA.selectFirst("span.halim-btn")
             val postId = spanInsideA?.attr("data-post-id")
-            val serverId = spanInsideA?.attr("data-server") // ServerId mặc định khi click vào tập phim
+            val serverId = spanInsideA?.attr("data-server") 
             val episodeSlug = spanInsideA?.attr("data-episode-slug")
 
             val episodeData = if (postId != null && serverId != null && episodeSlug != null) {
@@ -192,7 +193,6 @@ class HoatHinh3DProvider : MainAPI() {
                         partSpecificPoster = fixUrlNull(partMovieWrapper?.selectFirst("div.head div.first img")?.attr("src"))
                     }
                 } catch (_: Exception) {
-                    // Bỏ qua lỗi khi lấy poster phụ, sẽ dùng poster chính
                 }
             }
 
@@ -215,15 +215,13 @@ class HoatHinh3DProvider : MainAPI() {
         }
     }
 
-    // --- HÀM LOADLINKS ĐƯỢC CẬP NHẬT ĐỂ LẤY NHIỀU SERVER ---
+    // --- HÀM LOADLINKS ĐƯỢC CẬP NHẬT ĐỂ LẤY NHIỀU SERVER DỰA TRÊN subsv_id ---
     override suspend fun loadLinks(
         data: String, 
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // println("HoatHinh3DProvider: loadLinks called with data string: '$data'") 
-
         var episodeInfo: EpisodeDataInput? = null
         var episodePageUrlForReferer: String? = null
 
@@ -231,82 +229,85 @@ class HoatHinh3DProvider : MainAPI() {
             if (data.startsWith("{") && data.endsWith("}")) {
                 episodeInfo = AppUtils.parseJson<EpisodeDataInput>(data)
                 episodePageUrlForReferer = episodeInfo.episodePageUrl
-                // println("HoatHinh3DProvider: Parsed EpisodeDataInput: $episodeInfo")
             } else {
-                // println("HoatHinh3DProvider: loadLinks received non-JSON data: '$data'. This is unexpected.")
                 return false
             }
         } catch (e: Exception) {
-            // println("HoatHinh3DProvider: Error parsing Episode.data JSON: ${e.message}")
-            // e.printStackTrace()
             return false
         }
 
         if (episodeInfo == null) {
-            // println("HoatHinh3DProvider: Failed to get episode info from data (episodeInfo is null).")
             return false
         }
 
-        // Danh sách các server ID bạn muốn thử (1, 2, 3)
-        val targetServerIds = listOf("1", "2", "3") 
-        var atLeastOneLinkFound = false // Cờ để theo dõi nếu ít nhất một link được tìm thấy
+        // Danh sách các sub-server ID bạn muốn thử
+        // Dựa trên ví dụ của bạn: VIP 1 (subsv_id= để trống hoặc 1), VIP 2 (subsv_id=2), VIP 3 (subsv_id=3)
+        // Chúng ta sẽ thử subsv_id = 1, 2, 3. Server VIP 1 có thể dùng subsv_id="" hoặc subsv_id="1".
+        // Dựa trên các button trên trang: data-subsv-id="1", "2", "3"
+        val targetSubServerIds = listOf("1", "2", "3") 
+        var atLeastOneLinkFound = false
 
-        // Ánh xạ ID server sang tên hiển thị (dựa trên HTML của trang)
+        // Ánh xạ subsv_id sang tên hiển thị (dựa trên HTML của trang)
         val serverDisplayNames = mapOf(
-            "1" to "VIP 1",
-            "2" to "VIP 2",
-            "3" to "ADS"
-            // "4" to "HX" // Có thể thêm nếu cần
+            "1" to "VIP 1", // Hoặc tên server thực tế từ JSON response nếu có (response.server_used)
+            "2" to "VIP 2 (Rumble)",
+            "3" to "VIP 3 (Cache)" 
         )
 
         val playerPhpUrlBase = "https://hoathinh3d.name/wp-content/themes/halimmovies/player.php"
+        // server_id dường như cố định là "1" dựa trên các URL bạn cung cấp
+        val fixedServerId = "1" 
 
-        for (currentServerId in targetServerIds) {
-            // println("HoatHinh3DProvider: Attempting to fetch link for Server ID: $currentServerId")
+        for (currentSubSvid in targetSubServerIds) {
+            // println("HoatHinh3DProvider: Attempting to fetch link for subsv_id: $currentSubSvid with server_id: $fixedServerId")
+            
             val queryParams = try {
                 listOf(
                     "episode_slug" to episodeInfo.episodeSlug,
-                    "server_id" to currentServerId, // Sử dụng serverId hiện tại trong vòng lặp
-                    "subsv_id" to "", 
+                    "server_id" to fixedServerId, // Giữ server_id=1
+                    "subsv_id" to currentSubSvid, // Thay đổi subsv_id
                     "post_id" to episodeInfo.postId
                 ).joinToString("&") { (key, value) ->
-                    "$key=$value" // Giả sử các giá trị này an toàn cho URL
+                    // Nên encode value nếu nó có thể chứa ký tự đặc biệt
+                    // Ví dụ: "$key=${URLEncoder.encode(value, "UTF-8")}"
+                    // Tuy nhiên, với các ID và slug này, nối trực tiếp thường vẫn ổn.
+                    "$key=$value"
                 }
             } catch (e: Exception) {
-                // println("HoatHinh3DProvider: Error building query parameters for server $currentServerId: ${e.message}")
-                // e.printStackTrace()
-                continue // Bỏ qua server này nếu có lỗi tạo URL
+                // println("HoatHinh3DProvider: Error building query parameters for subsv_id $currentSubSvid: ${e.message}")
+                continue 
             }
 
             val urlToFetch = "$playerPhpUrlBase?$queryParams"
-            // println("HoatHinh3DProvider: Constructed URL for Server $currentServerId: $urlToFetch")
+            // println("HoatHinh3DProvider: Constructed URL for subsv_id $currentSubSvid: $urlToFetch")
 
             try {
                 val responseText = app.get(
                     urlToFetch,
                     referer = episodePageUrlForReferer ?: mainUrl
                 ).text
-                // println("HoatHinh3DProvider: Raw response for Server $currentServerId: '$responseText'")
+                // println("HoatHinh3DProvider: Raw response for subsv_id $currentSubSvid: '$responseText'")
 
                 if (responseText.isBlank()) {
-                    // println("HoatHinh3DProvider: Raw response from player.php for Server $currentServerId is blank.")
-                    continue // Bỏ qua server này
+                    // println("HoatHinh3DProvider: Raw response from player.php for subsv_id $currentSubSvid is blank.")
+                    continue 
                 }
 
                 val response = try {
                     AppUtils.parseJson<PlayerApiResponse>(responseText)
                 } catch (e: Exception) {
-                    // println("HoatHinh3DProvider: Failed to parse JSON for Server $currentServerId: ${e.message}")
-                    continue // Bỏ qua server này
+                    // println("HoatHinh3DProvider: Failed to parse JSON for subsv_id $currentSubSvid: ${e.message}")
+                    continue 
                 }
                 
-                // println("HoatHinh3DProvider: Parsed PlayerApiResponse for Server $currentServerId: $response")
+                // println("HoatHinh3DProvider: Parsed PlayerApiResponse for subsv_id $currentSubSvid: $response")
 
                 if (response.status == true && !response.file.isNullOrBlank()) {
                     val videoUrl = response.file
                     val qualityLabel = response.label ?: "Chất lượng" 
                     val videoType = response.type?.lowercase() ?: ""
-                    val serverDisplayName = serverDisplayNames[currentServerId] ?: "Server $currentServerId"
+                    // Sử dụng tên server từ map, hoặc tên từ JSON response (response.serverUsed), hoặc tên mặc định
+                    val serverDisplayName = serverDisplayNames[currentSubSvid] ?: response.serverUsed ?: "Server $currentSubSvid"
 
 
                     val qualityInt = qualityLabel.replace("p", "", ignoreCase = true).toIntOrNull() 
@@ -320,8 +321,8 @@ class HoatHinh3DProvider : MainAPI() {
 
                     callback.invoke(
                         ExtractorLink(
-                            source = serverDisplayName, // Tên nguồn rõ ràng hơn, ví dụ: "VIP 1"
-                            name = "$qualityLabel - $serverDisplayName", // Tên link, ví dụ: "1080p - VIP 1"
+                            source = serverDisplayName, 
+                            name = "$qualityLabel - $serverDisplayName", 
                             url = videoUrl,
                             referer = episodePageUrlForReferer ?: mainUrl, 
                             quality = qualityInt,
@@ -329,17 +330,15 @@ class HoatHinh3DProvider : MainAPI() {
                             headers = emptyMap() 
                         )
                     )
-                    // println("HoatHinh3DProvider: Link for Server $currentServerId ($serverDisplayName) added successfully.")
+                    // println("HoatHinh3DProvider: Link for subsv_id $currentSubSvid ($serverDisplayName) added successfully.")
                     atLeastOneLinkFound = true 
                 } else {
-                    // println("HoatHinh3DProvider: Server $currentServerId response status not true or file link missing.")
+                    // println("HoatHinh3DProvider: subsv_id $currentSubSvid response status not true or file link missing.")
                 }
             } catch (e: Exception) {
-                // println("HoatHinh3DProvider: Exception for Server $currentServerId: ${e.message}")
-                // Không cần printStackTrace cho mỗi lỗi server trừ khi debug sâu
+                // println("HoatHinh3DProvider: Exception for subsv_id $currentSubSvid: ${e.message}")
             }
-        } // Kết thúc vòng lặp qua các server
-
-        return atLeastOneLinkFound // Trả về true nếu ít nhất một server cung cấp link thành công
+        } 
+        return atLeastOneLinkFound
     }
 }
