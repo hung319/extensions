@@ -4,10 +4,8 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-// Dòng "import com.lagradost.cloudstream3.network.र्ज़" đã được XÓA BỎ
 
 // Data class cho response của AJAX call (sẽ dùng trong loadLinks)
-// Bạn có thể cần điều chỉnh các trường này dựa trên response thực tế
 data class VideoSourceResponse(
     @JsonProperty("status") val status: Boolean?,
     @JsonProperty("type") val type: String?,
@@ -26,8 +24,8 @@ class HoatHinh3DProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.Cartoon)
     override var lang = "vi"
     override val hasMainPage = true
-    override val hasChromecastSupport = true // Có thể cần xác minh lại khi loadLinks hoạt động
-    override val hasDownloadSupport = true // Có thể cần xác minh lại khi loadLinks hoạt động
+    override val hasChromecastSupport = true
+    override val hasDownloadSupport = true
 
     // Helper function để parse các item phim/series
     private fun Element.toSearchResponse(): SearchResponse? {
@@ -36,7 +34,7 @@ class HoatHinh3DProvider : MainAPI() {
         val title = this.selectFirst("div.halim-post-title h2.entry-title")?.text()?.trim()
             ?: thumbLink.attr("title")?.trim()
             ?: return null
-        // Thử lấy poster từ data-src trước, sau đó mới đến src
+        
         var posterUrl = fixUrlNull(this.selectFirst("figure img.img-responsive")?.attr("data-src"))
         if (posterUrl == null) {
             posterUrl = fixUrlNull(this.selectFirst("figure img.img-responsive")?.attr("src"))
@@ -46,23 +44,21 @@ class HoatHinh3DProvider : MainAPI() {
         return newAnimeSearchResponse(title, href, TvType.Cartoon) {
             this.posterUrl = posterUrl
             if (latestEpisodeText != null) {
-                addQuality(latestEpisodeText) // SỬA LỖI: Sử dụng addQuality thay vì addMeta
+                addQuality(latestEpisodeText)
             }
         }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val url = if (page == 1) mainUrl else "$mainUrl/page/$page/"
-        // Thêm trailing slash nếu chưa có cho mainUrl khi page là 1
         val effectiveUrl = if (page == 1 && !url.endsWith("/")) "$url/" else url
 
         val document = app.get(effectiveUrl).document
-
         val homePageList = ArrayList<HomePageList>()
 
-        // Lấy mục "Mới Cập Nhật" (dựa trên main.html)
+        // Lấy mục "Mới Cập Nhật"
         val newUpdateSection = document.selectFirst("div#sticky-sidebar div#-ajax-box div.halim_box")
-                                ?: document.selectFirst("div#-ajax-box div.halim_box") // Fallback
+                                ?: document.selectFirst("div#-ajax-box div.halim_box") 
         
         newUpdateSection?.let { section ->
             val sectionTitle = section.selectFirst("div.section-bar h3.section-title span")?.text()?.trim() ?: "Mới Cập Nhật"
@@ -74,7 +70,7 @@ class HoatHinh3DProvider : MainAPI() {
             }
         }
         
-        // Thêm section "Đang thịnh hành" (dựa trên main.html)
+        // Thêm section "Đang thịnh hành"
         val trendingSection = document.selectFirst("div.halim-trending-slider")
         trendingSection?.let { section ->
             val sectionTitle = section.selectFirst("div.section-bar h3.section-title span")?.text()?.trim() ?: "Đang Thịnh Hành"
@@ -90,15 +86,14 @@ class HoatHinh3DProvider : MainAPI() {
                 if (href != null && title != null) {
                     newAnimeSearchResponse(title, href, TvType.Cartoon) {
                         this.posterUrl = posterUrl
-                        // Có thể thêm original_title nếu muốn hiển thị
-                        // val originalTitle = card.selectFirst("p.halim-trending-original-title")?.text()?.trim()
                     }
                 } else {
                     null
                 }
             }
             if (movies.isNotEmpty()) {
-                homePageList.add(HomePageList(sectionTitle, movies))
+                // Đã bỏ isHorizontal = true không hợp lệ
+                homePageList.add(HomePageList(sectionTitle, movies)) 
             }
         }
 
@@ -109,7 +104,7 @@ class HoatHinh3DProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/search/$query" // Đã xác nhận từ search.html và script
+        val searchUrl = "$mainUrl/search/$query"
         val document = app.get(searchUrl).document
 
         return document.select("main#main-contents div.halim_box article.thumb.grid-item").mapNotNull {
@@ -136,14 +131,12 @@ class HoatHinh3DProvider : MainAPI() {
             ?: movieWrapper.selectFirst("div.entry-content div.wp-content")?.text()?.trim()
             ?: document.selectFirst("div.film-content div#info div.wp-content")?.text()?.trim()
 
-
         val tags = movieWrapper.select("div.last div.list_cate a").mapNotNull { it.text()?.trim() }
         
         val ratingScoreText = movieWrapper.selectFirst("div.last span.halim-rating-score")?.text()?.trim()
         val rating = ratingScoreText?.let {
             (it.toFloatOrNull()?.times(1000))?.toInt()
         }
-        val recommendations = ArrayList<SearchResponse>() // Có thể thêm logic sau
 
         val episodes = document.select("div#halim-list-server ul.halim-list-eps li.halim-episode").mapNotNull { epElement ->
             val epA = epElement.selectFirst("a") ?: return@mapNotNull null
@@ -167,18 +160,20 @@ class HoatHinh3DProvider : MainAPI() {
             val episodeData = if (postId != null && serverId != null && episodeSlug != null) {
                 """{"postId":"$postId", "slug":"$episodeSlug", "server":"$serverId", "episodePageUrl":"$epLink"}"""
             } else {
-                // Fallback: Nếu không có data-attributes, dùng chính epLink làm data.
-                // loadLinks sẽ cần fetch trang epLink này để tìm thông tin (ví dụ: halim_cfg).
                 epLink 
             }
             
-            Episode( // SỬA LỖI: Bỏ tham số 'url' không hợp lệ
+            Episode(
                 data = episodeData,
                 name = epName
-                // episode = epName.replace(Regex("[^0-9]"), "").toIntOrNull(), // Có thể parse số tập
-                // posterUrl = poster // Poster của tập phim (nếu có)
             )
         }.reversed()
+
+        // Logic lấy recommendations
+        val recommendationsList = document.select("section.related-movies article.thumb.grid-item").mapNotNull { element ->
+            element.toSearchResponse() 
+        }.take(10) // Giới hạn 10 phim đề xuất
+        // Kết thúc logic recommendations
 
         return newTvSeriesLoadResponse(title, url, TvType.Cartoon, episodes) {
             this.posterUrl = poster
@@ -186,7 +181,7 @@ class HoatHinh3DProvider : MainAPI() {
             this.plot = description
             this.tags = tags
             this.rating = rating
-            this.recommendations = recommendations
+            this.recommendations = recommendationsList // Gán danh sách đề xuất
         }
     }
 
@@ -223,8 +218,6 @@ class HoatHinh3DProvider : MainAPI() {
         //         //     val videoUrl = response.link
         //         //     val sourceName = "HoatHinh3D Server $serverId"
         //         //     if (response.type == "iframe" && videoUrl.isNotBlank()) {
-        //         //         // Cần xử lý iframe, có thể cần gọi hàm Unshorten.unshorten(videoUrl) hoặc loadExtractor
-        //         //         // Hoặc nếu iframe là của một host video đã biết (vd: Dailymotion, Facebook), dùng loadExtractor
         //         //         ExtractorApi.loadExtractor(videoUrl, episodePageUrl, subtitleCallback, callback)
         //         //     } else if (videoUrl.isNotBlank()) {
         //         //         callback.invoke(
@@ -232,7 +225,7 @@ class HoatHinh3DProvider : MainAPI() {
         //         //                 source = sourceName,
         //         //                 name = sourceName,
         //         //                 url = videoUrl,
-        //         //                 referer = episodePageUrl, // Quan trọng: referer thường là trang chứa player
+        //         //                 referer = episodePageUrl, 
         //         //                 quality = Qualities.Unknown.value,
         //         //                 isM3u8 = videoUrl.contains(".m3u8")
         //         //             )
@@ -247,14 +240,10 @@ class HoatHinh3DProvider : MainAPI() {
         //         // }
         //     } else {
         //          // Data là URL (fallback), cần fetch trang `data` (chính là episodePageUrl)
-        //          // và tìm biến `halim_cfg` hoặc các thông tin tương tự để thực hiện AJAX call
-        //          // val doc = app.get(data).document
-        //          // val scriptContent = doc.select("script").firstOrNull { it.data().contains("var halim_cfg") }?.data()
-        //          // // Parse scriptContent để lấy postId, episodeSlug, serverId rồi làm tương tự như trên
         //     }
         // } catch (e: Exception) {
         //     e.printStackTrace()
         // }
-        return false // Trả về false vì chưa có link nào được gọi qua callback
+        return false
     }
 }
