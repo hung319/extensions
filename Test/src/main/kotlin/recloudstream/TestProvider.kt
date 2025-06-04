@@ -2,9 +2,8 @@ package com.example.HoatHinh3DProvider // Bạn có thể thay đổi package na
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.* // AppUtils cũng nằm trong đây
 import org.jsoup.nodes.Element
-import org.jsoup.Jsoup // Thêm Jsoup nếu chưa có ở đây, mặc dù thường không cần thiết khi dùng app.get().document
 
 // Data class cho response của AJAX call (sẽ dùng trong loadLinks)
 data class VideoSourceResponse(
@@ -98,7 +97,9 @@ class HoatHinh3DProvider : MainAPI() {
         if (homePageList.isEmpty()) {
             return null
         }
-        return HomePageResponse(homePageList)
+        // SỬA Ở ĐÂY: Dùng newHomePageResponse
+        val hasNextPage = homePageList.any { it.list.isNotEmpty() } // Đơn giản hóa: nếu có item thì có thể có trang tiếp
+        return newHomePageResponse(homePageList, hasNextPage)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -111,13 +112,11 @@ class HoatHinh3DProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url).document // Trang chi tiết phim chính
+        val document = app.get(url).document 
 
         val movieWrapper = document.selectFirst("div.halim-movie-wrapper.tpl-2.info-movie") ?: return null
-
         val title = movieWrapper.selectFirst("div.head h1.movie_name")?.text()?.trim() ?: return null
         
-        // Poster của phim chính, sẽ được dùng làm fallback cho poster của các phần nếu không lấy được
         var mainFilmPoster = fixUrlNull(movieWrapper.selectFirst("div.head div.first img")?.attr("data-src"))
         if (mainFilmPoster == null) {
              mainFilmPoster = fixUrlNull(movieWrapper.selectFirst("div.head div.first img")?.attr("src"))
@@ -162,15 +161,17 @@ class HoatHinh3DProvider : MainAPI() {
                 epLink 
             }
             
-            Episode(
-                data = episodeData,
-                name = epName
-            )
+            // SỬA Ở ĐÂY: Dùng newEpisode
+            newEpisode(episodeData) {
+                this.name = epName
+                // Extract episode number if possible
+                this.episode = epName.replace(Regex("[^0-9]"), "").toIntOrNull()
+                this.duration = null // Không có thông tin thời lượng từ HTML cho từng tập
+            }
         }.reversed()
-
-        // --- CẬP NHẬT LOGIC LẤY RECOMMENDATIONS (CÁC PHẦN PHIM) VÀ POSTER CHO TỪNG PHẦN ---
+        
         val partLinkElements = document.select("ul#list-movies-part li.movies-part a")
-        println("HoatHinh3DProvider: Found ${partLinkElements.size} part links for recommendations section.")
+        // println("HoatHinh3DProvider: Found ${partLinkElements.size} part links for recommendations section.")
 
         val partsListAsRecommendations = partLinkElements.mapNotNull { linkElement ->
             val partUrl = fixUrl(linkElement.attr("href"))
@@ -180,10 +181,9 @@ class HoatHinh3DProvider : MainAPI() {
             }
 
             var partSpecificPoster: String? = null
-            if (partUrl.isNotBlank() && partUrl != url) { // Chỉ fetch nếu URL khác trang hiện tại để tránh vòng lặp vô hạn
+            if (partUrl.isNotBlank() && partUrl != url) { 
                 try {
-                    // Tải trang của phần phim này để lấy poster
-                    println("HoatHinh3DProvider: Fetching sub-page for poster: $partUrl")
+                    // println("HoatHinh3DProvider: Fetching sub-page for poster: $partUrl")
                     val partDocument = app.get(partUrl).document
                     val partMovieWrapper = partDocument.selectFirst("div.halim-movie-wrapper.tpl-2.info-movie")
                     partSpecificPoster = fixUrlNull(partMovieWrapper?.selectFirst("div.head div.first img")?.attr("data-src"))
@@ -191,24 +191,21 @@ class HoatHinh3DProvider : MainAPI() {
                         partSpecificPoster = fixUrlNull(partMovieWrapper?.selectFirst("div.head div.first img")?.attr("src"))
                     }
                 } catch (e: Exception) {
-                    println("HoatHinh3DProvider: Error fetching poster for $partUrl - ${e.message}")
-                    // Nếu lỗi, có thể dùng poster chính hoặc để null
+                    // println("HoatHinh3DProvider: Error fetching poster for $partUrl - ${e.message}")
                 }
             }
 
             if (partUrl.isNotBlank() && !partTitle.isNullOrEmpty()) {
                 newAnimeSearchResponse(partTitle, partUrl, TvType.Cartoon) {
-                    // Ưu tiên poster riêng của phần đó, nếu không có thì dùng poster của phim/phần chính
                     this.posterUrl = partSpecificPoster ?: mainFilmPoster 
                 }
             } else {
                 null
             }
         }.take(10) 
-        // --- KẾT THÚC LOGIC RECOMMENDATIONS ---
 
         return newTvSeriesLoadResponse(title, url, TvType.Cartoon, episodes) {
-            this.posterUrl = mainFilmPoster // Poster của phim chính
+            this.posterUrl = mainFilmPoster 
             this.year = year
             this.plot = description
             this.tags = tags
