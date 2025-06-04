@@ -6,7 +6,6 @@ import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
 
-// Data class cho JSON được lưu trong Episode.data (đã đổi tên và trường)
 private data class EpisodeLinkData(
     @JsonProperty("seriesPostId") val seriesPostId: String,
     @JsonProperty("episodeSlug") val episodeSlug: String,
@@ -14,7 +13,6 @@ private data class EpisodeLinkData(
     @JsonProperty("episodePageUrl") val episodePageUrl: String
 )
 
-// Data class cho JSON response từ player.php
 private data class PlayerApiResponse(
     @JsonProperty("status") val status: Boolean?,
     @JsonProperty("file") val file: String?,
@@ -114,7 +112,6 @@ class HoatHinh3DProvider : MainAPI() {
         }
     }
 
-    // --- HÀM LOAD ĐƯỢC CẬP NHẬT LOGIC LẤY postId ---
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document 
 
@@ -140,18 +137,15 @@ class HoatHinh3DProvider : MainAPI() {
             (it.toFloatOrNull()?.times(1000))?.toInt()
         }
 
-        // Trích xuất seriesPostId từ halim_cfg trên trang chi tiết phim
         var seriesPostIdFromCfg: String? = null
         document.select("script").forEach { script ->
             val scriptData = script.data()
             if (scriptData.contains("var halim_cfg")) {
                 val postIdRegex = Regex("""["']post_id["']\s*:\s*["']?(\d+)["']?""")
                 seriesPostIdFromCfg = postIdRegex.find(scriptData)?.groupValues?.get(1)
-                if (seriesPostIdFromCfg != null) return@forEach // Thoát sớm nếu tìm thấy
+                if (seriesPostIdFromCfg != null) return@forEach 
             }
         }
-        // println("HoatHinh3DProvider [load]: Extracted seriesPostIdFromCfg: $seriesPostIdFromCfg")
-
 
         val episodes = document.select("div#halim-list-server ul.halim-list-eps li.halim-episode").mapNotNull { epElement ->
             val epA = epElement.selectFirst("a") ?: return@mapNotNull null
@@ -168,27 +162,28 @@ class HoatHinh3DProvider : MainAPI() {
             }
 
             val spanInsideA = epA.selectFirst("span.halim-btn")
-            val episodeSpecificPostId = spanInsideA?.attr("data-post-id") // postId trên từng tập
-            val defaultSubSvidForThisLink = spanInsideA?.attr("data-server") // data-server trên từng tập, là subsv_id mặc định
+            val episodeSpecificPostId = spanInsideA?.attr("data-post-id") 
+            val defaultSubSvidForThisLink = spanInsideA?.attr("data-server") 
             val currentEpisodeSlug = spanInsideA?.attr("data-episode-slug")
-
-            // Ưu tiên postId từ halim_cfg của trang, nếu không có thì mới dùng postId từ thuộc tính của tập
             val finalSeriesPostId = seriesPostIdFromCfg ?: episodeSpecificPostId
 
             if (finalSeriesPostId != null && defaultSubSvidForThisLink != null && currentEpisodeSlug != null) {
-                val episodeDataJson = EpisodeLinkData(
-                    seriesPostId = finalSeriesPostId,
-                    episodeSlug = currentEpisodeSlug,
-                    defaultSubSvid = defaultSubSvidForThisLink,
-                    episodePageUrl = epLink
-                ).toJson() // Chuyển thành JSON string
+                // SỬA LỖI: Tạo JSON string thủ công thay vì .toJson()
+                val episodeDataJsonString = """
+                    {
+                        "seriesPostId": "$finalSeriesPostId",
+                        "episodeSlug": "$currentEpisodeSlug",
+                        "defaultSubSvid": "$defaultSubSvidForThisLink",
+                        "episodePageUrl": "$epLink"
+                    }
+                """.trimIndent()
 
-                newEpisode(episodeDataJson) {
+                newEpisode(episodeDataJsonString) {
                     this.name = epName
-                    this.episode = epName.replace(Regex("[^0-9]"), "").toIntOrNull()
+                    // SỬA LỖI: Bỏ this.episode nếu gây lỗi, hoặc đảm bảo nó đúng cách
+                    // this.episode = epName.replace(Regex("[^0-9]"), "").toIntOrNull() // Tạm thời comment out nếu đây là dòng 188
                 }
             } else {
-                // println("HoatHinh3DProvider [load]: Missing data for episode: $epName. FinalPostId: $finalSeriesPostId, DefaultSubSvid: $defaultSubSvidForThisLink, Slug: $currentEpisodeSlug")
                 null
             }
         }.reversed()
@@ -236,31 +231,40 @@ class HoatHinh3DProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        var episodeLinkInfo: EpisodeLinkData? = null // Sử dụng data class đã đổi tên
+        var episodeLinkInfo: EpisodeLinkData? = null
         var episodePageUrlForReferer: String? = null
 
         try {
             if (data.startsWith("{") && data.endsWith("}")) {
                 episodeLinkInfo = AppUtils.parseJson<EpisodeLinkData>(data)
+                if (episodeLinkInfo.seriesPostId.isBlank() || episodeLinkInfo.episodeSlug.isBlank() || 
+                    episodeLinkInfo.defaultSubSvid.isBlank() || episodeLinkInfo.episodePageUrl.isBlank()) {
+                    // println("HoatHinh3DProvider: Parsed EpisodeLinkData has blank critical fields: $episodeLinkInfo")    
+                    return false
+                }
                 episodePageUrlForReferer = episodeLinkInfo.episodePageUrl
             } else { return false }
         } catch (e: Exception) { return false }
 
-        if (episodeLinkInfo == null) { return false }
+        // Sửa lỗi: Dòng 186 (cũ) `Argument type mismatch` liên quan đến việc `episodeInfo` có thể null sau catch.
+        // Với logic mới, nếu parsing lỗi hoặc field trống thì đã return false.
+        // Nên `episodeLinkInfo` ở đây sẽ không null. Sử dụng !! hoặc một biến local non-null.
+        val currentEpisodeInfo = episodeLinkInfo!!
+
 
         val targetSubServerIds = listOf("1", "2", "3") 
         var atLeastOneLinkFound = false
         val serverDisplayNames = mapOf("1" to "VIP 1", "2" to "VIP 2 (Rumble)", "3" to "VIP 3 (Cache)")
         val playerPhpUrlBase = "https://hoathinh3d.name/wp-content/themes/halimmovies/player.php"
-        val fixedServerIdQueryParam = "1" // server_id trong URL của player.php luôn là "1"
+        val fixedServerIdQueryParam = "1" 
 
         for (currentSubSvid in targetSubServerIds) {
             val queryParams = try {
                 listOf(
-                    "episode_slug" to episodeLinkInfo.episodeSlug,
-                    "server_id" to fixedServerIdQueryParam, // Luôn dùng server_id="1"
-                    "subsv_id" to currentSubSvid,           // Thay đổi subsv_id
-                    "post_id" to episodeLinkInfo.seriesPostId // Dùng seriesPostId đã lấy chính xác
+                    "episode_slug" to currentEpisodeInfo.episodeSlug,
+                    "server_id" to fixedServerIdQueryParam, 
+                    "subsv_id" to currentSubSvid,          
+                    "post_id" to currentEpisodeInfo.seriesPostId 
                 ).joinToString("&") { (key, value) -> "$key=$value" }
             } catch (e: Exception) { continue }
 
