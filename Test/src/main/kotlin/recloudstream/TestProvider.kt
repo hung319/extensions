@@ -273,34 +273,50 @@ class HoatHinh3DProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // println("HoatHinh3DProvider: [loadLinks] Called with data string: '$data'") 
+        println("HoatHinh3DProvider: [loadLinks] Called with data string: '$data'") 
 
         var episodeLinkInfo: EpisodeLinkData? = null
         var episodePageUrlForReferer: String? = null
 
+        // ---- TẠM THỜI VÔ HIỆU HÓA TOÀN BỘ KHỐI KIỂM TRA NÀY ĐỂ XEM CÓ VÀO FOR LOOP KHÔNG ----
+        /*
         try {
             if (data.startsWith("{") && data.endsWith("}")) {
                 episodeLinkInfo = AppUtils.parseJson<EpisodeLinkData>(data)
-                // println("HoatHinh3DProvider: [loadLinks] Attempting to parse: $episodeLinkInfo")
+                println("HoatHinh3DProvider: [loadLinks] Attempting to parse: $episodeLinkInfo")
                 if (episodeLinkInfo.seriesPostId.isBlank() || 
                     episodeLinkInfo.episodeSlug.isBlank() ||
                     episodeLinkInfo.episodePageUrl.isBlank()) { 
-                    // println("HoatHinh3DProvider: [loadLinks] Parsed EpisodeLinkData has blank critical fields...")    
+                    println("HoatHinh3DProvider: [loadLinks] Parsed EpisodeLinkData has blank critical fields...")    
                     return false 
                 }
                 episodePageUrlForReferer = episodeLinkInfo.episodePageUrl
-                // println("HoatHinh3DProvider: [loadLinks] Successfully parsed EpisodeLinkData...")
+                println("HoatHinh3DProvider: [loadLinks] Successfully parsed EpisodeLinkData...")
             } else { 
-                // println("HoatHinh3DProvider: [loadLinks] Data received is not JSON...")
+                println("HoatHinh3DProvider: [loadLinks] Data received is not JSON...")
                 return false 
             }
         } catch (e: Exception) { 
-            // println("HoatHinh3DProvider: [loadLinks] Error parsing EpisodeLinkData JSON: ${e.message}")
+            println("HoatHinh3DProvider: [loadLinks] Error parsing EpisodeLinkData JSON...")
             // e.printStackTrace() 
             return false 
         }
 
-        val currentEpisodeInfo = episodeLinkInfo ?: return false
+        val currentEpisodeInfo = episodeLinkInfo ?: return false 
+        */
+
+        // ---- THAY VÀO ĐÓ, TẠM THỜI HARDCODE GIÁ TRỊ ĐỂ TEST ----
+        // Sử dụng dữ liệu từ debug string bạn cung cấp cho "Đấu Chiến Thiên Hạ - Tập 1"
+        val currentEpisodeInfo = EpisodeLinkData(
+            seriesPostId = "716931",
+            episodeSlug = "tap-1",
+            defaultSubSvid = "1",
+            episodePageUrl = "https://hoathinh3d.name/xem-phim-dau-chien-thien-ha/tap-1-sv1.html"
+        )
+        episodePageUrlForReferer = currentEpisodeInfo.episodePageUrl
+        println("HoatHinh3DProvider: [loadLinks DEBUG] USING HARDCODED currentEpisodeInfo: $currentEpisodeInfo")
+        // ---- KẾT THÚC PHẦN HARDCODE ----
+
 
         val targetSubServerIdsWithNames = listOf(
             ""    to "VIP 1 (Default/subsv_id rỗng)", 
@@ -313,30 +329,24 @@ class HoatHinh3DProvider : MainAPI() {
         val playerPhpUrlBase = "https://hoathinh3d.name/wp-content/themes/halimmovies/player.php"
         val fixedServerIdQueryParam = "1" 
 
-        // println("HoatHinh3DProvider: [loadLinks] Proceeding to loop...")
+        println("HoatHinh3DProvider: [loadLinks DEBUG] Proceeding to loop...")
 
         for ((currentSubSvid, serverDisplayName) in targetSubServerIdsWithNames) {
-            // println("HoatHinh3DProvider: [loadLinks] Loop - currentSubSvid: '$currentSubSvid'")
+            println("HoatHinh3DProvider: [loadLinks DEBUG] Loop - currentSubSvid: '$currentSubSvid'")
 
-            // --- THAY ĐỔI CÁCH TẠO queryParams ---
             val episodeSlugValue = currentEpisodeInfo.episodeSlug
             val serverIdValue = fixedServerIdQueryParam
             val subSvidValue = currentSubSvid
             val postIdValue = currentEpisodeInfo.seriesPostId
 
-            // Ghép chuỗi trực tiếp, giữ nguyên thứ tự như các URL hoạt động bạn đã cung cấp
-            // Các giá trị này thường không cần encode URL vì là ID/slug, nhưng nếu có ký tự đặc biệt,
-            // bạn có thể dùng URLEncoder.encode(value, "UTF-8") cho từng giá trị.
             val queryParams = "episode_slug=$episodeSlugValue" +
                               "&server_id=$serverIdValue" +
                               "&subsv_id=$subSvidValue" +
                               "&post_id=$postIdValue"
-            // --- KẾT THÚC THAY ĐỔI ---
-
+            
             val urlToFetch = "$playerPhpUrlBase?$queryParams"
-            // println("HoatHinh3DProvider: [loadLinks] Generated API URL for $serverDisplayName: $urlToFetch")
+            println("HoatHinh3DProvider: [loadLinks DEBUG] Generated API URL for $serverDisplayName: $urlToFetch")
 
-            // Phiên bản này vẫn đang trả về link API để bạn kiểm tra
             callback.invoke(
                 ExtractorLink(
                     source = serverDisplayName, 
@@ -348,15 +358,15 @@ class HoatHinh3DProvider : MainAPI() {
                     headers = emptyMap() 
                 )
             )
-            // println("HoatHinh3DProvider: [loadLinks] callback.invoke called for $serverDisplayName")
+            println("HoatHinh3DProvider: [loadLinks DEBUG] callback.invoke called for $serverDisplayName")
             atLeastOneLinkGenerated = true
         } 
         
-        // if (!atLeastOneLinkGenerated) {
-        //     println("HoatHinh3DProvider: [loadLinks] Loop completed but no API links were generated/callbacked.")
-        // } else {
-        //     println("HoatHinh3DProvider: [loadLinks] Finished. atLeastOneLinkGenerated is true.")
-        // }
+        if (!atLeastOneLinkGenerated) {
+            println("HoatHinh3DProvider: [loadLinks DEBUG] Loop completed but NO API links were generated/callbacked.")
+        } else {
+            println("HoatHinh3DProvider: [loadLinks DEBUG] Finished. atLeastOneLinkGenerated is true.")
+        }
         return atLeastOneLinkGenerated
     }
 }
