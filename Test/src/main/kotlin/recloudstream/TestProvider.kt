@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
+import org.jsoup.Jsoup // Thêm Jsoup nếu chưa có ở đây, mặc dù thường không cần thiết khi dùng app.get().document
 
 // Data class cho response của AJAX call (sẽ dùng trong loadLinks)
 data class VideoSourceResponse(
@@ -110,15 +111,16 @@ class HoatHinh3DProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url).document
+        val document = app.get(url).document // Trang chi tiết phim chính
 
         val movieWrapper = document.selectFirst("div.halim-movie-wrapper.tpl-2.info-movie") ?: return null
 
         val title = movieWrapper.selectFirst("div.head h1.movie_name")?.text()?.trim() ?: return null
         
-        var poster = fixUrlNull(movieWrapper.selectFirst("div.head div.first img")?.attr("data-src"))
-        if (poster == null) {
-             poster = fixUrlNull(movieWrapper.selectFirst("div.head div.first img")?.attr("src"))
+        // Poster của phim chính, sẽ được dùng làm fallback cho poster của các phần nếu không lấy được
+        var mainFilmPoster = fixUrlNull(movieWrapper.selectFirst("div.head div.first img")?.attr("data-src"))
+        if (mainFilmPoster == null) {
+             mainFilmPoster = fixUrlNull(movieWrapper.selectFirst("div.head div.first img")?.attr("src"))
         }
         
         val yearText = movieWrapper.selectFirst("div.last span.released a")?.text()?.trim()
@@ -166,34 +168,52 @@ class HoatHinh3DProvider : MainAPI() {
             )
         }.reversed()
 
-        // --- CẬP NHẬT LOGIC LẤY RECOMMENDATIONS TỪ DANH SÁCH PHẦN ---
-        val partsListAsRecommendations = document.select("ul#list-movies-part li.movies-part a").mapNotNull { linkElement ->
+        // --- CẬP NHẬT LOGIC LẤY RECOMMENDATIONS (CÁC PHẦN PHIM) VÀ POSTER CHO TỪNG PHẦN ---
+        val partLinkElements = document.select("ul#list-movies-part li.movies-part a")
+        println("HoatHinh3DProvider: Found ${partLinkElements.size} part links for recommendations section.")
+
+        val partsListAsRecommendations = partLinkElements.mapNotNull { linkElement ->
             val partUrl = fixUrl(linkElement.attr("href"))
-            // Ưu tiên title attribute, nếu không có hoặc rỗng thì lấy text của thẻ a
             var partTitle = linkElement.attr("title")?.trim()
             if (partTitle.isNullOrEmpty()) {
                 partTitle = linkElement.text()?.trim()
             }
 
+            var partSpecificPoster: String? = null
+            if (partUrl.isNotBlank() && partUrl != url) { // Chỉ fetch nếu URL khác trang hiện tại để tránh vòng lặp vô hạn
+                try {
+                    // Tải trang của phần phim này để lấy poster
+                    println("HoatHinh3DProvider: Fetching sub-page for poster: $partUrl")
+                    val partDocument = app.get(partUrl).document
+                    val partMovieWrapper = partDocument.selectFirst("div.halim-movie-wrapper.tpl-2.info-movie")
+                    partSpecificPoster = fixUrlNull(partMovieWrapper?.selectFirst("div.head div.first img")?.attr("data-src"))
+                    if (partSpecificPoster == null) {
+                        partSpecificPoster = fixUrlNull(partMovieWrapper?.selectFirst("div.head div.first img")?.attr("src"))
+                    }
+                } catch (e: Exception) {
+                    println("HoatHinh3DProvider: Error fetching poster for $partUrl - ${e.message}")
+                    // Nếu lỗi, có thể dùng poster chính hoặc để null
+                }
+            }
+
             if (partUrl.isNotBlank() && !partTitle.isNullOrEmpty()) {
-                // Sử dụng poster của phim/phần hiện tại cho các phần khác này
-                // vì HTML không cung cấp poster riêng cho từng phần trong danh sách này.
                 newAnimeSearchResponse(partTitle, partUrl, TvType.Cartoon) {
-                    this.posterUrl = poster // 'poster' là poster của phim đang load
+                    // Ưu tiên poster riêng của phần đó, nếu không có thì dùng poster của phim/phần chính
+                    this.posterUrl = partSpecificPoster ?: mainFilmPoster 
                 }
             } else {
                 null
             }
-        }.take(10) // Giới hạn số lượng phần hiển thị (tùy chọn)
+        }.take(10) 
         // --- KẾT THÚC LOGIC RECOMMENDATIONS ---
 
         return newTvSeriesLoadResponse(title, url, TvType.Cartoon, episodes) {
-            this.posterUrl = poster
+            this.posterUrl = mainFilmPoster // Poster của phim chính
             this.year = year
             this.plot = description
             this.tags = tags
             this.rating = rating
-            this.recommendations = partsListAsRecommendations // Gán danh sách các phần vào recommendations
+            this.recommendations = partsListAsRecommendations 
         }
     }
 
