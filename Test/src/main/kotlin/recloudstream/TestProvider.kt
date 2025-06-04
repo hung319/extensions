@@ -29,7 +29,7 @@ class AnimeVietsubProvider : MainAPI() {
         TvType.Anime,
         TvType.Cartoon,
         TvType.Movie,
-        TvType.AnimeMovie // Added for more specific typing if needed, though LoadResponse might map to Anime/Movie
+        TvType.AnimeMovie 
     )
     override var lang = "vi"
     override val hasMainPage = true
@@ -120,7 +120,7 @@ class AnimeVietsubProvider : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val baseUrl = getBaseUrl()
         val lists = mutableListOf<HomePageList>()
-        val pageToLoadForList = request.data?.toIntOrNull() ?: page // *** Sửa: request.key -> request.data ***
+        val pageToLoadForList = request.data?.toIntOrNull() ?: page 
 
         if (pageToLoadForList > 1 && request.name.isNotBlank()) {
             val listName = request.name
@@ -141,14 +141,13 @@ class AnimeVietsubProvider : MainAPI() {
                 val items = document.select(itemsSelector)
                     .mapNotNull { it.toSearchResponse(this, baseUrl) }
                 
-                if (items.isEmpty() && pageToLoadForList > 1) {
-                     Log.w(name, "No items found on $listName page $pageToLoadForList ($urlToLoad)")
-                     return HomePageResponse(listOf(HomePageList(listName, emptyList(), nextKey = null))) // *** Sửa: nextKey -> nextUrl ***
-                }
-                val hasNext = document.parseHasNext(pageToLoadForList)
-                val nextUrlValue = if (hasNext) (pageToLoadForList + 1).toString() else null
+                // If items are empty, it signifies no more pages or an issue.
+                // The hasNext logic is implicitly handled by CloudStream trying the next page
+                // and stopping if the list is empty.
+                // parseHasNext can be used to log or for more fine-grained control if needed.
+                // val hasNext = document.parseHasNext(pageToLoadForList) // Still useful for logging or future logic
                 
-                return HomePageResponse(listOf(HomePageList(listName, items, nextKey = nextUrlValue))) // *** Sửa: nextKey -> nextUrl ***
+                return HomePageResponse(listOf(HomePageList(listName, items))) // *** Sửa: Bỏ nextKey/nextUrl ***
             } catch (e: Exception) {
                 Log.e(name, "Error loading page $pageToLoadForList for $listName from $urlToLoad: ${e.message}", e)
                 return HomePageResponse(emptyList())
@@ -162,8 +161,8 @@ class AnimeVietsubProvider : MainAPI() {
             val moiCapNhatItems = moiCapNhatDoc.select("ul.MovieList.Rows li.TPostMv, div.posts-list article, ul.list-film li")
                 .mapNotNull { it.toSearchResponse(this, baseUrl) }
             if (moiCapNhatItems.isNotEmpty()) {
-                val hasNext = moiCapNhatDoc.parseHasNext(1)
-                lists.add(HomePageList("Mới cập nhật", moiCapNhatItems, nextKey = if (hasNext) "2" else null)) // *** Sửa: nextKey -> nextUrl ***
+                // val hasNext = moiCapNhatDoc.parseHasNext(1) // Info for provider, not directly for HomePageList
+                lists.add(HomePageList("Mới cập nhật", moiCapNhatItems)) // *** Sửa: Bỏ nextKey/nextUrl ***
             } else {
                  Log.w(name, "No items found for 'Mới cập nhật' on $moiCapNhatUrl")
             }
@@ -178,8 +177,8 @@ class AnimeVietsubProvider : MainAPI() {
             val sapChieuItems = sapChieuDoc.select("ul.MovieList.Rows li.TPostMv, div.posts-list article, ul.list-film li")
                 .mapNotNull { it.toSearchResponse(this, baseUrl) }
             if (sapChieuItems.isNotEmpty()) {
-                val hasNext = sapChieuDoc.parseHasNext(1)
-                lists.add(HomePageList("Sắp chiếu", sapChieuItems, nextKey = if (hasNext) "2" else null)) // *** Sửa: nextKey -> nextUrl ***
+                // val hasNext = sapChieuDoc.parseHasNext(1) // Info for provider
+                lists.add(HomePageList("Sắp chiếu", sapChieuItems)) // *** Sửa: Bỏ nextKey/nextUrl ***
             } else {
                 Log.w(name, "No items found for 'Sắp chiếu' on $sapChieuUrl")
             }
@@ -194,7 +193,7 @@ class AnimeVietsubProvider : MainAPI() {
                 .mapNotNull { it.toSearchResponse(this, baseUrl) }
             if (hotItems.isNotEmpty()) {
                 val hotListName = mainDocumentForHot.selectFirst("section#hot-home div.Top a.STPb.Current")?.text() ?: "Đề cử"
-                lists.add(HomePageList(hotListName, hotItems, nextKey = null)) // *** Sửa: nextKey -> nextUrl ***
+                lists.add(HomePageList(hotListName, hotItems)) // *** Sửa: Bỏ nextKey/nextUrl ***
             } else {
                  Log.w(name, "No items found for 'Đề cử' on main page.")
             }
@@ -210,8 +209,8 @@ class AnimeVietsubProvider : MainAPI() {
             val baseUrl = getBaseUrl()
             val searchUrl = "$baseUrl/tim-kiem/${query.encodeUri()}/"
             val document = app.get(searchUrl).document
-            return document.selectFirst("ul.MovieList.Rows, div.posts-list, ul.list-film") // Added selectors
-                ?.select("li.TPostMv, article, li") // Added selectors
+            return document.selectFirst("ul.MovieList.Rows, div.posts-list, ul.list-film") 
+                ?.select("li.TPostMv, article, li") 
                 ?.mapNotNull { it.toSearchResponse(this, baseUrl) } ?: emptyList()
         } catch (e: Exception) {
             Log.e(name, "Error in search for query '$query': ${e.message}", e)
@@ -264,7 +263,6 @@ class AnimeVietsubProvider : MainAPI() {
 
             val statusSpanText = this.selectFirst("span.mli-st, .status, .ribbon-top-left span")?.text() ?: ""
 
-            // *** Sửa: Bỏ 'genres' và sửa Regex ***
             if (titleFromElement.contains("OVA", ignoreCase = true) ||
                 titleFromElement.contains("ONA", ignoreCase = true) ||
                 titleFromElement.contains("Movie", ignoreCase = true) ||
@@ -283,12 +281,12 @@ class AnimeVietsubProvider : MainAPI() {
                 } else {
                     TvType.Movie
                 }
-            } else if (hasEpisodeSpan || statusSpanText.contains(Regex("""Tập|Episode""", RegexOption.IGNORE_CASE)) ) { // *** Sửa Regex ***
+            } else if (hasEpisodeSpan || statusSpanText.contains(Regex("""Tập|Episode""", RegexOption.IGNORE_CASE)) ) {
                  finalTvType = if (provider.name.contains("Anime", ignoreCase = true) || 
                                  titleFromElement.contains("Anime", ignoreCase = true)
                                  ) {
                     TvType.Anime 
-                } else { // Không có genres, tạm thời dựa vào title hoặc mặc định TvSeries
+                } else { 
                     if (titleFromElement.contains("Hoạt Hình", ignoreCase = true) || titleFromElement.contains("Cartoon", ignoreCase = true)) {
                         TvType.Cartoon
                     } else {
@@ -297,7 +295,7 @@ class AnimeVietsubProvider : MainAPI() {
                 }
             }
             
-            if (finalTvType == null) { // Fallback nếu các logic trên không xác định được
+            if (finalTvType == null) { 
                 finalTvType = if (hasEpisodeSpan || this.selectFirst("span.mli-quality, .quality") == null) TvType.Anime else TvType.Movie
             }
             
