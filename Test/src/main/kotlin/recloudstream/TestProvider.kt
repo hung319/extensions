@@ -166,7 +166,6 @@ class HoatHinh3DProvider : MainAPI() {
                 this.name = epName
                 // Extract episode number if possible
                 this.episode = epName.replace(Regex("[^0-9]"), "").toIntOrNull()
-                this.duration = null // Không có thông tin thời lượng từ HTML cho từng tập
             }
         }.reversed()
         
