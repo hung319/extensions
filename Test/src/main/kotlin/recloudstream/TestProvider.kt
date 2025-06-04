@@ -98,7 +98,7 @@ class HoatHinh3DProvider : MainAPI() {
                 }
             }
             if (movies.isNotEmpty()) {
-                homePageList.add(HomePageList(sectionTitle, movies, isHorizontal = true))
+                homePageList.add(HomePageList(sectionTitle, movies))
             }
         }
 
