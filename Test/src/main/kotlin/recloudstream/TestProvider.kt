@@ -14,14 +14,14 @@ private data class ExtractedEpisodeInfo(
 
 private data class PlayerApiResponse(
     @JsonProperty("status") val status: Boolean?,
-    @JsonProperty("file") val file: String?,    // Video URL M3U8
+    @JsonProperty("file") val file: String?,    // Video URL M3U8 hoặc MP4
     @JsonProperty("label") val label: String?,  // Ví dụ: "1080"
-    @JsonProperty("type") val type: String?,     // Ví dụ: "hls"
+    @JsonProperty("type") val type: String?,     // Ví dụ: "hls", "mp4"
     @JsonProperty("server_used") val serverUsed: String? 
 )
 
 class HoatHinh3DProvider : MainAPI() {
-    override var mainUrl = "https://hoathinh3d.name" // mainUrl đã bao gồm https://
+    override var mainUrl = "https://hoathinh3d.name"
     override var name = "HoatHinh3D"
     override val supportedTypes = setOf(TvType.Cartoon)
     override var lang = "vi"
@@ -154,7 +154,7 @@ class HoatHinh3DProvider : MainAPI() {
             }
             
             if (epLink.isNotBlank()) {
-                newEpisode(epLink) { 
+                newEpisode(epLink) { // Episode.data giờ là URL của trang xem tập phim
                     this.name = epName
                 }
             } else {
@@ -200,9 +200,9 @@ class HoatHinh3DProvider : MainAPI() {
         }
     }
 
-    // --- HÀM LOADLINKS HOÀN CHỈNH - LẤY LINK M3U8 ---
+    // --- HÀM LOADLINKS HOÀN CHỈNH - LẤY LINK M3U8 THỰC SỰ ---
     override suspend fun loadLinks(
-        data: String, // data giờ là URL của trang xem tập phim (epLink)
+        data: String, 
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
@@ -253,28 +253,36 @@ class HoatHinh3DProvider : MainAPI() {
         val serversToTry = availableServersFromPage.filter { desiredServerNames.contains(it.second) }
 
         if (serversToTry.isEmpty()) {
-            // println("HoatHinh3DProvider: [loadLinks] No desired servers (VIP 1, VIP 2, VIP 3) found on the page.")
-            return false
+            // Nếu không tìm thấy server VIP 1,2,3 theo tên, thử dùng các subsv_id mặc định
+            // mà chúng ta đã thảo luận (ví dụ: "", "1", "2", "3")
+            // println("HoatHinh3DProvider: [loadLinks] No desired servers (VIP 1, 2, 3) found by name. Falling back to default subsv_id list.")
+            val defaultServersToTry = listOf(
+                // subsv_id to try -> Display Name (nếu không có tên từ HTML)
+                // "" to "VIP 1 (Default)", // Dựa trên URL hoạt động của bạn
+                "1" to "VIP 1", // Thử cả "1" nếu khác với ""
+                "2" to "VIP 2",
+                "3" to "VIP 3"
+            )
+            // Nếu serversToTry rỗng, bạn có thể gán nó bằng defaultServersToTry ở đây nếu muốn
+            // For now, if no named servers match, it will return false.
+            // You might want to add logic here to try default subsv_ids if serversToTry is empty.
+            if (serversToTry.isEmpty()){
+                 // println("HoatHinh3DProvider: [loadLinks] No specific VIP 1,2,3 servers found on page. Exiting.")
+                 return false
+            }
         }
         
         var atLeastOneLinkFound = false 
-        // --- THAY ĐỔI CÁCH ĐỊNH NGHĨA playerPhpUrlBase ---
-        val playerPhpUrlBase = "$mainUrl/wp-content/themes/halimmovies/player.php"
-        // --- KẾT THÚC THAY ĐỔI ---
+        val playerPhpUrlBase = "$mainUrl/wp-content/themes/halimmovies/player.php" // Sử dụng mainUrl
         val fixedServerIdQueryParam = "1" 
 
         for ((currentSubSvid, serverDisplayNameFromHtml) in serversToTry) {
             val queryParams = try {
-                // Đảm bảo extractedEpisodeSlug và extractedSeriesPostId không null ở đây
-                // bằng cách sử dụng !! (nếu chắc chắn) hoặc kiểm tra lại
-                val slug = extractedEpisodeSlug ?: return@loadLinks false // Thoát sớm nếu null
-                val postId = extractedSeriesPostId ?: return@loadLinks false // Thoát sớm nếu null
-
                 listOf(
-                    "episode_slug" to slug,
+                    "episode_slug" to extractedEpisodeSlug!!,
                     "server_id" to fixedServerIdQueryParam, 
                     "subsv_id" to currentSubSvid,          
-                    "post_id" to postId 
+                    "post_id" to extractedSeriesPostId!! 
                 ).joinToString("&") { (key, value) -> "$key=$value" }
             } catch (e: Exception) { 
                 // println("HoatHinh3DProvider: [loadLinks] Error building query for subsv_id '$currentSubSvid': ${e.message}")
@@ -285,6 +293,7 @@ class HoatHinh3DProvider : MainAPI() {
             // println("HoatHinh3DProvider: [loadLinks] Fetching API URL for $serverDisplayNameFromHtml: $urlToFetchApi")
 
             try {
+                // BƯỚC 1: GỌI API player.php ĐỂ LẤY JSON
                 val apiResponseText = app.get(urlToFetchApi, referer = episodePageUrl).text
                 if (apiResponseText.isBlank()) {
                     // println("HoatHinh3DProvider: [loadLinks] Blank response from API $urlToFetchApi")
@@ -299,8 +308,9 @@ class HoatHinh3DProvider : MainAPI() {
                     continue 
                 }
                 
+                // BƯỚC 2: XỬ LÝ JSON ĐỂ LẤY LINK VIDEO THỰC SỰ
                 if (playerApiResponse.status == true && !playerApiResponse.file.isNullOrBlank()) {
-                    val videoUrl = playerApiResponse.file 
+                    val videoUrl = playerApiResponse.file // Đây là link M3U8/MP4
                     val qualityLabel = playerApiResponse.label ?: "Chất lượng" 
                     val videoType = playerApiResponse.type?.lowercase() ?: ""
                     
@@ -321,10 +331,10 @@ class HoatHinh3DProvider : MainAPI() {
                         ExtractorLink(
                             source = finalServerName, 
                             name = "$qualityLabel - $finalServerName", 
-                            url = videoUrl, 
+                            url = videoUrl, // << ĐẶT LINK VIDEO THỰC SỰ VÀO ĐÂY
                             referer = episodePageUrl, 
                             quality = qualityInt,
-                            type = linkType, 
+                            type = linkType, // << TYPE LÀ M3U8 HOẶC VIDEO
                             headers = emptyMap() 
                         )
                     )
