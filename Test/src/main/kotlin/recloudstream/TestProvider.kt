@@ -2,8 +2,9 @@ package com.example.HoatHinh3DProvider // Bạn có thể thay đổi package na
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.* import org.jsoup.nodes.Element
-import java.net.URLEncoder // Import for URL encoding if needed, though may not be strictly necessary for these slugs/IDs
+import com.lagradost.cloudstream3.utils.*
+import org.jsoup.nodes.Element
+import java.net.URLEncoder // Import cho trường hợp cần encode URL
 
 // Data class cho JSON được lưu trong Episode.data
 private data class EpisodeDataInput(
@@ -19,6 +20,7 @@ private data class PlayerApiResponse(
     @JsonProperty("file") val file: String?,    // Video URL
     @JsonProperty("label") val label: String?,  // Ví dụ: "1080"
     @JsonProperty("type") val type: String?     // Ví dụ: "hls"
+    // Các trường khác như title, poster, skip_time có thể thêm nếu cần
 )
 
 class HoatHinh3DProvider : MainAPI() {
@@ -191,7 +193,7 @@ class HoatHinh3DProvider : MainAPI() {
                         partSpecificPoster = fixUrlNull(partMovieWrapper?.selectFirst("div.head div.first img")?.attr("src"))
                     }
                 } catch (_: Exception) {
-                    // Ignore error fetching sub-poster, will use main poster
+                    // Bỏ qua lỗi khi lấy poster phụ, sẽ dùng poster chính
                 }
             }
 
@@ -214,13 +216,15 @@ class HoatHinh3DProvider : MainAPI() {
         }
     }
 
-    // --- HÀM LOADLINKS VỚI SỬA LỖI ---
+    // --- HÀM LOADLINKS ĐƯỢC CẬP NHẬT ---
     override suspend fun loadLinks(
         data: String, 
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // println("HoatHinh3DProvider: loadLinks called with data string: '$data'") 
+
         var episodeInfo: EpisodeDataInput? = null
         var episodePageUrlForReferer: String? = null
 
@@ -228,58 +232,91 @@ class HoatHinh3DProvider : MainAPI() {
             if (data.startsWith("{") && data.endsWith("}")) {
                 episodeInfo = AppUtils.parseJson<EpisodeDataInput>(data)
                 episodePageUrlForReferer = episodeInfo.episodePageUrl
+                // println("HoatHinh3DProvider: Parsed EpisodeDataInput: $episodeInfo")
             } else {
-                println("HoatHinh3DProvider: loadLinks received non-JSON data: $data. This is unexpected.")
+                // println("HoatHinh3DProvider: loadLinks received non-JSON data: '$data'. This is unexpected.")
                 return false
             }
         } catch (e: Exception) {
-            println("HoatHinh3DProvider: Error parsing Episode.data JSON: ${e.message}")
-            // e.printStackTrace() // Bỏ comment nếu cần debug chi tiết
+            // println("HoatHinh3DProvider: Error parsing Episode.data JSON: ${e.message}")
+            // e.printStackTrace()
             return false
         }
 
         if (episodeInfo == null) {
-            println("HoatHinh3DProvider: Failed to get episode info from data.")
+            // println("HoatHinh3DProvider: Failed to get episode info from data (episodeInfo is null).")
             return false
         }
 
         val playerPhpUrlBase = "https://hoathinh3d.name/wp-content/themes/halimmovies/player.php"
         
-        // SỬA LỖI: Xây dựng URL thủ công
-        val queryParams = listOfNotNull(
-            "post_id" to episodeInfo.postId,
-            "episode_slug" to episodeInfo.episodeSlug,
-            "server_id" to episodeInfo.serverId,
-            "subsv_id" to "" // Giữ nguyên subsv_id rỗng
-        ).joinToString("&") { (key, value) ->
-            // Chỉ encode value nếu cần, các key và value này thường là ID/slug nên có thể không cần
-            // Nếu episodeSlug có thể chứa ký tự đặc biệt, hãy dùng URLEncoder.encode(value, "UTF-8")
-            "$key=$value" 
+        // Xây dựng query parameters theo đúng thứ tự và bao gồm subsv_id=""
+        val queryParams = try {
+            // Sử dụng map để dễ dàng nối chuỗi, sau đó joinToString sẽ giữ thứ tự
+            // Hoặc bạn có thể nối chuỗi trực tiếp nếu muốn kiểm soát hoàn toàn thứ tự.
+            // Trong ví dụ này, List sẽ đảm bảo thứ tự khi join.
+            listOf(
+                "episode_slug" to episodeInfo.episodeSlug,
+                "server_id" to episodeInfo.serverId,
+                "subsv_id" to "", // Quan trọng: thêm subsv_id rỗng
+                "post_id" to episodeInfo.postId
+            ).joinToString("&") { (key, value) ->
+                // Mã hóa giá trị để đảm bảo URL hợp lệ, đặc biệt nếu slug có thể chứa ký tự đặc biệt
+                // tuy nhiên, slug thường đã an toàn. ID thì chắc chắn an toàn.
+                // Để cẩn thận, có thể encode:
+                // "$key=${URLEncoder.encode(value, "UTF-8")}"
+                // Nhưng với các giá trị hiện tại, nối trực tiếp có thể vẫn ổn.
+                "$key=$value"
+            }
+        } catch (e: Exception) {
+            // println("HoatHinh3DProvider: Error building query parameters: ${e.message}")
+            // e.printStackTrace()
+            return false
         }
+
         val urlToFetch = "$playerPhpUrlBase?$queryParams"
-        
-        // println("HoatHinh3DProvider: Fetching player data from: $urlToFetch")
+        // println("HoatHinh3DProvider: Constructed URL to fetch player data: $urlToFetch")
+        // println("HoatHinh3DProvider: Referer for request will be: $episodePageUrlForReferer")
 
         try {
-            val response = app.get(
+            val responseText = app.get(
                 urlToFetch,
-                referer = episodePageUrlForReferer ?: mainUrl 
-            ).parsedSafe<PlayerApiResponse>()
+                referer = episodePageUrlForReferer ?: mainUrl
+            ).text
+            // println("HoatHinh3DProvider: Raw response from player.php: '$responseText'")
 
-            if (response?.status == true && !response.file.isNullOrBlank()) {
+            if (responseText.isBlank()) {
+                // println("HoatHinh3DProvider: Raw response from player.php is blank.")
+                return false
+            }
+
+            val response = try {
+                AppUtils.parseJson<PlayerApiResponse>(responseText)
+            } catch (e: Exception) {
+                // println("HoatHinh3DProvider: Failed to parse JSON from player.php response: ${e.message}")
+                // println("HoatHinh3DProvider: JSON was: $responseText")
+                // e.printStackTrace()
+                return false
+            }
+            
+            // println("HoatHinh3DProvider: Parsed PlayerApiResponse: $response")
+
+            if (response.status == true && !response.file.isNullOrBlank()) {
                 val videoUrl = response.file
                 val qualityLabel = response.label ?: "Chất lượng" 
                 val videoType = response.type?.lowercase() ?: ""
 
+                // println("HoatHinh3DProvider: Video URL found: $videoUrl, Label: $qualityLabel, Type: $videoType")
+
                 val qualityInt = qualityLabel.replace("p", "", ignoreCase = true).toIntOrNull() 
                                  ?: Qualities.Unknown.value
 
-                // SỬA LỖI: MP4Download -> VIDEO
                 val linkType = when (videoType) {
                     "hls", "m3u8" -> ExtractorLinkType.M3U8
                     "mp4" -> ExtractorLinkType.VIDEO 
                     else -> ExtractorLinkType.VIDEO 
                 }
+                // println("HoatHinh3DProvider: Determined QualityInt: $qualityInt, LinkType: $linkType")
 
                 callback.invoke(
                     ExtractorLink(
@@ -292,15 +329,16 @@ class HoatHinh3DProvider : MainAPI() {
                         headers = emptyMap() 
                     )
                 )
+                // println("HoatHinh3DProvider: ExtractorLink callback invoked successfully.")
                 return true 
             } else {
                 // println("HoatHinh3DProvider: player.php response status is not true or file link is missing.")
-                // println("HoatHinh3DProvider: Response status: ${response?.status}, file: ${response?.file}")
+                // println("HoatHinh3DProvider: Response details -> Status: ${response.status}, File: ${response.file}, Type: ${response.type}, Label: ${response.label}")
                 return false
             }
         } catch (e: Exception) {
-            // println("HoatHinh3DProvider: Exception during loadLinks GET request or JSON parsing: ${e.message}")
-            // e.printStackTrace() // Bỏ comment nếu cần debug chi tiết
+            // println("HoatHinh3DProvider: Exception during HTTP GET request to player.php or subsequent processing: ${e.message}")
+            // e.printStackTrace()
             return false
         }
     }
