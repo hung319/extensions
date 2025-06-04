@@ -5,17 +5,21 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.* // AppUtils cũng nằm trong đây
 import org.jsoup.nodes.Element
 
-// Data class cho response của AJAX call (sẽ dùng trong loadLinks)
-data class VideoSourceResponse(
-    @JsonProperty("status") val status: Boolean?,
-    @JsonProperty("type") val type: String?,
-    @JsonProperty("link") val link: String?,
-    @JsonProperty("subs") val subs: List<SubtitleInfo>?
+// Data class cho JSON được lưu trong Episode.data
+private data class EpisodeDataInput(
+    @JsonProperty("postId") val postId: String,
+    @JsonProperty("slug") val episodeSlug: String,
+    @JsonProperty("server") val serverId: String,
+    @JsonProperty("episodePageUrl") val episodePageUrl: String
 )
 
-data class SubtitleInfo(
-    @JsonProperty("label") val label: String?,
-    @JsonProperty("file") val file: String
+// Data class cho JSON response từ player.php
+private data class PlayerApiResponse(
+    @JsonProperty("status") val status: Boolean?,
+    @JsonProperty("file") val file: String?,    // Video URL
+    @JsonProperty("label") val label: String?,  // Ví dụ: "1080"
+    @JsonProperty("type") val type: String?     // Ví dụ: "hls"
+    // Các trường khác như title, poster, skip_time có thể thêm nếu cần
 )
 
 class HoatHinh3DProvider : MainAPI() {
@@ -27,7 +31,7 @@ class HoatHinh3DProvider : MainAPI() {
     override val hasChromecastSupport = true
     override val hasDownloadSupport = true
 
-    // Helper function để parse các item phim/series
+    // Helper function để parse các item phim/series (giữ nguyên)
     private fun Element.toSearchResponse(): SearchResponse? {
         val thumbLink = this.selectFirst("a.halim-thumb") ?: return null
         val href = fixUrl(thumbLink.attr("href"))
@@ -49,6 +53,7 @@ class HoatHinh3DProvider : MainAPI() {
         }
     }
 
+    // hàm getMainPage (giữ nguyên)
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val url = if (page == 1) mainUrl else "$mainUrl/page/$page/"
         val effectiveUrl = if (page == 1 && !url.endsWith("/")) "$url/" else url
@@ -97,11 +102,11 @@ class HoatHinh3DProvider : MainAPI() {
         if (homePageList.isEmpty()) {
             return null
         }
-        // SỬA Ở ĐÂY: Dùng newHomePageResponse
-        val hasNextPage = homePageList.any { it.list.isNotEmpty() } // Đơn giản hóa: nếu có item thì có thể có trang tiếp
+        val hasNextPage = homePageList.any { it.list.isNotEmpty() }
         return newHomePageResponse(homePageList, hasNextPage)
     }
 
+    // hàm search (giữ nguyên)
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/search/$query"
         val document = app.get(searchUrl).document
@@ -111,6 +116,7 @@ class HoatHinh3DProvider : MainAPI() {
         }
     }
 
+    // hàm load (giữ nguyên với các chỉnh sửa trước đó)
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document 
 
@@ -161,11 +167,10 @@ class HoatHinh3DProvider : MainAPI() {
                 epLink 
             }
             
-            // SỬA Ở ĐÂY: Dùng newEpisode
             newEpisode(episodeData) {
                 this.name = epName
-                // Extract episode number if possible
                 this.episode = epName.replace(Regex("[^0-9]"), "").toIntOrNull()
+                // this.duration = null // Đã bỏ do lỗi unresolved reference
             }
         }.reversed()
         
@@ -213,13 +218,105 @@ class HoatHinh3DProvider : MainAPI() {
         }
     }
 
+    // --- HÀM LOADLINKS ĐƯỢC TRIỂN KHAI ---
     override suspend fun loadLinks(
-        data: String,
+        data: String, // JSON string từ Episode.data
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        println("HoatHinh3DProvider: loadLinks function called with data: $data - NOT IMPLEMENTED YET")
-        return false
+        var episodeInfo: EpisodeDataInput? = null
+        var episodePageUrlForReferer: String? = null // Biến để lưu URL trang tập phim làm referer
+
+        try {
+            // Parse JSON string từ Episode.data
+            if (data.startsWith("{") && data.endsWith("}")) {
+                episodeInfo = AppUtils.parseJson<EpisodeDataInput>(data)
+                episodePageUrlForReferer = episodeInfo.episodePageUrl
+            } else {
+                // Trường hợp data là URL trực tiếp (fallback từ hàm load, nếu có)
+                // Tuy nhiên, với cách chúng ta xây dựng Episode.data, nó luôn là JSON.
+                // Nếu data là URL, chúng ta có thể cần fetch trang đó để lấy postId, slug, serverId
+                // nhưng điều này sẽ phức tạp hơn và ít khả năng xảy ra với logic hiện tại.
+                // For now, we assume data is always the JSON string.
+                // episodePageUrlForReferer = data // Nếu data là URL của trang tập phim
+                println("HoatHinh3DProvider: loadLinks received non-JSON data: $data. This is unexpected.")
+                return false
+            }
+        } catch (e: Exception) {
+            println("HoatHinh3DProvider: Error parsing Episode.data JSON: ${e.message}")
+            e.printStackTrace()
+            return false
+        }
+
+        if (episodeInfo == null) {
+            println("HoatHinh3DProvider: Failed to get episode info from data.")
+            return false
+        }
+
+        // Xây dựng URL cho player.php
+        val playerPhpUrl = "https://hoathinh3d.name/wp-content/themes/halimmovies/player.php"
+        val urlToFetch = try {
+            buildUrl(
+                playerPhpUrl,
+                mapOf(
+                    "post_id" to episodeInfo.postId,
+                    "episode_slug" to episodeInfo.episodeSlug,
+                    "server_id" to episodeInfo.serverId,
+                    "subsv_id" to "" // Giữ nguyên subsv_id rỗng như trong ví dụ bạn tìm thấy
+                )
+            )
+        } catch (e: Exception) {
+            println("HoatHinh3DProvider: Error building URL for player.php: ${e.message}")
+            e.printStackTrace()
+            return false
+        }
+        
+        println("HoatHinh3DProvider: Fetching player data from: $urlToFetch")
+
+        try {
+            val response = app.get(
+                urlToFetch,
+                referer = episodePageUrlForReferer ?: mainUrl // Dùng episodePageUrl làm referer
+            ).parsedSafe<PlayerApiResponse>() // Parse JSON response trực tiếp
+
+            if (response?.status == true && !response.file.isNullOrBlank()) {
+                val videoUrl = response.file
+                val qualityLabel = response.label ?: "Chất lượng" // Ví dụ "1080"
+                val videoType = response.type?.lowercase() ?: ""
+
+                // Chuyển đổi label chất lượng (vd: "1080p", "720") thành Int
+                val qualityInt = qualityLabel.replace("p", "", ignoreCase = true).toIntOrNull() 
+                                 ?: Qualities.Unknown.value // Giá trị mặc định nếu không parse được
+
+                val linkType = when (videoType) {
+                    "hls", "m3u8" -> ExtractorLinkType.M3U8
+                    "mp4" -> ExtractorLinkType.MP4Download
+                    // Thêm các case khác nếu trang web có thể trả về các type khác
+                    else -> ExtractorLinkType.VIDEO // Hoặc một type mặc định khác
+                }
+
+                callback.invoke(
+                    ExtractorLink(
+                        source = "$name Server ${episodeInfo.serverId}", // Tên nguồn (ví dụ: "HoatHinh3D Server 1")
+                        name = "$name - $qualityLabel", // Tên của link (ví dụ: "HoatHinh3D - 1080p")
+                        url = videoUrl,
+                        referer = episodePageUrlForReferer ?: mainUrl, // Referer quan trọng
+                        quality = qualityInt,
+                        type = linkType, // Loại link (M3U8, MP4, etc.)
+                        headers = emptyMap() // Thêm header nếu cần
+                    )
+                )
+                return true // Báo hiệu đã tìm thấy và gọi callback thành công
+            } else {
+                println("HoatHinh3DProvider: player.php response status is not true or file link is missing.")
+                println("HoatHinh3DProvider: Response status: ${response?.status}, file: ${response?.file}")
+                return false
+            }
+        } catch (e: Exception) {
+            println("HoatHinh3DProvider: Exception during loadLinks GET request or JSON parsing: ${e.message}")
+            e.printStackTrace()
+            return false
+        }
     }
 }
