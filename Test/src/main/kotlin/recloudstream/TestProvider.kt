@@ -4,25 +4,26 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-import java.net.URLEncoder
+import java.net.URLEncoder // Để sẵn nếu cần encode URL sau này
 
-// Data class này dùng để chứa thông tin parse được từ halim_cfg bên trong loadLinks.
+// Data class chứa thông tin trích xuất từ halim_cfg bên trong loadLinks
 private data class ExtractedEpisodeInfo(
     val seriesPostId: String,
     val episodeSlug: String
 )
 
+// Data class cho JSON response từ player.php
 private data class PlayerApiResponse(
     @JsonProperty("status") val status: Boolean?,
     @JsonProperty("file") val file: String?,    // Video URL M3U8 hoặc MP4
     @JsonProperty("label") val label: String?,  // Ví dụ: "1080"
     @JsonProperty("type") val type: String?,     // Ví dụ: "hls", "mp4"
-    @JsonProperty("server_used") val serverUsed: String? 
+    @JsonProperty("server_used") val serverUsed: String? // Tên server thực tế được sử dụng
 )
 
 class HoatHinh3DProvider : MainAPI() {
     override var mainUrl = "https://hoathinh3d.name"
-    override var name = "HoatHinh3D"
+    override var name = "HoatHinh3D" // Tên provider
     override val supportedTypes = setOf(TvType.Cartoon)
     override var lang = "vi"
     override val hasMainPage = true
@@ -155,7 +156,7 @@ class HoatHinh3DProvider : MainAPI() {
             
             if (epLink.isNotBlank()) {
                 newEpisode(epLink) { // Episode.data giờ là URL của trang xem tập phim
-                    this.name = epName
+                    this.name = epName // Tên tập phim đã được làm sạch, không còn debug info
                 }
             } else {
                 null
@@ -200,7 +201,6 @@ class HoatHinh3DProvider : MainAPI() {
         }
     }
 
-    // --- HÀM LOADLINKS HOÀN CHỈNH - LẤY LINK M3U8 THỰC SỰ ---
     override suspend fun loadLinks(
         data: String, 
         isCasting: Boolean,
@@ -208,6 +208,7 @@ class HoatHinh3DProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val episodePageUrl = data 
+        // // Log giá trị data (episodePageUrl) nhận được
         // println("HoatHinh3DProvider: [loadLinks] Called with episodePageUrl: '$episodePageUrl'") 
 
         if (episodePageUrl.isBlank()) {
@@ -217,7 +218,7 @@ class HoatHinh3DProvider : MainAPI() {
 
         var extractedSeriesPostId: String? = null
         var extractedEpisodeSlug: String? = null
-        var availableServersFromPage: List<Pair<String, String>> = emptyList()
+        var availableServersFromPage: List<Pair<String, String>> = emptyList() // List of (subsvId, serverName)
 
         try {
             val episodePageDocument = app.get(episodePageUrl).document
@@ -237,46 +238,36 @@ class HoatHinh3DProvider : MainAPI() {
 
             availableServersFromPage = episodePageDocument.select("div#halim-ajax-list-server span.get-eps").mapNotNull { serverElement ->
                 val subSvid = serverElement.attr("data-subsv-id")
-                val serverName = serverElement.text().trim()
+                val serverName = serverElement.text().trim() // Lấy tên server từ text của span
                 if (subSvid.isNotBlank() && serverName.isNotBlank()) {
                     subSvid to serverName
                 } else {
                     null
                 }
             }
+            // println("HoatHinh3DProvider: [loadLinks] All available servers from page: $availableServersFromPage")
+
         } catch (e: Exception) { 
             // println("HoatHinh3DProvider: [loadLinks] Error fetching/parsing episode page: ${e.message}")
             return false 
         }
         
         val desiredServerNames = setOf("VIP 1", "VIP 2", "VIP 3")
+        // Lọc danh sách server dựa trên tên mong muốn
         val serversToTry = availableServersFromPage.filter { desiredServerNames.contains(it.second) }
 
+        // println("HoatHinh3DProvider: [loadLinks] Servers to try after filtering for VIP 1, 2, 3: $serversToTry")
+
         if (serversToTry.isEmpty()) {
-            // Nếu không tìm thấy server VIP 1,2,3 theo tên, thử dùng các subsv_id mặc định
-            // mà chúng ta đã thảo luận (ví dụ: "", "1", "2", "3")
-            // println("HoatHinh3DProvider: [loadLinks] No desired servers (VIP 1, 2, 3) found by name. Falling back to default subsv_id list.")
-            val defaultServersToTry = listOf(
-                // subsv_id to try -> Display Name (nếu không có tên từ HTML)
-                // "" to "VIP 1 (Default)", // Dựa trên URL hoạt động của bạn
-                "1" to "VIP 1", // Thử cả "1" nếu khác với ""
-                "2" to "VIP 2",
-                "3" to "VIP 3"
-            )
-            // Nếu serversToTry rỗng, bạn có thể gán nó bằng defaultServersToTry ở đây nếu muốn
-            // For now, if no named servers match, it will return false.
-            // You might want to add logic here to try default subsv_ids if serversToTry is empty.
-            if (serversToTry.isEmpty()){
-                 // println("HoatHinh3DProvider: [loadLinks] No specific VIP 1,2,3 servers found on page. Exiting.")
-                 return false
-            }
+            // println("HoatHinh3DProvider: [loadLinks] No desired servers (VIP 1, VIP 2, VIP 3) found on the page.")
+            return false
         }
         
         var atLeastOneLinkFound = false 
-        val playerPhpUrlBase = "$mainUrl/wp-content/themes/halimmovies/player.php" // Sử dụng mainUrl
+        val playerPhpUrlBase = "$mainUrl/wp-content/themes/halimmovies/player.php"
         val fixedServerIdQueryParam = "1" 
 
-        for ((currentSubSvid, serverDisplayNameFromHtml) in serversToTry) {
+        for ((currentSubSvid, serverDisplayNameFromHtml) in serversToTry) { // serverDisplayNameFromHtml giờ là "VIP 1", "VIP 2", ...
             val queryParams = try {
                 listOf(
                     "episode_slug" to extractedEpisodeSlug!!,
@@ -293,7 +284,6 @@ class HoatHinh3DProvider : MainAPI() {
             // println("HoatHinh3DProvider: [loadLinks] Fetching API URL for $serverDisplayNameFromHtml: $urlToFetchApi")
 
             try {
-                // BƯỚC 1: GỌI API player.php ĐỂ LẤY JSON
                 val apiResponseText = app.get(urlToFetchApi, referer = episodePageUrl).text
                 if (apiResponseText.isBlank()) {
                     // println("HoatHinh3DProvider: [loadLinks] Blank response from API $urlToFetchApi")
@@ -308,13 +298,13 @@ class HoatHinh3DProvider : MainAPI() {
                     continue 
                 }
                 
-                // BƯỚC 2: XỬ LÝ JSON ĐỂ LẤY LINK VIDEO THỰC SỰ
                 if (playerApiResponse.status == true && !playerApiResponse.file.isNullOrBlank()) {
-                    val videoUrl = playerApiResponse.file // Đây là link M3U8/MP4
+                    val videoUrl = playerApiResponse.file 
                     val qualityLabel = playerApiResponse.label ?: "Chất lượng" 
                     val videoType = playerApiResponse.type?.lowercase() ?: ""
                     
-                    val finalServerName = playerApiResponse.serverUsed?.replace("_", " ")?.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() } ?: serverDisplayNameFromHtml
+                    // SỬ DỤNG serverDisplayNameFromHtml (là "VIP 1", "VIP 2", "VIP 3")
+                    val finalServerName = serverDisplayNameFromHtml 
 
                     val qualityInt = qualityLabel.replace("p", "", ignoreCase = true).toIntOrNull() 
                                      ?: Qualities.Unknown.value
@@ -329,21 +319,21 @@ class HoatHinh3DProvider : MainAPI() {
 
                     callback.invoke(
                         ExtractorLink(
-                            source = finalServerName, 
+                            source = finalServerName, // Tên server hiển thị (VIP 1, VIP 2, VIP 3)
                             name = "$qualityLabel - $finalServerName", 
-                            url = videoUrl, // << ĐẶT LINK VIDEO THỰC SỰ VÀO ĐÂY
+                            url = videoUrl, 
                             referer = episodePageUrl, 
                             quality = qualityInt,
-                            type = linkType, // << TYPE LÀ M3U8 HOẶC VIDEO
+                            type = linkType, 
                             headers = emptyMap() 
                         )
                     )
                     atLeastOneLinkFound = true 
                 } else {
-                    // println("HoatHinh3DProvider: [loadLinks] API response for $serverDisplayNameFromHtml status not true or file link missing. Status: ${playerApiResponse.status}, File: ${playerApiResponse.file}")
+                    // println("HoatHinh3DProvider: [loadLinks] API for $serverDisplayNameFromHtml status not true or file link missing.")
                 }
             } catch (e: Exception) {
-                // println("HoatHinh3DProvider: [loadLinks] Exception during GET request to API $urlToFetchApi or subsequent processing: ${e.message}")
+                // println("HoatHinh3DProvider: [loadLinks] Exception for $serverDisplayNameFromHtml API call: ${e.message}")
             }
         } 
         return atLeastOneLinkFound
