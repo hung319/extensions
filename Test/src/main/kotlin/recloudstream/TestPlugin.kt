@@ -1,4 +1,4 @@
-package recloudstream
+package com.example.HoatHinh3DProvider
 
 import android.content.Context
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
@@ -11,6 +11,6 @@ class TestPlugin: Plugin() { // Kế thừa Plugin
     override fun load(context: Context) {
         // Tất cả provider nên được thêm vào theo cách này.
         // Đăng ký AnimeHayProvider
-        registerMainAPI(AnimeHayProvider()) // Gọi đăng ký provider ở đây
+        registerMainAPI(HoatHinh3DProvider()) // Gọi đăng ký provider ở đây
     }
 }
