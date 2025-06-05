@@ -79,8 +79,6 @@ class PhimMoiChillProvider : MainAPI() {
         val statusDivText = this.selectFirst("span.label div.status")?.text()?.trim()
         val currentQuality = statusDivText ?: qualityText
 
-        // Xác định tvType ngay trên trang chủ/tìm kiếm nếu có thể (dù không chính xác bằng trang load)
-        // Phần này có thể không cần thay đổi nhiều vì trang load sẽ quyết định cuối cùng
         var tvType = TvType.Movie
         if (currentQuality != null) {
             if (currentQuality.contains("Tập", ignoreCase = true) ||
@@ -94,11 +92,9 @@ class PhimMoiChillProvider : MainAPI() {
         if (href.contains("/genre/phim-sap-chieu", ignoreCase = true) || title.contains("Trailer", ignoreCase = true)){
             tvType = TvType.TvSeries
         }
-        // Việc xác định Anime chính xác nhất là ở hàm load, ở đây chỉ là sơ bộ
         if (title.contains("anime", ignoreCase = true)) {
             tvType = TvType.Anime
         }
-
 
         return newMovieSearchResponse(title, href, tvType) {
             this.posterUrl = posterUrl
@@ -142,7 +138,8 @@ class PhimMoiChillProvider : MainAPI() {
                 }
             }
         }
-        return HomePageResponse(homePageList)
+        // *** SỬA LỖI DEPRECATED 1 ***
+        return newHomePageResponse(homePageList)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -168,15 +165,11 @@ class PhimMoiChillProvider : MainAPI() {
         if (posterUrl.isNullOrBlank()) {
             posterUrl = document.selectFirst("meta[property=og:image]")?.attr("content")
         }
-
-        // *** THAY ĐỔI CÁCH LẤY MÔ TẢ ***
-        // Tạo một bản sao của phần tử chứa nội dung để không ảnh hưởng đến các selector khác
+        
         val plotElement = document.selectFirst("div#film-content")?.clone()
-        // Xóa thẻ span chứa @phimmoi khỏi bản sao
         plotElement?.select("span[itemprop=author]")?.remove()
-        // Lấy text từ bản sao đã được làm sạch
         val plot = plotElement?.text()?.trim()
-            ?: document.selectFirst("meta[itemprop=description]")?.attr("content")?.trim()?.removeSuffix("...")?.trim() // Fallback
+            ?: document.selectFirst("meta[itemprop=description]")?.attr("content")?.trim()?.removeSuffix("...")?.trim()
 
         val tags = document.select("div#tags ul.tags-list li.tag a")?.mapNotNull { it.text() }
         
@@ -196,7 +189,6 @@ class PhimMoiChillProvider : MainAPI() {
         
         val recommendations = document.select("div.block.film-related ul.list-film li.item").mapNotNull { it.toSearchResponseDefault() }
         
-        // --- LOGIC NHẬN DIỆN TVTYPE MỚI, BAO GỒM ANIME ---
         val genres = document.select("ul.entry-meta.block-film li:has(label:contains(Thể loại)) a")
         val isAnime = genres.any { it.attr("href").contains("/genre/phim-anime") || it.text().contains("Anime", ignoreCase = true) }
 
@@ -215,9 +207,7 @@ class PhimMoiChillProvider : MainAPI() {
         } else {
             TvType.Movie
         }
-        // --- KẾT THÚC LOGIC MỚI ---
 
-        // Phim lẻ được xử lý riêng
         if (tvType == TvType.Movie) {
             return newMovieLoadResponse(title, url, tvType, episodeListPageUrl ?: url) {
                 this.posterUrl = posterUrl
@@ -235,11 +225,19 @@ class PhimMoiChillProvider : MainAPI() {
                     val episodeListDocument = app.get(episodeListPageUrl, headers = curlHeaders).document
                     val episodeElements = episodeListDocument.select("div#list-server div.server-group ul#list_episodes li a")
                     if (episodeElements.isNotEmpty()) {
+                        // *** SỬA LỖI DEPRECATED 2 ***
                         episodes.addAll(episodeElements.reversed().mapNotNull { ep ->
                             val epHref = ep.attr("abs:href")
                             val epName = ep.ownText().trim().ifBlank { ep.attr("title").trim() }
                             val episodeNumber = Regex("""tập\s*(\d+)""").find(epName.lowercase())?.groupValues?.get(1)?.toIntOrNull()
-                            if (epHref.isNotBlank()) Episode(epHref, epName, episode = episodeNumber) else null
+                            if (epHref.isNotBlank()) {
+                                newEpisode(epHref) { // Dùng hàm newEpisode
+                                    this.name = epName
+                                    this.episode = episodeNumber
+                                }
+                            } else {
+                                null
+                            }
                         })
                     }
                 } catch (e: Exception) {
@@ -247,8 +245,12 @@ class PhimMoiChillProvider : MainAPI() {
                 }
             }
 
+            // Fallback nếu không có tập nào được tìm thấy
             if (episodes.isEmpty()) {
-                episodes.add(Episode(data = url, name = "Không tìm thấy danh sách tập"))
+                // *** SỬA LỖI DEPRECATED 3 ***
+                episodes.add(newEpisode(url) { // Dùng hàm newEpisode
+                    this.name = "Không tìm thấy danh sách tập"
+                })
             }
             
             return newTvSeriesLoadResponse(title, url, tvType, episodes) {
