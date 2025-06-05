@@ -142,9 +142,11 @@ class PhimMoiChillProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document 
 
-        val title = document.selectFirst("div.film-info div.text h1[itemprop=name]")?.text()?.trim()
+        val title = document.selectFirst("div.film-info div.image div.text h1[itemprop=name]")?.text()?.trim() // Sửa lại selector title cho chính xác hơn với load2.html
+            ?: document.selectFirst("div.film-info > div.text h1[itemprop=name]")?.text()?.trim() // Fallback cho cấu trúc cũ hơn nếu có
             ?: return null
-        val yearText = document.selectFirst("div.film-info div.text h2")?.text()
+        val yearText = document.selectFirst("div.film-info div.image div.text h2")?.text() // Sửa lại selector year
+            ?: document.selectFirst("div.film-info > div.text h2")?.text() // Fallback
         val year = yearText?.substringAfterLast("(")?.substringBefore(")")?.toIntOrNull()
 
         var posterUrl = document.selectFirst("div.film-info div.image img.avatar")?.attr("abs:src")
@@ -167,11 +169,10 @@ class PhimMoiChillProvider : MainAPI() {
 
         val rating = document.selectFirst("div.box-rating span.average#average")?.text()?.toRatingInt()
         
-        // *** THAY ĐỔI CHÍNH: Chỉ lấy nút "Xem phim" (btn-see) ***
-        val watchButton = document.selectFirst("div.film-info ul.list-button a.btn-see")
+        // *** THAY ĐỔI CÁCH TÌM watchButton ***
+        val watchButton = document.select("div.film-info a.btn-see[href^=/xem/]") // Tìm tất cả <a> có class btn-see và href bắt đầu bằng /xem/
+            .firstOrNull { it.text().contains("Xem phim", ignoreCase = true) } // Chọn cái đầu tiên có text "Xem phim"
         val episodeListPageUrl = watchButton?.attr("abs:href") 
-        // Nút trailer (nếu cần xử lý riêng) có thể lấy bằng:
-        // val trailerButton = document.selectFirst("div.film-info ul.list-button a.btn-download[onclick*=trailer]")
 
         val recommendations = mutableListOf<SearchResponse>()
         document.select("div.block.film-related ul.list-film li.item").forEach { recElement ->
@@ -179,27 +180,14 @@ class PhimMoiChillProvider : MainAPI() {
         }
         
         val statusText = document.selectFirst("ul.entry-meta.block-film li:has(label:containsOwn(Đang phát:)) span")?.text()
-        // Xác định tvType, chủ yếu dựa vào statusText cho series
-        // Nút trailer không còn ảnh hưởng trực tiếp đến episodeListPageUrl cho series nữa
         var tvType = if (statusText?.contains("Tập", ignoreCase = true) == true ||
                          (statusText?.contains("Hoàn Tất", ignoreCase = true) == true && !statusText.contains("Full", ignoreCase = true) )
                          ) {
             TvType.TvSeries
         } else {
-            // Nếu statusText không rõ ràng, kiểm tra xem có nút "Xem phim" không
-            // Nếu có nút "Xem phim" (watchButton != null) và tiêu đề của nó không giống trailer
-            // thì có thể là phim lẻ, hoặc series mà statusText không rõ.
-            // Nếu không có nút "Xem phim" thì có thể là phim sắp chiếu (xem như series để hiển thị info)
-            if (watchButton != null && watchButton.attr("title")?.contains("Trailer", ignoreCase = true) != true) {
-                 TvType.Movie // Mặc định là Movie nếu có nút xem phim không phải trailer
-            } else {
-                 // Nếu không có nút xem phim, hoặc nút xem phim lại là trailer (ít khả năng với selector mới)
-                 // hoặc statusText không rõ, thì xem như series để hiển thị thông tin (ví dụ phim sắp chiếu)
-                 TvType.TvSeries
-            }
+             if (watchButton != null) TvType.Movie else TvType.TvSeries // Nếu có nút Xem Phim thì là Movie, không thì là Series (ví dụ: sắp chiếu)
         }
         
-        // Nếu phim được xác định là Movie nhưng không có link xem phim, thì coi như là TvSeries (để hiển thị thông tin)
         if (episodeListPageUrl.isNullOrBlank() && tvType == TvType.Movie) { 
              tvType = TvType.TvSeries 
         }
@@ -215,16 +203,15 @@ class PhimMoiChillProvider : MainAPI() {
                 this.rating = rating
                 this.recommendations = recommendations
             }
-        } else { // TvType.TvSeries
+        } else { 
             var debugInfo = "DEBUG INFO TV SERIES:\n"
             val episodes = mutableListOf<Episode>()
 
             debugInfo += "Trang Info URL: $url\n"
-            debugInfo += "Nút Xem Phim tìm được (chỉ btn-see): ${watchButton != null}\n"
+            debugInfo += "Nút Xem Phim (a.btn-see[href^=/xem/]): ${watchButton != null}\n"
             debugInfo += "episodeListPageUrl (từ nút Xem Phim): $episodeListPageUrl\n"
 
             if (!episodeListPageUrl.isNullOrBlank()) {
-                // Chỉ fetch và parse nếu episodeListPageUrl thực sự là link xem phim, không phải trailer JS
                 debugInfo += "Đang thử tải trang danh sách tập: $episodeListPageUrl\n"
                 try {
                     val episodeListHTML = app.get(episodeListPageUrl).text 
@@ -273,15 +260,13 @@ class PhimMoiChillProvider : MainAPI() {
             }
 
             if (episodes.isEmpty()) {
-                // Tạo tập giữ chỗ với thông tin debug, bất kể episodeListPageUrl có rỗng hay không
-                // để người dùng luôn thấy được thông tin debug này qua tên tập.
                 val placeholderName = if (!episodeListPageUrl.isNullOrBlank()) 
                                         "Lỗi DS tập - Xem Debug Plot" 
                                       else 
                                         "Ko thấy link Xem Phim - Xem Debug Plot"
                 episodes.add(
                     Episode(
-                        data = episodeListPageUrl ?: url, // Dùng url gốc nếu episodeListPageUrl rỗng
+                        data = episodeListPageUrl ?: url, 
                         name = placeholderName
                     )
                 )
