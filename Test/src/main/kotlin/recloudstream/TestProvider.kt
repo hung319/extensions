@@ -4,6 +4,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
+// import android.util.Log // Bỏ comment nếu bạn muốn dùng Log.d để debug trên Android
 
 class PhimMoiChillProvider : MainAPI() {
     override var mainUrl = "https://phimmoichill.day"
@@ -166,8 +167,11 @@ class PhimMoiChillProvider : MainAPI() {
 
         val rating = document.selectFirst("div.box-rating span.average#average")?.text()?.toRatingInt()
         
-        val watchButton = document.selectFirst("div.film-info div.text a.btn-see, div.film-info div.text a.btn-download")
+        // *** THAY ĐỔI CHÍNH: Chỉ lấy nút "Xem phim" (btn-see) ***
+        val watchButton = document.selectFirst("div.film-info ul.list-button a.btn-see")
         val episodeListPageUrl = watchButton?.attr("abs:href") 
+        // Nút trailer (nếu cần xử lý riêng) có thể lấy bằng:
+        // val trailerButton = document.selectFirst("div.film-info ul.list-button a.btn-download[onclick*=trailer]")
 
         val recommendations = mutableListOf<SearchResponse>()
         document.select("div.block.film-related ul.list-film li.item").forEach { recElement ->
@@ -175,15 +179,27 @@ class PhimMoiChillProvider : MainAPI() {
         }
         
         val statusText = document.selectFirst("ul.entry-meta.block-film li:has(label:containsOwn(Đang phát:)) span")?.text()
+        // Xác định tvType, chủ yếu dựa vào statusText cho series
+        // Nút trailer không còn ảnh hưởng trực tiếp đến episodeListPageUrl cho series nữa
         var tvType = if (statusText?.contains("Tập", ignoreCase = true) == true ||
-                         (statusText?.contains("Hoàn Tất", ignoreCase = true) == true && !statusText.contains("Full", ignoreCase = true) ) ||
-                         watchButton?.attr("title")?.contains("Trailer", ignoreCase = true) == true
+                         (statusText?.contains("Hoàn Tất", ignoreCase = true) == true && !statusText.contains("Full", ignoreCase = true) )
                          ) {
             TvType.TvSeries
         } else {
-            TvType.Movie
+            // Nếu statusText không rõ ràng, kiểm tra xem có nút "Xem phim" không
+            // Nếu có nút "Xem phim" (watchButton != null) và tiêu đề của nó không giống trailer
+            // thì có thể là phim lẻ, hoặc series mà statusText không rõ.
+            // Nếu không có nút "Xem phim" thì có thể là phim sắp chiếu (xem như series để hiển thị info)
+            if (watchButton != null && watchButton.attr("title")?.contains("Trailer", ignoreCase = true) != true) {
+                 TvType.Movie // Mặc định là Movie nếu có nút xem phim không phải trailer
+            } else {
+                 // Nếu không có nút xem phim, hoặc nút xem phim lại là trailer (ít khả năng với selector mới)
+                 // hoặc statusText không rõ, thì xem như series để hiển thị thông tin (ví dụ phim sắp chiếu)
+                 TvType.TvSeries
+            }
         }
         
+        // Nếu phim được xác định là Movie nhưng không có link xem phim, thì coi như là TvSeries (để hiển thị thông tin)
         if (episodeListPageUrl.isNullOrBlank() && tvType == TvType.Movie) { 
              tvType = TvType.TvSeries 
         }
@@ -193,44 +209,47 @@ class PhimMoiChillProvider : MainAPI() {
             return newMovieLoadResponse(title, url, tvType, episodeListPageUrl) {
                 this.posterUrl = posterUrl
                 this.year = year
-                this.plot = originalPlot // Sử dụng plot gốc cho phim lẻ
+                this.plot = originalPlot
                 this.tags = tags
                 this.duration = durationInMinutes
                 this.rating = rating
                 this.recommendations = recommendations
             }
         } else { // TvType.TvSeries
-            var debugInfo = "DEBUG INFO:\n" // Chuỗi để lưu thông tin gỡ lỗi
+            var debugInfo = "DEBUG INFO TV SERIES:\n"
             val episodes = mutableListOf<Episode>()
 
+            debugInfo += "Trang Info URL: $url\n"
+            debugInfo += "Nút Xem Phim tìm được (chỉ btn-see): ${watchButton != null}\n"
+            debugInfo += "episodeListPageUrl (từ nút Xem Phim): $episodeListPageUrl\n"
+
             if (!episodeListPageUrl.isNullOrBlank()) {
-                debugInfo += "EpisodeListPageUrl: $episodeListPageUrl\n"
+                // Chỉ fetch và parse nếu episodeListPageUrl thực sự là link xem phim, không phải trailer JS
+                debugInfo += "Đang thử tải trang danh sách tập: $episodeListPageUrl\n"
                 try {
                     val episodeListHTML = app.get(episodeListPageUrl).text 
-                    // Ghi lại một phần HTML để bạn có thể xem (nếu có thể copy từ plot)
-                    debugInfo += "HTMLFetched (first 500 chars): ${episodeListHTML.take(500)}\n"
+                    debugInfo += "HTMLFetched (500 chars): ${episodeListHTML.take(500)}\n"
 
                     val episodeListDocument = Jsoup.parse(episodeListHTML, episodeListPageUrl)
                     
                     val listEpisodesParent = episodeListDocument.selectFirst("div#list-server div.server-group ul#list_episodes")
                     if (listEpisodesParent == null) {
                         debugInfo += "ERROR: KHÔNG TÌM THẤY 'ul#list_episodes' trong 'div#list-server div.server-group'.\n"
-                        // Thử tìm rộng hơn chỉ để xem div#list-server có gì
                         val listServerDiv = episodeListDocument.selectFirst("div#list-server")
                         debugInfo += "HTML của 'div#list-server' (nếu có): ${listServerDiv?.outerHtml()?.take(500) ?: "KHÔNG TÌM THẤY div#list-server"}\n"
                     } else {
                         debugInfo += "ĐÃ TÌM THẤY 'ul#list_episodes'.\n"
-                        val episodeElements = listEpisodesParent.select("li a") // Selector tương đối từ listEpisodesParent
-                        debugInfo += "Số phần tử 'li a' tìm thấy bên trong: ${episodeElements.size}\n"
+                        val episodeElements = listEpisodesParent.select("li a") 
+                        debugInfo += "Số 'li a' tìm thấy: ${episodeElements.size}\n"
 
                         if (episodeElements.isNotEmpty()) {
-                            episodeElements.take(5).forEachIndexed { index, epElement -> // Chỉ lấy 5 tập đầu để debug
+                            episodeElements.forEachIndexed { index, epElement ->
                                 val epHref = epElement.attr("abs:href")
                                 var epName = epElement.ownText().trim() 
                                 if (epName.isBlank()) epName = epElement.attr("title").trim()
                                 if (epName.isBlank()) epName = epElement.text().trim().ifBlank { "Tập ?" } 
                                 
-                                debugInfo += "DebugEp ${index + 1}: Name='$epName', Href='$epHref'\n"
+                                if(index < 5) debugInfo += "DebugEp ${index + 1}: Name='$epName', Href='$epHref'\n"
                                 
                                 var episodeNumber: Int? = null
                                 val nameLower = epName.lowercase()
@@ -241,34 +260,39 @@ class PhimMoiChillProvider : MainAPI() {
                                     episodes.add(Episode(data = epHref, name = epName, episode = episodeNumber))
                                 }
                             }
-                            if(episodeElements.size > 5) debugInfo += "... và còn ${episodeElements.size - 5} tập nữa không hiển thị ở debug.\n"
+                            if(episodeElements.size > 5) debugInfo += "...và ${episodeElements.size - 5} tập nữa.\n"
                         } else {
-                             debugInfo += "Không có 'li a' nào trong 'ul#list_episodes'.\n"
+                             debugInfo += "Không có 'li a' trong 'ul#list_episodes'.\n"
                         }
                     }
                 } catch (e: Exception) {
-                    debugInfo += "EXCEPTION: ${e.message?.take(100)}\n" // Lấy một phần thông báo lỗi
+                    debugInfo += "EXCEPTION khi tải/parse DS tập: ${e.message?.take(100)}\n"
                 }
             } else {
-                debugInfo += "episodeListPageUrl RỖNG.\n"
+                debugInfo += "episodeListPageUrl RỖNG (không tìm thấy nút Xem Phim).\n"
             }
 
             if (episodes.isEmpty()) {
-                // Nếu không có tập nào, thêm một tập giữ chỗ với thông tin debug
+                // Tạo tập giữ chỗ với thông tin debug, bất kể episodeListPageUrl có rỗng hay không
+                // để người dùng luôn thấy được thông tin debug này qua tên tập.
+                val placeholderName = if (!episodeListPageUrl.isNullOrBlank()) 
+                                        "Lỗi DS tập - Xem Debug Plot" 
+                                      else 
+                                        "Ko thấy link Xem Phim - Xem Debug Plot"
                 episodes.add(
                     Episode(
-                        data = episodeListPageUrl ?: url, 
-                        name = "Lỗi lấy DS tập - Xem Debug Info trong Plot"
+                        data = episodeListPageUrl ?: url, // Dùng url gốc nếu episodeListPageUrl rỗng
+                        name = placeholderName
                     )
                 )
             }
             
-            val finalPlot = (originalPlot ?: "") + "\n\n--- THÔNG TIN GỠ LỖI (DEBUG INFO) ---\n" + debugInfo
+            val finalPlot = (originalPlot ?: "Không có mô tả.") + "\n\n--- THÔNG TIN GỠ LỖI (DEBUG INFO) ---\n" + debugInfo
 
             return newTvSeriesLoadResponse(title, url, tvType, episodes) {
                 this.posterUrl = posterUrl
                 this.year = year
-                this.plot = finalPlot // Đưa thông tin gỡ lỗi vào plot
+                this.plot = finalPlot 
                 this.tags = tags
                 this.duration = durationInMinutes 
                 this.rating = rating
