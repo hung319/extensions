@@ -1,9 +1,9 @@
 package com.phimmoichillprovider // Hoặc tên package của bạn
 
-import com.lagradost.cloudstream3.* // Vẫn giữ import wildcard này
+import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-// Các import cụ thể đã thử trước đó có thể giữ hoặc bỏ nếu wildcard hoạt động đúng
+// Các import cụ thể nếu bạn vẫn cần, ví dụ nếu dùng ở nơi khác
 // import com.lagradost.cloudstream3.Actor
 // import com.lagradost.cloudstream3.ActorData
 // import com.lagradost.cloudstream3.ActorRole
@@ -171,25 +171,9 @@ class PhimMoiChillProvider : MainAPI() {
 
         val rating = document.selectFirst("div.box-rating span.average#average")?.text()?.toRatingInt()
 
-        val combinedActorData = mutableListOf<com.lagradost.cloudstream3.ActorData>() // Sử dụng tên đầy đủ
-        // Parse "Diễn viên"
-        document.select("ul.entry-meta.block-film li:contains(Diễn viên:)")
-            .firstOrNull()?.select("a")?.forEach { actorElement ->
-                val actorName = actorElement.text()?.trim()
-                if (!actorName.isNullOrBlank()) {
-                    // Sử dụng tên đầy đủ cho ActorData, Actor, và ActorRole
-                    combinedActorData.add(com.lagradost.cloudstream3.ActorData(com.lagradost.cloudstream3.Actor(name = actorName), role = com.lagradost.cloudstream3.ActorRole.Actor))
-                }
-            }
-        // Parse "Đạo diễn"
-        document.select("ul.entry-meta.block-film li:contains(Đạo diễn:)")
-            .firstOrNull()?.select("a")?.forEach { directorElement ->
-                val directorName = directorElement.text()?.trim()
-                if (!directorName.isNullOrBlank()) {
-                    // Sử dụng tên đầy đủ cho ActorData, Actor, và ActorRole
-                    combinedActorData.add(com.lagradost.cloudstream3.ActorData(com.lagradost.cloudstream3.Actor(name = directorName), role = com.lagradost.cloudstream3.ActorRole.Director))
-                }
-            }
+        // Đã loại bỏ phần parse Diễn viên và Đạo diễn
+        // val combinedActorData = mutableListOf<com.lagradost.cloudstream3.ActorData>()
+        // ... (code parse actor/director đã bị xóa) ...
 
         val watchButton = document.selectFirst("div.film-info div.text a.btn-see, div.film-info div.text a.btn-download")
         val watchUrl = watchButton?.attr("abs:href")
@@ -221,7 +205,7 @@ class PhimMoiChillProvider : MainAPI() {
                 this.tags = tags
                 this.duration = durationInMinutes
                 this.rating = rating
-                this.actors = combinedActorData 
+                // this.actors = combinedActorData // Đã loại bỏ
                 this.recommendations = recommendations
             }
         } else {
@@ -242,7 +226,7 @@ class PhimMoiChillProvider : MainAPI() {
                 this.tags = tags
                 this.duration = durationInMinutes
                 this.rating = rating
-                this.actors = combinedActorData
+                // this.actors = combinedActorData // Đã loại bỏ
                 this.recommendations = recommendations
             }
         }
