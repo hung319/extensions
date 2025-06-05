@@ -53,7 +53,6 @@ class PhimMoiChillProvider : MainAPI() {
         return if (totalMinutes > 0) totalMinutes else null
     }
 
-    // *** CẬP NHẬT LOGIC LẤY POSTER ***
     private fun Element.toSearchResponseDefault(isSearchPage: Boolean = false): SearchResponse? {
         val aTag = this.selectFirst("a") ?: return null
         val href = aTag.attr("abs:href")
@@ -65,7 +64,6 @@ class PhimMoiChillProvider : MainAPI() {
             aTag.selectFirst("p")?.text() ?: aTag.selectFirst("h3")?.text()
         } ?: aTag.attr("title").ifBlank { null } ?: return null
 
-        // Cải tiến logic lấy poster để ưu tiên data-src và xử lý lazyload
         var posterUrl = this.selectFirst("img")?.attr("abs:data-src")
         if (posterUrl.isNullOrBlank()) {
             posterUrl = this.selectFirst("img")?.attr("abs:src")
@@ -87,7 +85,7 @@ class PhimMoiChillProvider : MainAPI() {
                 tvType = if(tvType == TvType.Anime) TvType.Anime else TvType.TvSeries
             }
         }
-
+        
         return newMovieSearchResponse(title, href, tvType) {
             this.posterUrl = posterUrl
             if (!currentQuality.isNullOrBlank()) {
@@ -144,7 +142,7 @@ class PhimMoiChillProvider : MainAPI() {
         
         val recommendations = document.select("div.block.film-related ul.list-film li.item").mapNotNull { it.toSearchResponseDefault() }
         
-        // *** CẬP NHẬT LOGIC NHẬN DIỆN TVTYPE ***
+        // *** LOGIC NHẬN DIỆN TVTYPE HOÀN CHỈNH ***
         val genres = document.select("ul.entry-meta.block-film li:has(label:contains(Thể loại)) a")
         val isAnime = genres.any { it.attr("href").contains("anime", ignoreCase = true) || it.text().contains("anime", ignoreCase = true) || it.text().contains("hoạt hình", ignoreCase = true) }
 
@@ -161,7 +159,7 @@ class PhimMoiChillProvider : MainAPI() {
         } else {
             if (isSeriesBased) TvType.TvSeries else TvType.Movie
         }
-        // --- KẾT THÚC CẬP NHẬT ---
+        // --- KẾT THÚC LOGIC ---
 
         if (tvType == TvType.Movie || tvType == TvType.AnimeMovie) {
             return newMovieLoadResponse(title, url, tvType, episodeListPageUrl ?: url) {
@@ -202,12 +200,10 @@ class PhimMoiChillProvider : MainAPI() {
     ): Boolean {
         val episodeId = Regex("-pm(\\d+)").find(data)?.groupValues?.get(1) ?: return false
 
-        // *** TỐI ƯU HÓA: Không cần tải lại trang để lấy server list ***
+        // *** TỐI ƯU HÓA: Chỉ giữ lại Server 1 và 2 ***
         val servers = listOf(
             Pair("0", "#1 PMFAST"),
-            Pair("1", "#2 PMHLS"),
-            Pair("2", "#3 PMPRO"),
-            Pair("3", "#4 PMBK")
+            Pair("1", "#2 PMHLS")
         )
 
         servers.apmap { (serverIndex, serverName) ->
@@ -229,9 +225,9 @@ class PhimMoiChillProvider : MainAPI() {
             } else {
                  val contentId = Regex("""iniPlayers\("([^"]*)""").find(apiResponse)?.groupValues?.get(1)
                  if (!contentId.isNullOrBlank()) {
-                    // *** CẬP NHẬT DOMAIN CHO CÁC SERVER ***
+                    // *** FIX LINK CHO SERVER 1 ***
                     val m3u8Link = when(serverName.trim()) {
-                        "#1 PMFAST", "#3 PMPRO" -> "https://dash.megacdn.xyz/raw/$contentId/index.m3u8"
+                        "#1 PMFAST" -> "https://dash.motchills.net/raw/$contentId/index.m3u8"
                         "#2 PMHLS" -> "https://sotrim.topphimmoi.org/raw/$contentId/index.m3u8"
                         else -> null
                     }
