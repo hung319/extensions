@@ -4,9 +4,9 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
+import java.net.URL
 
 class PhimMoiChillProvider : MainAPI() {
-    // *** THAY ĐỔI 1: SỬ DỤNG URL CHUYỂN HƯỚNG ĐỂ LUÔN CÓ TÊN MIỀN MỚI NHẤT ***
     override var mainUrl = "https://phimmoiplus.net"
     override var name = "PhimMoiChill"
     override val hasMainPage = true
@@ -88,13 +88,12 @@ class PhimMoiChillProvider : MainAPI() {
         return newMovieSearchResponse(title, href, tvType) {
             this.posterUrl = posterUrl
             if (!qualityText.isNullOrBlank()) {
-                addQuality(qualityText)
+                addQuality(currentQuality)
             }
         }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Sử dụng app.get với mainUrl, nó sẽ tự động đi theo redirect
         val document = app.get(mainUrl, headers = browserHeaders).document
         val homePageList = mutableListOf<HomePageList>()
 
@@ -163,7 +162,7 @@ class PhimMoiChillProvider : MainAPI() {
             return newMovieLoadResponse(title, url, tvType, episodeListPageUrl ?: url) {
                 this.posterUrl = posterUrl; this.year = year; this.plot = plot; this.tags = tags; this.duration = durationInMinutes; this.rating = rating; this.recommendations = recommendations
             }
-        } else { // TvSeries và Anime
+        } else {
             val episodes = mutableListOf<Episode>()
             if (!episodeListPageUrl.isNullOrBlank()) {
                 try {
@@ -191,22 +190,23 @@ class PhimMoiChillProvider : MainAPI() {
     }
 
     override suspend fun loadLinks(
-        data: String,
+        data: String, // Đây là URL của trang xem phim, ví dụ: https://phimmoichill.day/xem/...
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val episodeId = Regex("-pm(\\d+)").find(data)?.groupValues?.get(1) ?: return false
         
-        val servers = listOf(
-            Pair("0", "#1 PMFAST"),
-            Pair("1", "#2 PMHLS")
-        )
+        // *** THAY ĐỔI QUAN TRỌNG: Tự động lấy tên miền gốc từ `data` ***
+        val baseUrl = URL(data).let { "${it.protocol}://${it.host}" }
+        
+        val servers = listOf(Pair("0", "#1 PMFAST"), Pair("1", "#2 PMHLS"))
 
         servers.apmap { (serverIndex, serverName) ->
             try {
+                // Sử dụng `baseUrl` đã được xác định thay vì `mainUrl`
                 val apiResponse = app.post(
-                    url = "$mainUrl/chillsplayer.php", 
+                    url = "$baseUrl/chillsplayer.php", 
                     headers = browserHeaders + mapOf(
                         "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8",
                         "X-Requested-With" to "XMLHttpRequest",
@@ -215,7 +215,6 @@ class PhimMoiChillProvider : MainAPI() {
                     data = mapOf("qcao" to episodeId, "sv" to serverIndex)
                 ).text
                 
-                // Server PMBK (đã bị loại bỏ) trả về link trực tiếp, các server khác trả về ID nội dung
                 val contentId = Regex("""iniPlayers\("([^"]*)""").find(apiResponse)?.groupValues?.get(1)
                 if (!contentId.isNullOrBlank()) {
                     val m3u8Link = when(serverName.trim()) {
