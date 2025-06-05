@@ -141,7 +141,7 @@ class PhimMoiChillProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url).document 
+        val document = app.get(url).document // Trang info phim
 
         val title = document.selectFirst("div.film-info div.text h1[itemprop=name]")?.text()?.trim()
             ?: return null
@@ -169,7 +169,7 @@ class PhimMoiChillProvider : MainAPI() {
         val rating = document.selectFirst("div.box-rating span.average#average")?.text()?.toRatingInt()
         
         val watchButton = document.selectFirst("div.film-info div.text a.btn-see, div.film-info div.text a.btn-download")
-        val episodeListPageUrl = watchButton?.attr("abs:href") 
+        val episodeListPageUrl = watchButton?.attr("abs:href") // Đây là link "Xem phim" từ trang info
 
         val recommendations = mutableListOf<SearchResponse>()
         document.select("div.block.film-related ul.list-film li.item").forEach { recElement ->
@@ -203,67 +203,38 @@ class PhimMoiChillProvider : MainAPI() {
             }
         } else { // TvType.TvSeries
             val episodes = mutableListOf<Episode>()
+            
+            // Chỉ tạo một Episode đại diện nếu có episodeListPageUrl
+            // Việc lấy danh sách tập đầy đủ sẽ được xử lý trong loadLinks sau này
             if (!episodeListPageUrl.isNullOrBlank()) {
-                try {
-                    val episodeListHTML = app.get(episodeListPageUrl).text 
-                    // !! QUAN TRỌNG: Bỏ comment các dòng Log.d dưới đây để debug !!
-                    // Log.d("PhimMoiChillDebug", "HTML từ ${episodeListPageUrl.take(60)}... (${episodeListHTML.length} chars): ${episodeListHTML.take(5000)}")
-                    // val tempDoc = Jsoup.parse(episodeListHTML)
-                    // val listEpOuterHtml = tempDoc.selectFirst("ul#list_episodes")?.outerHtml()
-                    // Log.d("PhimMoiChillDebug", "HTML của ul#list_episodes: ${listEpOuterHtml ?: "KHÔNG TÌM THẤY ul#list_episodes"}")
-
-                    val episodeListDocument = Jsoup.parse(episodeListHTML, episodeListPageUrl)
-
-                    val episodeElements = episodeListDocument.select("ul#list_episodes li a")
-                    // Log.d("PhimMoiChillDebug", "Tìm thấy ${episodeElements.size} tập với selector 'ul#list_episodes li a'")
-
-                    if (episodeElements.isNotEmpty()) {
-                        episodeElements.forEach { epElement ->
-                            val epHref = epElement.attr("abs:href")
-                            var epName = epElement.ownText().trim() 
-                            if (epName.isBlank()) { 
-                                epName = epElement.attr("title").trim()
-                            }
-                            if (epName.isBlank()) { 
-                                epName = epElement.text().trim().ifBlank { "Tập ?" } 
-                            }
-                            
-                            var episodeNumber: Int? = null
-                            val nameLower = epName.lowercase()
-                            val epNumMatch = Regex("""tập\s*(\d+)""").find(nameLower)
-                            if (epNumMatch != null) {
-                                episodeNumber = epNumMatch.groupValues[1].toIntOrNull()
-                            }
-                            
-                            // Log.d("PhimMoiChillDebug", "Parse được: Tên='$epName', Href='$epHref', Số='$episodeNumber'")
-
-                            if (epHref.isNotBlank()) {
-                                episodes.add(
-                                    Episode(
-                                        data = epHref,
-                                        name = epName,
-                                        episode = episodeNumber,
-                                    )
-                                )
-                            }
-                        }
-                    } else {
-                        // Log.d("PhimMoiChillDebug", "Selector 'ul#list_episodes li a' không tìm thấy gì trên trang $episodeListPageUrl. Kiểm tra HTML nhận được.")
-                    }
-                } catch (e: Exception) {
-                    // Log.e("PhimMoiChillDebug", "Lỗi khi tải/phân tích trang danh sách tập từ $episodeListPageUrl: ${e.message}")
+                var episodeName = watchButton?.text()?.replace("Xem phim", "")?.trim()
+                if (episodeName.isNullOrBlank()) {
+                    episodeName = title // Lấy tên phim làm tên tập nếu nút không có text rõ ràng
                 }
-            }
+                if (statusText?.contains("Tập", ignoreCase = true) == true && !episodeName.contains("Tập", ignoreCase = true)) {
+                     // Ví dụ: statusText là "Tập 5", watchButton text chỉ là "Xem phim"
+                    val currentEpisodeMatch = Regex("""Tập\s*(\d+)""").find(statusText)
+                    val currentEpisodeNumber = currentEpisodeMatch?.groupValues?.get(1)
+                    if(currentEpisodeNumber != null) {
+                        episodeName = "Tập $currentEpisodeNumber"
+                    } else if (watchButton?.attr("title")?.contains("Trailer", ignoreCase = true) == true) {
+                        episodeName = "Trailer"
+                    } else {
+                         episodeName = "Xem phim / Danh sách tập"
+                    }
+                } else if (episodeName.isNullOrBlank()) {
+                     episodeName = "Xem phim / Danh sách tập"
+                }
 
-            if (episodes.isEmpty() && !episodeListPageUrl.isNullOrBlank()) {
-                // Log.d("PhimMoiChillDebug", "Không parse được tập nào, tạo tập giữ chỗ.")
+
                 episodes.add(
                     Episode(
-                        data = episodeListPageUrl,
-                        name = watchButton?.text()?.replace("Xem phim", "")?.trim()?.ifBlank { null } ?: "Tập 1 / Xem nội dung"
+                        data = episodeListPageUrl, // URL này sẽ được truyền cho loadLinks
+                        name = episodeName 
                     )
                 )
             }
+            // Nếu không có episodeListPageUrl (ví dụ phim sắp chiếu chưa có link), episodes sẽ rỗng.
             
             return newTvSeriesLoadResponse(title, url, tvType, episodes) {
                 this.posterUrl = posterUrl
@@ -277,5 +248,40 @@ class PhimMoiChillProvider : MainAPI() {
         }
     }
 
-    // override suspend fun loadLinks(...)
+    // Hàm loadLinks sẽ là nơi bạn thực sự tải trang episodeListPageUrl (từ Episode.data)
+    // và phân tích <ul id="list_episodes"> li a để lấy danh sách tập đầy đủ
+    // cũng như link video cho tập được chọn.
+    // override suspend fun loadLinks(
+    //    data: String, // Đây sẽ là episodeListPageUrl cho tập đầu tiên, hoặc href của tập cụ thể
+    //    isCasting: Boolean,
+    //    subtitleCallback: (SubtitleFile) -> Unit,
+    //    callback: (ExtractorLink) -> Unit
+    // ): Boolean {
+    //    
+    //    // 1. Tải trang `data` (chính là episodeListPageUrl hoặc link của tập cụ thể)
+    //    // val pageDocument = app.get(data).document
+    //    
+    //    // 2. **QUAN TRỌNG**: Tại đây, bạn sẽ parse danh sách TẤT CẢ các tập từ `pageDocument`
+    //    //    dùng selector "ul#list_episodes li a"
+    //    //    và có thể cần cập nhật lại danh sách tập trong UI của CloudStream nếu API hỗ trợ
+    //    //    (CloudStream có thể tự xử lý việc này nếu loadLinks trả về thông tin đúng cách
+    //    //    hoặc nếu bạn gọi một hàm API của CloudStream để cập nhật danh sách tập).
+    //    //    Hoặc đơn giản là loadLinks chỉ tập trung vào việc lấy link cho `data` hiện tại.
+    //
+    //    // 3. Tìm server và link video cho tập `data` hiện tại.
+    //    //    Ví dụ: dựa vào `filmInfo.episodeID` và gọi AJAX đến `chillplayer.php`
+    //    //    (cần phân tích `data` để lấy `episodeID` dạng số, ví dụ `pm122389` -> `122389`)
+    //    //    val episodeId = data.substringAfterLast("-pm").substringBefore("?") // Cần làm cẩn thận hơn
+    //
+    //    //    val servers = pageDocument.select("#pm-server ul.server-list li.backup-server ul.list-episode li.episode a.btn-link-backup")
+    //    //    servers.forEach { serverElement ->
+    //    //        val serverIndex = serverElement.attr("data-index")
+    //    //        val serverName = serverElement.text() 
+    //    //        // Gọi AJAX tới chillplayer.php với episodeId và serverIndex
+    //    //        // val videoPlayerHtml = app.post( ... ).text
+    //    //        // Trích xuất link video từ videoPlayerHtml
+    //    //        // callback.invoke(ExtractorLink(source = this.name, name = serverName, url = extractedVideoUrl, referer = data, quality = Qualities.Unknown.value))
+    //    //    }
+    //    return true // Trả về true nếu lấy được link, false nếu không
+    // }
 }
