@@ -6,7 +6,8 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 
 class PhimMoiChillProvider : MainAPI() {
-    override var mainUrl = "https://phimmoichill.day"
+    // *** THAY ĐỔI 1: SỬ DỤNG URL CHUYỂN HƯỚNG ĐỂ LUÔN CÓ TÊN MIỀN MỚI NHẤT ***
+    override var mainUrl = "https://phimmoiplus.net"
     override var name = "PhimMoiChill"
     override val hasMainPage = true
     override var lang = "vi"
@@ -53,7 +54,6 @@ class PhimMoiChillProvider : MainAPI() {
         return if (totalMinutes > 0) totalMinutes else null
     }
 
-    // Cải tiến logic nhận diện tvType ban đầu
     private fun Element.toSearchResponseDefault(isSearchPage: Boolean = false): SearchResponse? {
         val aTag = this.selectFirst("a") ?: return null
         val href = aTag.attr("abs:href")
@@ -76,7 +76,6 @@ class PhimMoiChillProvider : MainAPI() {
                             (qualityText?.contains("Hoàn Tất", ignoreCase = true) == true && !qualityText.contains("Full", ignoreCase = true)) ||
                              qualityText?.matches(Regex("""\d+/\d+""")) == true
         
-        // Nhận diện sơ bộ là Anime dựa vào title hoặc href
         val isPotentiallyAnime = title.contains("anime", ignoreCase = true) || href.contains("anime", ignoreCase = true) || title.contains("hoạt hình", ignoreCase = true)
 
         val tvType = when {
@@ -95,6 +94,7 @@ class PhimMoiChillProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        // Sử dụng app.get với mainUrl, nó sẽ tự động đi theo redirect
         val document = app.get(mainUrl, headers = browserHeaders).document
         val homePageList = mutableListOf<HomePageList>()
 
@@ -197,8 +197,7 @@ class PhimMoiChillProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val episodeId = Regex("-pm(\\d+)").find(data)?.groupValues?.get(1) ?: return false
-
-        // Chỉ giữ lại server 1 và 2
+        
         val servers = listOf(
             Pair("0", "#1 PMFAST"),
             Pair("1", "#2 PMHLS")
@@ -215,10 +214,10 @@ class PhimMoiChillProvider : MainAPI() {
                     ),
                     data = mapOf("qcao" to episodeId, "sv" to serverIndex)
                 ).text
-
+                
+                // Server PMBK (đã bị loại bỏ) trả về link trực tiếp, các server khác trả về ID nội dung
                 val contentId = Regex("""iniPlayers\("([^"]*)""").find(apiResponse)?.groupValues?.get(1)
                 if (!contentId.isNullOrBlank()) {
-                    // Sửa lại domain cho server PMFAST
                     val m3u8Link = when(serverName.trim()) {
                         "#1 PMFAST" -> "https://dash.motchills.net/raw/$contentId/index.m3u8"
                         "#2 PMHLS" -> "https://sotrim.topphimmoi.org/raw/$contentId/index.m3u8"
@@ -230,9 +229,7 @@ class PhimMoiChillProvider : MainAPI() {
                         )
                     }
                 }
-            } catch (e: Exception) {
-                // Bỏ qua lỗi nếu server không hoạt động
-            }
+            } catch (_: Exception) { }
         }
         return true
     }
