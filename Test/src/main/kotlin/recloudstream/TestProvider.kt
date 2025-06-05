@@ -17,7 +17,7 @@ class PhimMoiChillProvider : MainAPI() {
         TvType.TvSeries
     )
 
-    // *** THAY ĐỔI CUỐI CÙNG: Tạo một map chứa header giống hệt curl ***
+    // Headers giống với curl để vượt qua cơ chế chống bot
     private val curlHeaders = mapOf(
         "User-Agent" to "curl/8.13.0",
         "Accept" to "*/*"
@@ -153,51 +153,56 @@ class PhimMoiChillProvider : MainAPI() {
         val yearText = document.selectFirst("div.film-info h2")?.text()
         val year = yearText?.substringAfterLast("(")?.substringBefore(")")?.toIntOrNull()
 
-        val posterUrl = document.selectFirst("div.film-info div.image img.avatar")?.attr("abs:src")
-            ?: document.selectFirst("meta[property=og:image]")?.attr("content")
+        var posterUrl = document.selectFirst("div.film-info div.image img.avatar")?.attr("abs:src")
+        if (posterUrl.isNullOrBlank() || posterUrl.contains("lazy.png")) {
+            posterUrl = document.selectFirst("div.film-info div.image img.avatar")?.attr("abs:data-src")
+        }
+        if (posterUrl.isNullOrBlank()) {
+            posterUrl = document.selectFirst("meta[property=og:image]")?.attr("content")
+        }
 
-        val originalPlot = document.selectFirst("meta[itemprop=description]")?.attr("content")?.trim()
+        val plot = document.selectFirst("meta[itemprop=description]")?.attr("content")?.trim()
             ?: document.selectFirst("div#film-content")?.text()?.trim()
 
         val tags = document.select("div#tags ul.tags-list li.tag a")?.mapNotNull { it.text() }
         
-        val durationString = document.select("ul.entry-meta.block-film li:containsOwn(Thời lượng:)")
-            .firstOrNull()?.text()?.replace("Thời lượng:", "")?.trim()
-        val durationInMinutes = parseDuration(durationString)
+        val durationText = document.selectFirst("ul.entry-meta.block-film li:has(label:containsOwn(Thời lượng:))")?.text()
+        val durationInMinutes = parseDuration(durationText)
 
         val rating = document.selectFirst("div.box-rating span.average#average")?.text()?.toRatingInt()
         
         var episodeListPageUrl: String? = null
-        val watchButton = document.selectFirst("div.film-info a.btn-see")
-        if (watchButton != null) {
-            episodeListPageUrl = watchButton.attr("abs:href")
-        } else {
-            episodeListPageUrl = document.selectFirst("div.latest-episode a")?.attr("abs:href")
-        }
-        if (episodeListPageUrl.isNullOrBlank()){
-            episodeListPageUrl = document.selectFirst("div.film-info div.image a.icon-play")?.attr("abs:href")
-        }
+        val latestEpLink = document.selectFirst("div.latest-episode a")?.attr("abs:href")
+        val watchButtonLink = document.selectFirst("div.film-info a.btn-see")?.attr("abs:href")
+        val iconPlayLink = document.selectFirst("div.film-info div.image a.icon-play")?.attr("abs:href")
+        
+        episodeListPageUrl = latestEpLink ?: watchButtonLink ?: iconPlayLink
         
         val recommendations = document.select("div.block.film-related ul.list-film li.item").mapNotNull { it.toSearchResponseDefault() }
         
+        // --- LOGIC NHẬN DIỆN TVTYPE MỚI, CHÍNH XÁC HƠN ---
         val statusText = document.selectFirst("ul.entry-meta.block-film li:has(label:containsOwn(Đang phát:)) span")?.text()
-        var tvType = if (statusText?.contains("Tập", ignoreCase = true) == true || statusText?.contains("Hoàn Tất", ignoreCase = true) == true) {
-            TvType.TvSeries
-        } else {
-            TvType.Movie
-        }
+        val hasLatestEpisodeDiv = document.selectFirst("div.latest-episode") != null
+
+        val isTvSeries = statusText?.contains("Tập", ignoreCase = true) == true ||
+                         (statusText?.contains("Hoàn Tất", ignoreCase = true) == true && statusText != "Hoàn Tất") || // "Hoàn Tất(11/11)" -> true, "Hoàn Tất" -> false
+                         durationText?.contains("Tập", ignoreCase = true) == true ||
+                         hasLatestEpisodeDiv
+
+        val tvType = if (isTvSeries) TvType.TvSeries else TvType.Movie
+        // --- KẾT THÚC LOGIC MỚI ---
 
         if (tvType == TvType.Movie) {
             return newMovieLoadResponse(title, url, tvType, episodeListPageUrl ?: url) {
                 this.posterUrl = posterUrl
                 this.year = year
-                this.plot = originalPlot
+                this.plot = plot
                 this.tags = tags
                 this.duration = durationInMinutes
                 this.rating = rating
                 this.recommendations = recommendations
             }
-        } else {
+        } else { // TvType.TvSeries
             val episodes = mutableListOf<Episode>()
             if (!episodeListPageUrl.isNullOrBlank()) {
                 try {
@@ -212,10 +217,11 @@ class PhimMoiChillProvider : MainAPI() {
                         })
                     }
                 } catch (e: Exception) {
-                    // Ignored
+                    // Lỗi sẽ được xử lý ở dưới
                 }
             }
 
+            // Fallback nếu không có tập nào được tìm thấy
             if (episodes.isEmpty()) {
                 episodes.add(Episode(data = url, name = "Không tìm thấy danh sách tập"))
             }
@@ -223,7 +229,7 @@ class PhimMoiChillProvider : MainAPI() {
             return newTvSeriesLoadResponse(title, url, tvType, episodes) {
                 this.posterUrl = posterUrl
                 this.year = year
-                this.plot = originalPlot
+                this.plot = plot
                 this.tags = tags
                 this.duration = durationInMinutes
                 this.rating = rating
