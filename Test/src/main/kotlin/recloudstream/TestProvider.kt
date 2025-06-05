@@ -147,7 +147,7 @@ class PhimMoiChillProvider : MainAPI() {
 
         val filmInfoImageTextDiv = document.selectFirst("div.film-info div.image div.text")
         val title = filmInfoImageTextDiv?.selectFirst("h1[itemprop=name]")?.text()?.trim()
-            ?: document.selectFirst("div.film-info > div.text h1[itemprop=name]")?.text()?.trim() 
+            ?: document.selectFirst("div.film-info > div.text h1[itemprop=name]")?.text()?.trim()
             ?: return null
         
         val yearText = filmInfoImageTextDiv?.selectFirst("h2")?.text()
@@ -174,28 +174,42 @@ class PhimMoiChillProvider : MainAPI() {
 
         val rating = document.selectFirst("div.box-rating span.average#average")?.text()?.toRatingInt()
         
+        // --- Cập nhật logic tìm link xem phim với 3 cách ưu tiên ---
         var debugFindingUrl = "DEBUG Finding URL:\n"
-        // --- LOGIC MỚI: Ưu tiên lấy link từ "Tập mới nhất" ---
-        // Cách 1: Tìm link từ danh sách tập mới nhất
-        var episodeListPageUrl = document.selectFirst("div.latest-episode a")?.attr("abs:href")
+        var episodeListPageUrl: String?
+
+        // 1. Ưu tiên: Lấy từ mục "Tập mới nhất"
+        episodeListPageUrl = document.selectFirst("div.latest-episode a")?.attr("abs:href")
         if (episodeListPageUrl != null) {
-            debugFindingUrl += "  Found URL from 'div.latest-episode': $episodeListPageUrl\n"
+            debugFindingUrl += "  Found URL from 'div.latest-episode'.\n"
         }
 
-        // Cách 2: Nếu không có, tìm nút "Xem phim"
+        // 2. Dự phòng: Tìm nút "Xem phim" (btn-see)
         if (episodeListPageUrl.isNullOrBlank()) {
-            debugFindingUrl += "  'div.latest-episode' not found. Trying 'btn-see' button...\n"
+            debugFindingUrl += "  'latest-episode' not found. Trying 'btn-see'...\n"
             val watchButton = document.select("div.film-info a.btn-see[href^=/xem/]")
                 .firstOrNull { it.text().contains("Xem phim", ignoreCase = true) }
             episodeListPageUrl = watchButton?.attr("abs:href")
-            if(watchButton != null) {
-                debugFindingUrl += "  Found URL from 'btn-see': $episodeListPageUrl\n"
+            if (episodeListPageUrl != null) {
+                debugFindingUrl += "  Found URL from 'btn-see'.\n"
             } else {
-                debugFindingUrl += "  'btn-see' button also not found.\n"
+                debugFindingUrl += "  'btn-see' not found.\n"
             }
         }
-        // --- Kết thúc logic mới ---
-        
+
+        // 3. Dự phòng cuối: Tìm nút play trên ảnh (icon-play)
+        if (episodeListPageUrl.isNullOrBlank()) {
+            debugFindingUrl += "  'btn-see' not found. Trying 'icon-play'...\n"
+            val iconPlayButton = document.selectFirst("div.film-info div.image a.icon-play[href^=/xem/]")
+            episodeListPageUrl = iconPlayButton?.attr("abs:href")
+            if (episodeListPageUrl != null) {
+                debugFindingUrl += "  Found URL from 'icon-play'.\n"
+            } else {
+                debugFindingUrl += "  'icon-play' also not found.\n"
+            }
+        }
+        // --- Kết thúc cập nhật logic ---
+
         val recommendations = mutableListOf<SearchResponse>()
         document.select("div.block.film-related ul.list-film li.item").forEach { recElement ->
             recElement.toSearchResponseDefault()?.let { recommendations.add(it) }
@@ -227,12 +241,12 @@ class PhimMoiChillProvider : MainAPI() {
             }
         } else { 
             var debugInfo = "DEBUG INFO TV SERIES:\n"
-            debugInfo += debugFindingUrl
+            debugInfo += debugFindingUrl // Thêm debug của việc tìm URL
             debugInfo += "episodeListPageUrl (final result): $episodeListPageUrl\n"
             val episodes = mutableListOf<Episode>()
 
             if (!episodeListPageUrl.isNullOrBlank()) {
-                debugInfo += "Đang thử tải trang danh sách tập: $episodeListPageUrl\n"
+                debugInfo += "Đang thử tải trang danh sách tập...\n"
                 try {
                     val episodeListDocument = app.get(episodeListPageUrl, headers = mapOf("User-Agent" to a)).document 
                     
@@ -243,8 +257,8 @@ class PhimMoiChillProvider : MainAPI() {
                         debugInfo += "ĐÃ TÌM THẤY 'ul#list_episodes'.\n"
                         val episodeElements = listEpisodesParent.select("li a") 
                         debugInfo += "Số 'li a' tìm thấy: ${episodeElements.size}\n"
-                        if(episodeElements.isNotEmpty()){
-                            // Lấy danh sách tập và đảo ngược lại để có thứ tự từ 1 -> N
+
+                        if (episodeElements.isNotEmpty()) {
                             episodeElements.reversed().forEach { epElement ->
                                 val epHref = epElement.attr("abs:href")
                                 var epName = epElement.ownText().trim() 
@@ -261,14 +275,14 @@ class PhimMoiChillProvider : MainAPI() {
                                 }
                             }
                         } else {
-                            debugInfo += "Không có 'li a' trong 'ul#list_episodes'.\n"
+                             debugInfo += "Không có 'li a' trong 'ul#list_episodes'.\n"
                         }
                     }
                 } catch (e: Exception) {
                     debugInfo += "EXCEPTION khi tải/parse DS tập: ${e.message?.take(100)}\n"
                 }
             } else {
-                debugInfo += "episodeListPageUrl RỖNG.\n"
+                debugInfo += "episodeListPageUrl RỖNG sau khi thử cả 3 cách tìm.\n"
             }
 
             if (episodes.isEmpty()) {
