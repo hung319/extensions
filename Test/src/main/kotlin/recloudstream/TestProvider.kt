@@ -15,7 +15,7 @@ class PhimMoiChillProvider : MainAPI() {
         TvType.Movie,
         TvType.TvSeries,
         TvType.Anime,
-        TvType.AnimeMovie // Thêm Anime Movie vào các loại được hỗ trợ
+        TvType.AnimeMovie
     )
 
     private val browserHeaders = mapOf(
@@ -53,6 +53,7 @@ class PhimMoiChillProvider : MainAPI() {
         return if (totalMinutes > 0) totalMinutes else null
     }
 
+    // *** CẬP NHẬT LOGIC LẤY POSTER ***
     private fun Element.toSearchResponseDefault(isSearchPage: Boolean = false): SearchResponse? {
         val aTag = this.selectFirst("a") ?: return null
         val href = aTag.attr("abs:href")
@@ -64,25 +65,29 @@ class PhimMoiChillProvider : MainAPI() {
             aTag.selectFirst("p")?.text() ?: aTag.selectFirst("h3")?.text()
         } ?: aTag.attr("title").ifBlank { null } ?: return null
 
-        var posterUrl = aTag.selectFirst("img")?.attr("abs:data-src")
-            ?: aTag.selectFirst("img")?.attr("abs:src")
+        // Cải tiến logic lấy poster để ưu tiên data-src và xử lý lazyload
+        var posterUrl = this.selectFirst("img")?.attr("abs:data-src")
+        if (posterUrl.isNullOrBlank()) {
+            posterUrl = this.selectFirst("img")?.attr("abs:src")
+        }
 
         val qualityText = this.selectFirst("span.label")?.text()?.trim()
         val statusDivText = this.selectFirst("span.label div.status")?.text()?.trim()
         val currentQuality = statusDivText ?: qualityText
 
-        var tvType: TvType = TvType.Movie // Mặc định
-        if (title.contains("anime", ignoreCase = true)) tvType = TvType.Anime
+        var tvType: TvType = TvType.Movie
+        if (title.contains("anime", ignoreCase = true) || href.contains("anime", ignoreCase = true)) {
+            tvType = TvType.Anime
+        }
         if (currentQuality != null) {
             if (currentQuality.contains("Tập", ignoreCase = true) ||
                 (currentQuality.contains("Hoàn Tất", ignoreCase = true) && !currentQuality.contains("Full", ignoreCase = true)) ||
-                currentQuality.matches(Regex("""\d+/\d+""")) || 
-                currentQuality.contains("Trailer", ignoreCase = true) && href.contains("/info/") 
+                currentQuality.matches(Regex("""\d+/\d+"""))
             ) {
                 tvType = if(tvType == TvType.Anime) TvType.Anime else TvType.TvSeries
             }
         }
-        
+
         return newMovieSearchResponse(title, href, tvType) {
             this.posterUrl = posterUrl
             if (!currentQuality.isNullOrBlank()) {
@@ -127,7 +132,7 @@ class PhimMoiChillProvider : MainAPI() {
         plotElement?.select("span[itemprop=author]")?.remove()
         val plot = plotElement?.text()?.trim() ?: document.selectFirst("meta[itemprop=description]")?.attr("content")?.trim()
 
-        val tags = document.select("div#tags ul.tags-list li.tag a")?.mapNotNull { it.text() }
+        val tags = document.select("div#tags ul.tags-list li.tag a")?.map { it.text() }
         val durationText = document.selectFirst("ul.entry-meta.block-film li:has(label:containsOwn(Thời lượng:))")?.text()
         val durationInMinutes = parseDuration(durationText)
         val rating = document.selectFirst("div.box-rating span.average#average")?.text()?.toRatingInt()
@@ -139,14 +144,13 @@ class PhimMoiChillProvider : MainAPI() {
         
         val recommendations = document.select("div.block.film-related ul.list-film li.item").mapNotNull { it.toSearchResponseDefault() }
         
-        // --- LOGIC NHẬN DIỆN TVTYPE MỚI, PHÂN BIỆT ANIME MOVIE ---
+        // *** CẬP NHẬT LOGIC NHẬN DIỆN TVTYPE ***
         val genres = document.select("ul.entry-meta.block-film li:has(label:contains(Thể loại)) a")
-        val isAnime = genres.any { it.attr("href").contains("/genre/phim-anime", ignoreCase = true) || it.text().contains("Anime", ignoreCase = true) }
+        val isAnime = genres.any { it.attr("href").contains("anime", ignoreCase = true) || it.text().contains("anime", ignoreCase = true) || it.text().contains("hoạt hình", ignoreCase = true) }
 
         val statusText = document.selectFirst("ul.entry-meta.block-film li:has(label:containsOwn(Đang phát:)) span")?.text()
         val hasLatestEpisodeDiv = document.selectFirst("div.latest-episode") != null
         
-        // Một nội dung được coi là 'phim bộ' nếu có các chỉ số rõ ràng
         val isSeriesBased = statusText?.contains("Tập", ignoreCase = true) == true ||
                          (statusText?.contains("Hoàn Tất", ignoreCase = true) == true && statusText != "Hoàn Tất") ||
                          durationText?.contains("Tập", ignoreCase = true) == true ||
@@ -157,14 +161,13 @@ class PhimMoiChillProvider : MainAPI() {
         } else {
             if (isSeriesBased) TvType.TvSeries else TvType.Movie
         }
-        // --- KẾT THÚC LOGIC MỚI ---
+        // --- KẾT THÚC CẬP NHẬT ---
 
-        // Xử lý chung cho phim lẻ và phim lẻ anime
         if (tvType == TvType.Movie || tvType == TvType.AnimeMovie) {
             return newMovieLoadResponse(title, url, tvType, episodeListPageUrl ?: url) {
                 this.posterUrl = posterUrl; this.year = year; this.plot = plot; this.tags = tags; this.duration = durationInMinutes; this.rating = rating; this.recommendations = recommendations
             }
-        } else { // Xử lý chung cho phim bộ và phim bộ anime
+        } else { // TvSeries và Anime
             val episodes = mutableListOf<Episode>()
             if (!episodeListPageUrl.isNullOrBlank()) {
                 try {
@@ -192,20 +195,22 @@ class PhimMoiChillProvider : MainAPI() {
     }
 
     override suspend fun loadLinks(
-        data: String, 
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val episodeId = Regex("-pm(\\d+)").find(data)?.groupValues?.get(1) ?: return false
 
-        val document = app.get(data, headers = browserHeaders).document
-        val servers = document.select("#pm-server a.btn-link-backup")
+        // *** TỐI ƯU HÓA: Không cần tải lại trang để lấy server list ***
+        val servers = listOf(
+            Pair("0", "#1 PMFAST"),
+            Pair("1", "#2 PMHLS"),
+            Pair("2", "#3 PMPRO"),
+            Pair("3", "#4 PMBK")
+        )
 
-        servers.apmap { server ->
-            val serverIndex = server.attr("data-index")
-            val serverName = server.text()
-            
+        servers.apmap { (serverIndex, serverName) ->
             val apiResponse = app.post(
                 url = "$mainUrl/chillsplayer.php", 
                 headers = browserHeaders + mapOf(
@@ -216,16 +221,16 @@ class PhimMoiChillProvider : MainAPI() {
                 data = mapOf("qcao" to episodeId, "sv" to serverIndex)
             ).text
 
-            // Server PMBK trả về link trực tiếp
             val directLink = Regex("""initPlayer\("([^"]+)""").find(apiResponse)?.groupValues?.get(1)
             if (directLink != null) {
                 callback.invoke(
                     ExtractorLink(this.name, serverName, directLink, data, Qualities.Unknown.value, type = ExtractorLinkType.M3U8, headers = browserHeaders)
                 )
-            } else { // Các server khác trả về ID nội dung
+            } else {
                  val contentId = Regex("""iniPlayers\("([^"]*)""").find(apiResponse)?.groupValues?.get(1)
                  if (!contentId.isNullOrBlank()) {
-                    val m3u8Link = when(serverName.trim()) { // .trim() để đảm bảo không có khoảng trắng thừa
+                    // *** CẬP NHẬT DOMAIN CHO CÁC SERVER ***
+                    val m3u8Link = when(serverName.trim()) {
                         "#1 PMFAST", "#3 PMPRO" -> "https://dash.megacdn.xyz/raw/$contentId/index.m3u8"
                         "#2 PMHLS" -> "https://sotrim.topphimmoi.org/raw/$contentId/index.m3u8"
                         else -> null
