@@ -161,8 +161,10 @@ class PhimMoiChillProvider : MainAPI() {
             posterUrl = document.selectFirst("meta[property=og:image]")?.attr("content")
         }
 
-        val plot = document.selectFirst("meta[itemprop=description]")?.attr("content")?.trim()
-            ?: document.selectFirst("div#film-content")?.text()?.trim()
+        // *** THAY ĐỔI CHÍNH: Ưu tiên lấy mô tả đầy đủ từ div#film-content ***
+        val plot = document.selectFirst("div#film-content")?.text()?.trim()
+            ?: document.selectFirst("meta[itemprop=description]")?.attr("content")?.trim()?.removeSuffix("...")?.trim()
+            ?: document.selectFirst("meta[name=description]")?.attr("content")?.trim()?.removeSuffix("...")?.trim()
 
         val tags = document.select("div#tags ul.tags-list li.tag a")?.mapNotNull { it.text() }
         
@@ -171,26 +173,26 @@ class PhimMoiChillProvider : MainAPI() {
 
         val rating = document.selectFirst("div.box-rating span.average#average")?.text()?.toRatingInt()
         
-        var episodeListPageUrl: String? = null
-        val latestEpLink = document.selectFirst("div.latest-episode a")?.attr("abs:href")
-        val watchButtonLink = document.selectFirst("div.film-info a.btn-see")?.attr("abs:href")
-        val iconPlayLink = document.selectFirst("div.film-info div.image a.icon-play")?.attr("abs:href")
-        
-        episodeListPageUrl = latestEpLink ?: watchButtonLink ?: iconPlayLink
+        var episodeListPageUrl: String?
+        episodeListPageUrl = document.selectFirst("div.latest-episode a")?.attr("abs:href")
+        if (episodeListPageUrl.isNullOrBlank()) {
+            episodeListPageUrl = document.selectFirst("div.film-info a.btn-see")?.attr("abs:href")
+        }
+        if (episodeListPageUrl.isNullOrBlank()){
+            episodeListPageUrl = document.selectFirst("div.film-info div.image a.icon-play")?.attr("abs:href")
+        }
         
         val recommendations = document.select("div.block.film-related ul.list-film li.item").mapNotNull { it.toSearchResponseDefault() }
         
-        // --- LOGIC NHẬN DIỆN TVTYPE MỚI, CHÍNH XÁC HƠN ---
         val statusText = document.selectFirst("ul.entry-meta.block-film li:has(label:containsOwn(Đang phát:)) span")?.text()
         val hasLatestEpisodeDiv = document.selectFirst("div.latest-episode") != null
 
         val isTvSeries = statusText?.contains("Tập", ignoreCase = true) == true ||
-                         (statusText?.contains("Hoàn Tất", ignoreCase = true) == true && statusText != "Hoàn Tất") || // "Hoàn Tất(11/11)" -> true, "Hoàn Tất" -> false
+                         (statusText?.contains("Hoàn Tất", ignoreCase = true) == true && statusText != "Hoàn Tất") ||
                          durationText?.contains("Tập", ignoreCase = true) == true ||
                          hasLatestEpisodeDiv
 
         val tvType = if (isTvSeries) TvType.TvSeries else TvType.Movie
-        // --- KẾT THÚC LOGIC MỚI ---
 
         if (tvType == TvType.Movie) {
             return newMovieLoadResponse(title, url, tvType, episodeListPageUrl ?: url) {
@@ -221,7 +223,6 @@ class PhimMoiChillProvider : MainAPI() {
                 }
             }
 
-            // Fallback nếu không có tập nào được tìm thấy
             if (episodes.isEmpty()) {
                 episodes.add(Episode(data = url, name = "Không tìm thấy danh sách tập"))
             }
@@ -237,5 +238,6 @@ class PhimMoiChillProvider : MainAPI() {
             }
         }
     }
+
     // override suspend fun loadLinks(...)
 }
