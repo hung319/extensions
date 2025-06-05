@@ -1,10 +1,9 @@
-package com.phimmoichillprovider // Bạn có thể thay đổi tên package cho phù hợp
+package com.phimmoichillprovider
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
-// import android.util.Log // Bỏ comment nếu bạn muốn dùng Log.d để debug trên Android
 
 class PhimMoiChillProvider : MainAPI() {
     override var mainUrl = "https://phimmoichill.day"
@@ -62,7 +61,6 @@ class PhimMoiChillProvider : MainAPI() {
         } else {
             aTag.selectFirst("p")?.text() ?: aTag.selectFirst("h3")?.text()
         } ?: aTag.attr("title").ifBlank { null } ?: return null
-
 
         var posterUrl = aTag.selectFirst("img")?.attr("abs:src")
         if (posterUrl.isNullOrBlank() || posterUrl.contains("lazy.png") || posterUrl.contains("blank.png")) {
@@ -141,7 +139,7 @@ class PhimMoiChillProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url).document // Trang info phim
+        val document = app.get(url).document 
 
         val title = document.selectFirst("div.film-info div.text h1[itemprop=name]")?.text()?.trim()
             ?: return null
@@ -156,7 +154,7 @@ class PhimMoiChillProvider : MainAPI() {
             posterUrl = document.selectFirst("meta[property=og:image]")?.attr("content")
         }
 
-        val plot = document.selectFirst("meta[itemprop=description]")?.attr("content")?.trim()
+        val originalPlot = document.selectFirst("meta[itemprop=description]")?.attr("content")?.trim()
             ?: document.selectFirst("meta[name=description]")?.attr("content")?.trim()
             ?: document.selectFirst("div.film-content#film-content-wrapper div#film-content")?.text()?.replace(Regex("^.*?Nội dung phim"),"")?.trim()
 
@@ -195,76 +193,82 @@ class PhimMoiChillProvider : MainAPI() {
             return newMovieLoadResponse(title, url, tvType, episodeListPageUrl) {
                 this.posterUrl = posterUrl
                 this.year = year
-                this.plot = plot
+                this.plot = originalPlot // Sử dụng plot gốc cho phim lẻ
                 this.tags = tags
                 this.duration = durationInMinutes
                 this.rating = rating
                 this.recommendations = recommendations
             }
         } else { // TvType.TvSeries
+            var debugInfo = "DEBUG INFO:\n" // Chuỗi để lưu thông tin gỡ lỗi
             val episodes = mutableListOf<Episode>()
+
             if (!episodeListPageUrl.isNullOrBlank()) {
+                debugInfo += "EpisodeListPageUrl: $episodeListPageUrl\n"
                 try {
-                    // Tải nội dung của trang danh sách tập phim (ví dụ: loadlinks2.html)
-                    val episodeListDocument = app.get(episodeListPageUrl).document 
+                    val episodeListHTML = app.get(episodeListPageUrl).text 
+                    // Ghi lại một phần HTML để bạn có thể xem (nếu có thể copy từ plot)
+                    debugInfo += "HTMLFetched (first 500 chars): ${episodeListHTML.take(500)}\n"
+
+                    val episodeListDocument = Jsoup.parse(episodeListHTML, episodeListPageUrl)
                     
-                    // Selector chính xác dựa trên HTML bạn cung cấp từ loadlinks2.html
-                    val episodeElements = episodeListDocument.select("div#list-server div.server-group ul#list_episodes li a")
-                    
-                    if (episodeElements.isNotEmpty()) {
-                        episodeElements.forEach { epElement ->
-                            val epHref = epElement.attr("abs:href")
-                            var epName = epElement.ownText().trim() 
-                            if (epName.isBlank()) { 
-                                epName = epElement.attr("title").trim() // Lấy từ title nếu text rỗng
-                            }
-                            if (epName.isBlank()) { // Fallback cuối nếu cả text và title đều rỗng
-                                epName = epElement.text().trim().ifBlank { "Tập ?" } 
-                            }
-                            
-                            var episodeNumber: Int? = null
-                            val nameLower = epName.lowercase()
-                            val epNumMatch = Regex("""tập\s*(\d+)""").find(nameLower)
-                            if (epNumMatch != null) {
-                                episodeNumber = epNumMatch.groupValues[1].toIntOrNull()
-                            }
-                            
-                            if (epHref.isNotBlank()) {
-                                episodes.add(
-                                    Episode(
-                                        data = epHref,
-                                        name = epName,
-                                        episode = episodeNumber,
-                                    )
-                                )
-                            }
-                        }
+                    val listEpisodesParent = episodeListDocument.selectFirst("div#list-server div.server-group ul#list_episodes")
+                    if (listEpisodesParent == null) {
+                        debugInfo += "ERROR: KHÔNG TÌM THẤY 'ul#list_episodes' trong 'div#list-server div.server-group'.\n"
+                        // Thử tìm rộng hơn chỉ để xem div#list-server có gì
+                        val listServerDiv = episodeListDocument.selectFirst("div#list-server")
+                        debugInfo += "HTML của 'div#list-server' (nếu có): ${listServerDiv?.outerHtml()?.take(500) ?: "KHÔNG TÌM THẤY div#list-server"}\n"
                     } else {
-                        // Nếu selector không tìm thấy gì (dù không nên xảy ra với HTML bạn cung cấp)
-                        // Tạo một tập giữ chỗ
-                        episodes.add(
-                            Episode(
-                                data = episodeListPageUrl,
-                                name = watchButton?.text()?.replace("Xem phim", "")?.trim()?.ifBlank { null } ?: "Xem Phim / Tập 1"
-                            )
-                        )
+                        debugInfo += "ĐÃ TÌM THẤY 'ul#list_episodes'.\n"
+                        val episodeElements = listEpisodesParent.select("li a") // Selector tương đối từ listEpisodesParent
+                        debugInfo += "Số phần tử 'li a' tìm thấy bên trong: ${episodeElements.size}\n"
+
+                        if (episodeElements.isNotEmpty()) {
+                            episodeElements.take(5).forEachIndexed { index, epElement -> // Chỉ lấy 5 tập đầu để debug
+                                val epHref = epElement.attr("abs:href")
+                                var epName = epElement.ownText().trim() 
+                                if (epName.isBlank()) epName = epElement.attr("title").trim()
+                                if (epName.isBlank()) epName = epElement.text().trim().ifBlank { "Tập ?" } 
+                                
+                                debugInfo += "DebugEp ${index + 1}: Name='$epName', Href='$epHref'\n"
+                                
+                                var episodeNumber: Int? = null
+                                val nameLower = epName.lowercase()
+                                val epNumMatch = Regex("""tập\s*(\d+)""").find(nameLower)
+                                if (epNumMatch != null) episodeNumber = epNumMatch.groupValues[1].toIntOrNull()
+                                
+                                if (epHref.isNotBlank()) {
+                                    episodes.add(Episode(data = epHref, name = epName, episode = episodeNumber))
+                                }
+                            }
+                            if(episodeElements.size > 5) debugInfo += "... và còn ${episodeElements.size - 5} tập nữa không hiển thị ở debug.\n"
+                        } else {
+                             debugInfo += "Không có 'li a' nào trong 'ul#list_episodes'.\n"
+                        }
                     }
                 } catch (e: Exception) {
-                    // Lỗi khi tải hoặc phân tích trang danh sách tập, tạo tập giữ chỗ
-                    // Log.e("PhimMoiChillError", "Error loading/parsing episode page $episodeListPageUrl: ${e.message}")
-                    episodes.add(
-                        Episode(
-                            data = episodeListPageUrl,
-                            name = watchButton?.text()?.replace("Xem phim", "")?.trim()?.ifBlank { null } ?: "Lỗi tải DS tập"
-                        )
-                    )
+                    debugInfo += "EXCEPTION: ${e.message?.take(100)}\n" // Lấy một phần thông báo lỗi
                 }
+            } else {
+                debugInfo += "episodeListPageUrl RỖNG.\n"
+            }
+
+            if (episodes.isEmpty()) {
+                // Nếu không có tập nào, thêm một tập giữ chỗ với thông tin debug
+                episodes.add(
+                    Episode(
+                        data = episodeListPageUrl ?: url, 
+                        name = "Lỗi lấy DS tập - Xem Debug Info trong Plot"
+                    )
+                )
             }
             
+            val finalPlot = (originalPlot ?: "") + "\n\n--- THÔNG TIN GỠ LỖI (DEBUG INFO) ---\n" + debugInfo
+
             return newTvSeriesLoadResponse(title, url, tvType, episodes) {
                 this.posterUrl = posterUrl
                 this.year = year
-                this.plot = plot
+                this.plot = finalPlot // Đưa thông tin gỡ lỗi vào plot
                 this.tags = tags
                 this.duration = durationInMinutes 
                 this.rating = rating
@@ -272,6 +276,5 @@ class PhimMoiChillProvider : MainAPI() {
             }
         }
     }
-
     // override suspend fun loadLinks(...)
 }
