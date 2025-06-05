@@ -3,10 +3,6 @@ package com.phimmoichillprovider // Hoặc tên package của bạn
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-// Các import cụ thể nếu bạn vẫn cần, ví dụ nếu dùng ở nơi khác
-// import com.lagradost.cloudstream3.Actor
-// import com.lagradost.cloudstream3.ActorData
-// import com.lagradost.cloudstream3.ActorRole
 
 class PhimMoiChillProvider : MainAPI() {
     override var mainUrl = "https://phimmoichill.day"
@@ -144,7 +140,7 @@ class PhimMoiChillProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url).document
+        val document = app.get(url).document // Đây là trang info
 
         val title = document.selectFirst("div.film-info div.text h1[itemprop=name]")?.text()?.trim()
             ?: return null
@@ -171,10 +167,6 @@ class PhimMoiChillProvider : MainAPI() {
 
         val rating = document.selectFirst("div.box-rating span.average#average")?.text()?.toRatingInt()
 
-        // Đã loại bỏ phần parse Diễn viên và Đạo diễn
-        // val combinedActorData = mutableListOf<com.lagradost.cloudstream3.ActorData>()
-        // ... (code parse actor/director đã bị xóa) ...
-
         val watchButton = document.selectFirst("div.film-info div.text a.btn-see, div.film-info div.text a.btn-download")
         val watchUrl = watchButton?.attr("abs:href")
 
@@ -192,33 +184,71 @@ class PhimMoiChillProvider : MainAPI() {
         } else {
             TvType.Movie
         }
-        if (watchUrl.isNullOrBlank() && tvType == TvType.Movie) {
+        if (watchUrl.isNullOrBlank() && tvType == TvType.Movie) { // Phim lẻ chưa có link thì coi như series để hiển thị info
              tvType = TvType.TvSeries
         }
 
         if (tvType == TvType.Movie) {
-            if (watchUrl.isNullOrBlank()) return null
-            return newMovieLoadResponse(title, url, tvType, watchUrl) {
+            if (watchUrl.isNullOrBlank()) return null // Phim lẻ không có link xem thì không load
+            return newMovieLoadResponse(title, url, tvType, watchUrl) { // data cho MovieLoadResponse là watchUrl
                 this.posterUrl = posterUrl
                 this.year = year
                 this.plot = plot
                 this.tags = tags
                 this.duration = durationInMinutes
                 this.rating = rating
-                // this.actors = combinedActorData // Đã loại bỏ
                 this.recommendations = recommendations
             }
-        } else {
+        } else { // TvType.TvSeries
             val episodes = mutableListOf<Episode>()
             if (!watchUrl.isNullOrBlank()) {
-                 episodes.add(
+                try {
+                    // Tải trang watchUrl để tìm danh sách tập phim
+                    val episodeListPageDoc = app.get(watchUrl).document
+
+                    // Thử các selector phổ biến để tìm danh sách tập.
+                    // **LƯU Ý:** Đây là phần phỏng đoán và cần HTML thực tế của trang danh sách tập phim
+                    // từ phimmoichill.day để có selector chính xác.
+                    // Ví dụ: #list-episode a, .list_ep a, #server_data .episode a, etc.
+                    // Cần kiểm tra xem phimmoichill.day dùng cấu trúc nào.
+                    // Dưới đây là một số ví dụ selector, bạn cần thay thế bằng selector đúng:
+                    val episodeElements = episodeListPageDoc.select(
+                        "#list_episodes a, .episodes_list a, #list-server a[data-episode-id], .list-episode li a" 
+                        // Thêm các selector khác bạn nghĩ có thể đúng
+                    )
+                    
+                    if (episodeElements.isNotEmpty()) {
+                        episodeElements.forEach { epElement ->
+                            val epHref = epElement.attr("abs:href")
+                            var epName = epElement.text().trim()
+                            if (epName.isBlank()) { // Nếu text rỗng, thử lấy từ title hoặc thuộc tính khác
+                                epName = epElement.attr("title").ifBlank { "Tập ?" }
+                            }
+
+                            if (epHref.isNotBlank() && epName.isNotBlank()) {
+                                episodes.add(Episode(data = epHref, name = epName))
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    // Lỗi khi tải hoặc parse trang danh sách tập, không làm gì cả, sẽ fallback ở dưới
+                    // Log.e("PhimMoiChillProvider", "Error fetching/parsing episode list page: $watchUrl", e)
+                }
+            }
+
+            // Nếu không tìm thấy danh sách tập nào từ watchUrl (ví dụ do selector sai, trang không có, hoặc lỗi)
+            // thì tạo một tập mặc định trỏ đến watchUrl (link "Xem phim" ban đầu)
+            if (episodes.isEmpty() && !watchUrl.isNullOrBlank()) {
+                episodes.add(
                     Episode(
                         data = watchUrl,
-                        name = watchButton?.text()?.replace("Xem phim", "")?.trim()?.ifBlank { null } ?: "Trailer/Tập 1",
+                        name = watchButton?.text()?.replace("Xem phim", "")?.trim()?.ifBlank { null } ?: "Tập 1 / Xem phim"
                     )
                 )
             }
             
+            // Nếu là TVSeries mà không có watchUrl (ví dụ phim sắp chiếu chưa có trailer)
+            // thì episodes sẽ rỗng, nhưng vẫn trả về thông tin phim.
             return newTvSeriesLoadResponse(title, url, tvType, episodes) {
                 this.posterUrl = posterUrl
                 this.year = year
@@ -226,12 +256,9 @@ class PhimMoiChillProvider : MainAPI() {
                 this.tags = tags
                 this.duration = durationInMinutes
                 this.rating = rating
-                // this.actors = combinedActorData // Đã loại bỏ
                 this.recommendations = recommendations
             }
         }
     }
-
-    // Hàm loadLinks sẽ được triển khai sau.
-    // override suspend fun loadLinks(...)
+    // Hàm loadLinks sẽ được triển khai sau
 }
