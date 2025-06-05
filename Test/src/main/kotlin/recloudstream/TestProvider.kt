@@ -84,110 +84,143 @@ class AnimeVietsubProvider : MainAPI() {
         return currentActiveUrl 
     }
 
-    // *** Helper function to parse pagination and determine if there's a next page ***
+    // *** Hàm getHasNextFromDocument được cập nhật với logging chi tiết hơn ***
     private fun getHasNextFromDocument(doc: Document): Boolean {
-        val pagenavi = doc.selectFirst("div.wp-pagenavi") ?: return false
+        val pagenavi = doc.selectFirst("div.wp-pagenavi")
+        if (pagenavi == null) {
+            Log.d("AnimeVietsubProvider", "Pagination: div.wp-pagenavi not found.")
+            return false
+        }
+        // Để debug, bạn có thể bỏ comment dòng sau để xem chính xác HTML của phần pagenavi
+        // Log.d("AnimeVietsubProvider", "Pagenavi HTML: ${pagenavi.outerHtml()}")
+
+        val currentPageSpanElement = pagenavi.selectFirst("span.current")
+        var currentPage = 1 // Mặc định là 1
+
+        if (currentPageSpanElement == null) {
+            Log.d("AnimeVietsubProvider", "Pagination: span.current not found.")
+            // Nếu không có span.current, kiểm tra xem có link phân trang nào không. 
+            // Nếu không có link nào, có thể chỉ có 1 trang.
+            if (pagenavi.select("a.page.larger").isEmpty()) {
+                Log.d("AnimeVietsubProvider", "Pagination: No 'a.page.larger' links found and no 'span.current'. Assuming single page or no pages.")
+                return false // Không có span.current và cũng không có link nào khác -> không có trang tiếp
+            }
+            Log.d("AnimeVietsubProvider", "Pagination: span.current not found, but 'a.page.larger' links exist. Defaulting current page to 1 for checks.")
+            // currentPage vẫn là 1 trong trường hợp này để logic fallback hoạt động
+        } else {
+            currentPage = currentPageSpanElement.text()?.trim()?.toIntOrNull() ?: 1
+        }
+        Log.d("AnimeVietsubProvider", "Pagination: Parsed currentPage = $currentPage")
         
-        // Lấy trang hiện tại từ span.current (nếu có)
-        val currentPageSpan = pagenavi.selectFirst("span.current")?.text()?.trim()?.toIntOrNull() ?: 1
-        
-        // Lấy tổng số trang từ span.pages (ví dụ: "Trang 1 của 183")
         val pagesSpanText = pagenavi.selectFirst("span.pages")?.text()
         if (pagesSpanText != null) {
-            try {
-                // Regex để trích xuất số trang hiện tại và tổng số trang
-                // Ví dụ: "Trang 1 của 183" -> current=1, total=183
-                // Hoặc chỉ "183 trang" (ít gặp hơn với cấu trúc này, nhưng thêm để phòng hờ)
-                val totalPagesMatch = Regex("""Trang\s*\d+\s*của\s*(\d+)""").find(pagesSpanText)
-                val totalPages = totalPagesMatch?.groupValues?.get(1)?.toIntOrNull()
-
-                if (totalPages != null) {
-                    Log.d("AnimeVietsubProvider", "Pagination: Current $currentPageSpan, Total $totalPages")
-                    return currentPageSpan < totalPages
-                }
-            } catch (e: Exception) {
-                Log.e("AnimeVietsubProvider", "Error parsing total pages from '$pagesSpanText': ${e.message}")
+            Log.d("AnimeVietsubProvider", "Pagination: Found span.pages text: '$pagesSpanText'")
+            val totalPagesMatch = Regex("""Trang\s*\d+\s*của\s*(\d+)""").find(pagesSpanText)
+            val totalPages = totalPagesMatch?.groupValues?.get(1)?.toIntOrNull()
+            if (totalPages != null) {
+                val hasNext = currentPage < totalPages
+                Log.d("AnimeVietsubProvider", "Pagination: PrimaryLogic - Current $currentPage, Total $totalPages. HasNext: $hasNext")
+                return hasNext
+            } else {
+                Log.d("AnimeVietsubProvider", "Pagination: Could not parse totalPages from '$pagesSpanText'. Proceeding to fallback.")
             }
+        } else {
+            Log.d("AnimeVietsubProvider", "Pagination: span.pages not found. Proceeding to fallback.")
         }
         
-        // Fallback: Kiểm tra xem có link đến trang tiếp theo không (page number = current page + 1)
-        val hasNextPageLink = pagenavi.select("a.page.larger").any { link ->
-            val linkPageNum = link.attr("data").toIntOrNull() ?: link.text().trim().toIntOrNull()
-            linkPageNum != null && linkPageNum == currentPageSpan + 1
+        // Fallback: Kiểm tra xem có link đến trang tiếp theo không (currentPage + 1)
+        val nextPageLinks = pagenavi.select("a.page.larger")
+        if (nextPageLinks.isEmpty()) {
+            Log.d("AnimeVietsubProvider", "Pagination: Fallback - No 'a.page.larger' links found.")
+            return false
         }
-        Log.d("AnimeVietsubProvider", "Pagination fallback check for next page link: $hasNextPageLink (current: $currentPageSpan)")
-        return hasNextPageLink
+
+        val hasSpecificNextPageLink = nextPageLinks.any { link ->
+            val linkPageNumData = link.attr("data").toIntOrNull()
+            val linkPageNumText = link.text().trim().toIntOrNull()
+            // Một link được coi là "trang tiếp theo" nếu số trang của nó bằng currentPage + 1
+            (linkPageNumData != null && linkPageNumData == currentPage + 1) || (linkPageNumText != null && linkPageNumText == currentPage + 1)
+        }
+        
+        Log.d("AnimeVietsubProvider", "Pagination: Fallback - Specific next page link (currentPage + 1) found: $hasSpecificNextPageLink")
+        return hasSpecificNextPageLink
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // getMainPage chỉ tải dữ liệu cho page = 1.
-        // hasNext sẽ cho biết liệu các mục con (Mới cập nhật, Sắp chiếu) có trang 2 hay không.
         if (page > 1) return newHomePageResponse(emptyList(), false)
 
         val lists = mutableListOf<HomePageList>()
         val baseUrl = getBaseUrl()
-        var overallHasNext = false // Biến này sẽ là true nếu BẤT KỲ list nào có trang tiếp theo
+        var overallHasNext = false 
 
-        // 1. Lấy "Mới cập nhật"
-        // Đường dẫn này phải trỏ đến trang đầu tiên của danh sách "Mới cập nhật"
+        // --- Phần "Mới cập nhật" ---
         val newlyUpdatedPath = "/anime-moi/" 
+        var newlyUpdatedListName = "Mới cập nhật" // Tên gốc
         try {
-            val newlyUpdatedUrl = "$baseUrl$newlyUpdatedPath" // Luôn lấy trang 1 cho getMainPage
-            Log.d("AnimeVietsubProvider", "Fetching 'Mới cập nhật' from: $newlyUpdatedUrl for page: $page")
+            val newlyUpdatedUrl = "$baseUrl$newlyUpdatedPath" 
+            // Log.d("AnimeVietsubProvider", "Fetching 'Mới cập nhật' from: $newlyUpdatedUrl for page: $page") // Giữ lại log này nếu bạn có thể xem sau
             val newlyUpdatedDocument = app.get(newlyUpdatedUrl).document
             val newlyUpdatedItems = newlyUpdatedDocument.select("ul.MovieList.Rows.AX.A06.B04.C03.E20 li.TPostMv")
                 .mapNotNull { it.toSearchResponse(this, baseUrl, isUpcomingList = false) }
                 .takeIf { it.isNotEmpty() }
+            
+            val listHasNextNewlyUpdated = getHasNextFromDocument(newlyUpdatedDocument) // Lấy trạng thái hasNext
+            newlyUpdatedListName += " (hasNext: $listHasNextNewlyUpdated)" // Thêm thông tin vào tên list
+
             if (newlyUpdatedItems != null) {
-                lists.add(HomePageList("Mới cập nhật", newlyUpdatedItems))
-                val listHasNext = getHasNextFromDocument(newlyUpdatedDocument)
-                if (listHasNext) overallHasNext = true
-                Log.d("AnimeVietsubProvider", "Added 'Mới cập nhật' with ${newlyUpdatedItems.size} items. ListHasNext: $listHasNext")
+                lists.add(HomePageList(newlyUpdatedListName, newlyUpdatedItems))
+                if (listHasNextNewlyUpdated) overallHasNext = true
+                // Log.d("AnimeVietsubProvider", "Added '$newlyUpdatedListName' with ${newlyUpdatedItems.size} items.")
             } else {
-                 Log.d("AnimeVietsubProvider", "'Mới cập nhật' list is empty or null from $newlyUpdatedUrl")
+                lists.add(HomePageList("$newlyUpdatedListName [Rỗng]", emptyList())) // Thêm list rỗng để biết nó đã được xử lý
+                // Log.d("AnimeVietsubProvider", "'Mới cập nhật' list is empty or null from $newlyUpdatedUrl")
             }
         } catch (e: Exception) {
-            Log.e("AnimeVietsubProvider", "Error loading 'Mới cập nhật' list from $baseUrl$newlyUpdatedPath: ${e.message}", e)
+            // Log.e("AnimeVietsubProvider", "Error loading 'Mới cập nhật' list from $baseUrl$newlyUpdatedPath: ${e.message}", e)
+            lists.add(HomePageList("$newlyUpdatedListName [Lỗi]", emptyList())) // Thêm list lỗi
         }
 
-        // 2. Lấy "Sắp chiếu"
-        // Đường dẫn này phải trỏ đến trang đầu tiên của danh sách "Sắp chiếu"
+        // --- Phần "Sắp chiếu" ---
         val upcomingPath = "/anime-sap-chieu/"
+        var upcomingListName = "Sắp chiếu" // Tên gốc
         try {
-            val upcomingUrl = "$baseUrl$upcomingPath" // Luôn lấy trang 1 cho getMainPage
-            Log.d("AnimeVietsubProvider", "Fetching 'Sắp chiếu' from: $upcomingUrl for page: $page")
+            val upcomingUrl = "$baseUrl$upcomingPath" 
+            // Log.d("AnimeVietsubProvider", "Fetching 'Sắp chiếu' from: $upcomingUrl for page: $page")
             val upcomingDocument = app.get(upcomingUrl).document
             val upcomingItems = upcomingDocument.select("ul.MovieList.Rows.AX.A06.B04.C03.E20 li.TPostMv")
                 .mapNotNull { it.toSearchResponse(this, baseUrl, isUpcomingList = true) }
                 .takeIf { it.isNotEmpty() }
+
+            val listHasNextUpcoming = getHasNextFromDocument(upcomingDocument) // Lấy trạng thái hasNext
+            upcomingListName += " (hasNext: $listHasNextUpcoming)" // Thêm thông tin vào tên list
+
             if (upcomingItems != null) {
-                lists.add(HomePageList("Sắp chiếu", upcomingItems))
-                val listHasNext = getHasNextFromDocument(upcomingDocument)
-                if (listHasNext) overallHasNext = true
-                Log.d("AnimeVietsubProvider", "Added 'Sắp chiếu' with ${upcomingItems.size} items. ListHasNext: $listHasNext")
+                lists.add(HomePageList(upcomingListName, upcomingItems))
+                if (listHasNextUpcoming) overallHasNext = true
+                // Log.d("AnimeVietsubProvider", "Added '$upcomingListName' with ${upcomingItems.size} items.")
             } else {
-                Log.d("AnimeVietsubProvider", "'Sắp chiếu' list is empty or null from $upcomingUrl")
+                lists.add(HomePageList("$upcomingListName [Rỗng]", emptyList()))
+                // Log.d("AnimeVietsubProvider", "'Sắp chiếu' list is empty or null from $upcomingUrl")
             }
         } catch (e: Exception) {
-            Log.e("AnimeVietsubProvider", "Error loading 'Sắp chiếu' list from $baseUrl$upcomingPath: ${e.message}", e)
+            // Log.e("AnimeVietsubProvider", "Error loading 'Sắp chiếu' list from $baseUrl$upcomingPath: ${e.message}", e)
+            lists.add(HomePageList("$upcomingListName [Lỗi]", emptyList()))
         }
 
-        if (lists.isEmpty()) {
-            Log.w("AnimeVietsubProvider", "No lists were successfully populated for the homepage.")
+        if (lists.isEmpty() && !(newlyUpdatedListName.contains("[Lỗi]") || newlyUpdatedListName.contains("[Rỗng]")) && !(upcomingListName.contains("[Lỗi]") || upcomingListName.contains("[Rỗng]")) ) {
+             // Log.w("AnimeVietsubProvider", "No lists were successfully populated for the homepage.")
             return newHomePageResponse(emptyList(), false)
         }
-        // overallHasNext giờ đây phản ánh liệu có bất kỳ danh sách nào (từ trang 1 của nguồn) có trang tiếp theo không.
-        Log.i("AnimeVietsubProvider", "getMainPage for page $page returning ${lists.size} lists. OverallHasNext: $overallHasNext")
+        
+        // Log.i("AnimeVietsubProvider", "getMainPage for page $page returning ${lists.size} lists. OverallHasNext: $overallHasNext")
         return newHomePageResponse(lists, hasNext = overallHasNext)
     }
+   
+    // ... (Phần còn lại của search, load, toSearchResponse, EpisodeData, getCountry, toLoadResponse, AjaxPlayerResponse, LinkSource, loadLinks, encodeUri, toAnimeVietsubRatingInt, fixUrl giữ nguyên như trước)
 
     override suspend fun search(query: String): List<SearchResponse> {
         try {
             val baseUrl = getBaseUrl()
-            // TODO: Xác minh URL tìm kiếm và trang kết quả. 
-            // Nếu trang tìm kiếm có phân trang, bạn cần xử lý page > 1 ở đây.
-            // Ví dụ: "$baseUrl/tim-kiem/${query.encodeUri()}/page/$page/"
-            // Hiện tại, hàm search này không nhận 'page', nên chỉ lấy trang 1.
             val searchUrl = "$baseUrl/tim-kiem/${query.encodeUri()}/" 
             val document = app.get(searchUrl).document
             return document.selectFirst("ul.MovieList.Rows")?.select("li.TPostMv") 
@@ -197,8 +230,6 @@ class AnimeVietsubProvider : MainAPI() {
             return emptyList()
         }
     }
-
-    // ... (Phần còn lại của code giữ nguyên như trước) ...
 
     override suspend fun load(url: String): LoadResponse? {
         val baseUrl = getBaseUrl() 
