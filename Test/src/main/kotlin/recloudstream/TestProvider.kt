@@ -4,7 +4,6 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
-// import android.util.Log // Bỏ comment nếu bạn muốn dùng Log.d để debug trên Android
 
 class PhimMoiChillProvider : MainAPI() {
     override var mainUrl = "https://phimmoichill.day"
@@ -15,10 +14,10 @@ class PhimMoiChillProvider : MainAPI() {
     override val supportedTypes = setOf(
         TvType.Movie,
         TvType.TvSeries,
-        TvType.Anime
+        TvType.Anime,
+        TvType.AnimeMovie // Thêm Anime Movie vào các loại được hỗ trợ
     )
 
-    // Headers để giả lập yêu cầu từ trình duyệt thật
     private val browserHeaders = mapOf(
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36",
         "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
@@ -72,23 +71,18 @@ class PhimMoiChillProvider : MainAPI() {
         val statusDivText = this.selectFirst("span.label div.status")?.text()?.trim()
         val currentQuality = statusDivText ?: qualityText
 
-        var tvType = TvType.Movie
+        var tvType: TvType = TvType.Movie // Mặc định
+        if (title.contains("anime", ignoreCase = true)) tvType = TvType.Anime
         if (currentQuality != null) {
             if (currentQuality.contains("Tập", ignoreCase = true) ||
                 (currentQuality.contains("Hoàn Tất", ignoreCase = true) && !currentQuality.contains("Full", ignoreCase = true)) ||
                 currentQuality.matches(Regex("""\d+/\d+""")) || 
                 currentQuality.contains("Trailer", ignoreCase = true) && href.contains("/info/") 
             ) {
-                tvType = TvType.TvSeries
+                tvType = if(tvType == TvType.Anime) TvType.Anime else TvType.TvSeries
             }
         }
-        if (href.contains("/genre/phim-sap-chieu", ignoreCase = true) || title.contains("Trailer", ignoreCase = true)){
-            tvType = TvType.TvSeries
-        }
-        if (title.contains("anime", ignoreCase = true)) {
-            tvType = TvType.Anime
-        }
-
+        
         return newMovieSearchResponse(title, href, tvType) {
             this.posterUrl = posterUrl
             if (!currentQuality.isNullOrBlank()) {
@@ -133,7 +127,7 @@ class PhimMoiChillProvider : MainAPI() {
         plotElement?.select("span[itemprop=author]")?.remove()
         val plot = plotElement?.text()?.trim() ?: document.selectFirst("meta[itemprop=description]")?.attr("content")?.trim()
 
-        val tags = document.select("div#tags ul.tags-list li.tag a")?.map { it.text() }
+        val tags = document.select("div#tags ul.tags-list li.tag a")?.mapNotNull { it.text() }
         val durationText = document.selectFirst("ul.entry-meta.block-film li:has(label:containsOwn(Thời lượng:))")?.text()
         val durationInMinutes = parseDuration(durationText)
         val rating = document.selectFirst("div.box-rating span.average#average")?.text()?.toRatingInt()
@@ -145,22 +139,32 @@ class PhimMoiChillProvider : MainAPI() {
         
         val recommendations = document.select("div.block.film-related ul.list-film li.item").mapNotNull { it.toSearchResponseDefault() }
         
+        // --- LOGIC NHẬN DIỆN TVTYPE MỚI, PHÂN BIỆT ANIME MOVIE ---
         val genres = document.select("ul.entry-meta.block-film li:has(label:contains(Thể loại)) a")
         val isAnime = genres.any { it.attr("href").contains("/genre/phim-anime", ignoreCase = true) || it.text().contains("Anime", ignoreCase = true) }
+
         val statusText = document.selectFirst("ul.entry-meta.block-film li:has(label:containsOwn(Đang phát:)) span")?.text()
         val hasLatestEpisodeDiv = document.selectFirst("div.latest-episode") != null
-        val isTvSeries = statusText?.contains("Tập", ignoreCase = true) == true ||
+        
+        // Một nội dung được coi là 'phim bộ' nếu có các chỉ số rõ ràng
+        val isSeriesBased = statusText?.contains("Tập", ignoreCase = true) == true ||
                          (statusText?.contains("Hoàn Tất", ignoreCase = true) == true && statusText != "Hoàn Tất") ||
                          durationText?.contains("Tập", ignoreCase = true) == true ||
                          hasLatestEpisodeDiv
 
-        val tvType = if (isAnime) TvType.Anime else if (isTvSeries) TvType.TvSeries else TvType.Movie
+        val tvType = if (isAnime) {
+            if (isSeriesBased) TvType.Anime else TvType.AnimeMovie
+        } else {
+            if (isSeriesBased) TvType.TvSeries else TvType.Movie
+        }
+        // --- KẾT THÚC LOGIC MỚI ---
 
-        if (tvType == TvType.Movie) {
+        // Xử lý chung cho phim lẻ và phim lẻ anime
+        if (tvType == TvType.Movie || tvType == TvType.AnimeMovie) {
             return newMovieLoadResponse(title, url, tvType, episodeListPageUrl ?: url) {
                 this.posterUrl = posterUrl; this.year = year; this.plot = plot; this.tags = tags; this.duration = durationInMinutes; this.rating = rating; this.recommendations = recommendations
             }
-        } else { // TvSeries và Anime
+        } else { // Xử lý chung cho phim bộ và phim bộ anime
             val episodes = mutableListOf<Episode>()
             if (!episodeListPageUrl.isNullOrBlank()) {
                 try {
@@ -188,7 +192,7 @@ class PhimMoiChillProvider : MainAPI() {
     }
 
     override suspend fun loadLinks(
-        data: String,
+        data: String, 
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
@@ -203,7 +207,7 @@ class PhimMoiChillProvider : MainAPI() {
             val serverName = server.text()
             
             val apiResponse = app.post(
-                url = "$mainUrl/chillsplayer.php",
+                url = "$mainUrl/chillsplayer.php", 
                 headers = browserHeaders + mapOf(
                     "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8",
                     "X-Requested-With" to "XMLHttpRequest",
@@ -212,40 +216,23 @@ class PhimMoiChillProvider : MainAPI() {
                 data = mapOf("qcao" to episodeId, "sv" to serverIndex)
             ).text
 
+            // Server PMBK trả về link trực tiếp
             val directLink = Regex("""initPlayer\("([^"]+)""").find(apiResponse)?.groupValues?.get(1)
             if (directLink != null) {
-                // *** SỬA LỖI DEPRECATED 4 ***
                 callback.invoke(
-                    ExtractorLink(
-                        source = this.name,
-                        name = serverName,
-                        url = directLink,
-                        referer = data,
-                        quality = Qualities.Unknown.value,
-                        type = ExtractorLinkType.M3U8, // Dùng type thay cho isM3u8
-                        headers = browserHeaders // Thêm headers
-                    )
+                    ExtractorLink(this.name, serverName, directLink, data, Qualities.Unknown.value, type = ExtractorLinkType.M3U8, headers = browserHeaders)
                 )
-            } else {
+            } else { // Các server khác trả về ID nội dung
                  val contentId = Regex("""iniPlayers\("([^"]*)""").find(apiResponse)?.groupValues?.get(1)
                  if (!contentId.isNullOrBlank()) {
-                    val m3u8Link = when(serverIndex) {
-                        "0", "1" -> "https://sotrim.topphimmoi.org/raw/$contentId/index.m3u8"
-                        "2" -> "https://dash.megacdn.xyz/raw/$contentId/index.m3u8"
+                    val m3u8Link = when(serverName.trim()) { // .trim() để đảm bảo không có khoảng trắng thừa
+                        "#1 PMFAST", "#3 PMPRO" -> "https://dash.megacdn.xyz/raw/$contentId/index.m3u8"
+                        "#2 PMHLS" -> "https://sotrim.topphimmoi.org/raw/$contentId/index.m3u8"
                         else -> null
                     }
                     if (m3u8Link != null) {
-                        // *** SỬA LỖI DEPRECATED 5 ***
                          callback.invoke(
-                            ExtractorLink(
-                                source = this.name,
-                                name = serverName,
-                                url = m3u8Link,
-                                referer = data,
-                                quality = Qualities.Unknown.value,
-                                type = ExtractorLinkType.M3U8, // Dùng type thay cho isM3u8
-                                headers = browserHeaders // Thêm headers
-                            )
+                            ExtractorLink(this.name, serverName, m3u8Link, data, Qualities.Unknown.value, type = ExtractorLinkType.M3U8, headers = browserHeaders)
                         )
                     }
                 }
