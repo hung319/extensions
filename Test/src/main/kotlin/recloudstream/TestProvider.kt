@@ -14,7 +14,8 @@ class PhimMoiChillProvider : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(
         TvType.Movie,
-        TvType.TvSeries
+        TvType.TvSeries,
+        TvType.Anime // Thêm Anime vào các loại được hỗ trợ
     )
 
     // Headers giống với curl để vượt qua cơ chế chống bot
@@ -78,6 +79,8 @@ class PhimMoiChillProvider : MainAPI() {
         val statusDivText = this.selectFirst("span.label div.status")?.text()?.trim()
         val currentQuality = statusDivText ?: qualityText
 
+        // Xác định tvType ngay trên trang chủ/tìm kiếm nếu có thể (dù không chính xác bằng trang load)
+        // Phần này có thể không cần thay đổi nhiều vì trang load sẽ quyết định cuối cùng
         var tvType = TvType.Movie
         if (currentQuality != null) {
             if (currentQuality.contains("Tập", ignoreCase = true) ||
@@ -91,6 +94,11 @@ class PhimMoiChillProvider : MainAPI() {
         if (href.contains("/genre/phim-sap-chieu", ignoreCase = true) || title.contains("Trailer", ignoreCase = true)){
             tvType = TvType.TvSeries
         }
+        // Việc xác định Anime chính xác nhất là ở hàm load, ở đây chỉ là sơ bộ
+        if (title.contains("anime", ignoreCase = true)) {
+            tvType = TvType.Anime
+        }
+
 
         return newMovieSearchResponse(title, href, tvType) {
             this.posterUrl = posterUrl
@@ -161,10 +169,14 @@ class PhimMoiChillProvider : MainAPI() {
             posterUrl = document.selectFirst("meta[property=og:image]")?.attr("content")
         }
 
-        // *** THAY ĐỔI CHÍNH: Ưu tiên lấy mô tả đầy đủ từ div#film-content ***
-        val plot = document.selectFirst("div#film-content")?.text()?.trim()
-            ?: document.selectFirst("meta[itemprop=description]")?.attr("content")?.trim()?.removeSuffix("...")?.trim()
-            ?: document.selectFirst("meta[name=description]")?.attr("content")?.trim()?.removeSuffix("...")?.trim()
+        // *** THAY ĐỔI CÁCH LẤY MÔ TẢ ***
+        // Tạo một bản sao của phần tử chứa nội dung để không ảnh hưởng đến các selector khác
+        val plotElement = document.selectFirst("div#film-content")?.clone()
+        // Xóa thẻ span chứa @phimmoi khỏi bản sao
+        plotElement?.select("span[itemprop=author]")?.remove()
+        // Lấy text từ bản sao đã được làm sạch
+        val plot = plotElement?.text()?.trim()
+            ?: document.selectFirst("meta[itemprop=description]")?.attr("content")?.trim()?.removeSuffix("...")?.trim() // Fallback
 
         val tags = document.select("div#tags ul.tags-list li.tag a")?.mapNotNull { it.text() }
         
@@ -184,6 +196,10 @@ class PhimMoiChillProvider : MainAPI() {
         
         val recommendations = document.select("div.block.film-related ul.list-film li.item").mapNotNull { it.toSearchResponseDefault() }
         
+        // --- LOGIC NHẬN DIỆN TVTYPE MỚI, BAO GỒM ANIME ---
+        val genres = document.select("ul.entry-meta.block-film li:has(label:contains(Thể loại)) a")
+        val isAnime = genres.any { it.attr("href").contains("/genre/phim-anime") || it.text().contains("Anime", ignoreCase = true) }
+
         val statusText = document.selectFirst("ul.entry-meta.block-film li:has(label:containsOwn(Đang phát:)) span")?.text()
         val hasLatestEpisodeDiv = document.selectFirst("div.latest-episode") != null
 
@@ -192,8 +208,16 @@ class PhimMoiChillProvider : MainAPI() {
                          durationText?.contains("Tập", ignoreCase = true) == true ||
                          hasLatestEpisodeDiv
 
-        val tvType = if (isTvSeries) TvType.TvSeries else TvType.Movie
+        val tvType = if (isAnime) {
+            TvType.Anime
+        } else if (isTvSeries) {
+            TvType.TvSeries
+        } else {
+            TvType.Movie
+        }
+        // --- KẾT THÚC LOGIC MỚI ---
 
+        // Phim lẻ được xử lý riêng
         if (tvType == TvType.Movie) {
             return newMovieLoadResponse(title, url, tvType, episodeListPageUrl ?: url) {
                 this.posterUrl = posterUrl
@@ -204,7 +228,7 @@ class PhimMoiChillProvider : MainAPI() {
                 this.rating = rating
                 this.recommendations = recommendations
             }
-        } else { // TvType.TvSeries
+        } else { // Xử lý chung cho TvSeries và Anime
             val episodes = mutableListOf<Episode>()
             if (!episodeListPageUrl.isNullOrBlank()) {
                 try {
