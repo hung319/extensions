@@ -17,6 +17,9 @@ class PhimMoiChillProvider : MainAPI() {
         TvType.TvSeries
     )
 
+    // Thêm một User-Agent trình duyệt phổ biến
+    private val a = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
+
     private fun parseDuration(durationString: String?): Int? {
         if (durationString.isNullOrBlank()) return null
         var totalMinutes = 0
@@ -95,7 +98,7 @@ class PhimMoiChillProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get(mainUrl).document
+        val document = app.get(mainUrl, headers = mapOf("User-Agent" to a)).document
         val homePageList = mutableListOf<HomePageList>()
 
         document.selectFirst("div.block.top-slide:has(h2.caption:containsOwn(Phim Đề Cử))")?.let { block ->
@@ -133,23 +136,23 @@ class PhimMoiChillProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/tim-kiem/$query/"
-        val document = app.get(searchUrl).document
+        val document = app.get(searchUrl, headers = mapOf("User-Agent" to a)).document
         return document.select("div#binlist ul.list-film li.item.small").mapNotNull {
             it.toSearchResponseDefault(isSearchPage = true)
         }
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url).document 
+        // *** THAY ĐỔI QUAN TRỌNG: Thêm header User-Agent vào yêu cầu app.get() ***
+        val document = app.get(url, headers = mapOf("User-Agent" to a)).document 
 
-        // Selector cho title và year, ưu tiên cấu trúc trong div.image > div.text từ load2.html
         val filmInfoImageTextDiv = document.selectFirst("div.film-info div.image div.text")
         val title = filmInfoImageTextDiv?.selectFirst("h1[itemprop=name]")?.text()?.trim()
-            ?: document.selectFirst("div.film-info > div.text h1[itemprop=name]")?.text()?.trim() // Fallback cho cấu trúc khác
-            ?: return null // Không tìm thấy tiêu đề thì thoát sớm
+            ?: document.selectFirst("div.film-info > div.text h1[itemprop=name]")?.text()?.trim()
+            ?: return null
         
         val yearText = filmInfoImageTextDiv?.selectFirst("h2")?.text()
-            ?: document.selectFirst("div.film-info > div.text h2")?.text() // Fallback
+            ?: document.selectFirst("div.film-info > div.text h2")?.text()
         val year = yearText?.substringAfterLast("(")?.substringBefore(")")?.toIntOrNull()
 
         var posterUrl = document.selectFirst("div.film-info div.image img.avatar")?.attr("abs:src")
@@ -172,38 +175,9 @@ class PhimMoiChillProvider : MainAPI() {
 
         val rating = document.selectFirst("div.box-rating span.average#average")?.text()?.toRatingInt()
         
-        // --- Cập nhật cách tìm watchButton với debug chi tiết ---
-        var watchButton: Element? = null
-        var debugFindingWatchButton = "DEBUG WatchButton Finding:\n"
-        // Tìm tất cả thẻ <a> trong div.film-info có href bắt đầu bằng /xem/
-        val potentialWatchButtons = document.select("div.film-info a[href^=/xem/]")
-        debugFindingWatchButton += "  Found ${potentialWatchButtons.size} potential buttons (href^=/xem/).\n"
-
-        if (potentialWatchButtons.isNotEmpty()) {
-            for (idx in potentialWatchButtons.indices) {
-                val button = potentialWatchButtons[idx]
-                val buttonText = button.text().trim()
-                val buttonHref = button.attr("abs:href")
-                val buttonClasses = button.className()
-                debugFindingWatchButton += "  Checking button #${idx + 1}: Text='${buttonText.take(30)}', Href='$buttonHref', Classes='$buttonClasses'\n"
-                
-                if (buttonClasses.contains("btn-see") && buttonText.contains("Xem phim", ignoreCase = true)) {
-                    watchButton = button
-                    debugFindingWatchButton += "    -> MATCHED! (class 'btn-see' AND text 'Xem phim').\n"
-                    break 
-                } else {
-                    if (!buttonClasses.contains("btn-see")) debugFindingWatchButton += "    -> Reason: No 'btn-see' class.\n"
-                    if (!buttonText.contains("Xem phim", ignoreCase = true)) debugFindingWatchButton += "    -> Reason: Text does not contain 'Xem phim'.\n"
-                }
-            }
-            if (watchButton == null) {
-                debugFindingWatchButton += "  No button matched all criteria.\n"
-            }
-        } else {
-            debugFindingWatchButton += "  No <a> tags with href^=/xem/ found in div.film-info.\n"
-        }
-        val episodeListPageUrl = watchButton?.attr("abs:href")
-        // --- Kết thúc cập nhật cách tìm watchButton ---
+        val watchButton = document.select("div.film-info a.btn-see[href^=/xem/]")
+            .firstOrNull { it.text().contains("Xem phim", ignoreCase = true) }
+        val episodeListPageUrl = watchButton?.attr("abs:href") 
 
         val recommendations = mutableListOf<SearchResponse>()
         document.select("div.block.film-related ul.list-film li.item").forEach { recElement ->
@@ -236,37 +210,32 @@ class PhimMoiChillProvider : MainAPI() {
             }
         } else { 
             var debugInfo = "DEBUG INFO TV SERIES:\n"
-            debugInfo += "Trang Info URL: $url\n"
-            debugInfo += debugFindingWatchButton // Thêm debug của việc tìm watchButton
-            debugInfo += "episodeListPageUrl (final result): $episodeListPageUrl\n"
-
             val episodes = mutableListOf<Episode>()
 
+            debugInfo += "Trang Info URL: $url\n"
+            debugInfo += "Nút Xem Phim (a.btn-see[href^=/xem/]): ${watchButton != null}\n"
+            debugInfo += "episodeListPageUrl (từ nút Xem Phim): $episodeListPageUrl\n"
+
             if (!episodeListPageUrl.isNullOrBlank()) {
-                debugInfo += "Đang thử tải trang DS tập: $episodeListPageUrl\n"
+                debugInfo += "Đang thử tải trang danh sách tập: $episodeListPageUrl\n"
                 try {
-                    val episodeListHTML = app.get(episodeListPageUrl).text 
-                    debugInfo += "HTMLFetched (first 500 chars): ${episodeListHTML.take(500)}\n"
-                    val episodeListDocument = Jsoup.parse(episodeListHTML, episodeListPageUrl)
+                    // *** THAY ĐỔI QUAN TRỌNG: Thêm header User-Agent vào yêu cầu thứ hai này ***
+                    val episodeListDocument = app.get(episodeListPageUrl, headers = mapOf("User-Agent" to a)).document 
                     
                     val listEpisodesParent = episodeListDocument.selectFirst("div#list-server div.server-group ul#list_episodes")
                     if (listEpisodesParent == null) {
-                        debugInfo += "ERROR: KHÔNG TÌM THẤY 'ul#list_episodes' trong 'div#list-server div.server-group'.\n"
-                        val listServerDiv = episodeListDocument.selectFirst("div#list-server")
-                        debugInfo += "HTML của 'div#list-server' (nếu có): ${listServerDiv?.outerHtml()?.take(500) ?: "KHÔNG TÌM THẤY div#list-server"}\n"
+                        debugInfo += "ERROR: KHÔNG TÌM THẤY 'ul#list_episodes'...\n"
                     } else {
                         debugInfo += "ĐÃ TÌM THẤY 'ul#list_episodes'.\n"
                         val episodeElements = listEpisodesParent.select("li a") 
                         debugInfo += "Số 'li a' tìm thấy: ${episodeElements.size}\n"
 
                         if (episodeElements.isNotEmpty()) {
-                            episodeElements.forEachIndexed { index, epElement ->
+                            episodeElements.forEach { epElement ->
                                 val epHref = epElement.attr("abs:href")
                                 var epName = epElement.ownText().trim() 
                                 if (epName.isBlank()) epName = epElement.attr("title").trim()
                                 if (epName.isBlank()) epName = epElement.text().trim().ifBlank { "Tập ?" } 
-                                
-                                if(index < 5) debugInfo += "DebugEp ${index + 1}: Name='$epName', Href='$epHref'\n"
                                 
                                 var episodeNumber: Int? = null
                                 val nameLower = epName.lowercase()
@@ -277,29 +246,19 @@ class PhimMoiChillProvider : MainAPI() {
                                     episodes.add(Episode(data = epHref, name = epName, episode = episodeNumber))
                                 }
                             }
-                            if(episodeElements.size > 5) debugInfo += "...và ${episodeElements.size - 5} tập nữa.\n"
-                        } else {
-                             debugInfo += "Không có 'li a' trong 'ul#list_episodes'.\n"
                         }
                     }
                 } catch (e: Exception) {
                     debugInfo += "EXCEPTION khi tải/parse DS tập: ${e.message?.take(100)}\n"
                 }
-            } else {
-                debugInfo += "episodeListPageUrl RỖNG sau khi thử tìm watchButton.\n"
             }
 
             if (episodes.isEmpty()) {
-                val placeholderName = if (!debugInfo.contains("episodeListPageUrl RỖNG")) 
+                val placeholderName = if (!episodeListPageUrl.isNullOrBlank()) 
                                         "Lỗi DS tập - Xem Debug Plot" 
                                       else 
                                         "Ko thấy link Xem Phim - Xem Debug Plot"
-                episodes.add(
-                    Episode(
-                        data = episodeListPageUrl ?: url, 
-                        name = placeholderName
-                    )
-                )
+                episodes.add(Episode(data = episodeListPageUrl ?: url, name = placeholderName))
             }
             
             val finalPlot = (originalPlot ?: "Không có mô tả.") + "\n\n--- THÔNG TIN GỠ LỖI (DEBUG INFO) ---\n" + debugInfo
