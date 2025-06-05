@@ -140,7 +140,7 @@ class PhimMoiChillProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url).document // Đây là trang info
+        val document = app.get(url).document // Trang info phim
 
         val title = document.selectFirst("div.film-info div.text h1[itemprop=name]")?.text()?.trim()
             ?: return null
@@ -167,8 +167,10 @@ class PhimMoiChillProvider : MainAPI() {
 
         val rating = document.selectFirst("div.box-rating span.average#average")?.text()?.toRatingInt()
 
+        // Nút "Xem phim" hoặc "Trailer" trên trang info
         val watchButton = document.selectFirst("div.film-info div.text a.btn-see, div.film-info div.text a.btn-download")
-        val watchUrl = watchButton?.attr("abs:href")
+        // Đây là URL dẫn đến trang xem phim (có thể chứa danh sách tập)
+        val episodeListPageUrl = watchButton?.attr("abs:href") 
 
         val recommendations = mutableListOf<SearchResponse>()
         document.select("div.block.film-related ul.list-film li.item").forEach { recElement ->
@@ -184,13 +186,15 @@ class PhimMoiChillProvider : MainAPI() {
         } else {
             TvType.Movie
         }
-        if (watchUrl.isNullOrBlank() && tvType == TvType.Movie) { // Phim lẻ chưa có link thì coi như series để hiển thị info
+        // Nếu phim lẻ chưa có link thì coi như series để hiển thị info, không có tập nào
+        if (episodeListPageUrl.isNullOrBlank() && tvType == TvType.Movie) { 
              tvType = TvType.TvSeries
         }
 
         if (tvType == TvType.Movie) {
-            if (watchUrl.isNullOrBlank()) return null // Phim lẻ không có link xem thì không load
-            return newMovieLoadResponse(title, url, tvType, watchUrl) { // data cho MovieLoadResponse là watchUrl
+            // Phim lẻ không có episodeListPageUrl (watchUrl) thì không load
+            if (episodeListPageUrl.isNullOrBlank()) return null 
+            return newMovieLoadResponse(title, url, tvType, episodeListPageUrl) { // data cho MovieLoadResponse là episodeListPageUrl
                 this.posterUrl = posterUrl
                 this.year = year
                 this.plot = plot
@@ -201,60 +205,59 @@ class PhimMoiChillProvider : MainAPI() {
             }
         } else { // TvType.TvSeries
             val episodes = mutableListOf<Episode>()
-            if (!watchUrl.isNullOrBlank()) {
+            if (!episodeListPageUrl.isNullOrBlank()) {
                 try {
-                    // Tải trang watchUrl để tìm danh sách tập phim
-                    val episodeListPageDoc = app.get(watchUrl).document
-
-                    // Thử các selector phổ biến để tìm danh sách tập.
-                    // **LƯU Ý:** Đây là phần phỏng đoán và cần HTML thực tế của trang danh sách tập phim
-                    // từ phimmoichill.day để có selector chính xác.
-                    // Ví dụ: #list-episode a, .list_ep a, #server_data .episode a, etc.
-                    // Cần kiểm tra xem phimmoichill.day dùng cấu trúc nào.
-                    // Dưới đây là một số ví dụ selector, bạn cần thay thế bằng selector đúng:
-                    val episodeElements = episodeListPageDoc.select(
-                        "#list_episodes a, .episodes_list a, #list-server a[data-episode-id], .list-episode li a" 
-                        // Thêm các selector khác bạn nghĩ có thể đúng
-                    )
+                    // Tải nội dung của trang danh sách tập phim (trang mà `episodeListPageUrl` trỏ tới)
+                    val episodeListDocument = app.get(episodeListPageUrl).document
                     
-                    if (episodeElements.isNotEmpty()) {
-                        episodeElements.forEach { epElement ->
-                            val epHref = epElement.attr("abs:href")
-                            var epName = epElement.text().trim()
-                            if (epName.isBlank()) { // Nếu text rỗng, thử lấy từ title hoặc thuộc tính khác
-                                epName = epElement.attr("title").ifBlank { "Tập ?" }
-                            }
+                    // Trích xuất các tập phim từ <ul class="episodes" id="list_episodes">
+                    episodeListDocument.select("ul#list_episodes li a").forEach { epElement ->
+                        val epHref = epElement.attr("abs:href") // Link của tập phim
+                        var epName = epElement.text().trim()    // Tên tập, ví dụ "Tập 1"
+                        val epDataId = epElement.attr("data-id") // data-id, ví dụ "122389"
+                        
+                        // Lấy số tập từ tên, ví dụ "Tập 1" -> 1, "Tập 11 - Cuối" -> 11
+                        val episodeNumber = epName.substringAfter("Tập ")
+                                                  .substringBefore(" ")
+                                                  .toIntOrNull()
 
-                            if (epHref.isNotBlank() && epName.isNotBlank()) {
-                                episodes.add(Episode(data = epHref, name = epName))
-                            }
+                        if (epHref.isNotBlank() && epName.isNotBlank()) {
+                            episodes.add(
+                                Episode(
+                                    data = epHref, // URL này sẽ được truyền cho loadLinks
+                                    name = epName,
+                                    episode = episodeNumber,
+                                    // season = можно попробовать извлечь, если есть информация
+                                    // posterUrl = можно попробовать извлечь, если есть отдельный постер для эпизода
+                                    // dataId = epDataId // có thể lưu trữ nếu cần cho loadLinks
+                                )
+                            )
                         }
                     }
                 } catch (e: Exception) {
-                    // Lỗi khi tải hoặc parse trang danh sách tập, không làm gì cả, sẽ fallback ở dưới
-                    // Log.e("PhimMoiChillProvider", "Error fetching/parsing episode list page: $watchUrl", e)
+                    // Ghi lại lỗi nếu có vấn đề khi tải hoặc phân tích trang danh sách tập
+                    // Log.e("PhimMoiChillProvider", "Error fetching/parsing episode list from $episodeListPageUrl", e)
                 }
             }
 
-            // Nếu không tìm thấy danh sách tập nào từ watchUrl (ví dụ do selector sai, trang không có, hoặc lỗi)
-            // thì tạo một tập mặc định trỏ đến watchUrl (link "Xem phim" ban đầu)
-            if (episodes.isEmpty() && !watchUrl.isNullOrBlank()) {
+            // Nếu sau khi thử lấy danh sách mà vẫn rỗng (và có episodeListPageUrl),
+            // thì tạo một tập mặc định trỏ đến episodeListPageUrl (link "Xem phim" ban đầu).
+            // Điều này hữu ích cho trường hợp phim sắp chiếu có link trailer, hoặc phim bộ mới chỉ có tập 1.
+            if (episodes.isEmpty() && !episodeListPageUrl.isNullOrBlank()) {
                 episodes.add(
                     Episode(
-                        data = watchUrl,
-                        name = watchButton?.text()?.replace("Xem phim", "")?.trim()?.ifBlank { null } ?: "Tập 1 / Xem phim"
+                        data = episodeListPageUrl,
+                        name = watchButton?.text()?.replace("Xem phim", "")?.trim()?.ifBlank { null } ?: "Tập 1 / Xem nội dung"
                     )
                 )
             }
             
-            // Nếu là TVSeries mà không có watchUrl (ví dụ phim sắp chiếu chưa có trailer)
-            // thì episodes sẽ rỗng, nhưng vẫn trả về thông tin phim.
             return newTvSeriesLoadResponse(title, url, tvType, episodes) {
                 this.posterUrl = posterUrl
                 this.year = year
                 this.plot = plot
                 this.tags = tags
-                this.duration = durationInMinutes
+                this.duration = durationInMinutes // Tổng thời lượng của series (nếu có), hoặc bỏ trống
                 this.rating = rating
                 this.recommendations = recommendations
             }
