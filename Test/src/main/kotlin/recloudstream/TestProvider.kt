@@ -142,10 +142,13 @@ class PhimMoiChillProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document 
 
-        val title = document.selectFirst("div.film-info div.image div.text h1[itemprop=name]")?.text()?.trim() // Sửa lại selector title cho chính xác hơn với load2.html
-            ?: document.selectFirst("div.film-info > div.text h1[itemprop=name]")?.text()?.trim() // Fallback cho cấu trúc cũ hơn nếu có
-            ?: return null
-        val yearText = document.selectFirst("div.film-info div.image div.text h2")?.text() // Sửa lại selector year
+        // Selector cho title và year, ưu tiên cấu trúc trong div.image > div.text từ load2.html
+        val filmInfoImageTextDiv = document.selectFirst("div.film-info div.image div.text")
+        val title = filmInfoImageTextDiv?.selectFirst("h1[itemprop=name]")?.text()?.trim()
+            ?: document.selectFirst("div.film-info > div.text h1[itemprop=name]")?.text()?.trim() // Fallback cho cấu trúc khác
+            ?: return null // Không tìm thấy tiêu đề thì thoát sớm
+        
+        val yearText = filmInfoImageTextDiv?.selectFirst("h2")?.text()
             ?: document.selectFirst("div.film-info > div.text h2")?.text() // Fallback
         val year = yearText?.substringAfterLast("(")?.substringBefore(")")?.toIntOrNull()
 
@@ -169,10 +172,38 @@ class PhimMoiChillProvider : MainAPI() {
 
         val rating = document.selectFirst("div.box-rating span.average#average")?.text()?.toRatingInt()
         
-        // *** THAY ĐỔI CÁCH TÌM watchButton ***
-        val watchButton = document.select("div.film-info a.btn-see[href^=/xem/]") // Tìm tất cả <a> có class btn-see và href bắt đầu bằng /xem/
-            .firstOrNull { it.text().contains("Xem phim", ignoreCase = true) } // Chọn cái đầu tiên có text "Xem phim"
-        val episodeListPageUrl = watchButton?.attr("abs:href") 
+        // --- Cập nhật cách tìm watchButton với debug chi tiết ---
+        var watchButton: Element? = null
+        var debugFindingWatchButton = "DEBUG WatchButton Finding:\n"
+        // Tìm tất cả thẻ <a> trong div.film-info có href bắt đầu bằng /xem/
+        val potentialWatchButtons = document.select("div.film-info a[href^=/xem/]")
+        debugFindingWatchButton += "  Found ${potentialWatchButtons.size} potential buttons (href^=/xem/).\n"
+
+        if (potentialWatchButtons.isNotEmpty()) {
+            for (idx in potentialWatchButtons.indices) {
+                val button = potentialWatchButtons[idx]
+                val buttonText = button.text().trim()
+                val buttonHref = button.attr("abs:href")
+                val buttonClasses = button.className()
+                debugFindingWatchButton += "  Checking button #${idx + 1}: Text='${buttonText.take(30)}', Href='$buttonHref', Classes='$buttonClasses'\n"
+                
+                if (buttonClasses.contains("btn-see") && buttonText.contains("Xem phim", ignoreCase = true)) {
+                    watchButton = button
+                    debugFindingWatchButton += "    -> MATCHED! (class 'btn-see' AND text 'Xem phim').\n"
+                    break 
+                } else {
+                    if (!buttonClasses.contains("btn-see")) debugFindingWatchButton += "    -> Reason: No 'btn-see' class.\n"
+                    if (!buttonText.contains("Xem phim", ignoreCase = true)) debugFindingWatchButton += "    -> Reason: Text does not contain 'Xem phim'.\n"
+                }
+            }
+            if (watchButton == null) {
+                debugFindingWatchButton += "  No button matched all criteria.\n"
+            }
+        } else {
+            debugFindingWatchButton += "  No <a> tags with href^=/xem/ found in div.film-info.\n"
+        }
+        val episodeListPageUrl = watchButton?.attr("abs:href")
+        // --- Kết thúc cập nhật cách tìm watchButton ---
 
         val recommendations = mutableListOf<SearchResponse>()
         document.select("div.block.film-related ul.list-film li.item").forEach { recElement ->
@@ -185,7 +216,7 @@ class PhimMoiChillProvider : MainAPI() {
                          ) {
             TvType.TvSeries
         } else {
-             if (watchButton != null) TvType.Movie else TvType.TvSeries // Nếu có nút Xem Phim thì là Movie, không thì là Series (ví dụ: sắp chiếu)
+             if (watchButton != null) TvType.Movie else TvType.TvSeries
         }
         
         if (episodeListPageUrl.isNullOrBlank() && tvType == TvType.Movie) { 
@@ -205,18 +236,17 @@ class PhimMoiChillProvider : MainAPI() {
             }
         } else { 
             var debugInfo = "DEBUG INFO TV SERIES:\n"
+            debugInfo += "Trang Info URL: $url\n"
+            debugInfo += debugFindingWatchButton // Thêm debug của việc tìm watchButton
+            debugInfo += "episodeListPageUrl (final result): $episodeListPageUrl\n"
+
             val episodes = mutableListOf<Episode>()
 
-            debugInfo += "Trang Info URL: $url\n"
-            debugInfo += "Nút Xem Phim (a.btn-see[href^=/xem/]): ${watchButton != null}\n"
-            debugInfo += "episodeListPageUrl (từ nút Xem Phim): $episodeListPageUrl\n"
-
             if (!episodeListPageUrl.isNullOrBlank()) {
-                debugInfo += "Đang thử tải trang danh sách tập: $episodeListPageUrl\n"
+                debugInfo += "Đang thử tải trang DS tập: $episodeListPageUrl\n"
                 try {
                     val episodeListHTML = app.get(episodeListPageUrl).text 
-                    debugInfo += "HTMLFetched (500 chars): ${episodeListHTML.take(500)}\n"
-
+                    debugInfo += "HTMLFetched (first 500 chars): ${episodeListHTML.take(500)}\n"
                     val episodeListDocument = Jsoup.parse(episodeListHTML, episodeListPageUrl)
                     
                     val listEpisodesParent = episodeListDocument.selectFirst("div#list-server div.server-group ul#list_episodes")
@@ -256,11 +286,11 @@ class PhimMoiChillProvider : MainAPI() {
                     debugInfo += "EXCEPTION khi tải/parse DS tập: ${e.message?.take(100)}\n"
                 }
             } else {
-                debugInfo += "episodeListPageUrl RỖNG (không tìm thấy nút Xem Phim).\n"
+                debugInfo += "episodeListPageUrl RỖNG sau khi thử tìm watchButton.\n"
             }
 
             if (episodes.isEmpty()) {
-                val placeholderName = if (!episodeListPageUrl.isNullOrBlank()) 
+                val placeholderName = if (!debugInfo.contains("episodeListPageUrl RỖNG")) 
                                         "Lỗi DS tập - Xem Debug Plot" 
                                       else 
                                         "Ko thấy link Xem Phim - Xem Debug Plot"
