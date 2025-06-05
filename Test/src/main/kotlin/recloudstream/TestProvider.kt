@@ -143,12 +143,11 @@ class PhimMoiChillProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        // *** THAY ĐỔI QUAN TRỌNG: Thêm header User-Agent vào yêu cầu app.get() ***
         val document = app.get(url, headers = mapOf("User-Agent" to a)).document 
 
         val filmInfoImageTextDiv = document.selectFirst("div.film-info div.image div.text")
         val title = filmInfoImageTextDiv?.selectFirst("h1[itemprop=name]")?.text()?.trim()
-            ?: document.selectFirst("div.film-info > div.text h1[itemprop=name]")?.text()?.trim()
+            ?: document.selectFirst("div.film-info > div.text h1[itemprop=name]")?.text()?.trim() 
             ?: return null
         
         val yearText = filmInfoImageTextDiv?.selectFirst("h2")?.text()
@@ -175,10 +174,28 @@ class PhimMoiChillProvider : MainAPI() {
 
         val rating = document.selectFirst("div.box-rating span.average#average")?.text()?.toRatingInt()
         
-        val watchButton = document.select("div.film-info a.btn-see[href^=/xem/]")
-            .firstOrNull { it.text().contains("Xem phim", ignoreCase = true) }
-        val episodeListPageUrl = watchButton?.attr("abs:href") 
+        var debugFindingUrl = "DEBUG Finding URL:\n"
+        // --- LOGIC MỚI: Ưu tiên lấy link từ "Tập mới nhất" ---
+        // Cách 1: Tìm link từ danh sách tập mới nhất
+        var episodeListPageUrl = document.selectFirst("div.latest-episode a")?.attr("abs:href")
+        if (episodeListPageUrl != null) {
+            debugFindingUrl += "  Found URL from 'div.latest-episode': $episodeListPageUrl\n"
+        }
 
+        // Cách 2: Nếu không có, tìm nút "Xem phim"
+        if (episodeListPageUrl.isNullOrBlank()) {
+            debugFindingUrl += "  'div.latest-episode' not found. Trying 'btn-see' button...\n"
+            val watchButton = document.select("div.film-info a.btn-see[href^=/xem/]")
+                .firstOrNull { it.text().contains("Xem phim", ignoreCase = true) }
+            episodeListPageUrl = watchButton?.attr("abs:href")
+            if(watchButton != null) {
+                debugFindingUrl += "  Found URL from 'btn-see': $episodeListPageUrl\n"
+            } else {
+                debugFindingUrl += "  'btn-see' button also not found.\n"
+            }
+        }
+        // --- Kết thúc logic mới ---
+        
         val recommendations = mutableListOf<SearchResponse>()
         document.select("div.block.film-related ul.list-film li.item").forEach { recElement ->
             recElement.toSearchResponseDefault()?.let { recommendations.add(it) }
@@ -190,7 +207,7 @@ class PhimMoiChillProvider : MainAPI() {
                          ) {
             TvType.TvSeries
         } else {
-             if (watchButton != null) TvType.Movie else TvType.TvSeries
+             if (!episodeListPageUrl.isNullOrBlank()) TvType.Movie else TvType.TvSeries
         }
         
         if (episodeListPageUrl.isNullOrBlank() && tvType == TvType.Movie) { 
@@ -210,16 +227,13 @@ class PhimMoiChillProvider : MainAPI() {
             }
         } else { 
             var debugInfo = "DEBUG INFO TV SERIES:\n"
+            debugInfo += debugFindingUrl
+            debugInfo += "episodeListPageUrl (final result): $episodeListPageUrl\n"
             val episodes = mutableListOf<Episode>()
-
-            debugInfo += "Trang Info URL: $url\n"
-            debugInfo += "Nút Xem Phim (a.btn-see[href^=/xem/]): ${watchButton != null}\n"
-            debugInfo += "episodeListPageUrl (từ nút Xem Phim): $episodeListPageUrl\n"
 
             if (!episodeListPageUrl.isNullOrBlank()) {
                 debugInfo += "Đang thử tải trang danh sách tập: $episodeListPageUrl\n"
                 try {
-                    // *** THAY ĐỔI QUAN TRỌNG: Thêm header User-Agent vào yêu cầu thứ hai này ***
                     val episodeListDocument = app.get(episodeListPageUrl, headers = mapOf("User-Agent" to a)).document 
                     
                     val listEpisodesParent = episodeListDocument.selectFirst("div#list-server div.server-group ul#list_episodes")
@@ -229,9 +243,9 @@ class PhimMoiChillProvider : MainAPI() {
                         debugInfo += "ĐÃ TÌM THẤY 'ul#list_episodes'.\n"
                         val episodeElements = listEpisodesParent.select("li a") 
                         debugInfo += "Số 'li a' tìm thấy: ${episodeElements.size}\n"
-
-                        if (episodeElements.isNotEmpty()) {
-                            episodeElements.forEach { epElement ->
+                        if(episodeElements.isNotEmpty()){
+                            // Lấy danh sách tập và đảo ngược lại để có thứ tự từ 1 -> N
+                            episodeElements.reversed().forEach { epElement ->
                                 val epHref = epElement.attr("abs:href")
                                 var epName = epElement.ownText().trim() 
                                 if (epName.isBlank()) epName = epElement.attr("title").trim()
@@ -246,18 +260,19 @@ class PhimMoiChillProvider : MainAPI() {
                                     episodes.add(Episode(data = epHref, name = epName, episode = episodeNumber))
                                 }
                             }
+                        } else {
+                            debugInfo += "Không có 'li a' trong 'ul#list_episodes'.\n"
                         }
                     }
                 } catch (e: Exception) {
                     debugInfo += "EXCEPTION khi tải/parse DS tập: ${e.message?.take(100)}\n"
                 }
+            } else {
+                debugInfo += "episodeListPageUrl RỖNG.\n"
             }
 
             if (episodes.isEmpty()) {
-                val placeholderName = if (!episodeListPageUrl.isNullOrBlank()) 
-                                        "Lỗi DS tập - Xem Debug Plot" 
-                                      else 
-                                        "Ko thấy link Xem Phim - Xem Debug Plot"
+                val placeholderName = "Lỗi/Chưa có DS tập - Xem Debug Plot"
                 episodes.add(Episode(data = episodeListPageUrl ?: url, name = placeholderName))
             }
             
