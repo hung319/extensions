@@ -2,7 +2,7 @@ package com.phimmoichillprovider // Bạn có thể thay đổi tên package cho
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import org.jsoup.Jsoup // Đảm bảo import Jsoup
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 // import android.util.Log // Bỏ comment nếu bạn muốn dùng Log.d để debug trên Android
 
@@ -11,13 +11,12 @@ class PhimMoiChillProvider : MainAPI() {
     override var name = "PhimMoiChill"
     override val hasMainPage = true
     override var lang = "vi"
-    override val hasDownloadSupport = true // Giả định là có hỗ trợ tải về
+    override val hasDownloadSupport = true
     override val supportedTypes = setOf(
         TvType.Movie,
         TvType.TvSeries
     )
 
-    // --- Hàm tiện ích parse thời lượng phim ---
     private fun parseDuration(durationString: String?): Int? {
         if (durationString.isNullOrBlank()) return null
         var totalMinutes = 0
@@ -27,7 +26,6 @@ class PhimMoiChillProvider : MainAPI() {
             .replace("min", "phút")
             .replace("hr", "giờ")
 
-        // Regex tìm "X giờ Y phút" hoặc "X giờ" hoặc "Y phút"
         val pattern = Regex("""(?:(\d+)\s*giờ)?\s*(?:(\d+)\s*phút)?""")
         val match = pattern.find(cleanedString)
 
@@ -43,10 +41,8 @@ class PhimMoiChillProvider : MainAPI() {
             }
         }
         
-        // Nếu không tìm thấy giờ/phút nhưng chuỗi chỉ là một số (ví dụ "90")
         if (totalMinutes == 0 && cleanedString.matches(Regex("""^\d+$"""))) {
             cleanedString.toIntOrNull()?.let {
-                // Giả định là phút nếu không có đơn vị và totalMinutes vẫn là 0
                 if (!cleanedString.contains("giờ") && !cleanedString.contains("phút")) {
                     totalMinutes = it
                 }
@@ -56,7 +52,6 @@ class PhimMoiChillProvider : MainAPI() {
         return if (totalMinutes > 0) totalMinutes else null
     }
 
-    // --- Hàm tiện ích chuyển đổi Element thành SearchResponse ---
     private fun Element.toSearchResponseDefault(isSearchPage: Boolean = false): SearchResponse? {
         val aTag = this.selectFirst("a") ?: return null
         val href = aTag.attr("abs:href")
@@ -78,7 +73,7 @@ class PhimMoiChillProvider : MainAPI() {
         val statusDivText = this.selectFirst("span.label div.status")?.text()?.trim()
         val currentQuality = statusDivText ?: qualityText
 
-        var tvType = TvType.Movie // Mặc định là phim lẻ
+        var tvType = TvType.Movie
         if (currentQuality != null) {
             if (currentQuality.contains("Tập", ignoreCase = true) ||
                 (currentQuality.contains("Hoàn Tất", ignoreCase = true) && !currentQuality.contains("Full", ignoreCase = true)) ||
@@ -88,7 +83,6 @@ class PhimMoiChillProvider : MainAPI() {
                 tvType = TvType.TvSeries
             }
         }
-        // Phim Sắp Chiếu / Trailer thường là TvSeries trong ngữ cảnh CloudStream để hiển thị thông tin
         if (href.contains("/genre/phim-sap-chieu", ignoreCase = true) || title.contains("Trailer", ignoreCase = true)){
             tvType = TvType.TvSeries
         }
@@ -101,12 +95,10 @@ class PhimMoiChillProvider : MainAPI() {
         }
     }
 
-    // --- Hàm lấy nội dung trang chủ ---
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(mainUrl).document
         val homePageList = mutableListOf<HomePageList>()
 
-        // Section: Phim Đề Cử (Hot) - ul#film-hot
         document.selectFirst("div.block.top-slide:has(h2.caption:containsOwn(Phim Đề Cử))")?.let { block ->
             val name = block.selectFirst("h2.caption")?.text() ?: "Phim Đề Cử"
             val movies = block.select("ul#film-hot li.item").mapNotNull { it.toSearchResponseDefault() }
@@ -115,7 +107,6 @@ class PhimMoiChillProvider : MainAPI() {
             }
         }
 
-        // Các sections khác dùng chung cấu trúc ul.list-film.horizontal
         val sectionSelectors = listOf(
             "Phim lẻ mới cập nhật",
             "Phim chiếu rạp mới",
@@ -141,21 +132,16 @@ class PhimMoiChillProvider : MainAPI() {
         return HomePageResponse(homePageList)
     }
 
-    // --- Hàm tìm kiếm phim ---
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/tim-kiem/$query/"
-        // Log.d("PhimMoiChillProvider", "Search URL: $searchUrl") // Debug URL
         val document = app.get(searchUrl).document
         return document.select("div#binlist ul.list-film li.item.small").mapNotNull {
             it.toSearchResponseDefault(isSearchPage = true)
         }
     }
 
-    // --- Hàm tải thông tin chi tiết phim và danh sách tập ---
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url).document // Trang info phim
-        // Log.d("PhimMoiChillProvider", "Loading URL: $url") // Debug URL
-        // Log.d("PhimMoiChillProvider", "Info Page HTML (first 1000 chars): ${document.html().take(1000)}")
+        val document = app.get(url).document 
 
         val title = document.selectFirst("div.film-info div.text h1[itemprop=name]")?.text()?.trim()
             ?: return null
@@ -166,7 +152,7 @@ class PhimMoiChillProvider : MainAPI() {
         if (posterUrl.isNullOrBlank() || posterUrl.contains("lazy.png") || posterUrl.contains("blank.png")) {
             posterUrl = document.selectFirst("div.film-info div.image img.avatar")?.attr("abs:data-src")
         }
-        if (posterUrl.isNullOrBlank()) { // Fallback
+        if (posterUrl.isNullOrBlank()) {
             posterUrl = document.selectFirst("meta[property=og:image]")?.attr("content")
         }
 
@@ -181,10 +167,8 @@ class PhimMoiChillProvider : MainAPI() {
         val durationInMinutes = parseDuration(durationString)
 
         val rating = document.selectFirst("div.box-rating span.average#average")?.text()?.toRatingInt()
-
-        // Nút "Xem phim" hoặc "Trailer" trên trang info
+        
         val watchButton = document.selectFirst("div.film-info div.text a.btn-see, div.film-info div.text a.btn-download")
-        // Đây là URL dẫn đến trang xem phim (có thể chứa danh sách tập)
         val episodeListPageUrl = watchButton?.attr("abs:href") 
 
         val recommendations = mutableListOf<SearchResponse>()
@@ -202,18 +186,13 @@ class PhimMoiChillProvider : MainAPI() {
             TvType.Movie
         }
         
-        // Nếu phim lẻ chưa có link thì coi như series để hiển thị info, không có tập nào
         if (episodeListPageUrl.isNullOrBlank() && tvType == TvType.Movie) { 
              tvType = TvType.TvSeries 
         }
 
         if (tvType == TvType.Movie) {
-            // Phim lẻ không có episodeListPageUrl (watchUrl) thì không load
-            if (episodeListPageUrl.isNullOrBlank()) {
-                // Log.d("PhimMoiChillProvider", "Movie '$title' has no watch URL, returning null.")
-                return null 
-            }
-            return newMovieLoadResponse(title, url, tvType, episodeListPageUrl) { // data cho MovieLoadResponse là episodeListPageUrl
+            if (episodeListPageUrl.isNullOrBlank()) return null 
+            return newMovieLoadResponse(title, url, tvType, episodeListPageUrl) {
                 this.posterUrl = posterUrl
                 this.year = year
                 this.plot = plot
@@ -225,21 +204,18 @@ class PhimMoiChillProvider : MainAPI() {
         } else { // TvType.TvSeries
             val episodes = mutableListOf<Episode>()
             if (!episodeListPageUrl.isNullOrBlank()) {
-                // Log.d("PhimMoiChillProvider", "Fetching episode list from: $episodeListPageUrl")
                 try {
                     val episodeListHTML = app.get(episodeListPageUrl).text 
-                    // --- GỢI Ý LOGGING QUAN TRỌNG ---
-                    // Bỏ comment các dòng Log.d dưới đây nếu bạn có thể xem log để debug
-                    // Log.d("PhimMoiChillProvider", "HTML trang danh sách tập (${episodeListPageUrl.take(50)}..., ${episodeListHTML.length} ký tự): ${episodeListHTML.take(3000)}")
-                    // val listEpisodesHtmlCheck = Jsoup.parse(episodeListHTML).selectFirst("ul#list_episodes")?.outerHtml()
-                    // Log.d("PhimMoiChillProvider", "HTML của ul#list_episodes: ${listEpisodesHtmlCheck ?: "KHÔNG TÌM THẤY ul#list_episodes TRONG HTML NHẬN ĐƯỢC"}")
-                    // --- KẾT THÚC GỢI Ý LOGGING ---
+                    // !! QUAN TRỌNG: Bỏ comment các dòng Log.d dưới đây để debug !!
+                    // Log.d("PhimMoiChillDebug", "HTML từ ${episodeListPageUrl.take(60)}... (${episodeListHTML.length} chars): ${episodeListHTML.take(5000)}")
+                    // val tempDoc = Jsoup.parse(episodeListHTML)
+                    // val listEpOuterHtml = tempDoc.selectFirst("ul#list_episodes")?.outerHtml()
+                    // Log.d("PhimMoiChillDebug", "HTML của ul#list_episodes: ${listEpOuterHtml ?: "KHÔNG TÌM THẤY ul#list_episodes"}")
 
                     val episodeListDocument = Jsoup.parse(episodeListHTML, episodeListPageUrl)
 
                     val episodeElements = episodeListDocument.select("ul#list_episodes li a")
-                    
-                    // Log.d("PhimMoiChillProvider", "Tìm thấy ${episodeElements.size} phần tử tập phim với selector 'ul#list_episodes li a'")
+                    // Log.d("PhimMoiChillDebug", "Tìm thấy ${episodeElements.size} tập với selector 'ul#list_episodes li a'")
 
                     if (episodeElements.isNotEmpty()) {
                         episodeElements.forEach { epElement ->
@@ -259,7 +235,7 @@ class PhimMoiChillProvider : MainAPI() {
                                 episodeNumber = epNumMatch.groupValues[1].toIntOrNull()
                             }
                             
-                            // Log.d("PhimMoiChillProvider", "Đã parse tập: Tên='$epName', Href='$epHref', Số tập='$episodeNumber'")
+                            // Log.d("PhimMoiChillDebug", "Parse được: Tên='$epName', Href='$epHref', Số='$episodeNumber'")
 
                             if (epHref.isNotBlank()) {
                                 episodes.add(
@@ -272,16 +248,15 @@ class PhimMoiChillProvider : MainAPI() {
                             }
                         }
                     } else {
-                        // Log.d("PhimMoiChillProvider", "Selector 'ul#list_episodes li a' không tìm thấy phần tử nào trên trang: $episodeListPageUrl. Có thể nội dung được tải bằng JS.")
+                        // Log.d("PhimMoiChillDebug", "Selector 'ul#list_episodes li a' không tìm thấy gì trên trang $episodeListPageUrl. Kiểm tra HTML nhận được.")
                     }
                 } catch (e: Exception) {
-                    // Log.e("PhimMoiChillProvider", "Lỗi khi tải/phân tích trang danh sách tập từ $episodeListPageUrl: ${e.message}")
+                    // Log.e("PhimMoiChillDebug", "Lỗi khi tải/phân tích trang danh sách tập từ $episodeListPageUrl: ${e.message}")
                 }
             }
 
-            // Fallback nếu không tìm được tập nào hoặc không có episodeListPageUrl cho series
             if (episodes.isEmpty() && !episodeListPageUrl.isNullOrBlank()) {
-                // Log.d("PhimMoiChillProvider", "Không parse được tập nào từ list, tạo tập giữ chỗ.")
+                // Log.d("PhimMoiChillDebug", "Không parse được tập nào, tạo tập giữ chỗ.")
                 episodes.add(
                     Episode(
                         data = episodeListPageUrl,
@@ -302,16 +277,5 @@ class PhimMoiChillProvider : MainAPI() {
         }
     }
 
-    // Hàm loadLinks sẽ được triển khai sau khi phần load() ổn định
-    // override suspend fun loadLinks(
-    //    data: String, // Đây sẽ là epHref từ đối tượng Episode
-    //    isCasting: Boolean,
-    //    subtitleCallback: (SubtitleFile) -> Unit,
-    //    callback: (ExtractorLink) -> Unit
-    // ): Boolean {
-    //    // Logic để lấy link video từ data (epHref)
-    //    // Ví dụ: tải trang data, tìm iframe hoặc ajax call đến chillplayer.php
-    //    // Log.d("PhimMoiChillProvider", "loadLinks called with: $data")
-    //    return true
-    // }
+    // override suspend fun loadLinks(...)
 }
