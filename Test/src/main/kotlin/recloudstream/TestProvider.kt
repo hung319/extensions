@@ -2,7 +2,10 @@ package com.phimmoichillprovider // Hoặc tên package của bạn
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import org.jsoup.Jsoup // Thêm import cho Jsoup nếu chưa có ở đầu file
 import org.jsoup.nodes.Element
+// import com.lagradost.cloudstream3.utils.AppUtils.toJson // Cho Log nếu cần
+// import android.util.Log // Cho Log nếu chạy trên Android
 
 class PhimMoiChillProvider : MainAPI() {
     override var mainUrl = "https://phimmoichill.day"
@@ -167,9 +170,7 @@ class PhimMoiChillProvider : MainAPI() {
 
         val rating = document.selectFirst("div.box-rating span.average#average")?.text()?.toRatingInt()
 
-        // Nút "Xem phim" hoặc "Trailer" trên trang info
         val watchButton = document.selectFirst("div.film-info div.text a.btn-see, div.film-info div.text a.btn-download")
-        // Đây là URL dẫn đến trang xem phim (có thể chứa danh sách tập)
         val episodeListPageUrl = watchButton?.attr("abs:href") 
 
         val recommendations = mutableListOf<SearchResponse>()
@@ -186,15 +187,13 @@ class PhimMoiChillProvider : MainAPI() {
         } else {
             TvType.Movie
         }
-        // Nếu phim lẻ chưa có link thì coi như series để hiển thị info, không có tập nào
         if (episodeListPageUrl.isNullOrBlank() && tvType == TvType.Movie) { 
              tvType = TvType.TvSeries
         }
 
         if (tvType == TvType.Movie) {
-            // Phim lẻ không có episodeListPageUrl (watchUrl) thì không load
             if (episodeListPageUrl.isNullOrBlank()) return null 
-            return newMovieLoadResponse(title, url, tvType, episodeListPageUrl) { // data cho MovieLoadResponse là episodeListPageUrl
+            return newMovieLoadResponse(title, url, tvType, episodeListPageUrl) {
                 this.posterUrl = posterUrl
                 this.year = year
                 this.plot = plot
@@ -207,43 +206,77 @@ class PhimMoiChillProvider : MainAPI() {
             val episodes = mutableListOf<Episode>()
             if (!episodeListPageUrl.isNullOrBlank()) {
                 try {
-                    // Tải nội dung của trang danh sách tập phim (trang mà `episodeListPageUrl` trỏ tới)
-                    val episodeListDocument = app.get(episodeListPageUrl).document
-                    
-                    // Trích xuất các tập phim từ <ul class="episodes" id="list_episodes">
-                    episodeListDocument.select("ul#list_episodes li a").forEach { epElement ->
-                        val epHref = epElement.attr("abs:href") // Link của tập phim
-                        var epName = epElement.text().trim()    // Tên tập, ví dụ "Tập 1"
-                        val epDataId = epElement.attr("data-id") // data-id, ví dụ "122389"
-                        
-                        // Lấy số tập từ tên, ví dụ "Tập 1" -> 1, "Tập 11 - Cuối" -> 11
-                        val episodeNumber = epName.substringAfter("Tập ")
-                                                  .substringBefore(" ")
-                                                  .toIntOrNull()
+                    val episodeListHTML = app.get(episodeListPageUrl).text 
+                    // --- GỢI Ý LOGGING QUAN TRỌNG ---
+                    // Nếu bạn có thể xem log, hãy in ra một phần HTML này để kiểm tra:
+                    // Ví dụ: Log.d("PhimMoiChillProvider", "HTML trang danh sách tập (2000 ký tự đầu): ${episodeListHTML.take(2000)}")
+                    // Hoặc cụ thể hơn, tìm xem thẻ ul#list_episodes có tồn tại không:
+                    // val listEpisodesHtml = Jsoup.parse(episodeListHTML).selectFirst("ul#list_episodes")?.outerHtml()
+                    // Log.d("PhimMoiChillProvider", "HTML của ul#list_episodes: $listEpisodesHtml")
+                    // --- KẾT THÚC GỢI Ý LOGGING ---
 
-                        if (epHref.isNotBlank() && epName.isNotBlank()) {
-                            episodes.add(
-                                Episode(
-                                    data = epHref, // URL này sẽ được truyền cho loadLinks
-                                    name = epName,
-                                    episode = episodeNumber,
-                                    // season = можно попробовать извлечь, если есть информация
-                                    // posterUrl = можно попробовать извлечь, если есть отдельный постер для эпизода
-                                    // dataId = epDataId // có thể lưu trữ nếu cần cho loadLinks
+                    val episodeListDocument = Jsoup.parse(episodeListHTML, episodeListPageUrl) // Parse với base URI để abs:href hoạt động đúng
+
+                    // Selector dựa trên thông tin bạn cung cấp: <ul class="episodes" id="list_episodes"> <li><a>...</a></li> ... </ul>
+                    val episodeElements = episodeListDocument.select("ul#list_episodes li a")
+                    
+                    // --- GỢI Ý LOGGING ---
+                    // Log.d("PhimMoiChillProvider", "Tìm thấy ${episodeElements.size} phần tử tập phim với selector 'ul#list_episodes li a'")
+                    // --- KẾT THÚC GỢI Ý LOGGING ---
+
+                    if (episodeElements.isNotEmpty()) {
+                        // episodes.clear() // Không cần thiết nếu episodes được khởi tạo rỗng ở trên
+                        episodeElements.forEach { epElement ->
+                            val epHref = epElement.attr("abs:href")
+                            // Ưu tiên lấy text trực tiếp của thẻ <a>, tránh text của thẻ con nếu có
+                            var epName = epElement.ownText().trim() 
+                            if (epName.isBlank()) { // Nếu ownText rỗng, thử lấy từ attribute title
+                                epName = epElement.attr("title").trim()
+                            }
+                            if (epName.isBlank()) { // Nếu vẫn rỗng, thử lấy toàn bộ text của thẻ a
+                                epName = epElement.text().trim().ifBlank { "Tập ?" } // Fallback cuối cùng
+                            }
+                            
+                            var episodeNumber: Int? = null
+                            val nameLower = epName.lowercase()
+                            // Trích xuất số tập từ tên, ví dụ "Tập 1", "Tập 10 - Cuối"
+                            val epNumMatch = Regex("""tập\s*(\d+)""").find(nameLower)
+                            if (epNumMatch != null) {
+                                episodeNumber = epNumMatch.groupValues[1].toIntOrNull()
+                            }
+                            
+                            // --- GỢI Ý LOGGING ---
+                            // Log.d("PhimMoiChillProvider", "Đã parse tập: Tên='$epName', Href='$epHref', Số tập='$episodeNumber'")
+                            // --- KẾT THÚC GỢI Ý LOGGING ---
+
+                            if (epHref.isNotBlank()) { // Cần có href, tên có thể là "?"
+                                episodes.add(
+                                    Episode(
+                                        data = epHref,
+                                        name = epName,
+                                        episode = episodeNumber,
+                                        // season = N/A từ HTML này
+                                    )
                                 )
-                            )
+                            }
                         }
+                    } else {
+                        // --- GỢI Ý LOGGING ---
+                        // Log.d("PhimMoiChillProvider", "Selector 'ul#list_episodes li a' không tìm thấy phần tử nào trên trang: $episodeListPageUrl")
+                        // --- KẾT THÚC GỢI Ý LOGGING ---
                     }
                 } catch (e: Exception) {
-                    // Ghi lại lỗi nếu có vấn đề khi tải hoặc phân tích trang danh sách tập
-                    // Log.e("PhimMoiChillProvider", "Error fetching/parsing episode list from $episodeListPageUrl", e)
+                    // --- GỢI Ý LOGGING ---
+                    // Log.e("PhimMoiChillProvider", "Lỗi khi tải/phân tích trang danh sách tập từ $episodeListPageUrl: ${e.message}")
+                    // e.printStackTrace() // Nếu có thể xem stack trace
+                    // --- KẾT THÚC GỢI Ý LOGGING ---
                 }
             }
 
-            // Nếu sau khi thử lấy danh sách mà vẫn rỗng (và có episodeListPageUrl),
-            // thì tạo một tập mặc định trỏ đến episodeListPageUrl (link "Xem phim" ban đầu).
-            // Điều này hữu ích cho trường hợp phim sắp chiếu có link trailer, hoặc phim bộ mới chỉ có tập 1.
             if (episodes.isEmpty() && !episodeListPageUrl.isNullOrBlank()) {
+                // --- GỢI Ý LOGGING ---
+                // Log.d("PhimMoiChillProvider", "Không parse được tập nào, tạo tập giữ chỗ.")
+                // --- KẾT THÚC GỢI Ý LOGGING ---
                 episodes.add(
                     Episode(
                         data = episodeListPageUrl,
@@ -257,7 +290,7 @@ class PhimMoiChillProvider : MainAPI() {
                 this.year = year
                 this.plot = plot
                 this.tags = tags
-                this.duration = durationInMinutes // Tổng thời lượng của series (nếu có), hoặc bỏ trống
+                this.duration = durationInMinutes
                 this.rating = rating
                 this.recommendations = recommendations
             }
