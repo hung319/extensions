@@ -17,8 +17,11 @@ class PhimMoiChillProvider : MainAPI() {
         TvType.TvSeries
     )
 
-    // Thêm một User-Agent trình duyệt phổ biến
-    private val a = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
+    // *** THAY ĐỔI CUỐI CÙNG: Tạo một map chứa header giống hệt curl ***
+    private val curlHeaders = mapOf(
+        "User-Agent" to "curl/8.13.0",
+        "Accept" to "*/*"
+    )
 
     private fun parseDuration(durationString: String?): Int? {
         if (durationString.isNullOrBlank()) return null
@@ -98,7 +101,7 @@ class PhimMoiChillProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get(mainUrl, headers = mapOf("User-Agent" to a)).document
+        val document = app.get(mainUrl, headers = curlHeaders).document
         val homePageList = mutableListOf<HomePageList>()
 
         document.selectFirst("div.block.top-slide:has(h2.caption:containsOwn(Phim Đề Cử))")?.let { block ->
@@ -136,35 +139,25 @@ class PhimMoiChillProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/tim-kiem/$query/"
-        val document = app.get(searchUrl, headers = mapOf("User-Agent" to a)).document
+        val document = app.get(searchUrl, headers = curlHeaders).document
         return document.select("div#binlist ul.list-film li.item.small").mapNotNull {
             it.toSearchResponseDefault(isSearchPage = true)
         }
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url, headers = mapOf("User-Agent" to a)).document 
+        val document = app.get(url, headers = curlHeaders).document 
 
-        val filmInfoImageTextDiv = document.selectFirst("div.film-info div.image div.text")
-        val title = filmInfoImageTextDiv?.selectFirst("h1[itemprop=name]")?.text()?.trim()
-            ?: document.selectFirst("div.film-info > div.text h1[itemprop=name]")?.text()?.trim()
-            ?: return null
+        val title = document.selectFirst("div.film-info h1[itemprop=name]")?.text()?.trim() ?: return null
         
-        val yearText = filmInfoImageTextDiv?.selectFirst("h2")?.text()
-            ?: document.selectFirst("div.film-info > div.text h2")?.text()
+        val yearText = document.selectFirst("div.film-info h2")?.text()
         val year = yearText?.substringAfterLast("(")?.substringBefore(")")?.toIntOrNull()
 
-        var posterUrl = document.selectFirst("div.film-info div.image img.avatar")?.attr("abs:src")
-        if (posterUrl.isNullOrBlank() || posterUrl.contains("lazy.png") || posterUrl.contains("blank.png")) {
-            posterUrl = document.selectFirst("div.film-info div.image img.avatar")?.attr("abs:data-src")
-        }
-        if (posterUrl.isNullOrBlank()) {
-            posterUrl = document.selectFirst("meta[property=og:image]")?.attr("content")
-        }
+        val posterUrl = document.selectFirst("div.film-info div.image img.avatar")?.attr("abs:src")
+            ?: document.selectFirst("meta[property=og:image]")?.attr("content")
 
         val originalPlot = document.selectFirst("meta[itemprop=description]")?.attr("content")?.trim()
-            ?: document.selectFirst("meta[name=description]")?.attr("content")?.trim()
-            ?: document.selectFirst("div.film-content#film-content-wrapper div#film-content")?.text()?.replace(Regex("^.*?Nội dung phim"),"")?.trim()
+            ?: document.selectFirst("div#film-content")?.text()?.trim()
 
         val tags = document.select("div#tags ul.tags-list li.tag a")?.mapNotNull { it.text() }
         
@@ -174,63 +167,28 @@ class PhimMoiChillProvider : MainAPI() {
 
         val rating = document.selectFirst("div.box-rating span.average#average")?.text()?.toRatingInt()
         
-        // --- Cập nhật logic tìm link xem phim với 3 cách ưu tiên ---
-        var debugFindingUrl = "DEBUG Finding URL:\n"
-        var episodeListPageUrl: String?
-
-        // 1. Ưu tiên: Lấy từ mục "Tập mới nhất"
-        episodeListPageUrl = document.selectFirst("div.latest-episode a")?.attr("abs:href")
-        if (episodeListPageUrl != null) {
-            debugFindingUrl += "  Found URL from 'div.latest-episode'.\n"
+        var episodeListPageUrl: String? = null
+        val watchButton = document.selectFirst("div.film-info a.btn-see")
+        if (watchButton != null) {
+            episodeListPageUrl = watchButton.attr("abs:href")
+        } else {
+            episodeListPageUrl = document.selectFirst("div.latest-episode a")?.attr("abs:href")
         }
-
-        // 2. Dự phòng: Tìm nút "Xem phim" (btn-see)
-        if (episodeListPageUrl.isNullOrBlank()) {
-            debugFindingUrl += "  'latest-episode' not found. Trying 'btn-see'...\n"
-            val watchButton = document.select("div.film-info a.btn-see[href^=/xem/]")
-                .firstOrNull { it.text().contains("Xem phim", ignoreCase = true) }
-            episodeListPageUrl = watchButton?.attr("abs:href")
-            if (episodeListPageUrl != null) {
-                debugFindingUrl += "  Found URL from 'btn-see'.\n"
-            } else {
-                debugFindingUrl += "  'btn-see' not found.\n"
-            }
+        if (episodeListPageUrl.isNullOrBlank()){
+            episodeListPageUrl = document.selectFirst("div.film-info div.image a.icon-play")?.attr("abs:href")
         }
-
-        // 3. Dự phòng cuối: Tìm nút play trên ảnh (icon-play)
-        if (episodeListPageUrl.isNullOrBlank()) {
-            debugFindingUrl += "  'btn-see' not found. Trying 'icon-play'...\n"
-            val iconPlayButton = document.selectFirst("div.film-info div.image a.icon-play[href^=/xem/]")
-            episodeListPageUrl = iconPlayButton?.attr("abs:href")
-            if (episodeListPageUrl != null) {
-                debugFindingUrl += "  Found URL from 'icon-play'.\n"
-            } else {
-                debugFindingUrl += "  'icon-play' also not found.\n"
-            }
-        }
-        // --- Kết thúc cập nhật logic ---
-
-        val recommendations = mutableListOf<SearchResponse>()
-        document.select("div.block.film-related ul.list-film li.item").forEach { recElement ->
-            recElement.toSearchResponseDefault()?.let { recommendations.add(it) }
-        }
+        
+        val recommendations = document.select("div.block.film-related ul.list-film li.item").mapNotNull { it.toSearchResponseDefault() }
         
         val statusText = document.selectFirst("ul.entry-meta.block-film li:has(label:containsOwn(Đang phát:)) span")?.text()
-        var tvType = if (statusText?.contains("Tập", ignoreCase = true) == true ||
-                         (statusText?.contains("Hoàn Tất", ignoreCase = true) == true && !statusText.contains("Full", ignoreCase = true) )
-                         ) {
+        var tvType = if (statusText?.contains("Tập", ignoreCase = true) == true || statusText?.contains("Hoàn Tất", ignoreCase = true) == true) {
             TvType.TvSeries
         } else {
-             if (!episodeListPageUrl.isNullOrBlank()) TvType.Movie else TvType.TvSeries
-        }
-        
-        if (episodeListPageUrl.isNullOrBlank() && tvType == TvType.Movie) { 
-             tvType = TvType.TvSeries 
+            TvType.Movie
         }
 
         if (tvType == TvType.Movie) {
-            if (episodeListPageUrl.isNullOrBlank()) return null 
-            return newMovieLoadResponse(title, url, tvType, episodeListPageUrl) {
+            return newMovieLoadResponse(title, url, tvType, episodeListPageUrl ?: url) {
                 this.posterUrl = posterUrl
                 this.year = year
                 this.plot = originalPlot
@@ -239,65 +197,35 @@ class PhimMoiChillProvider : MainAPI() {
                 this.rating = rating
                 this.recommendations = recommendations
             }
-        } else { 
-            var debugInfo = "DEBUG INFO TV SERIES:\n"
-            debugInfo += debugFindingUrl // Thêm debug của việc tìm URL
-            debugInfo += "episodeListPageUrl (final result): $episodeListPageUrl\n"
+        } else {
             val episodes = mutableListOf<Episode>()
-
             if (!episodeListPageUrl.isNullOrBlank()) {
-                debugInfo += "Đang thử tải trang danh sách tập...\n"
                 try {
-                    val episodeListDocument = app.get(episodeListPageUrl, headers = mapOf("User-Agent" to a)).document 
-                    
-                    val listEpisodesParent = episodeListDocument.selectFirst("div#list-server div.server-group ul#list_episodes")
-                    if (listEpisodesParent == null) {
-                        debugInfo += "ERROR: KHÔNG TÌM THẤY 'ul#list_episodes'...\n"
-                    } else {
-                        debugInfo += "ĐÃ TÌM THẤY 'ul#list_episodes'.\n"
-                        val episodeElements = listEpisodesParent.select("li a") 
-                        debugInfo += "Số 'li a' tìm thấy: ${episodeElements.size}\n"
-
-                        if (episodeElements.isNotEmpty()) {
-                            episodeElements.reversed().forEach { epElement ->
-                                val epHref = epElement.attr("abs:href")
-                                var epName = epElement.ownText().trim() 
-                                if (epName.isBlank()) epName = epElement.attr("title").trim()
-                                if (epName.isBlank()) epName = epElement.text().trim().ifBlank { "Tập ?" } 
-                                
-                                var episodeNumber: Int? = null
-                                val nameLower = epName.lowercase()
-                                val epNumMatch = Regex("""tập\s*(\d+)""").find(nameLower)
-                                if (epNumMatch != null) episodeNumber = epNumMatch.groupValues[1].toIntOrNull()
-                                
-                                if (epHref.isNotBlank()) {
-                                    episodes.add(Episode(data = epHref, name = epName, episode = episodeNumber))
-                                }
-                            }
-                        } else {
-                             debugInfo += "Không có 'li a' trong 'ul#list_episodes'.\n"
-                        }
+                    val episodeListDocument = app.get(episodeListPageUrl, headers = curlHeaders).document
+                    val episodeElements = episodeListDocument.select("div#list-server div.server-group ul#list_episodes li a")
+                    if (episodeElements.isNotEmpty()) {
+                        episodes.addAll(episodeElements.reversed().mapNotNull { ep ->
+                            val epHref = ep.attr("abs:href")
+                            val epName = ep.ownText().trim().ifBlank { ep.attr("title").trim() }
+                            val episodeNumber = Regex("""tập\s*(\d+)""").find(epName.lowercase())?.groupValues?.get(1)?.toIntOrNull()
+                            if (epHref.isNotBlank()) Episode(epHref, epName, episode = episodeNumber) else null
+                        })
                     }
                 } catch (e: Exception) {
-                    debugInfo += "EXCEPTION khi tải/parse DS tập: ${e.message?.take(100)}\n"
+                    // Ignored
                 }
-            } else {
-                debugInfo += "episodeListPageUrl RỖNG sau khi thử cả 3 cách tìm.\n"
             }
 
             if (episodes.isEmpty()) {
-                val placeholderName = "Lỗi/Chưa có DS tập - Xem Debug Plot"
-                episodes.add(Episode(data = episodeListPageUrl ?: url, name = placeholderName))
+                episodes.add(Episode(data = url, name = "Không tìm thấy danh sách tập"))
             }
             
-            val finalPlot = (originalPlot ?: "Không có mô tả.") + "\n\n--- THÔNG TIN GỠ LỖI (DEBUG INFO) ---\n" + debugInfo
-
             return newTvSeriesLoadResponse(title, url, tvType, episodes) {
                 this.posterUrl = posterUrl
                 this.year = year
-                this.plot = finalPlot 
+                this.plot = originalPlot
                 this.tags = tags
-                this.duration = durationInMinutes 
+                this.duration = durationInMinutes
                 this.rating = rating
                 this.recommendations = recommendations
             }
