@@ -3,6 +3,9 @@ package com.phimmoichillprovider // Bạn có thể thay đổi tên package cho
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
+import com.lagradost.cloudstream3.Actor // Import cụ thể cho Actor
+import com.lagradost.cloudstream3.ActorData // Import cụ thể cho ActorData
+import com.lagradost.cloudstream3.ActorRole // Import cụ thể cho ActorRole
 
 class PhimMoiChillProvider : MainAPI() {
     override var mainUrl = "https://phimmoichill.day"
