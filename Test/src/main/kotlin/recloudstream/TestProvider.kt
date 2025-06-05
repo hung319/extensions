@@ -54,6 +54,7 @@ class PhimMoiChillProvider : MainAPI() {
         return if (totalMinutes > 0) totalMinutes else null
     }
 
+    // *** ĐÃ SỬA LẠI HÀM NÀY ***
     private fun Element.toSearchResponseDefault(isSearchPage: Boolean = false): SearchResponse? {
         val aTag = this.selectFirst("a") ?: return null
         val href = aTag.attr("abs:href")
@@ -71,10 +72,13 @@ class PhimMoiChillProvider : MainAPI() {
         }
 
         val qualityText = this.selectFirst("span.label")?.text()?.trim()
-        
-        val isSeriesBased = qualityText?.contains("Tập", ignoreCase = true) == true ||
-                            (qualityText?.contains("Hoàn Tất", ignoreCase = true) == true && !qualityText.contains("Full", ignoreCase = true)) ||
-                             qualityText?.matches(Regex("""\d+/\d+""")) == true
+        val statusDivText = this.selectFirst("span.label div.status")?.text()?.trim()
+        // Khôi phục lại biến currentQuality để sử dụng nhất quán
+        val currentQuality = statusDivText ?: qualityText
+
+        val isSeriesBased = currentQuality?.contains("Tập", ignoreCase = true) == true ||
+                            (currentQuality?.contains("Hoàn Tất", ignoreCase = true) == true && !currentQuality.contains("Full", ignoreCase = true)) ||
+                             currentQuality?.matches(Regex("""\d+/\d+""")) == true
         
         val isPotentiallyAnime = title.contains("anime", ignoreCase = true) || href.contains("anime", ignoreCase = true) || title.contains("hoạt hình", ignoreCase = true)
 
@@ -87,7 +91,8 @@ class PhimMoiChillProvider : MainAPI() {
         
         return newMovieSearchResponse(title, href, tvType) {
             this.posterUrl = posterUrl
-            if (!qualityText.isNullOrBlank()) {
+            // Sử dụng biến đã được khai báo đúng
+            if (!currentQuality.isNullOrBlank()) {
                 addQuality(currentQuality)
             }
         }
@@ -162,7 +167,7 @@ class PhimMoiChillProvider : MainAPI() {
             return newMovieLoadResponse(title, url, tvType, episodeListPageUrl ?: url) {
                 this.posterUrl = posterUrl; this.year = year; this.plot = plot; this.tags = tags; this.duration = durationInMinutes; this.rating = rating; this.recommendations = recommendations
             }
-        } else {
+        } else { // TvSeries và Anime
             val episodes = mutableListOf<Episode>()
             if (!episodeListPageUrl.isNullOrBlank()) {
                 try {
@@ -190,21 +195,22 @@ class PhimMoiChillProvider : MainAPI() {
     }
 
     override suspend fun loadLinks(
-        data: String, // Đây là URL của trang xem phim, ví dụ: https://phimmoichill.day/xem/...
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val episodeId = Regex("-pm(\\d+)").find(data)?.groupValues?.get(1) ?: return false
         
-        // *** THAY ĐỔI QUAN TRỌNG: Tự động lấy tên miền gốc từ `data` ***
         val baseUrl = URL(data).let { "${it.protocol}://${it.host}" }
         
-        val servers = listOf(Pair("0", "#1 PMFAST"), Pair("1", "#2 PMHLS"))
+        val servers = listOf(
+            Pair("0", "#1 PMFAST"),
+            Pair("1", "#2 PMHLS")
+        )
 
         servers.apmap { (serverIndex, serverName) ->
             try {
-                // Sử dụng `baseUrl` đã được xác định thay vì `mainUrl`
                 val apiResponse = app.post(
                     url = "$baseUrl/chillsplayer.php", 
                     headers = browserHeaders + mapOf(
@@ -215,17 +221,24 @@ class PhimMoiChillProvider : MainAPI() {
                     data = mapOf("qcao" to episodeId, "sv" to serverIndex)
                 ).text
                 
-                val contentId = Regex("""iniPlayers\("([^"]*)""").find(apiResponse)?.groupValues?.get(1)
-                if (!contentId.isNullOrBlank()) {
-                    val m3u8Link = when(serverName.trim()) {
-                        "#1 PMFAST" -> "https://dash.motchills.net/raw/$contentId/index.m3u8"
-                        "#2 PMHLS" -> "https://sotrim.topphimmoi.org/raw/$contentId/index.m3u8"
-                        else -> null
-                    }
-                    if (m3u8Link != null) {
-                         callback.invoke(
-                            ExtractorLink(this.name, serverName, m3u8Link, data, Qualities.Unknown.value, type = ExtractorLinkType.M3U8, headers = browserHeaders)
-                        )
+                val directLink = Regex("""initPlayer\("([^"]+)""").find(apiResponse)?.groupValues?.get(1)
+                if (directLink != null) {
+                    callback.invoke(
+                        ExtractorLink(this.name, serverName, directLink, data, Qualities.Unknown.value, type = ExtractorLinkType.M3U8, headers = browserHeaders)
+                    )
+                } else {
+                     val contentId = Regex("""iniPlayers\("([^"]*)""").find(apiResponse)?.groupValues?.get(1)
+                     if (!contentId.isNullOrBlank()) {
+                        val m3u8Link = when(serverName.trim()) {
+                            "#1 PMFAST" -> "https://dash.motchills.net/raw/$contentId/index.m3u8"
+                            "#2 PMHLS" -> "https://sotrim.topphimmoi.org/raw/$contentId/index.m3u8"
+                            else -> null
+                        }
+                        if (m3u8Link != null) {
+                             callback.invoke(
+                                ExtractorLink(this.name, serverName, m3u8Link, data, Qualities.Unknown.value, type = ExtractorLinkType.M3U8, headers = browserHeaders)
+                            )
+                        }
                     }
                 }
             } catch (_: Exception) { }
