@@ -1,11 +1,12 @@
-package com.phimmoichillprovider // Bạn có thể thay đổi tên package cho phù hợp
+package com.phimmoichillprovider // Hoặc tên package của bạn
 
-import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.* // Vẫn giữ import wildcard này
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-import com.lagradost.cloudstream3.Actor // Import cụ thể cho Actor
-import com.lagradost.cloudstream3.ActorData // Import cụ thể cho ActorData
-import com.lagradost.cloudstream3.ActorRole // Import cụ thể cho ActorRole
+// Các import cụ thể đã thử trước đó có thể giữ hoặc bỏ nếu wildcard hoạt động đúng
+// import com.lagradost.cloudstream3.Actor
+// import com.lagradost.cloudstream3.ActorData
+// import com.lagradost.cloudstream3.ActorRole
 
 class PhimMoiChillProvider : MainAPI() {
     override var mainUrl = "https://phimmoichill.day"
@@ -18,25 +19,20 @@ class PhimMoiChillProvider : MainAPI() {
         TvType.TvSeries
     )
 
-    // Hàm tiện ích để chuyển đổi chuỗi thời lượng thành số phút (Int?)
     private fun parseDuration(durationString: String?): Int? {
         if (durationString.isNullOrBlank()) return null
         var totalMinutes = 0
-        // Chuẩn hóa "tiếng" thành "giờ" và xử lý chữ thường
         val cleanedString = durationString.lowercase()
             .replace("tiếng", "giờ")
-            .replace("mins", "phút") // Thêm chuẩn hóa nếu cần
+            .replace("mins", "phút")
             .replace("min", "phút")
             .replace("hr", "giờ")
-            .replace("h", "giờ") // Nếu 'h' đứng một mình và không phải là 1h30 (cần regex cẩn thận hơn)
 
-
-        // Regex tìm "X giờ Y phút" hoặc "X giờ" hoặc "Y phút"
         val pattern = Regex("""(?:(\d+)\s*giờ)?\s*(?:(\d+)\s*phút)?""")
         val match = pattern.find(cleanedString)
 
         if (match != null) {
-            val hours = match.groupValues[1].toIntOrNull() // groupValues[0] là toàn bộ match
+            val hours = match.groupValues[1].toIntOrNull()
             val minutes = match.groupValues[2].toIntOrNull()
 
             if (hours != null) {
@@ -47,10 +43,8 @@ class PhimMoiChillProvider : MainAPI() {
             }
         }
         
-        // Nếu không tìm thấy giờ/phút nhưng chuỗi chỉ là một số (ví dụ "90")
         if (totalMinutes == 0 && cleanedString.matches(Regex("""^\d+$"""))) {
             cleanedString.toIntOrNull()?.let {
-                 // Giả định là phút nếu không có đơn vị và totalMinutes vẫn là 0
                 if (!cleanedString.contains("giờ") && !cleanedString.contains("phút")) {
                     totalMinutes = it
                 }
@@ -59,7 +53,6 @@ class PhimMoiChillProvider : MainAPI() {
         
         return if (totalMinutes > 0) totalMinutes else null
     }
-
 
     private fun Element.toSearchResponseDefault(isSearchPage: Boolean = false): SearchResponse? {
         val aTag = this.selectFirst("a") ?: return null
@@ -174,17 +167,18 @@ class PhimMoiChillProvider : MainAPI() {
         
         val durationString = document.select("ul.entry-meta.block-film li:containsOwn(Thời lượng:)")
             .firstOrNull()?.text()?.replace("Thời lượng:", "")?.trim()
-        val durationInMinutes = parseDuration(durationString) // Sửa lỗi duration
+        val durationInMinutes = parseDuration(durationString)
 
         val rating = document.selectFirst("div.box-rating span.average#average")?.text()?.toRatingInt()
 
-        val combinedActorData = mutableListOf<ActorData>()
+        val combinedActorData = mutableListOf<com.lagradost.cloudstream3.ActorData>() // Sử dụng tên đầy đủ
         // Parse "Diễn viên"
         document.select("ul.entry-meta.block-film li:contains(Diễn viên:)")
             .firstOrNull()?.select("a")?.forEach { actorElement ->
                 val actorName = actorElement.text()?.trim()
                 if (!actorName.isNullOrBlank()) {
-                    combinedActorData.add(ActorData(Actor(name = actorName), role = ActorRole.Actor))
+                    // Sử dụng tên đầy đủ cho ActorData, Actor, và ActorRole
+                    combinedActorData.add(com.lagradost.cloudstream3.ActorData(com.lagradost.cloudstream3.Actor(name = actorName), role = com.lagradost.cloudstream3.ActorRole.Actor))
                 }
             }
         // Parse "Đạo diễn"
@@ -192,7 +186,8 @@ class PhimMoiChillProvider : MainAPI() {
             .firstOrNull()?.select("a")?.forEach { directorElement ->
                 val directorName = directorElement.text()?.trim()
                 if (!directorName.isNullOrBlank()) {
-                    combinedActorData.add(ActorData(Actor(name = directorName), role = ActorRole.Director))
+                    // Sử dụng tên đầy đủ cho ActorData, Actor, và ActorRole
+                    combinedActorData.add(com.lagradost.cloudstream3.ActorData(com.lagradost.cloudstream3.Actor(name = directorName), role = com.lagradost.cloudstream3.ActorRole.Director))
                 }
             }
 
@@ -224,11 +219,10 @@ class PhimMoiChillProvider : MainAPI() {
                 this.year = year
                 this.plot = plot
                 this.tags = tags
-                this.duration = durationInMinutes // Sửa lỗi duration
+                this.duration = durationInMinutes
                 this.rating = rating
-                this.actors = combinedActorData // Sửa lỗi director
+                this.actors = combinedActorData 
                 this.recommendations = recommendations
-                // Không có this.director = directorString, thay vào đó đã thêm vào actors
             }
         } else {
             val episodes = mutableListOf<Episode>()
@@ -246,23 +240,14 @@ class PhimMoiChillProvider : MainAPI() {
                 this.year = year
                 this.plot = plot
                 this.tags = tags
-                this.duration = durationInMinutes // Sửa lỗi duration
+                this.duration = durationInMinutes
                 this.rating = rating
-                this.actors = combinedActorData // Sửa lỗi director
+                this.actors = combinedActorData
                 this.recommendations = recommendations
-                // Không có this.director = directorString, thay vào đó đã thêm vào actors
             }
         }
     }
 
     // Hàm loadLinks sẽ được triển khai sau.
-    // override suspend fun loadLinks(
-    //    data: String,
-    //    isCasting: Boolean,
-    //    subtitleCallback: (SubtitleFile) -> Unit,
-    //    callback: (ExtractorLink) -> Unit
-    // ): Boolean {
-    //    // ...
-    //    return true
-    // }
+    // override suspend fun loadLinks(...)
 }
