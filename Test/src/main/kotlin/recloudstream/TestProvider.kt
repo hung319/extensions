@@ -55,20 +55,18 @@ class PornhubProvider : MainAPI() {
         }
     }
 
-    // Function to fetch content for the main page
+    // **Function to fetch content for the main page (UPDATED)**
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get("$mainUrl/video?page=$page").document
-        val homePageList = ArrayList<HomePageList>()
-
-        // Find the main video container and parse each item
         val videoList = document.select("ul#videoCategory li.pcVideoListItem")
             .mapNotNull { parseVideoCard(it) }
 
-        if (videoList.isNotEmpty()) {
-            homePageList.add(HomePageList("Latest Videos", videoList))
-        }
-
-        return HomePageResponse(homePageList)
+        // Use the newHomePageResponse helper function as recommended
+        val home = listOf(
+            HomePageList("Latest Videos", videoList)
+        )
+        
+        return newHomePageResponse(home, videoList.isNotEmpty())
     }
 
     // Function to handle search queries
@@ -99,7 +97,6 @@ class PornhubProvider : MainAPI() {
             this.posterUrl = poster
             this.plot = synopsis
             this.tags = tags
-            // **FIXED:** Assign the list directly
             this.recommendations = recommendations
         }
     }
