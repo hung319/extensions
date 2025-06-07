@@ -1,4 +1,4 @@
-package recloudstream 
+package com.recloudstream.extractors.pornhub 
 
 import android.content.Context
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
