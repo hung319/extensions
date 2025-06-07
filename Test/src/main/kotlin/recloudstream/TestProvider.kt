@@ -99,7 +99,7 @@ class PornhubProvider : MainAPI() {
         }
     }
 
-    // **Function to extract video stream links (REGEX FIXED)**
+    // **Function to extract video stream links (QUALITY FILTERED)**
     override suspend fun loadLinks(
         data: String, // URL of the video
         isCasting: Boolean,
@@ -107,40 +107,39 @@ class PornhubProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val response = app.get(data)
-        // Regex with proper escaping for Java/Android's engine
         val scriptRegex = Regex("var flashvars_\\d+ = (\\{.*?\\});")
         
-        // Find the script and get the first capture group (the JSON object)
         val scriptText = scriptRegex.find(response.text)?.groupValues?.get(1) ?: return false
 
-        // Parse the JSON to get media definitions
         val mediaDefinitions =
             mapper.readTree(scriptText).get("mediaDefinitions") ?: return false
 
-        // Iterate through different quality levels and extract URLs
         mediaDefinitions.forEach { media ->
+            // Ensure both URL and quality string are present and not blank
             val videoUrl = media.get("videoUrl")?.asText()?.ifBlank { null } ?: return@forEach
-            val qualityStr = media.get("quality")?.asText()
+            val qualityStr = media.get("quality")?.asText()?.ifBlank { null } ?: return@forEach
             
-            val qualityInt = qualityStr?.toIntOrNull()?.let {
+            // **NEW: Filter out 240p and 480p qualities**
+            if (qualityStr == "240" || qualityStr == "480") {
+                return@forEach // Skips the current iteration
+            }
+
+            val qualityInt = qualityStr.toIntOrNull()?.let {
                 when {
                     it >= 1080 -> Qualities.P1080.value
                     it >= 720 -> Qualities.P720.value
-                    it >= 480 -> Qualities.P480.value
-                    it >= 240 -> Qualities.P240.value
+                    // 480p and 240p are now filtered out before this point
                     else -> Qualities.Unknown.value
                 }
             } ?: Qualities.Unknown.value
 
-            // Add the found link to the callback
             callback.invoke(
                 ExtractorLink(
                     source = this.name,
-                    name = "${this.name} ${qualityStr}p",
+                    name = this.name,
                     url = videoUrl,
-                    referer = data, // The page URL is a good referer
+                    referer = data, 
                     quality = qualityInt,
-                    // Determine the type based on the URL format
                     type = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                 )
             )
