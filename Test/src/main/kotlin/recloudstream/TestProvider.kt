@@ -20,7 +20,6 @@ class PornhubProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        // Thêm headers vào yêu cầu mạng
         val document = app.get("$mainUrl/", headers = headers).document
         
         val home = document.select("li.pcVideoListItem").mapNotNull {
@@ -41,7 +40,6 @@ class PornhubProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/video/search?search=$query"
-        // Thêm headers vào yêu cầu mạng
         val document = app.get(searchUrl, headers = headers).document
         
         return document.select("li.pcVideoListItem").mapNotNull {
@@ -59,7 +57,6 @@ class PornhubProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        // Thêm headers vào yêu cầu mạng
         val document = app.get(url, headers = headers).document
 
         val title = document.selectFirst("h1.title span.inlineFree")?.text() 
@@ -71,20 +68,28 @@ class PornhubProvider : MainAPI() {
         
         val plot = document.selectFirst("div.video-description-text")?.text()
 
-        val recommendations = document.select("#relatedVideosCenter li.video-list-item").mapNotNull {
-             val recTitleElement = it.selectFirst("span.title a") ?: return@mapNotNull null
-             val recTitle = recTitleElement.attr("title")
-             val recHref = recTitleElement.absUrl("href")
-             val recImage = it.selectFirst("img")?.let { img ->
-                 img.attr("data-thumbsrc").ifEmpty { img.attr("src") }
-             }
+        // ======================= PHẦN SỬA LỖI QUAN TRỌNG =======================
+        // Dùng selector chính xác dựa trên HTML bạn cung cấp
+        val recommendations = document.select("ul#recommendedVideos > li").mapNotNull { item ->
+            val linkElement = item.selectFirst("a.thumbnailTitle")
+            
+            // Lấy link, nếu không có thì bỏ qua video này
+            val href = linkElement?.absUrl("href") ?: return@mapNotNull null
+            
+            // Lấy tiêu đề từ link, nếu không có thì lấy từ alt của ảnh
+            val recTitle = linkElement.text().trim().ifBlank {
+                item.selectFirst("img.videoThumb")?.attr("alt")?.trim()
+            } ?: return@mapNotNull null
 
-             if (recTitle.isNotBlank() && recHref.isNotBlank()) {
-                newMovieSearchResponse(name = recTitle, url = recHref, type = TvType.NSFW) {
-                    this.posterUrl = recImage
-                }
-             } else { null }
+            // Lấy ảnh thumbnail
+            val image = item.selectFirst("img.videoThumb")?.attr("src")
+
+            // Tạo đối tượng SearchResponse
+            newMovieSearchResponse(name = recTitle, url = href, type = TvType.NSFW) {
+                this.posterUrl = image
+            }
         }
+        // =====================================================================
 
         return newMovieLoadResponse(name = title, url = url, type = TvType.NSFW, dataUrl = url) {
             this.posterUrl = poster
