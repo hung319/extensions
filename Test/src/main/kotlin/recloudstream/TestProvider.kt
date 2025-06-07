@@ -91,21 +91,16 @@ class PornhubProvider : MainAPI() {
         val tags = document.select("div.video-tags-list a[href*=/tags/]").map { it.text() }
         val synopsis = document.selectFirst("div.video-description-text")?.text()?.trim()
 
-        // NEW: Find and parse recommended videos
+        // Find and parse recommended videos
         val recommendations = document.select("ul#relatedVideosCenter li.videoblock")
             .mapNotNull { parseRecommendationCard(it) }
-        val recList = if (recommendations.isNotEmpty()) {
-            listOf(HomePageList("Đề xuất cho bạn", recommendations))
-        } else {
-            null
-        }
 
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
             this.plot = synopsis
             this.tags = tags
-            // Add the recommendations to the load response
-            this.recommendations = recList
+            // **FIXED:** Assign the list directly
+            this.recommendations = recommendations
         }
     }
 
