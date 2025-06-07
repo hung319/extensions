@@ -20,13 +20,35 @@ class PornhubProvider : MainAPI() {
         TvType.NSFW
     )
 
-    // Helper function to parse video elements from the page
+    // Helper function to parse video elements from the main page and search results
     private fun parseVideoCard(element: Element): SearchResponse? {
-        // Extract the link, title, and poster image URL
-        val link = element.selectFirst("a")?.attr("href") ?: return null
-        val title = element.selectFirst("span.title a")?.text() ?: return null
-        // Use data-src for poster image as it loads dynamically
-        val poster = element.selectFirst("img")?.attr("data-src")
+        val linkTag = element.selectFirst("a") ?: return null
+        val link = fixUrl(linkTag.attr("href"))
+        val title = linkTag.attr("title")
+
+        // Improved poster logic: Try data-src, then data-thumb_url, then src
+        val img = element.selectFirst("img")
+        val poster = img?.attr("data-src")?.ifBlank { null }
+            ?: img?.attr("data-thumb_url")?.ifBlank { null }
+            ?: img?.attr("src")?.ifBlank { null }
+
+        if (title.isBlank() || link.isBlank()) return null
+
+        return newMovieSearchResponse(title, link, TvType.NSFW) {
+            this.posterUrl = poster
+        }
+    }
+
+    // Helper function to parse recommended video elements
+    private fun parseRecommendationCard(element: Element): SearchResponse? {
+        val linkTag = element.selectFirst("a") ?: return null
+        val link = fixUrl(linkTag.attr("href"))
+        val title = element.selectFirst("span.title a")?.text() ?: linkTag.attr("title")
+
+        // Poster logic for recommendation cards
+        val poster = element.selectFirst("img")?.attr("data-thumb_url")
+
+        if (title.isBlank() || !link.contains("view_video")) return null
 
         return newMovieSearchResponse(title, link, TvType.NSFW) {
             this.posterUrl = poster
@@ -59,7 +81,7 @@ class PornhubProvider : MainAPI() {
             .mapNotNull { parseVideoCard(it) }
     }
 
-    // Function to load details of a specific video
+    // Function to load details of a specific video AND get recommendations
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
@@ -69,10 +91,21 @@ class PornhubProvider : MainAPI() {
         val tags = document.select("div.video-tags-list a[href*=/tags/]").map { it.text() }
         val synopsis = document.selectFirst("div.video-description-text")?.text()?.trim()
 
+        // NEW: Find and parse recommended videos
+        val recommendations = document.select("ul#relatedVideosCenter li.videoblock")
+            .mapNotNull { parseRecommendationCard(it) }
+        val recList = if (recommendations.isNotEmpty()) {
+            listOf(HomePageList("Đề xuất cho bạn", recommendations))
+        } else {
+            null
+        }
+
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
             this.plot = synopsis
             this.tags = tags
+            // Add the recommendations to the load response
+            this.recommendations = recList
         }
     }
 
