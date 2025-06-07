@@ -1,17 +1,10 @@
 package com.recloudstream.extractors.pornhub
 
-import com.lagradost.cloudstream3.HomePageResponse
-import com.lagradost.cloudstream3.LoadResponse
-import com.lagradost.cloudstream3.MainAPI
-import com.lagradost.cloudstream3.MainPageRequest
-import com.lagradost.cloudstream3.SearchResponse
-import com.lagradost.cloudstream3.SubtitleFile
-import com.lagradost.cloudstream3.TvType
-import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.newHomePageResponse
-import com.lagradost.cloudstream3.newMovieLoadResponse
-import com.lagradost.cloudstream3.newMovieSearchResponse
+// Thêm các import cần thiết
+import com.fasterxml.jackson.annotation.JsonProperty
+import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 
 class PornhubProvider : MainAPI() {
     override var name = "Pornhub"
@@ -20,25 +13,25 @@ class PornhubProvider : MainAPI() {
     override var hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
 
+    // Sử dụng lại các hàm và biến từ các bước trước
+    private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+    private val headers get() = mapOf("User-Agent" to userAgent)
+
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        val document = app.get("$mainUrl/").document
+        val document = app.get("$mainUrl/", headers = headers).document
         
         val home = document.select("li.pcVideoListItem").mapNotNull {
             val titleElement = it.selectFirst("span.title a")
             val title = titleElement?.attr("title") ?: ""
-            val href = titleElement?.attr("href")?.let { link -> mainUrl + link } ?: return@mapNotNull null
+            val href = titleElement?.absUrl("href") ?: return@mapNotNull null
             val image = it.selectFirst("img")?.let { img -> 
                 img.attr("data-src").ifEmpty { img.attr("src") }
             }
 
-            newMovieSearchResponse(
-                name = title,
-                url = href,
-                type = TvType.NSFW 
-            ) {
+            newMovieSearchResponse(name = title, url = href, type = TvType.NSFW) {
                 this.posterUrl = image
             }
         }
@@ -48,12 +41,12 @@ class PornhubProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/video/search?search=$query"
-        val document = app.get(searchUrl).document
+        val document = app.get(searchUrl, headers = headers).document
         
         return document.select("li.pcVideoListItem").mapNotNull {
             val titleElement = it.selectFirst("span.title a")
             val title = titleElement?.attr("title") ?: ""
-            val href = titleElement?.attr("href")?.let { link -> mainUrl + link } ?: return@mapNotNull null
+            val href = titleElement?.absUrl("href") ?: return@mapNotNull null
             val image = it.selectFirst("img")?.let { img ->
                 img.attr("data-src").ifEmpty { img.attr("src") }
             }
@@ -64,12 +57,8 @@ class PornhubProvider : MainAPI() {
         }
     }
 
-    /**
-     * Hàm load đã được rút gọn, chỉ lấy tiêu đề và poster.
-     * Đã loại bỏ phần lấy mô tả và danh sách đề xuất.
-     */
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url).document
+        val document = app.get(url, headers = headers).document
 
         val title = document.selectFirst("h1.title span.inlineFree")?.text() 
             ?: document.selectFirst("title")?.text() 
@@ -78,25 +67,93 @@ class PornhubProvider : MainAPI() {
         val pageText = document.html()
         val poster = Regex("""image_url":"([^"]+)""").find(pageText)?.groupValues?.get(1)
         
-        return newMovieLoadResponse(
-            name = title,
-            url = url,
-            type = TvType.NSFW,
-            dataUrl = url 
-        ) {
+        val plot = document.selectFirst("div.video-description-text")?.text()
+
+        return newMovieLoadResponse(name = title, url = url, type = TvType.NSFW, dataUrl = url) {
             this.posterUrl = poster
-            // Đã xóa: this.plot = description
-            // Đã xóa: this.recommendations = recommendations
+            this.plot = plot
         }
     }
 
+    // Cấu trúc data class để giúp parse JSON dễ dàng hơn
+    private data class MediaDefinition(
+        @JsonProperty("videoUrl") val videoUrl: String?,
+        @JsonProperty("quality") val quality: String?,
+        @JsonProperty("format") val format: String?
+    )
+    private data class FlashVars(
+        @JsonProperty("mediaDefinitions") val mediaDefinitions: List<MediaDefinition>?
+    )
+
+    /**
+     * Hàm loadLinks đã được triển khai.
+     * @param data Chính là `url` được truyền từ hàm `load`.
+     * @param callback Hàm được gọi để trả về mỗi link video tìm thấy.
+     */
     override suspend fun loadLinks(
-        data: String,
+        data: String, // url
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        throw NotImplementedError("loadLinks is not yet implemented.")
-        return true
+        // Tải lại trang để lấy nội dung HTML
+        val document = app.get(data, headers = headers).document
+
+        // Tìm thẻ script chứa "flashvars"
+        val scriptText = document.select("script").find { it.data().contains("var flashvars_") }?.data() 
+            ?: return false // Nếu không tìm thấy, thoát
+
+        // Dùng Regex để lấy phần JSON từ trong script
+        val jsonString = Regex("""var flashvars_\d+ = (\{.*\});""").find(scriptText)?.groupValues?.get(1) 
+            ?: return false // Nếu không có JSON, thoát
+
+        // Parse chuỗi JSON thành object FlashVars
+        val flashVars = app.parseJson<FlashVars>(jsonString)
+
+        // Lặp qua từng mediaDefinition (từng chất lượng video)
+        flashVars.mediaDefinitions?.forEach { media ->
+            val videoUrl = media.videoUrl
+            val qualityStr = media.quality
+
+            // Bỏ qua nếu không có url hoặc quality
+            if (videoUrl.isNullOrBlank() || qualityStr.isNullOrBlank()) {
+                return@forEach
+            }
+
+            // Chuyển chất lượng từ "1080" sang số 1080
+            val qualityInt = qualityStr.toIntOrNull() ?: 0
+            
+            // Kiểm tra định dạng video
+            when (media.format) {
+                // Nếu là HLS (M3U8)
+                "hls" -> {
+                    callback.invoke(
+                        ExtractorLink(
+                            source = this.name, // Tên provider
+                            name = "${qualityStr}p (HLS)",
+                            url = videoUrl,
+                            referer = data, // URL của trang video
+                            quality = qualityInt,
+                            type = ExtractorLinkType.M3U8
+                        )
+                    )
+                }
+                // Nếu là MP4
+                "mp4" -> {
+                    callback.invoke(
+                        ExtractorLink(
+                            source = this.name,
+                            name = "${qualityStr}p (MP4)",
+                            url = videoUrl,
+                            referer = data,
+                            quality = qualityInt,
+                            type = ExtractorLinkType.VIDEO
+                        )
+                    )
+                }
+            }
+        }
+        
+        return true // Trả về true nếu tìm thấy ít nhất một link
     }
 }
