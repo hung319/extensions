@@ -1,109 +1,90 @@
-package com.recloudstream.extractors.pornhub
+// Desription: CloudStream 3 Plugin for phub.com
+// Author: Coder
+// Date: 2025-06-07
 
-import com.lagradost.cloudstream3.HomePageResponse
-import com.lagradost.cloudstream3.LoadResponse
-import com.lagradost.cloudstream3.MainAPI
-import com.lagradost.cloudstream3.MainPageRequest
-import com.lagradost.cloudstream3.SearchResponse
-import com.lagradost.cloudstream3.SubtitleFile
-import com.lagradost.cloudstream3.TvType
-import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.newHomePageResponse
-import com.lagradost.cloudstream3.newMovieLoadResponse
-import com.lagradost.cloudstream3.newMovieSearchResponse
+package com.lagradost.cloudstream3.movieprovider
+
+import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import org.jsoup.nodes.Element
 
+// Define the main provider class
 class PornhubProvider : MainAPI() {
-    override var name = "Pornhub"
+    // Basic provider information
     override var mainUrl = "https://www.pornhub.com"
+    override var name = "Pornhub"
+    override val hasMainPage = true
     override var lang = "en"
-    override var hasMainPage = true
-    override val supportedTypes = setOf(TvType.NSFW)
+    override val hasDownloadSupport = true
+    override val supportedTypes = setOf(
+        TvType.NSFW
+    )
 
-    override suspend fun getMainPage(
-        page: Int,
-        request: MainPageRequest
-    ): HomePageResponse {
-        val document = app.get("$mainUrl/").document
-        
-        val home = document.select("li.pcVideoListItem").mapNotNull {
-            val titleElement = it.selectFirst("span.title a")
-            val title = titleElement?.attr("title") ?: ""
-            
-            val href = titleElement?.absUrl("href")
+    // Helper function to parse video elements from the page
+    private fun parseVideoCard(element: Element): SearchResponse? {
+        // Extract the link, title, and poster image URL
+        val link = element.selectFirst("a")?.attr("href") ?: return null
+        val title = element.selectFirst("span.title a")?.text() ?: return null
+        // Use data-src for poster image as it loads dynamically
+        val poster = element.selectFirst("img")?.attr("data-src")
 
-            // KIỂM TRA URL: Bỏ qua nếu link rỗng hoặc không phải là link http
-            if (href.isNullOrBlank() || !href.startsWith("http")) {
-                return@mapNotNull null
-            }
-            
-            val image = it.selectFirst("img")?.let { img -> 
-                img.attr("data-src").ifEmpty { img.attr("src") }
-            }
-
-            newMovieSearchResponse(
-                name = title,
-                url = href,
-                type = TvType.NSFW 
-            ) {
-                this.posterUrl = image
-            }
-        }
-        
-        return newHomePageResponse("Recommended", home)
-    }
-
-    override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/video/search?search=$query"
-        val document = app.get(searchUrl).document
-        
-        return document.select("li.pcVideoListItem").mapNotNull {
-            val titleElement = it.selectFirst("span.title a")
-            val title = titleElement?.attr("title") ?: ""
-            
-            val href = titleElement?.absUrl("href")
-
-            // KIỂM TRA URL: Bỏ qua nếu link rỗng hoặc không phải là link http
-            if (href.isNullOrBlank() || !href.startsWith("http")) {
-                return@mapNotNull null
-            }
-
-            val image = it.selectFirst("img")?.let { img ->
-                img.attr("data-src").ifEmpty { img.attr("src") }
-            }
-
-            newMovieSearchResponse(name = title, url = href, type = TvType.NSFW) {
-                this.posterUrl = image
-            }
-        }
-    }
-
-    override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url).document
-
-        val title = document.selectFirst("h1.title span.inlineFree")?.text() 
-            ?: document.selectFirst("title")?.text() 
-            ?: ""
-
-        val pageText = document.html()
-        val poster = Regex("""image_url":"([^"]+)""").find(pageText)?.groupValues?.get(1)
-        
-        return newMovieLoadResponse(
-            name = title,
-            url = url,
-            type = TvType.NSFW,
-            dataUrl = url 
-        ) {
+        return newMovieSearchResponse(title, link, TvType.NSFW) {
             this.posterUrl = poster
         }
     }
 
+    // Function to fetch content for the main page
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val document = app.get("$mainUrl/video?page=$page").document
+        val homePageList = ArrayList<HomePageList>()
+
+        // Find the main video container and parse each item
+        val videoList = document.select("ul#videoCategory li.pcVideoListItem")
+            .mapNotNull { parseVideoCard(it) }
+
+        if (videoList.isNotEmpty()) {
+            homePageList.add(HomePageList("Latest Videos", videoList))
+        }
+
+        return HomePageResponse(homePageList)
+    }
+
+    // Function to handle search queries
+    override suspend fun search(query: String): List<SearchResponse> {
+        val searchUrl = "$mainUrl/video/search?search=$query"
+        val document = app.get(searchUrl).document
+
+        // Find the search results container and parse each item
+        return document.select("ul#videoSearchResult li.pcVideoListItem")
+            .mapNotNull { parseVideoCard(it) }
+    }
+
+    // Function to load details of a specific video
+    override suspend fun load(url: String): LoadResponse {
+        val document = app.get(url).document
+
+        // Extract detailed information about the video
+        val title = document.selectFirst("h1.title span.inlineFree")?.text()?.trim() ?: "No title"
+        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
+        val tags = document.select("div.video-tags-list a[href*=/tags/]").map { it.text() }
+        val synopsis = document.selectFirst("div.video-description-text")?.text()?.trim()
+
+        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
+            this.posterUrl = poster
+            this.plot = synopsis
+            this.tags = tags
+        }
+    }
+
+    // Function to extract video stream links
     override suspend fun loadLinks(
-        data: String,
+        data: String, // URL of the video
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        throw NotImplementedError("loadLinks is not yet implemented.")
+        // Tạm thời bỏ qua theo yêu cầu.
+        // Sẽ triển khai khi được yêu cầu.
+        return false
     }
 }
