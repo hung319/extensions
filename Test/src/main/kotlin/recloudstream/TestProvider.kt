@@ -15,7 +15,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 
 class PornhubProvider : MainAPI() {
     override var name = "Pornhub"
-    override var mainUrl = "https://www.pornhub.com" // Sẽ được sử dụng bởi absUrl
+    override var mainUrl = "https://www.pornhub.com"
     override var lang = "en"
     override var hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
@@ -30,8 +30,12 @@ class PornhubProvider : MainAPI() {
             val titleElement = it.selectFirst("span.title a")
             val title = titleElement?.attr("title") ?: ""
             
-            // SỬA LỖI: Dùng absUrl("href") để tạo link tuyệt đối an toàn
-            val href = titleElement?.absUrl("href") ?: return@mapNotNull null
+            val href = titleElement?.absUrl("href")
+
+            // KIỂM TRA URL: Bỏ qua nếu link rỗng hoặc không phải là link http
+            if (href.isNullOrBlank() || !href.startsWith("http")) {
+                return@mapNotNull null
+            }
             
             val image = it.selectFirst("img")?.let { img -> 
                 img.attr("data-src").ifEmpty { img.attr("src") }
@@ -50,8 +54,6 @@ class PornhubProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        // Lưu ý: Mặc dù searchUrl đúng, nhưng document được parse từ nó
-        // sẽ có base URI là searchUrl. absUrl sẽ dùng base URI đó.
         val searchUrl = "$mainUrl/video/search?search=$query"
         val document = app.get(searchUrl).document
         
@@ -59,8 +61,12 @@ class PornhubProvider : MainAPI() {
             val titleElement = it.selectFirst("span.title a")
             val title = titleElement?.attr("title") ?: ""
             
-            // SỬA LỖI: Dùng absUrl("href") để tạo link tuyệt đối an toàn
-            val href = titleElement?.absUrl("href") ?: return@mapNotNull null
+            val href = titleElement?.absUrl("href")
+
+            // KIỂM TRA URL: Bỏ qua nếu link rỗng hoặc không phải là link http
+            if (href.isNullOrBlank() || !href.startsWith("http")) {
+                return@mapNotNull null
+            }
 
             val image = it.selectFirst("img")?.let { img ->
                 img.attr("data-src").ifEmpty { img.attr("src") }
@@ -99,6 +105,5 @@ class PornhubProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         throw NotImplementedError("loadLinks is not yet implemented.")
-        return true
     }
 }
