@@ -74,33 +74,33 @@ class PornhubProvider : MainAPI() {
         val pageText = document.html()
         val poster = Regex("""image_url":"([^"]+)""").find(pageText)?.groupValues?.get(1)
         
-        var plot = document.selectFirst("div.video-description-text")?.text() ?: ""
+        val plot = document.selectFirst("div.video-description-text")?.text()
 
-        val recommendations = document.select("#relatedVideos .pcVideoListItem").mapNotNull {
+        // **SỬA LỖI "MÙ"**: Sử dụng selector rộng hơn và kiểm tra nhiều thuộc tính ảnh hơn
+        val recommendations = document.select("#relatedVideosCenter li.video-list-item").mapNotNull {
              val recTitleElement = it.selectFirst("span.title a")
              if (recTitleElement == null) return@mapNotNull null
 
              val recTitle = recTitleElement.attr("title")
              val recHref = recTitleElement.absUrl("href")
 
+             // Thử nhiều thuộc tính ảnh hơn để tăng khả năng thành công
              val recImage = it.selectFirst("img")?.let { img ->
-                 img.attr("data-thumbsrc").ifEmpty { img.attr("src") }
+                 img.attr("data-thumbsrc")
+                    .ifEmpty { img.attr("data-mediumthumb") }
+                    .ifEmpty { img.attr("data-src") }
+                    .ifEmpty { img.attr("src") }
              }
 
-             newMovieSearchResponse(name = recTitle, url = recHref, type = TvType.NSFW) {
-                 this.posterUrl = recImage
+             // Chỉ thêm vào danh sách nếu có cả tiêu đề và link
+             if (recTitle.isNotBlank() && recHref.isNotBlank()) {
+                newMovieSearchResponse(name = recTitle, url = recHref, type = TvType.NSFW) {
+                    this.posterUrl = recImage
+                }
+             } else {
+                null
              }
         }
-
-        // ======================= PHẦN GỠ LỖI =IAO DIỆN =======================
-        val debugMessage = if (recommendations.isNotEmpty()) {
-            "DEBUG: Tìm thấy ${recommendations.size} video đề xuất."
-        } else {
-            "DEBUG: Không tìm thấy video đề xuất nào. Selector có thể đã sai hoặc nội dung được tải bằng JS."
-        }
-        // Chèn thông điệp gỡ lỗi vào đầu phần mô tả
-        plot = "$debugMessage\n\n$plot"
-        // =======================================================================
 
         return newMovieLoadResponse(
             name = title,
@@ -109,7 +109,7 @@ class PornhubProvider : MainAPI() {
             dataUrl = url 
         ) {
             this.posterUrl = poster
-            this.plot = plot // Gán phần mô tả đã chứa thông tin gỡ lỗi
+            this.plot = plot
             this.recommendations = recommendations
         }
     }
