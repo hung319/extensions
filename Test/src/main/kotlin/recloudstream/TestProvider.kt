@@ -71,22 +71,17 @@ class PornhubProvider : MainAPI() {
             ?: document.selectFirst("title")?.text() 
             ?: ""
 
-        // Lấy toàn bộ mã HTML của trang
         val pageText = document.html()
-        // Tìm URL poster bằng cách sử dụng biểu thức chính quy (Regex) 
-        // để tìm "image_url" trong biến javascript "flashvars"
         val poster = Regex("""image_url":"([^"]+)""").find(pageText)?.groupValues?.get(1)
         
-        val description = document.selectFirst("div.video-description-text")?.text()
+        var plot = document.selectFirst("div.video-description-text")?.text() ?: ""
 
-        // Sử dụng selector chính xác hơn để lấy các video trong khu vực "relatedVideos"
         val recommendations = document.select("#relatedVideos .pcVideoListItem").mapNotNull {
              val recTitleElement = it.selectFirst("span.title a")
-             // Bỏ qua nếu không tìm thấy tiêu đề hoặc link
              if (recTitleElement == null) return@mapNotNull null
 
              val recTitle = recTitleElement.attr("title")
-             val recHref = recTitleElement.attr("href").let { link -> mainUrl + link }
+             val recHref = recTitleElement.absUrl("href")
 
              val recImage = it.selectFirst("img")?.let { img ->
                  img.attr("data-thumbsrc").ifEmpty { img.attr("src") }
@@ -97,15 +92,24 @@ class PornhubProvider : MainAPI() {
              }
         }
 
+        // ======================= PHẦN GỠ LỖI =IAO DIỆN =======================
+        val debugMessage = if (recommendations.isNotEmpty()) {
+            "DEBUG: Tìm thấy ${recommendations.size} video đề xuất."
+        } else {
+            "DEBUG: Không tìm thấy video đề xuất nào. Selector có thể đã sai hoặc nội dung được tải bằng JS."
+        }
+        // Chèn thông điệp gỡ lỗi vào đầu phần mô tả
+        plot = "$debugMessage\n\n$plot"
+        // =======================================================================
+
         return newMovieLoadResponse(
             name = title,
             url = url,
             type = TvType.NSFW,
             dataUrl = url 
         ) {
-            // Gán poster và recommendations đã được sửa
             this.posterUrl = poster
-            this.plot = description
+            this.plot = plot // Gán phần mô tả đã chứa thông tin gỡ lỗi
             this.recommendations = recommendations
         }
     }
