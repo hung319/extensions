@@ -57,21 +57,39 @@ class PornhubProvider : MainAPI() {
      * Hàm load đã được đơn giản hóa, không còn lấy danh sách đề xuất.
      */
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url, headers = headers).document
-
-        val title = document.selectFirst("h1.title span.inlineFree")?.text() 
-            ?: document.selectFirst("title")?.text() 
-            ?: ""
-
-        val pageText = document.html()
-        val poster = Regex("""image_url":"([^"]+)""").find(pageText)?.groupValues?.get(1)
+        val document: org.jsoup.nodes.Document
         
-        val plot = document.selectFirst("div.video-description-text")?.text()
+        // --- Giai đoạn 1: Bắt lỗi khi tải trang ---
+        try {
+            document = app.get(url, headers = headers).document
+        } catch (e: Exception) {
+            // Nếu không tải được trang, tạo một phim giả với thông tin lỗi
+            return newMovieLoadResponse("Lỗi Mạng (Network Error)", url, TvType.NSFW, url) {
+                this.plot = "Không thể tải dữ liệu trang. Lỗi: ${e.message}"
+            }
+        }
 
-        return newMovieLoadResponse(name = title, url = url, type = TvType.NSFW, dataUrl = url) {
-            this.posterUrl = poster
-            this.plot = plot
-            // Đã xóa dòng: this.recommendations = recommendations
+        // --- Giai đoạn 2: Bắt lỗi khi phân tích dữ liệu ---
+        try {
+            val title = document.selectFirst("h1.title span.inlineFree")?.text() 
+                ?: document.selectFirst("title")?.text() 
+                ?: "Không tìm thấy tiêu đề"
+
+            val pageText = document.html()
+            val poster = Regex("""image_url":"([^"]+)""").find(pageText)?.groupValues?.get(1)
+            
+            val plot = document.selectFirst("div.video-description-text")?.text() ?: "Không có mô tả."
+
+            // Nếu mọi thứ thành công, trả về kết quả bình thường
+            return newMovieLoadResponse(name = title, url = url, type = TvType.NSFW, dataUrl = url) {
+                this.posterUrl = poster
+                this.plot = plot
+            }
+        } catch (e: Exception) {
+            // Nếu có lỗi khi phân tích, tạo một phim giả với thông tin lỗi
+            return newMovieLoadResponse("Lỗi Phân Tích (Parsing Error)", url, TvType.NSFW, url) {
+                this.plot = "Không thể phân tích dữ liệu từ HTML. Lỗi: ${e.message}"
+            }
         }
     }
 
