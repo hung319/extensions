@@ -3,6 +3,7 @@ package com.recloudstream.extractors.pornhub
 // Thêm các import cần thiết
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson // <- THÊM DÒNG NÀY
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 
@@ -13,9 +14,10 @@ class PornhubProvider : MainAPI() {
     override var hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
 
-    // Sử dụng lại các hàm và biến từ các bước trước
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
     private val headers get() = mapOf("User-Agent" to userAgent)
+
+    // ... (Các hàm getMainPage, search, load giữ nguyên như cũ) ...
 
     override suspend fun getMainPage(
         page: Int,
@@ -75,7 +77,6 @@ class PornhubProvider : MainAPI() {
         }
     }
 
-    // Cấu trúc data class để giúp parse JSON dễ dàng hơn
     private data class MediaDefinition(
         @JsonProperty("videoUrl") val videoUrl: String?,
         @JsonProperty("quality") val quality: String?,
@@ -85,75 +86,61 @@ class PornhubProvider : MainAPI() {
         @JsonProperty("mediaDefinitions") val mediaDefinitions: List<MediaDefinition>?
     )
 
-    /**
-     * Hàm loadLinks đã được triển khai.
-     * @param data Chính là `url` được truyền từ hàm `load`.
-     * @param callback Hàm được gọi để trả về mỗi link video tìm thấy.
-     */
     override suspend fun loadLinks(
-        data: String, // url
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Tải lại trang để lấy nội dung HTML
         val document = app.get(data, headers = headers).document
 
-        // Tìm thẻ script chứa "flashvars"
         val scriptText = document.select("script").find { it.data().contains("var flashvars_") }?.data() 
-            ?: return false // Nếu không tìm thấy, thoát
+            ?: return false
 
-        // Dùng Regex để lấy phần JSON từ trong script
         val jsonString = Regex("""var flashvars_\d+ = (\{.*\});""").find(scriptText)?.groupValues?.get(1) 
-            ?: return false // Nếu không có JSON, thoát
+            ?: return false
+        
+        // Sửa lại cách gọi hàm parseJson
+        val flashVars = parseJson<FlashVars>(jsonString)
 
-        // Parse chuỗi JSON thành object FlashVars
-        val flashVars = app.parseJson<FlashVars>(jsonString)
-
-        // Lặp qua từng mediaDefinition (từng chất lượng video)
         flashVars.mediaDefinitions?.forEach { media ->
             val videoUrl = media.videoUrl
             val qualityStr = media.quality
 
-            // Bỏ qua nếu không có url hoặc quality
             if (videoUrl.isNullOrBlank() || qualityStr.isNullOrBlank()) {
-                return@forEach
-            }
-
-            // Chuyển chất lượng từ "1080" sang số 1080
-            val qualityInt = qualityStr.toIntOrNull() ?: 0
-            
-            // Kiểm tra định dạng video
-            when (media.format) {
-                // Nếu là HLS (M3U8)
-                "hls" -> {
-                    callback.invoke(
-                        ExtractorLink(
-                            source = this.name, // Tên provider
-                            name = "${qualityStr}p (HLS)",
-                            url = videoUrl,
-                            referer = data, // URL của trang video
-                            quality = qualityInt,
-                            type = ExtractorLinkType.M3U8
+                // Do nothing, just continue to the next item in the loop
+            } else {
+                val qualityInt = qualityStr.toIntOrNull() ?: 0
+                
+                when (media.format) {
+                    "hls" -> {
+                        callback.invoke(
+                            ExtractorLink(
+                                source = this.name,
+                                name = "${qualityStr}p (HLS)",
+                                url = videoUrl,
+                                referer = data,
+                                quality = qualityInt,
+                                type = ExtractorLinkType.M3U8
+                            )
                         )
-                    )
-                }
-                // Nếu là MP4
-                "mp4" -> {
-                    callback.invoke(
-                        ExtractorLink(
-                            source = this.name,
-                            name = "${qualityStr}p (MP4)",
-                            url = videoUrl,
-                            referer = data,
-                            quality = qualityInt,
-                            type = ExtractorLinkType.VIDEO
+                    }
+                    "mp4" -> {
+                        callback.invoke(
+                            ExtractorLink(
+                                source = this.name,
+                                name = "${qualityStr}p (MP4)",
+                                url = videoUrl,
+                                referer = data,
+                                quality = qualityInt,
+                                type = ExtractorLinkType.VIDEO
+                            )
                         )
-                    )
+                    }
                 }
             }
         }
         
-        return true // Trả về true nếu tìm thấy ít nhất một link
+        return true
     }
 }
