@@ -5,7 +5,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 
 class PornhubProvider : MainAPI() {
     override var name = "Pornhub"
-    override var mainUrl = "https://www.kenhub.com"
+    override var mainUrl = "https://www.pornhub.com"
     override var lang = "en"
     override var hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
