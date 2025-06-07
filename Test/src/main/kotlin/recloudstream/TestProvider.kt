@@ -6,6 +6,8 @@ package com.lagradost.cloudstream3.movieprovider
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
 
 // Define the main provider class
@@ -55,13 +57,12 @@ class PornhubProvider : MainAPI() {
         }
     }
 
-    // **Function to fetch content for the main page (UPDATED)**
+    // Function to fetch content for the main page
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get("$mainUrl/video?page=$page").document
         val videoList = document.select("ul#videoCategory li.pcVideoListItem")
             .mapNotNull { parseVideoCard(it) }
 
-        // Use the newHomePageResponse helper function as recommended
         val home = listOf(
             HomePageList("Latest Videos", videoList)
         )
@@ -74,7 +75,6 @@ class PornhubProvider : MainAPI() {
         val searchUrl = "$mainUrl/video/search?search=$query"
         val document = app.get(searchUrl).document
 
-        // Find the search results container and parse each item
         return document.select("ul#videoSearchResult li.pcVideoListItem")
             .mapNotNull { parseVideoCard(it) }
     }
@@ -83,13 +83,11 @@ class PornhubProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
-        // Extract detailed information about the video
         val title = document.selectFirst("h1.title span.inlineFree")?.text()?.trim() ?: "No title"
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         val tags = document.select("div.video-tags-list a[href*=/tags/]").map { it.text() }
         val synopsis = document.selectFirst("div.video-description-text")?.text()?.trim()
 
-        // Find and parse recommended videos
         val recommendations = document.select("ul#relatedVideosCenter li.videoblock")
             .mapNotNull { parseRecommendationCard(it) }
 
@@ -101,15 +99,52 @@ class PornhubProvider : MainAPI() {
         }
     }
 
-    // Function to extract video stream links
+    // **Function to extract video stream links (IMPLEMENTED)**
     override suspend fun loadLinks(
         data: String, // URL of the video
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Tạm thời bỏ qua theo yêu cầu.
-        // Sẽ triển khai khi được yêu cầu.
-        return false
+        val response = app.get(data)
+        // Regex to find the javascript object containing video information
+        val scriptRegex = Regex("""var flashvars_(\d+) = (\{.+?});""")
+        
+        val scriptText = scriptRegex.find(response.text)?.groupValues?.get(2) ?: return false
+
+        // Parse the JSON to get media definitions
+        val mediaDefinitions =
+            mapper.readTree(scriptText).get("mediaDefinitions") ?: return false
+
+        // Iterate through different quality levels and extract URLs
+        mediaDefinitions.forEach { media ->
+            val videoUrl = media.get("videoUrl")?.asText()?.ifBlank { null } ?: return@forEach
+            val qualityStr = media.get("quality")?.asText()
+            
+            val qualityInt = qualityStr?.toIntOrNull()?.let {
+                when {
+                    it >= 1080 -> Qualities.P1080.value
+                    it >= 720 -> Qualities.P720.value
+                    it >= 480 -> Qualities.P480.value
+                    it >= 240 -> Qualities.P240.value
+                    else -> Qualities.Unknown.value
+                }
+            } ?: Qualities.Unknown.value
+
+            // Add the found link to the callback
+            callback.invoke(
+                ExtractorLink(
+                    source = this.name,
+                    name = "${this.name} ${qualityStr}p",
+                    url = videoUrl,
+                    referer = data, // The page URL is a good referer
+                    quality = qualityInt,
+                    // Determine the type based on the URL format
+                    type = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                )
+            )
+        }
+        
+        return true
     }
 }
