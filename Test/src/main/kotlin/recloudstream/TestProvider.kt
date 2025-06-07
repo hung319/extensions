@@ -64,6 +64,10 @@ class PornhubProvider : MainAPI() {
         }
     }
 
+    /**
+     * Hàm load đã được rút gọn, chỉ lấy tiêu đề và poster.
+     * Đã loại bỏ phần lấy mô tả và danh sách đề xuất.
+     */
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
@@ -71,42 +75,18 @@ class PornhubProvider : MainAPI() {
             ?: document.selectFirst("title")?.text() 
             ?: ""
 
-        // Lấy toàn bộ mã HTML của trang
         val pageText = document.html()
-        // Tìm URL poster bằng cách sử dụng biểu thức chính quy (Regex) 
-        // để tìm "image_url" trong biến javascript "flashvars"
         val poster = Regex("""image_url":"([^"]+)""").find(pageText)?.groupValues?.get(1)
         
-        val description = document.selectFirst("div.video-description-text")?.text()
-
-        // Sử dụng selector chính xác hơn để lấy các video trong khu vực "relatedVideos"
-        val recommendations = document.select("#relatedVideos .pcVideoListItem").mapNotNull {
-             val recTitleElement = it.selectFirst("span.title a")
-             // Bỏ qua nếu không tìm thấy tiêu đề hoặc link
-             if (recTitleElement == null) return@mapNotNull null
-
-             val recTitle = recTitleElement.attr("title")
-             val recHref = recTitleElement.attr("href").let { link -> mainUrl + link }
-
-             val recImage = it.selectFirst("img")?.let { img ->
-                 img.attr("data-thumbsrc").ifEmpty { img.attr("src") }
-             }
-
-             newMovieSearchResponse(name = recTitle, url = recHref, type = TvType.NSFW) {
-                 this.posterUrl = recImage
-             }
-        }
-
         return newMovieLoadResponse(
             name = title,
             url = url,
             type = TvType.NSFW,
             dataUrl = url 
         ) {
-            // Gán poster và recommendations đã được sửa
             this.posterUrl = poster
-            this.plot = description
-            this.recommendations = recommendations
+            // Đã xóa: this.plot = description
+            // Đã xóa: this.recommendations = recommendations
         }
     }
 
