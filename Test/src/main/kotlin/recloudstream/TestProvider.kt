@@ -99,7 +99,7 @@ class PornhubProvider : MainAPI() {
         }
     }
 
-    // **Function to extract video stream links (IMPLEMENTED)**
+    // **Function to extract video stream links (REGEX FIXED)**
     override suspend fun loadLinks(
         data: String, // URL of the video
         isCasting: Boolean,
@@ -107,10 +107,11 @@ class PornhubProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val response = app.get(data)
-        // Regex to find the javascript object containing video information
-        val scriptRegex = Regex("""var flashvars_(\d+) = (\{.+?});""")
+        // Regex with proper escaping for Java/Android's engine
+        val scriptRegex = Regex("var flashvars_\\d+ = (\\{.*?\\});")
         
-        val scriptText = scriptRegex.find(response.text)?.groupValues?.get(2) ?: return false
+        // Find the script and get the first capture group (the JSON object)
+        val scriptText = scriptRegex.find(response.text)?.groupValues?.get(1) ?: return false
 
         // Parse the JSON to get media definitions
         val mediaDefinitions =
