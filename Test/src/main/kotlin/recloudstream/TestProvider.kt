@@ -4,27 +4,15 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.getAndUnpack
 import org.jsoup.nodes.Element
 
-// Plugin registration
-import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
-import com.lagradost.cloudstream3.plugins.Plugin
-import android.content.Context
-
-@CloudstreamPlugin
-class MissAVProvider: Plugin() {
-    override fun load(context: Context) {
-        // This function is called when the plugin is loaded
-        registerMainAPI(MissAV())
-    }
-}
-
-class MissAV : MainAPI() {
+// Lớp này chứa toàn bộ logic của nhà cung cấp, giờ có tên là MissAVProvider
+class MissAVProvider : MainAPI() {
+    // Thuộc tính 'name' vẫn là "MissAV" để hiển thị trong ứng dụng
     override var name = "MissAV"
     override var mainUrl = "https://missav.live"
     override var lang = "en"
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
 
-    // Define the main pages for the plugin
     override val mainPage = mainPageOf(
         "/dm22/en/new" to "Latest",
         "/dm588/en/release" to "New Releases",
@@ -32,7 +20,6 @@ class MissAV : MainAPI() {
         "/dm169/en/weekly-hot" to "Most Viewed Weekly",
     )
 
-    // Helper function to parse a video item from the page
     private fun Element.toSearchResponse(): SearchResponse? {
         val a = this.selectFirst("a") ?: return null
         val href = a.attr("href")
@@ -78,10 +65,10 @@ class MissAV : MainAPI() {
         val posterUrl = document.selectFirst("meta[property=og:image]")?.attr("content")
         val description = document.selectFirst("div.line-clamp-2, div.line-clamp-none")?.text()
 
-        val actors = document.select("a[href*=/actresses/]").map { it.text() }
+        val actors = document.select("a[href*=/actresses/]").map {
+            Actor(it.text().trim())
+        }
 
-        // --- Stream Link Extraction ---
-        // Find the packed Javascript and use getAndUnpack to decode it.
         val packedJS = document.select("script").firstOrNull { script ->
             script.data().contains("eval(function(p,a,c,k,e,d)")
         }?.data() ?: return null
@@ -90,8 +77,6 @@ class MissAV : MainAPI() {
         
         if (m3u8Link.isBlank()) return null
 
-        // Pass the m3u8 link directly to the LoadResponse.
-        // CloudStream will handle it without needing loadLinks.
         return newMovieLoadResponse(title, url, TvType.NSFW, m3u8Link) {
             this.posterUrl = posterUrl
             this.plot = description
