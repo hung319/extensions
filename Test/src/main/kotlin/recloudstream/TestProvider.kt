@@ -4,9 +4,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.getAndUnpack
 import org.jsoup.nodes.Element
 
-// Lớp này chứa toàn bộ logic của nhà cung cấp, giờ có tên là MissAVProvider
 class MissAVProvider : MainAPI() {
-    // Thuộc tính 'name' vẫn là "MissAV" để hiển thị trong ứng dụng
     override var name = "MissAV"
     override var mainUrl = "https://missav.live"
     override var lang = "en"
@@ -65,8 +63,9 @@ class MissAVProvider : MainAPI() {
         val posterUrl = document.selectFirst("meta[property=og:image]")?.attr("content")
         val description = document.selectFirst("div.line-clamp-2, div.line-clamp-none")?.text()
 
+        // SỬA LỖI: Bọc mỗi đối tượng 'Actor' trong một đối tượng 'ActorData'
         val actors = document.select("a[href*=/actresses/]").map {
-            Actor(it.text().trim())
+            ActorData(Actor(it.text().trim()))
         }
 
         val packedJS = document.select("script").firstOrNull { script ->
