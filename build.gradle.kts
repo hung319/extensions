@@ -12,7 +12,7 @@ buildscript {
 
     dependencies {
         classpath("com.android.tools.build:gradle:8.7.3")
-        classpath("com.github.recloudstream:gradle:-SNAPSHOT")
+        classpath("com.github.recloudstream:gradle:master-SNAPSHOT")
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.0")
     }
 }
@@ -87,7 +87,6 @@ subprojects {
         implementation("com.github.vidstige:jadb:v1.2.1")
         implementation("io.karn:khttp-android:0.1.2")
         implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
-        implementation("com.github.recloudstream.cloudstream:library-jvm:master")
     }
 }
 
