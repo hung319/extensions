@@ -1,85 +1,114 @@
 package recloudstream
 
-import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.getAndUnpack
+import android.util.Log
 import org.jsoup.nodes.Element
+import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.utils.*
+import okhttp3.FormBody
 
 class MissAVProvider : MainAPI() {
-    override var name = "MissAV"
-    override var mainUrl = "https://missav.live"
-    override var lang = "en"
-    override val hasMainPage = true
-    override val supportedTypes = setOf(TvType.NSFW)
+    override var mainUrl              = "https://missav.ws"
+    override var name                 = "MissAV"
+    override val hasMainPage          = true
+    override var lang                 = "en"
+    override val hasDownloadSupport   = true
+    override val hasChromecastSupport = true
+    override val supportedTypes       = setOf(TvType.NSFW)
+    override val vpnStatus            = VPNStatus.MightBeNeeded
 
     override val mainPage = mainPageOf(
-        "/dm22/en/new" to "Latest",
-        "/dm588/en/release" to "New Releases",
-        "/dm291/en/today-hot" to "Most Viewed Today",
-        "/dm169/en/weekly-hot" to "Most Viewed Weekly",
-    )
+            "/dm514/en/new" to "Recent Update",
+            "/dm562/en/release" to "New Releases",
+            "/dm620/en/uncensored-leak" to "Uncensored Leak",
+            "/dm291/en/today-hot" to "Most Viewed Today",
+            "/dm169/en/weekly-hot" to "Most Viewed by Week",
+            "/dm256/en/monthly-hot" to "Most Viewed by Month"
+        )
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+            val document = app.get("$mainUrl${request.data}?page=$page").document
+            val responseList  = document.select(".thumbnail").mapNotNull { it.toSearchResult() }
+            return newHomePageResponse(HomePageList(request.name, responseList, isHorizontalImages = true),hasNext = true)
 
-    private fun Element.toSearchResponse(): SearchResponse? {
-        val a = this.selectFirst("a") ?: return null
-        val href = a.attr("href")
-        if (href.isBlank() || href == "#") return null
+    }
 
-        val title = this.selectFirst("div.my-2 a")?.text()?.trim() ?: return null
-        val posterUrl = this.selectFirst("img")?.let {
-            it.attr("data-src").ifBlank { it.attr("src") }
-        }
-
+    private fun Element.toSearchResult(): SearchResponse {
+        val status = this.select(".bg-blue-800").text()
+        val title = if(!status.isNullOrBlank()){"[$status] "+ this.select(".text-secondary").text()} else {this.select(".text-secondary").text()}
+        val href = this.select(".text-secondary").attr("href")
+        val posterUrl = this.selectFirst(".w-full")?.attr("data-src")
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
         }
     }
 
-    override suspend fun getMainPage(
-        page: Int,
-        request: MainPageRequest
-    ): HomePageResponse {
-        val url = "$mainUrl${request.data}/page/$page"
-        val document = app.get(url).document
-        
-        val items = document.select("div.thumbnail").mapNotNull {
-            it.toSearchResponse()
-        }
-
-        return newHomePageResponse(request.name, items)
-    }
-
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$mainUrl/en/search/$query"
+
+        val searchResponse = mutableListOf<SearchResponse>()
+
+        for (i in 1..5) {
+            val document = app.get("$mainUrl/en/search/$query?page=$i").document
+            //val document = app.get("${mainUrl}/page/$i/?s=$query").document
+
+            val results = document.select(".thumbnail").mapNotNull { it.toSearchResult() }
+
+            if(!results.isNullOrEmpty())
+            {
+                for (result in results)
+                {
+                    if(!searchResponse.contains(result))
+                    {
+                        searchResponse.add(result)
+                    }
+                }
+            }
+            else
+            {
+                break
+            }
+            /*if (!searchResponse.containsAll(results)) {
+                searchResponse.addAll(results)
+            } else {
+                break
+            }
+
+            if (results.isEmpty()) break*/
+        }
+
+        return searchResponse
+
+    }
+
+    override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
-        
-        return document.select("div.thumbnail").mapNotNull {
-            it.toSearchResponse()
+
+        val title = document.selectFirst("meta[property=og:title]")?.attr("content")?.trim().toString().replace("| PornHoarder.tv","")
+        val poster = fixUrlNull(document.selectFirst("[property='og:image']")?.attr("content"))
+        val description = document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
+
+        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
+            this.posterUrl = poster
+            this.plot = description
         }
     }
 
-    override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url).document
-
-        val title = document.selectFirst("h1.text-base, h1.text-lg")?.text()?.trim() ?: return null
-        val posterUrl = document.selectFirst("meta[property=og:image]")?.attr("content")
-        val description = document.selectFirst("div.line-clamp-2, div.line-clamp-none")?.text()
-
-        // SỬA LỖI: Bọc mỗi đối tượng 'Actor' trong một đối tượng 'ActorData'
-        val actors = document.select("a[href*=/actresses/]").map {
-            ActorData(Actor(it.text().trim()))
+    override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
+        val doc = app.get(data).document
+        with(app.get(data)) {
+            getAndUnpack(this.text).let { unpackedText ->
+                val linkList = unpackedText.split(";")
+                val finalLink = "source='(.*)'".toRegex().find(linkList.first())?.groups?.get(1)?.value
+                callback.invoke(ExtractorLink(
+                    name,
+                    name,
+                    finalLink.toString(),
+                    "",
+                    Qualities.Unknown.value,
+                    isM3u8 = true
+                ))
+            }
         }
 
-        val packedJS = document.select("script").firstOrNull { script ->
-            script.data().contains("eval(function(p,a,c,k,e,d)")
-        }?.data() ?: return null
 
-        val m3u8Link = getAndUnpack(packedJS).substringAfter("source='").substringBefore("'")
-        
-        if (m3u8Link.isBlank()) return null
-
-        return newMovieLoadResponse(title, url, TvType.NSFW, m3u8Link) {
-            this.posterUrl = posterUrl
-            this.plot = description
-            this.actors = actors
-        }
+        return true
     }
 }
