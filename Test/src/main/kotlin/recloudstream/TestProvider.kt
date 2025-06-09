@@ -5,6 +5,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.getAndUnpack
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.lagradost.cloudstream3.utils.makeAbsoluteUrl // SỬA LỖI: Thêm import này
 import org.jsoup.nodes.Element
 
 class MissAVProvider : MainAPI() {
@@ -22,16 +23,29 @@ class MissAVProvider : MainAPI() {
         "/dm169/en/weekly-hot" to "Most Viewed by Week",
     )
 
-    // SỬA LỖI 1 & 2: Đảm bảo hàm này nằm BÊN TRONG lớp MissAVProvider
-    // và đổi tên thành toSearchResponse cho nhất quán với log lỗi
+    // SỬA LỖI: Cập nhật hàm toSearchResponse để lấy poster mạnh mẽ hơn
     private fun Element.toSearchResponse(): SearchResponse? {
         val a = this.selectFirst("a") ?: return null
         val href = a.attr("href")
         if (href.isBlank() || href == "#") return null
 
         val title = this.selectFirst("div.my-2 a")?.text()?.trim() ?: return null
-        val posterUrl = this.selectFirst("img")?.let {
-            it.attr("data-src").ifBlank { it.attr("src") }
+        
+        // Logic lấy poster mới:
+        // 1. Tìm thẻ <img>
+        // 2. Thử lần lượt các thuộc tính 'data-src', 'src', 'data-original' để tìm link ảnh.
+        // 3. Sử dụng `makeAbsoluteUrl` để đảm bảo link luôn đầy đủ.
+        val posterUrl = this.selectFirst("img")?.let { img ->
+            val potentialAttrs = listOf("data-src", "src", "data-original")
+            var foundUrl = ""
+            for (attr in potentialAttrs) {
+                val url = img.attr(attr)
+                if (url.isNotBlank()) {
+                    foundUrl = url
+                    break
+                }
+            }
+            makeAbsoluteUrl(foundUrl, mainUrl)
         }
 
         return newMovieSearchResponse(title, href, TvType.NSFW) {
@@ -47,7 +61,7 @@ class MissAVProvider : MainAPI() {
         val document = app.get(url).document
         
         val items = document.select("div.thumbnail").mapNotNull {
-            it.toSearchResponse() // Bây giờ hàm này sẽ được tìm thấy
+            it.toSearchResponse()
         }
 
         return newHomePageResponse(request.name, items)
@@ -98,7 +112,6 @@ class MissAVProvider : MainAPI() {
             val m3u8Link = unpacked.substringAfter("source='").substringBefore("'")
 
             if (m3u8Link.isNotBlank()) {
-                // SỬA LỖI 3: Không truyền `referer` trực tiếp mà đặt trong khối builder
                 newExtractorLink(
                     url = m3u8Link,
                     name = this.name,
