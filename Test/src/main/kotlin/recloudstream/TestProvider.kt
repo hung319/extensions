@@ -8,7 +8,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType // Đảm bảo import
 import okhttp3.FormBody
 
 class MissAVProvider : MainAPI() {
-    override var mainUrl          = "https://missav.ws"
+    override var mainUrl          = "https://missav.live"
     override var name             = "MissAV"
     override val hasMainPage      = true
     override var lang             = "en"
