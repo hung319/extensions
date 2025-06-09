@@ -5,7 +5,6 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.getAndUnpack
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import com.lagradost.cloudstream3.utils.makeAbsoluteUrl // SỬA LỖI: Thêm import này
 import org.jsoup.nodes.Element
 
 class MissAVProvider : MainAPI() {
@@ -23,7 +22,7 @@ class MissAVProvider : MainAPI() {
         "/dm169/en/weekly-hot" to "Most Viewed by Week",
     )
 
-    // SỬA LỖI: Cập nhật hàm toSearchResponse để lấy poster mạnh mẽ hơn
+    // SỬA LỖI: Đảm bảo hàm này nằm bên trong lớp và sử dụng fixUrl()
     private fun Element.toSearchResponse(): SearchResponse? {
         val a = this.selectFirst("a") ?: return null
         val href = a.attr("href")
@@ -31,10 +30,7 @@ class MissAVProvider : MainAPI() {
 
         val title = this.selectFirst("div.my-2 a")?.text()?.trim() ?: return null
         
-        // Logic lấy poster mới:
-        // 1. Tìm thẻ <img>
-        // 2. Thử lần lượt các thuộc tính 'data-src', 'src', 'data-original' để tìm link ảnh.
-        // 3. Sử dụng `makeAbsoluteUrl` để đảm bảo link luôn đầy đủ.
+        // Cập nhật logic lấy poster, thay `makeAbsoluteUrl` bằng `fixUrl`
         val posterUrl = this.selectFirst("img")?.let { img ->
             val potentialAttrs = listOf("data-src", "src", "data-original")
             var foundUrl = ""
@@ -45,7 +41,8 @@ class MissAVProvider : MainAPI() {
                     break
                 }
             }
-            makeAbsoluteUrl(foundUrl, mainUrl)
+            // fixUrl là cách mới và tốt hơn để xử lý link tương đối/tuyệt đối
+            foundUrl.fixUrl(mainUrl)
         }
 
         return newMovieSearchResponse(title, href, TvType.NSFW) {
@@ -112,13 +109,14 @@ class MissAVProvider : MainAPI() {
             val m3u8Link = unpacked.substringAfter("source='").substringBefore("'")
 
             if (m3u8Link.isNotBlank()) {
+                // SỬA LỖI: Thay thế tham số `referer` không hợp lệ
                 newExtractorLink(
                     url = m3u8Link,
                     name = this.name,
                     source = this.name,
                     type = ExtractorLinkType.M3U8
                 ).apply {
-                    this.referer = "$mainUrl/"
+                    this.referer = mainUrl // Đặt referer trong khối .apply{}
                 }.let { link -> callback.invoke(link) }
                 
                 return true
