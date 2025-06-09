@@ -2,7 +2,7 @@ package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType // SỬA LỖI: Thêm import này
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.getAndUnpack
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.nodes.Element
@@ -22,7 +22,9 @@ class MissAVProvider : MainAPI() {
         "/dm169/en/weekly-hot" to "Most Viewed by Week",
     )
 
-    private fun Element.toSearchResult(): SearchResponse? {
+    // SỬA LỖI 1 & 2: Đảm bảo hàm này nằm BÊN TRONG lớp MissAVProvider
+    // và đổi tên thành toSearchResponse cho nhất quán với log lỗi
+    private fun Element.toSearchResponse(): SearchResponse? {
         val a = this.selectFirst("a") ?: return null
         val href = a.attr("href")
         if (href.isBlank() || href == "#") return null
@@ -45,7 +47,7 @@ class MissAVProvider : MainAPI() {
         val document = app.get(url).document
         
         val items = document.select("div.thumbnail").mapNotNull {
-            it.toSearchResponse()
+            it.toSearchResponse() // Bây giờ hàm này sẽ được tìm thấy
         }
 
         return newHomePageResponse(request.name, items)
@@ -56,7 +58,7 @@ class MissAVProvider : MainAPI() {
         for (page in 1..5) {
             val doc = app.get("$mainUrl/en/search/$query?page=$page").document
             if (doc.select("div.thumbnail").isEmpty()) break
-            val results = doc.select("div.thumbnail").mapNotNull { it.toSearchResult() }
+            val results = doc.select("div.thumbnail").mapNotNull { it.toSearchResponse() }
             searchResponse.addAll(results)
         }
         return searchResponse.distinctBy { it.url }
@@ -96,16 +98,16 @@ class MissAVProvider : MainAPI() {
             val m3u8Link = unpacked.substringAfter("source='").substringBefore("'")
 
             if (m3u8Link.isNotBlank()) {
-                // SỬA LỖI: Thay thế isM3u8 = true bằng type = ExtractorLinkType.M3U8
-                callback.invoke(
-                    newExtractorLink(
-                        source = this.name,
-                        name = this.name,
-                        url = m3u8Link,
-                        referer = "$mainUrl/",
-                        type = ExtractorLinkType.M3U8 // Đã cập nhật
-                    )
-                )
+                // SỬA LỖI 3: Không truyền `referer` trực tiếp mà đặt trong khối builder
+                newExtractorLink(
+                    url = m3u8Link,
+                    name = this.name,
+                    source = this.name,
+                    type = ExtractorLinkType.M3U8
+                ).apply {
+                    this.referer = "$mainUrl/"
+                }.let { link -> callback.invoke(link) }
+                
                 return true
             }
         }
