@@ -9,17 +9,20 @@ import org.jsoup.nodes.Element
 
 class MissAVProvider : MainAPI() {
     override var name = "MissAV"
-    override var mainUrl = "https://missav.ws"
-    override var lang = "en"
+    // THAY ĐỔI 1: Cập nhật tên miền
+    override var mainUrl = "https://missav.ws" 
+    // THAY ĐỔI 2: Cập nhật ngôn ngữ
+    override var lang = "vi" 
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
 
+    // THAY ĐỔI 3: Cập nhật đường dẫn và dịch tiêu đề sang Tiếng Việt
     override val mainPage = mainPageOf(
-        "/dm22/en/new" to "Latest",
-        "/dm588/en/release" to "New Releases",
-        "/dm621/en/uncensored-leak" to "Uncensored Leak",
-        "/dm291/en/today-hot" to "Most Viewed Today",
-        "/dm169/en/weekly-hot" to "Most Viewed by Week",
+        "/dm22/vi/new" to "Mới cập nhật",
+        "/dm588/vi/release" to "Mới phát hành",
+        "/dm621/vi/uncensored-leak" to "Lộ hàng không che",
+        "/dm291/vi/today-hot" to "Xem nhiều hôm nay",
+        "/dm169/vi/weekly-hot" to "Xem nhiều trong tuần",
     )
 
     private fun Element.toSearchResponse(): SearchResponse? {
@@ -39,8 +42,6 @@ class MissAVProvider : MainAPI() {
                     break
                 }
             }
-            // SỬA LỖI: Gọi hàm fixUrl đúng cú pháp.
-            // Hàm này là của MainAPI, nên ta gọi trực tiếp fixUrl(link)
             fixUrl(foundUrl)
         }
 
@@ -66,7 +67,8 @@ class MissAVProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val searchResponse = mutableListOf<SearchResponse>()
         for (page in 1..5) {
-            val doc = app.get("$mainUrl/en/search/$query?page=$page").document
+            // THAY ĐỔI 4: Cập nhật đường dẫn tìm kiếm Tiếng Việt
+            val doc = app.get("$mainUrl/vi/search/$query?page=$page").document
             if (doc.select("div.thumbnail").isEmpty()) break
             val results = doc.select("div.thumbnail").mapNotNull { it.toSearchResponse() }
             searchResponse.addAll(results)
@@ -83,11 +85,25 @@ class MissAVProvider : MainAPI() {
         val actors = document.select("a[href*=/actresses/]").map {
             ActorData(Actor(it.text().trim()))
         }
+        
+        val tags = mutableListOf<String>()
+        if (url.contains("-english-subtitle")) {
+            tags.add("English Subtitle")
+        }
+        if (url.contains("-chinese-subtitle")) {
+            tags.add("Chinese Subtitle")
+        }
+        // Có thể thêm logic nhận diện phụ đề Tiếng Việt nếu có
+        if (url.contains("-vietnamese-subtitle")) {
+            tags.add("Vietnamese Subtitle")
+        }
+
 
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = posterUrl
             this.plot = description
             this.actors = actors
+            this.tags = tags
         }
     }
     
