@@ -9,7 +9,7 @@ import org.jsoup.nodes.Element
 
 class MissAVProvider : MainAPI() {
     override var name = "MissAV"
-    override var mainUrl = "https://missav.live"
+    override var mainUrl = "https://missav.ws"
     override var lang = "en"
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
