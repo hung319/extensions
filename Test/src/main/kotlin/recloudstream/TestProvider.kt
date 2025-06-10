@@ -582,17 +582,14 @@ class AnimetProvider : MainAPI() {
             val headers = mapOf(
                 "Referer" to currentBaseUrl,
                 "Origin" to currentBaseUrl
-                // app.post sẽ tự xử lý Content-Type: application/x-www-form-urlencoded
             )
 
             val responseText = app.post(ajaxUrl, data = postData, headers = headers).text
             Log.d(name, "Phản hồi AJAX: ${responseText.take(500)}")
 
             // 4. Trích xuất link M3U8 từ phản hồi
-            // Regex: "file":"(https?:\/\/..."
             val m3u8Regex = Regex(""""file":"(https?://[^"]+\.m3u8)"""")
             val m3u8Match = m3u8Regex.find(responseText)
-            // Lấy link và thay thế các dấu \/ (nếu có)
             val m3u8Link = m3u8Match?.groupValues?.getOrNull(1)?.replace("\\/", "/")
 
             if (m3u8Link.isNullOrBlank()) {
@@ -608,8 +605,10 @@ class AnimetProvider : MainAPI() {
                     name = "Animet (Direct)",
                     url = m3u8Link,
                     type = ExtractorLinkType.M3U8,
-                    referer = currentBaseUrl // Thêm referer để đảm bảo playback ổn định
+                    // 'referer' không đặt ở đây
                 ) {
+                    // *** SỬA LỖI: 'referer' phải được đặt ở đây ***
+                    this.referer = currentBaseUrl 
                     this.quality = Qualities.Unknown.value
                 }
             )
@@ -621,6 +620,5 @@ class AnimetProvider : MainAPI() {
             return false
         }
     }
-
 
 } // <-- Dấu ngoặc đóng class AnimetProvider
