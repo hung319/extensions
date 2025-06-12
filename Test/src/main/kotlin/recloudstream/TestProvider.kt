@@ -6,6 +6,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.lagradost.cloudstream3.ExtractorLinkType // SỬA LỖI: Thêm dòng import này
 import org.jsoup.Jsoup
 
 // Định nghĩa cấu trúc dữ liệu JSON để parse
@@ -118,13 +119,11 @@ class OphimProvider : MainAPI() {
         val year = movieInfo.year
         val plot = Jsoup.parse(movieInfo.content).text()
         val tags = movieInfo.category?.map { it.name }
-        // SỬA LỖI: Bọc Actor trong ActorData
         val actors = movieInfo.actor?.map { ActorData(Actor(it)) }
 
         return if (movieInfo.type == "series") {
             val episodes = detailData.episodes.flatMap { server ->
                 server.serverData.map { episodeData ->
-                    // SỬA LỖI: Gộp tên server và tên tập vào thuộc tính `name`
                     Episode(
                         data = episodeData.linkM3u8,
                         name = "${server.serverName} - Tập ${episodeData.name}"
@@ -136,7 +135,7 @@ class OphimProvider : MainAPI() {
                 this.year = year
                 this.plot = plot
                 this.tags = tags
-                this.actors = actors // Đã sửa
+                this.actors = actors
             }
         } else {
             newMovieLoadResponse(
@@ -149,32 +148,28 @@ class OphimProvider : MainAPI() {
                 this.year = year
                 this.plot = plot
                 this.tags = tags
-                this.actors = actors // Đã sửa
+                this.actors = actors
             }
         }
     }
 
     override suspend fun loadLinks(
-    data: String, // data là link m3u8 từ API
-    isCasting: Boolean,
-    subtitleCallback: (SubtitleFile) -> Unit,
-    callback: (ExtractorLink) -> Unit
-): Boolean {
-
-    // Gọi hàm newExtractorLink với initializer block
-    callback.invoke(
-        newExtractorLink(
-            source = this.name, // "Ophim"
-            name = "${this.name} Vietsub", // "Ophim Vietsub"
-            url = data, // Link M3U8
-            type = ExtractorLinkType.M3U8 // Chỉ định rõ loại link
-        ) { // Bắt đầu initializer block
-            // Thiết lập các thuộc tính bổ sung
-            this.referer = "$mainUrl/" // Đặt referer là trang chủ
-            this.quality = Qualities.Unknown.value // Vì API không cung cấp chất lượng cụ thể
-        }
-    )
-    
-    return true
-  }
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        callback.invoke(
+            newExtractorLink(
+                source = this.name,
+                name = "${this.name} Vietsub",
+                url = data,
+                type = ExtractorLinkType.M3U8 // Giờ đây đã hợp lệ
+            ) {
+                this.referer = "$mainUrl/"
+                this.quality = Qualities.Unknown.value
+            }
+        )
+        return true
+    }
 }
