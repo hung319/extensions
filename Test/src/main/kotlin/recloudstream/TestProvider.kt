@@ -6,7 +6,8 @@ import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
 
-class IhentaiProvider : MainAPI() {
+// Đổi tên class lại thành "Ihentai" để khớp với file test của bạn
+class Ihentai : MainAPI() { 
     // --- Thông tin cơ bản ---
     override var mainUrl = "https://ihentai.ws"
     override var name = "iHentai"
@@ -19,14 +20,24 @@ class IhentaiProvider : MainAPI() {
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     )
 
-    // Hàm helper để phân tích một thẻ item thành đối tượng SearchResponse
+    // Hàm helper để phân tích một thẻ item trên trang chủ
+    private fun parseHomepageCard(element: Element): SearchResponse? {
+        val linkElement = element.selectFirst("a") ?: return null
+        val href = fixUrl(linkElement.attr("href"))
+        val title = element.selectFirst("div.v-card-text h2")?.text()?.trim() ?: return null
+        val posterUrl = element.selectFirst("img")?.attr("src")
+
+        return newAnimeSearchResponse(title, href, TvType.NSFW) {
+            this.posterUrl = posterUrl
+        }
+    }
+    
+    // Hàm helper để phân tích một thẻ item từ trang tìm kiếm
     private fun parseSearchCard(element: Element): SearchResponse? {
         val linkElement = element.selectFirst("a") ?: return null
         val href = fixUrl(linkElement.attr("href"))
-        
-        val title = element.selectFirst("h2, h3")?.text()?.trim() ?: return null
-        
-        val posterUrl = element.selectFirst("img")?.attr("src")
+        val title = linkElement.selectFirst("h3")?.text()?.trim() ?: return null
+        val posterUrl = linkElement.selectFirst("img")?.attr("src")
 
         return newAnimeSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
@@ -41,7 +52,7 @@ class IhentaiProvider : MainAPI() {
         document.select("div.container > div.tw-mb-16").forEach { section ->
             val sectionTitle = section.selectFirst("h1")?.text()?.trim() ?: return@forEach
             val items = section.select("div.v-card").mapNotNull {
-                parseSearchCard(it)
+                parseHomepageCard(it)
             }
             if (items.isNotEmpty()) {
                 homePageList.add(HomePageList(sectionTitle, items))
