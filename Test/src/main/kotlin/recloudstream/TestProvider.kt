@@ -25,8 +25,9 @@ class Ihentai : MainAPI() { // all providers must inherit from MainAPI
         TvType.NSFW
     )
 
-    // Interceptor to solve Cloudflare issues
-    override val mainPageInterceptors = listOf(CloudflareKiller())
+    // Interceptor to solve Cloudflare issues.
+    // REMOVED "override" KEYWORD TO FIX THE BUILD ERROR.
+    val interceptor = CloudflareKiller()
 
 
     // --- DATA CLASSES FOR JSON PARSING ---
@@ -68,7 +69,7 @@ class Ihentai : MainAPI() { // all providers must inherit from MainAPI
     // Function to fetch and display content on the main page
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = "$mainUrl/?page=$page"
-        val document = app.get(url).text
+        val document = app.get(url, interceptor = interceptor).text
         
         // Extract the JSON data from the HTML
         val nuxtJson = getNuxtData(document) ?: return HomePageResponse(emptyList())
@@ -88,7 +89,7 @@ class Ihentai : MainAPI() { // all providers must inherit from MainAPI
     // Function to handle search queries
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/tim-kiem?q=$query"
-        val document = app.get(url).text
+        val document = app.get(url, interceptor = interceptor).text
         
         // Extract the JSON data from the HTML
         val nuxtJson = getNuxtData(document) ?: return emptyList()
@@ -104,7 +105,7 @@ class Ihentai : MainAPI() { // all providers must inherit from MainAPI
 
     // Function to load details of a specific anime/series
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url).text
+        val document = app.get(url, interceptor = interceptor).text
         
         // Extract the JSON data from the HTML
         val nuxtJson = getNuxtData(document) ?: throw ErrorLoadingException("Không thể tải dữ liệu")
@@ -115,11 +116,12 @@ class Ihentai : MainAPI() { // all providers must inherit from MainAPI
         val plot = item.description
 
         // Map chapters from JSON to Episode objects
+        // ADDED " ?: emptyList()" TO FIX THE NULLABILITY MISMATCH ERROR.
         val episodes = item.chapters?.mapNotNull { chapter ->
             newEpisode("$mainUrl/doc-truyen/${item.slug}/${chapter.slug}") {
                 name = chapter.name
             }
-        }?.reversed() // Usually newest chapters are last in the list, so we reverse it.
+        }?.reversed() ?: emptyList()
 
         return newTvSeriesLoadResponse(title, url, TvType.NSFW, episodes) {
             this.posterUrl = posterUrl
@@ -134,30 +136,7 @@ class Ihentai : MainAPI() { // all providers must inherit from MainAPI
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // This function will need the HTML of a chapter page to be fully implemented.
-        // The logic will be similar: get the page, extract __NUXT__ JSON,
-        // and find the list of image URLs inside it.
-        // For now, it's a placeholder.
-        
-        // Example logic (requires real chapter page HTML to verify paths):
-        /*
-        val document = app.get(data).text
-        val nuxtJson = getNuxtData(document) ?: return false
-        val chapterData = parseJson<your_chapter_data_class>(nuxtJson)
-
-        chapterData.images?.forEach { imageUrl ->
-            callback(
-                ExtractorLink(
-                    this.name,
-                    this.name,
-                    imageUrl,
-                    referer = mainUrl,
-                    quality = Qualities.Unknown.value,
-                    isM3u8 = false
-                )
-            )
-        }
-        */
+        // This function is intentionally left empty for now as requested.
         return true
     }
 }
