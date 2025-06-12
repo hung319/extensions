@@ -19,7 +19,7 @@ import kotlin.text.Regex
 
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch // SỬA LỖI: Thêm import còn thiếu
+import kotlinx.coroutines.launch
 
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -202,7 +202,6 @@ class AnimeVietsubProvider : MainAPI() {
                         
                         val isMedia = streamUrl.startsWith("http") && (streamUrl.contains(".m3u8") || streamUrl.contains(".mp4"))
                         if (isMedia) {
-                             // SỬA LỖI: Chuyển 'referer' và 'quality' vào trong khối lệnh
                             newExtractorLink(
                                 source = name,
                                 name = "$name - ${linkSource.label}",
@@ -279,6 +278,7 @@ class AnimeVietsubProvider : MainAPI() {
             val year = this.extractYear()
             val rating = this.extractRating()
             val actors = this.extractActors(baseUrl)
+            // SỬA LỖI: Gọi hàm extractRecommendations đã được sửa lại
             val recommendations = this.extractRecommendations(provider, baseUrl)
 
             if (tags.any { it.equals("Anime sắp chiếu", ignoreCase = true) }) {
@@ -380,10 +380,29 @@ class AnimeVietsubProvider : MainAPI() {
             } else null
         }
     }
-
+    
+    /**
+     * SỬA LỖI: Hàm này đã được viết lại để sử dụng logic phân tích chính xác cho các mục đề xuất,
+     * thay vì tái sử dụng hàm `toSearchResponse` một cách sai lầm.
+     */
     private fun Document.extractRecommendations(provider: MainAPI, baseUrl: String): List<SearchResponse> {
-        return this.select("div.Wdgt div.MovieListRelated.owl-carousel div.TPostMv").mapNotNull {
-            it.toSearchResponse(provider, baseUrl)
+        return this.select("div.Wdgt div.MovieListRelated.owl-carousel div.TPostMv").mapNotNull { item ->
+            try {
+                val linkElement = item.selectFirst("a") ?: return@mapNotNull null
+                val href = fixUrl(linkElement.attr("href"), baseUrl) ?: return@mapNotNull null
+                val title = linkElement.selectFirst(".Title")?.text()?.trim() ?: return@mapNotNull null
+                val posterUrl = fixUrl(linkElement.selectFirst("img")?.attr("src"), baseUrl)
+
+                val isMovie = linkElement.selectFirst("span.mli-eps") == null
+                val tvType = if (isMovie) TvType.Movie else TvType.Anime
+
+                provider.newMovieSearchResponse(title, href, tvType) {
+                    this.posterUrl = posterUrl
+                }
+            } catch (e: Exception) {
+                Log.e(name, "Error parsing recommendation item", e)
+                null
+            }
         }
     }
 
@@ -440,7 +459,6 @@ class AnimeVietsubProvider : MainAPI() {
     data class AjaxPlayerResponse(val success: Int?, val link: List<LinkSource>?)
     data class LinkSource(val file: String?, val type: String?, val label: String?)
     
-    // SỬA LỖI: Hoàn trả lại hàm gốc của người dùng, đã được chứng minh là hoạt động
     private fun String?.encodeUri(): String {
         if (this == null) return ""
         return try { URLEncoder.encode(this, "UTF-8").replace("+", "%20") }
