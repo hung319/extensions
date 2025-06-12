@@ -6,6 +6,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.network.CloudflareKiller
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 
 // Define the provider class, inheriting from MainAPI
 class Ihentai : MainAPI() {
@@ -13,28 +14,20 @@ class Ihentai : MainAPI() {
     override var name = "iHentai"
     override var mainUrl = "https://ihentai.ws"
     override var lang = "vi"
-    // Tell the app that this provider has a home page
     override val hasMainPage = true
-    // Define the supported content types
-    override val supportedTypes = setOf(
-        TvType.NSFW
-    )
+    override val supportedTypes = setOf(TvType.NSFW)
 
     // Interceptor to bypass Cloudflare protection
+    // The app should automatically use this if defined in the class.
     private val interceptor = CloudflareKiller()
 
     // ---- DATA CLASSES FOR JSON PARSING ----
-    // These classes map the structure of the JSON data from the website.
-    // Classes for chapter images are removed for now.
-
-    // For Homepage and Search
     private data class Item(
         @JsonProperty("name") val name: String?,
         @JsonProperty("slug") val slug: String?,
         @JsonProperty("thumbnail") val thumbnail: String?
     )
 
-    // For Load (Series Details)
     private data class ItemDetails(
         @JsonProperty("name") val name: String?,
         @JsonProperty("slug") val slug: String?,
@@ -48,14 +41,11 @@ class Ihentai : MainAPI() {
         @JsonProperty("slug") val slug: String?
     )
 
-    // Wrapper classes for the Nuxt.js data structure
     private data class NuxtData(
         @JsonProperty("items") val items: List<Item>?,
         @JsonProperty("item") val item: ItemDetails?
-        // Removed 'chapter' property as it's not used without loadLinks
     )
 
-    // The data is nested inside an array, so we need to get the first element.
     private data class NuxtPayload(
         @JsonProperty("data") val data: List<NuxtData>?
     )
@@ -65,9 +55,7 @@ class Ihentai : MainAPI() {
     )
     
     // ---- UTILITY FUNCTION ----
-    // Extracts the __NUXT__ JSON block from the HTML source
     private fun getNuxtJson(html: String): String? {
-        // A more robust regex to handle potential extra spaces
         return Regex("""window\.__NUXT__\s*=\s*(\{.*?\});\s*</script>""").find(html)?.groupValues?.get(1)
     }
     
@@ -75,14 +63,15 @@ class Ihentai : MainAPI() {
     
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = "$mainUrl/?page=$page"
-        // Use the interceptor correctly in the app.get call
-        val document = app.get(url, interceptors = listOf(interceptor)).text
+        // Removed the 'interceptors' parameter to match your API version
+        val document = app.get(url).text
         
         val nuxtJson = getNuxtData(document) ?: return HomePageResponse(emptyList())
-        // The data is inside the first element of the 'data' array
-        val items = parseJson<NuxtResponse>(nuxtJson).payload?.data?.firstOrNull()?.items
+        val response = parseJson<NuxtResponse>(nuxtJson)
+        val items = response.payload?.data?.firstOrNull()?.items
         
-        val homePageList = items?.mapNotNull { item ->
+        // Added explicit type 'Item' to help the compiler
+        val homePageList = items?.mapNotNull { item: Item ->
             newAnimeSearchResponse(item.name ?: "", "$mainUrl/doc-truyen/${item.slug}") {
                 posterUrl = item.thumbnail
             }
@@ -93,13 +82,15 @@ class Ihentai : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/tim-kiem?q=$query"
-        val document = app.get(url, interceptors = listOf(interceptor)).text
+        // Removed the 'interceptors' parameter
+        val document = app.get(url).text
         
         val nuxtJson = getNuxtData(document) ?: return emptyList()
-        // The data is inside the first element of the 'data' array
-        val items = parseJson<NuxtResponse>(nuxtJson).payload?.data?.firstOrNull()?.items
+        val response = parseJson<NuxtResponse>(nuxtJson)
+        val items = response.payload?.data?.firstOrNull()?.items
 
-        return items?.mapNotNull { item ->
+        // Added explicit type 'Item' to help the compiler
+        return items?.mapNotNull { item: Item ->
             newAnimeSearchResponse(item.name ?: "", "$mainUrl/doc-truyen/${item.slug}") {
                 posterUrl = item.thumbnail
             }
@@ -107,20 +98,22 @@ class Ihentai : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url, interceptors = listOf(interceptor)).text
+        // Removed the 'interceptors' parameter
+        val document = app.get(url).text
         
         val nuxtJson = getNuxtData(document) ?: throw ErrorLoadingException("Không thể tải dữ liệu truyện")
-        // The data is inside the first element of the 'data' array
-        val item = parseJson<NuxtResponse>(nuxtJson).payload?.data?.firstOrNull()?.item
+        val response = parseJson<NuxtResponse>(nuxtJson)
+        val item = response.payload?.data?.firstOrNull()?.item
             ?: throw ErrorLoadingException("Không tìm thấy thông tin truyện")
 
         val title = item.name ?: "Không có tiêu đề"
         
-        val episodes = item.chapters?.mapNotNull { chapter ->
+        // Added explicit type 'Chapter' to help the compiler
+        val episodes = item.chapters?.mapNotNull { chapter: Chapter ->
             newEpisode("$mainUrl/doc-truyen/${item.slug}/${chapter.slug}") {
                 name = chapter.name
             }
-        }?.reversed() ?: emptyList() // Reverse to show newest first
+        }?.reversed() ?: emptyList()
 
         return newTvSeriesLoadResponse(title, url, TvType.NSFW, episodes) {
             this.posterUrl = item.thumbnail
@@ -128,14 +121,13 @@ class Ihentai : MainAPI() {
         }
     }
 
-    // This function is temporarily disabled as requested.
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Return false to indicate that no links were loaded.
+        // Temporarily disabled as requested.
         return false
     }
 }
