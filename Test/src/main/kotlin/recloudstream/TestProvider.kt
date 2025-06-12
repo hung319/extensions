@@ -5,7 +5,6 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.fasterxml.jackson.annotation.JsonProperty
-import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 
 // Define the provider class, inheriting from MainAPI
@@ -17,8 +16,11 @@ class Ihentai : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
 
-    // Interceptor to bypass Cloudflare protection
-    private val interceptor = CloudflareKiller()
+    // Set the User-Agent that worked with your curl command.
+    // This header will be sent with every request.
+    private val headers = mapOf(
+        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    )
 
     // ---- DATA CLASSES FOR JSON PARSING ----
     private data class Item(
@@ -54,16 +56,16 @@ class Ihentai : MainAPI() {
     )
 
     // ---- UTILITY FUNCTION ----
-    // RENAMED aaaaaaaa to getNuxtData to fix the "Unresolved reference" error.
     private fun getNuxtData(html: String): String? {
         return Regex("""window\.__NUXT__\s*=\s*(\{.*?\});\s*</script>""").find(html)?.groupValues?.get(1)
     }
 
     // ---- CORE FUNCTIONS ----
-
+    
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = "$mainUrl/?page=$page"
-        val document = app.get(url).text
+        // Add the headers map to the get request
+        val document = app.get(url, headers = headers).text
 
         val nuxtJson = getNuxtData(document) ?: return HomePageResponse(emptyList())
         val response = parseJson<NuxtResponse>(nuxtJson)
@@ -80,7 +82,8 @@ class Ihentai : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/tim-kiem?q=$query"
-        val document = app.get(url).text
+        // Add the headers map to the get request
+        val document = app.get(url, headers = headers).text
 
         val nuxtJson = getNuxtData(document) ?: return emptyList()
         val response = parseJson<NuxtResponse>(nuxtJson)
@@ -94,7 +97,8 @@ class Ihentai : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url).text
+        // Add the headers map to the get request
+        val document = app.get(url, headers = headers).text
 
         val nuxtJson = getNuxtData(document) ?: throw ErrorLoadingException("Không thể tải dữ liệu truyện")
         val response = parseJson<NuxtResponse>(nuxtJson)
