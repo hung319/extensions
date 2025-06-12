@@ -51,7 +51,6 @@ class AnimetProvider : MainAPI() {
         TvType.TvSeries
     )
 
-    // Cache cho baseUrl để giảm thiểu request không cần thiết
     @Volatile
     private var baseUrl: String? = null
     private val baseUrlMutex = Mutex()
@@ -59,9 +58,6 @@ class AnimetProvider : MainAPI() {
 
     // === HELPER FUNCTIONS ===
 
-    /**
-     * Lấy và cache baseUrl một cách an toàn.
-     */
     private suspend fun getBaseUrl(): String {
         baseUrl?.let { return it }
         return baseUrlMutex.withLock {
@@ -87,9 +83,6 @@ class AnimetProvider : MainAPI() {
         }
     }
 
-    /**
-     * Hàm helper để tạo URL tuyệt đối từ URL tương đối, sử dụng baseUrl động.
-     */
     private fun fixUrlBased(url: String?, currentBaseUrl: String): String? {
         if (url.isNullOrBlank()) return null
         return when {
@@ -101,16 +94,17 @@ class AnimetProvider : MainAPI() {
     }
     
     /**
-     * Lấy URL ảnh gốc bằng cách loại bỏ phần kích thước (-150x150).
+     * SỬA LỖI: Tách câu lệnh if để trình biên dịch có thể "smart cast"
+     * thumbnailUrl thành kiểu String không-null.
      */
     private fun getOriginalImageUrl(thumbnailUrl: String?): String? {
-        if (thumbnailUrl.isNullOrBlank()) return null
+        if (thumbnailUrl.isNullOrBlank()) {
+            return null
+        }
+        // Sau khi kiểm tra isNullOrBlank, ở đây thumbnailUrl được đảm bảo là non-null.
         return thumbnailUrl.replace(Regex("(-\\d+x\\d+)(?=\\.\\w+$)"), "")
     }
 
-    /**
-     * Tìm kiếm poster trên Kitsu API.
-     */
     private suspend fun getKitsuPoster(title: String): String? {
         Log.d(name, "Searching Kitsu for: $title")
         return try {
@@ -129,9 +123,6 @@ class AnimetProvider : MainAPI() {
         }
     }
     
-    /**
-     * Hàm hợp nhất để map một element HTML thành AnimeSearchResponse.
-     */
     private fun mapElementToSearchResponse(element: Element, currentBaseUrl: String, forceTvType: TvType? = null): AnimeSearchResponse? {
         val linkTag = element.selectFirst("a") ?: return null
         val href = fixUrlBased(linkTag.attr("href"), currentBaseUrl) ?: return null
@@ -259,12 +250,7 @@ class AnimetProvider : MainAPI() {
             // =================================================================
             // NƠI CẬP NHẬT SELECTOR KHI WEBSITE THAY ĐỔI
             // =================================================================
-
-            // --- LẤY DANH SÁCH TẬP PHIM ---
-            // Selector cũ: "ul.list-episode li.episode a.episode-link"
-            // HÃY THAY THẾ SELECTOR MỚI BẠN TÌM ĐƯỢC VÀO BIẾN DƯỚI ĐÂY
             val episodeSelector = "div.episode_list ul.list-episode li a" 
-
             Log.d(name, "Finding episodes with selector: '$episodeSelector'")
             val episodeElements = mainDocument.select(episodeSelector)
             if (episodeElements.isEmpty()) {
@@ -276,18 +262,14 @@ class AnimetProvider : MainAPI() {
             val episodes = episodeElements.mapNotNull { epElement ->
                 val epHref = fixUrlBased(epElement.attr("href"), currentBaseUrl) ?: return@mapNotNull null
                 val epIdentifier = epElement.attr("data-epname").trim().ifBlank {
-                    epElement.selectFirst("span.ep_name")?.text()?.trim() ?: epElement.text()?.trim()
+                    epElement.selectFirst("span.ep_name")?.text()?.trim() ?: epElement.text().trim()
                 }
                 if (epIdentifier.isBlank()) return@mapNotNull null
                 val epName = if (epIdentifier.equals("Full", true) || epIdentifier.equals("Movie", true)) epIdentifier else "Tập $epIdentifier"
                 newEpisode(epHref) { this.name = epName }
             }
 
-            // --- LẤY PHIM ĐỀ XUẤT ---
-            // Selector cũ: "div.season_item a:not(.active), div.MovieListRelated ul.MovieList li.TPostMv"
-            // HÃY THAY THẾ SELECTOR MỚI BẠN TÌM ĐƯỢC VÀO BIẾN DƯỚI ĐÂY
             val recommendationSelector = "div.season_item a:not(.active), div.MovieListRelated ul.MovieList li"
-
             Log.d(name, "Finding recommendations with selector: '$recommendationSelector'")
             val recommendationElements = mainDocument.select(recommendationSelector)
             if (recommendationElements.isEmpty()){
@@ -301,7 +283,6 @@ class AnimetProvider : MainAPI() {
                     async { mapElementToSearchResponse(element, currentBaseUrl) }
                 }.awaitAll().filterNotNull()
             }
-
             // =================================================================
 
             val isMovie = tvType == TvType.AnimeMovie || tvType == TvType.OVA || (tvType == TvType.Anime && episodes.isEmpty())
