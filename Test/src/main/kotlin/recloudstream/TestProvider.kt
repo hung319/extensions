@@ -494,9 +494,9 @@ class AnimeVietsubProvider : MainAPI() {
 
             return if (isSeriesStructure) {
                 if (finalTvType == TvType.Anime) {
-                    // Cú pháp đúng: gán `episodes` bên trong khối lệnh
+                    // SỬA LỖI: episodes phải là một Map<DubStatus, List>
                     provider.newAnimeLoadResponse(title, infoUrl, finalTvType) {
-                        this.episodes = parsedEpisodes
+                        this.episodes = mutableMapOf(DubStatus.Subbed to parsedEpisodes)
                         this.posterUrl = posterUrlForResponse
                         this.plot = description
                         this.tags = genres
