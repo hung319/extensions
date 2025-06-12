@@ -1,21 +1,11 @@
-// Save this file as IHentaiProvider.kt
-package recloudstream // <-- 1. Đã đổi package
+// File: IHentai.kt
+package recloudstream
 
-import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
-import com.lagradost.cloudstream3.plugins.Plugin
-import android.content.Context
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.Jsoup
-
-@CloudstreamPlugin
-class IHentaiProvider : Plugin() {
-    override fun load(context: Context) {
-        registerMainAPI(IHentai())
-    }
-}
 
 // Data classes to map the JSON structure from __NUXT_DATA__
 data class NuxtItem(
@@ -55,7 +45,6 @@ class IHentai : MainAPI() {
         TvType.NSFW
     )
 
-    // 2. Thêm User-Agent để gửi kèm trong header
     private val headers = mapOf(
         "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36"
     )
@@ -77,7 +66,7 @@ class IHentai : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get(mainUrl, headers = headers).text // <-- Thêm headers
+        val document = app.get(mainUrl, headers = headers).text
         val nuxtData = getNuxtData(document) ?: return HomePageResponse(emptyList())
         
         val trays = parseJson<List<NuxtTray>>(
@@ -99,7 +88,7 @@ class IHentai : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/tim-kiem?keyword=$query"
-        val document = app.get(url, headers = headers).text // <-- Thêm headers
+        val document = app.get(url, headers = headers).text
         val nuxtData = getNuxtData(document) ?: return emptyList()
         
         val items = parseJson<List<NuxtItem>>(
@@ -110,7 +99,7 @@ class IHentai : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url, headers = headers).text // <-- Thêm headers
+        val document = app.get(url, headers = headers).text
         val nuxtData = getNuxtData(document) ?: return null
         
         val animeData = parseJson<NuxtItem>(
@@ -141,7 +130,6 @@ class IHentai : MainAPI() {
         }
     }
 
-    // 3. Tạm thời vô hiệu hóa hàm loadLinks
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -150,7 +138,7 @@ class IHentai : MainAPI() {
     ): Boolean {
         // --- LOGIC CŨ ĐƯỢC COMMENT LẠI ---
         /*
-        val document = app.get(data, headers = headers).text // <-- Thêm headers
+        val document = app.get(data, headers = headers).text
         val nuxtData = getNuxtData(document) ?: return false
 
         val episodeData = parseJson<NuxtEpisodeData>(
