@@ -18,7 +18,6 @@ class Ihentai : MainAPI() {
     override val supportedTypes = setOf(TvType.NSFW)
 
     // Interceptor to bypass Cloudflare protection
-    // The app should automatically use this if defined in the class.
     private val interceptor = CloudflareKiller()
 
     // ---- DATA CLASSES FOR JSON PARSING ----
@@ -53,24 +52,23 @@ class Ihentai : MainAPI() {
     private data class NuxtResponse(
         @JsonProperty("payload") val payload: NuxtPayload?
     )
-    
+
     // ---- UTILITY FUNCTION ----
-    private fun getNuxtJson(html: String): String? {
+    // RENAMED aaaaaaaa to getNuxtData to fix the "Unresolved reference" error.
+    private fun getNuxtData(html: String): String? {
         return Regex("""window\.__NUXT__\s*=\s*(\{.*?\});\s*</script>""").find(html)?.groupValues?.get(1)
     }
-    
+
     // ---- CORE FUNCTIONS ----
-    
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = "$mainUrl/?page=$page"
-        // Removed the 'interceptors' parameter to match your API version
         val document = app.get(url).text
-        
+
         val nuxtJson = getNuxtData(document) ?: return HomePageResponse(emptyList())
         val response = parseJson<NuxtResponse>(nuxtJson)
         val items = response.payload?.data?.firstOrNull()?.items
-        
-        // Added explicit type 'Item' to help the compiler
+
         val homePageList = items?.mapNotNull { item: Item ->
             newAnimeSearchResponse(item.name ?: "", "$mainUrl/doc-truyen/${item.slug}") {
                 posterUrl = item.thumbnail
@@ -82,14 +80,12 @@ class Ihentai : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/tim-kiem?q=$query"
-        // Removed the 'interceptors' parameter
         val document = app.get(url).text
-        
+
         val nuxtJson = getNuxtData(document) ?: return emptyList()
         val response = parseJson<NuxtResponse>(nuxtJson)
         val items = response.payload?.data?.firstOrNull()?.items
 
-        // Added explicit type 'Item' to help the compiler
         return items?.mapNotNull { item: Item ->
             newAnimeSearchResponse(item.name ?: "", "$mainUrl/doc-truyen/${item.slug}") {
                 posterUrl = item.thumbnail
@@ -98,17 +94,15 @@ class Ihentai : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        // Removed the 'interceptors' parameter
         val document = app.get(url).text
-        
+
         val nuxtJson = getNuxtData(document) ?: throw ErrorLoadingException("Không thể tải dữ liệu truyện")
         val response = parseJson<NuxtResponse>(nuxtJson)
         val item = response.payload?.data?.firstOrNull()?.item
             ?: throw ErrorLoadingException("Không tìm thấy thông tin truyện")
 
         val title = item.name ?: "Không có tiêu đề"
-        
-        // Added explicit type 'Chapter' to help the compiler
+
         val episodes = item.chapters?.mapNotNull { chapter: Chapter ->
             newEpisode("$mainUrl/doc-truyen/${item.slug}/${chapter.slug}") {
                 name = chapter.name
