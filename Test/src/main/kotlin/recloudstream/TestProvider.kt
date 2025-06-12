@@ -26,10 +26,8 @@ class Ihentai : MainAPI() {
         val linkElement = this.selectFirst("a") ?: return null
         val href = fixUrl(linkElement.attr("href"))
         
-        // Extract title from the h2 tag
         val title = this.selectFirst("h2")?.text()?.trim() ?: return null
         
-        // Extract poster image URL
         val posterUrl = this.selectFirst("img")?.attr("src")
 
         return newAnimeSearchResponse(title, href, TvType.NSFW) {
@@ -43,12 +41,12 @@ class Ihentai : MainAPI() {
         val url = "$mainUrl/?page=$page"
         val document = app.get(url, headers = headers).document
 
-        // Find all sections on the main page (e.g., "Mới tải lên", "Hentai 3D")
         val sections = document.select("div.container > div.tw-mb-16")
         val homePageList = mutableListOf<HomePageList>()
 
         for (section in sections) {
             val sectionTitle = section.selectFirst("h1")?.text()?.trim() ?: continue
+            // The items are inside a div with class "v-card" within each section
             val items = section.select("div.v-card").mapNotNull {
                 it.toSearchResponse()
             }
@@ -64,8 +62,9 @@ class Ihentai : MainAPI() {
         val url = "$mainUrl/tim-kiem?q=$query"
         val document = app.get(url, headers = headers).document
 
-        // The search results page has a similar structure to the homepage lists.
-        return document.select("div.film-list div.v-col").mapNotNull {
+        // Corrected the selector for search results based on your `ihentai_search_output.html` file.
+        // The items are inside a div with class "film-list" and then each item is a "v-card".
+        return document.select("div.film-list div.v-card").mapNotNull {
             it.toSearchResponse()
         }
     }
@@ -73,11 +72,10 @@ class Ihentai : MainAPI() {
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url, headers = headers).document
 
-        // Use new, correct selectors based on the curl output file
+        // Selectors based on your `ihentai_load_output.html` file.
         val title = document.selectFirst("h1.tw-text-3xl")?.text()?.trim() ?: "Không có tiêu đề"
         val posterUrl = document.selectFirst("div.grid > div:first-child img")?.attr("src")
         
-        // Find the "Nội dung" heading and get the next element which is the plot
         val plot = document.select("h3").find { it.text().contains("Nội dung") }
             ?.nextElementSibling()?.text()?.trim()
 
