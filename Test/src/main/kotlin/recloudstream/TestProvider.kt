@@ -149,7 +149,7 @@ class AnimeVietsubProvider : MainAPI() {
             val infoDocument = app.get(infoUrl, headers = mapOf("Referer" to baseUrl)).document
             var watchPageDocument: Document? = null
             try {
-                // Check genres before fetching watch page
+                // Check genres before fetching watch page to save a request
                 val genres = infoDocument.select("div.Info li:has(strong:containsOwn(Thể loại)) a, div.mvici-left li.AAIco-adjust:contains(Thể loại) a")
                     .mapNotNull { it.text()?.trim() }
                 if (!genres.any { it.equals("Anime sắp chiếu", ignoreCase = true) }) {
@@ -225,7 +225,8 @@ class AnimeVietsubProvider : MainAPI() {
             ?: this.selectFirst("div.mvici-left li.AAIco-adjust:contains(Quốc gia) a, ul.InfoList li:has(strong:containsOwn(Quốc gia)) a")
                 ?.text()?.trim()?.takeIf { it.isNotBlank() }
     }
-
+    
+    // Hàm này đã được cập nhật để sử dụng newAnimeLoadResponse cho các series Anime
     private suspend fun Document.toLoadResponse(
         provider: MainAPI,
         infoUrl: String,
@@ -335,24 +336,19 @@ class AnimeVietsubProvider : MainAPI() {
                 }
             }
 
-            // =========================== LOGIC MỚI BẮT ĐẦU TẠI ĐÂY ===========================
-            // Kiểm tra xem phim có phải là "Anime sắp chiếu" không
             val isUpcoming = genres.any { it.equals("Anime sắp chiếu", ignoreCase = true) }
             if (isUpcoming) {
                 Log.i("AnimeVietsubProvider", "'$title' là anime sắp chiếu. Sẽ không tải danh sách tập.")
-                // Nếu đúng là phim sắp chiếu, trả về với trạng thái Upcoming và danh sách tập rỗng
-                return provider.newTvSeriesLoadResponse(title, infoUrl, TvType.Anime, episodes = emptyList()) {
+                return provider.newAnimeLoadResponse(title, infoUrl, TvType.Anime) {
                     this.posterUrl = posterUrlForResponse
                     this.plot = description
                     this.tags = genres
                     this.year = year
                     this.rating = ratingValue
-                    this.showStatus = ShowStatus.Upcoming // Đặt trạng thái là Sắp chiếu
                     this.actors = actorsDataList
                     this.recommendations = recommendations
                 }
             }
-            // ============================ LOGIC MỚI KẾT THÚC TẠI ĐÂY ============================
 
             val statusTextOriginal = infoSection.select("li:has(strong:containsOwn(Trạng thái))")?.firstOrNull()?.ownText()?.trim()
                 ?: infoDoc.select("div.mvici-left li.AAIco-adjust:contains(Trạng thái)")
@@ -498,11 +494,21 @@ class AnimeVietsubProvider : MainAPI() {
                     (finalTvType == TvType.Anime && episodesCount > 1 && !isSingleEpisodeActuallyMovie && !hasAnimeLeTag)
 
             return if (isSeriesStructure) {
-                provider.newTvSeriesLoadResponse(title, infoUrl, finalTvType ?: TvType.Anime, episodes = parsedEpisodes) {
-                    this.posterUrl = posterUrlForResponse; this.plot = description; this.tags = genres; this.year = year; this.rating = ratingValue; this.showStatus = currentShowStatus;
-                    this.actors = actorsDataList; this.recommendations = recommendations
+                // Nếu là series và có TvType là Anime, hãy dùng hàm chuyên dụng newAnimeLoadResponse
+                if (finalTvType == TvType.Anime) {
+                    provider.newAnimeLoadResponse(title, infoUrl, finalTvType, episodes = parsedEpisodes) {
+                        this.posterUrl = posterUrlForResponse; this.plot = description; this.tags = genres; this.year = year; this.rating = ratingValue; this.showStatus = currentShowStatus;
+                        this.actors = actorsDataList; this.recommendations = recommendations
+                    }
+                } else {
+                    // Nếu là các loại series khác (Cartoon, TvSeries), dùng hàm tổng quát
+                    provider.newTvSeriesLoadResponse(title, infoUrl, finalTvType ?: TvType.TvSeries, episodes = parsedEpisodes) {
+                        this.posterUrl = posterUrlForResponse; this.plot = description; this.tags = genres; this.year = year; this.rating = ratingValue; this.showStatus = currentShowStatus;
+                        this.actors = actorsDataList; this.recommendations = recommendations
+                    }
                 }
             } else {
+                // Đối với phim lẻ (Movie), không có gì thay đổi
                 val actualMovieTvType = finalTvType ?: if(isJapaneseContext && (isMovieHintFromTitle || isSingleEpisodeActuallyMovie || hasAnimeLeTag)) TvType.Anime else TvType.Movie
 
                 val durationText = infoSection.select("li:has(strong:containsOwn(Thời lượng))")?.firstOrNull()?.ownText()?.trim()
@@ -539,6 +545,7 @@ class AnimeVietsubProvider : MainAPI() {
             Log.e("AnimeVietsubProvider", "Lỗi trong toLoadResponse xử lý cho url: $infoUrl", e); return null
         }
     }
+
 
     private data class AjaxPlayerResponse(
         @JsonProperty("success") val success: Int? = null,
