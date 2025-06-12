@@ -1,108 +1,172 @@
-package recloudstream
+// Save this file as IHentaiProvider.kt
+package recloudstream // <-- 1. Đã đổi package
 
-// Import các lớp cần thiết
+import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
+import com.lagradost.cloudstream3.plugins.Plugin
+import android.content.Context
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
-import org.jsoup.nodes.Element
-import java.net.URLEncoder
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.loadExtractor
+import org.jsoup.Jsoup
 
-class Ihentai : MainAPI() { 
-    // ---- METADATA ----
+@CloudstreamPlugin
+class IHentaiProvider : Plugin() {
+    override fun load(context: Context) {
+        registerMainAPI(IHentai())
+    }
+}
+
+// Data classes to map the JSON structure from __NUXT_DATA__
+data class NuxtItem(
+    val name: String?,
+    val slug: String?,
+    val poster: String?,
+    val episodes: List<NuxtEpisodeShort>?
+)
+
+data class NuxtEpisodeShort(
+    val slug: String?,
+    val name: String?,
+)
+
+data class NuxtEpisodeData(
+    val name: String?,
+    val sources: List<NuxtSource>?
+)
+
+data class NuxtSource(
+    val src: String?,
+    val type: String?
+)
+
+data class NuxtTray(
+    val name: String?,
+    val items: List<NuxtItem>?
+)
+
+class IHentai : MainAPI() {
     override var name = "iHentai"
     override var mainUrl = "https://ihentai.ws"
     override var lang = "vi"
     override val hasMainPage = true
-    override val supportedTypes = setOf(TvType.NSFW)
-    
-    // User-Agent để giả lập trình duyệt, rất quan trọng
-    private val headers = mapOf(
-        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    override val hasChromecastSupport = true
+    override val supportedTypes = setOf(
+        TvType.NSFW
     )
 
-    // Hàm helper để phân tích một thẻ item trên trang chủ
-    private fun parseHomepageCard(element: Element): SearchResponse? {
-        val linkElement = element.selectFirst("a") ?: return null
-        val href = fixUrl(linkElement.attr("href"))
-        val title = element.selectFirst("div.v-card-text h2")?.text()?.trim() ?: return null
-        val posterUrl = element.selectFirst("img")?.attr("src")
-
-        return newAnimeSearchResponse(title, href, TvType.NSFW) {
-            this.posterUrl = posterUrl
-        }
+    // 2. Thêm User-Agent để gửi kèm trong header
+    private val headers = mapOf(
+        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36"
+    )
+    
+    private fun getNuxtData(html: String): String? {
+        return Jsoup.parse(html).selectFirst("script[id=__NUXT_DATA__]")?.data()
     }
     
-    // Hàm helper để phân tích một thẻ item từ trang tìm kiếm
-    private fun parseSearchCard(element: Element): SearchResponse? {
-        val linkElement = element.selectFirst("a") ?: return null
-        val href = fixUrl(linkElement.attr("href"))
-        val title = linkElement.selectFirst("h3")?.text()?.trim() ?: return null
-        val posterUrl = linkElement.selectFirst("img")?.attr("src")
+    private fun NuxtItem.toSearchResponse(): SearchResponse? {
+        val slug = this.slug ?: return null
+        val title = this.name ?: "N/A"
+        val href = "$mainUrl/xem-phim/$slug"
+        val posterUrl = this.poster?.let { if (it.startsWith("/")) "$mainUrl$it" else it }
 
-        return newAnimeSearchResponse(title, href, TvType.NSFW) {
+        return newAnimeSearchResponse(title, href) {
             this.posterUrl = posterUrl
+            this.type = if ((this@toSearchResponse.episodes?.size ?: 0) > 1) TvType.TvSeries else TvType.Movie
         }
     }
 
-    // --- Hàm lấy trang chính ---
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get("$mainUrl/?page=$page", headers = headers).document
-        val homePageList = mutableListOf<HomePageList>()
-
-        document.select("div.container > div.tw-mb-16").forEach { section ->
-            val sectionTitle = section.selectFirst("h1")?.text()?.trim() ?: return@forEach
-            val items = section.select("div.v-card").mapNotNull {
-                parseHomepageCard(it)
-            }
-            if (items.isNotEmpty()) {
-                homePageList.add(HomePageList(sectionTitle, items))
+        val document = app.get(mainUrl, headers = headers).text // <-- Thêm headers
+        val nuxtData = getNuxtData(document) ?: return HomePageResponse(emptyList())
+        
+        val trays = parseJson<List<NuxtTray>>(
+            (parseJson<Map<*,*>>(nuxtData)["data"] as? Map<*, *>)?.get("1")?.toString() ?: "[]"
+        )
+        
+        val homePageList = trays.mapNotNull { tray ->
+            val header = tray.name ?: "Unknown Category"
+            val list = tray.items?.mapNotNull { it.toSearchResponse() }
+            if (!list.isNullOrEmpty()) {
+                HomePageList(header, list)
+            } else {
+                null
             }
         }
         
         return HomePageResponse(homePageList)
     }
 
-    // --- Hàm tìm kiếm ---
     override suspend fun search(query: String): List<SearchResponse> {
-        val encodedQuery = URLEncoder.encode(query, "UTF-8")
-        val document = app.get("$mainUrl/tim-kiem?q=$encodedQuery", headers = headers).document
-        return document.select("div.film-list div.v-col").mapNotNull {
-            parseSearchCard(it)
-        }
+        val url = "$mainUrl/tim-kiem?keyword=$query"
+        val document = app.get(url, headers = headers).text // <-- Thêm headers
+        val nuxtData = getNuxtData(document) ?: return emptyList()
+        
+        val items = parseJson<List<NuxtItem>>(
+             (parseJson<Map<*,*>>(nuxtData)["data"] as? Map<*, *>)?.get("0")?.toString() ?: "[]"
+        )
+
+        return items.mapNotNull { it.toSearchResponse() }
     }
 
-    // --- Hàm tải thông tin chi tiết ---
-    override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url, headers = headers).document
+    override suspend fun load(url: String): LoadResponse? {
+        val document = app.get(url, headers = headers).text // <-- Thêm headers
+        val nuxtData = getNuxtData(document) ?: return null
+        
+        val animeData = parseJson<NuxtItem>(
+            (parseJson<Map<*,*>>(nuxtData)["data"] as? Map<*, *>)?.get("0")?.toString() ?: "{}"
+        )
 
-        val title = document.selectFirst("h1.tw-text-3xl")?.text()?.trim()
-            ?: throw ErrorLoadingException("Không tìm thấy tiêu đề")
+        val title = animeData.name ?: return null
+        val slug = animeData.slug ?: return null
+        val posterUrl = animeData.poster?.let { if (it.startsWith("/")) "$mainUrl$it" else it }
         
-        val posterUrl = document.selectFirst("div.grid > div:first-child img")?.attr("src")
-        
-        val plot = document.select("h3:contains(Nội dung)").first()?.nextElementSibling()?.text()?.trim()
-        
-        val genres = document.select("div.film-tag-list a.v-chip")?.mapNotNull { it.text()?.trim() }
-
-        val episodes = document.select("div#episode-list a").mapNotNull { element ->
-            newEpisode(fixUrl(element.attr("href"))) {
-                name = element.text().trim()
+        val episodes = animeData.episodes?.mapNotNull { ep ->
+            val epSlug = ep.slug ?: return@mapNotNull null
+            val epName = ep.name ?: "Episode"
+            val epUrl = "$mainUrl/xem-phim/$slug/$epSlug"
+            newEpisode(epUrl) {
+                this.name = epName
             }
-        }.reversed()
-        
-        return newTvSeriesLoadResponse(title, url, TvType.NSFW, episodes) {
-            this.posterUrl = posterUrl
-            this.plot = plot
-            this.tags = genres
+        }?.reversed()
+
+        return if (!episodes.isNullOrEmpty()) {
+            newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+                this.posterUrl = posterUrl
+            }
+        } else {
+            newMovieLoadResponse(title, url, TvType.Movie, url) {
+                this.posterUrl = posterUrl
+            }
         }
     }
 
-    // --- Hàm tải link (Tạm thời vô hiệu hóa) ---
+    // 3. Tạm thời vô hiệu hóa hàm loadLinks
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // --- LOGIC CŨ ĐƯỢC COMMENT LẠI ---
+        /*
+        val document = app.get(data, headers = headers).text // <-- Thêm headers
+        val nuxtData = getNuxtData(document) ?: return false
+
+        val episodeData = parseJson<NuxtEpisodeData>(
+             (parseJson<Map<*,*>>(nuxtData)["data"] as? Map<*, *>)?.get("0")?.toString() ?: "{}"
+        )
+
+        var hasLoaded = false
+        episodeData.sources?.forEach { source ->
+            val videoUrl = source.src ?: return@forEach
+            loadExtractor(videoUrl, data, subtitleCallback, callback)
+            hasLoaded = true
+        }
+        return hasLoaded
+        */
+
+        // Placeholder: Luôn trả về false để báo hiệu không tìm thấy link
         return false
     }
 }
