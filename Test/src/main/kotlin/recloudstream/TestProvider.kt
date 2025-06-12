@@ -19,6 +19,7 @@ import kotlin.text.Regex
 
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch // SỬA LỖI: Thêm import còn thiếu
 
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -44,9 +45,6 @@ class AnimeVietsubProvider : MainAPI() {
 
     // =================== CÁC HÀM API CHÍNH ===================
 
-    /**
-     * Tự động phân giải và cache domain của trang web để tránh bị chặn.
-     */
     private suspend fun getBaseUrl(): String {
         if (domainResolutionAttempted && !currentActiveUrl.contains("bit.ly")) {
             return currentActiveUrl
@@ -99,7 +97,6 @@ class AnimeVietsubProvider : MainAPI() {
             val document = app.get(baseUrl).document
 
             val lists = coroutineScope {
-                // Tối ưu: song song hóa việc lấy các danh sách phim trên trang chủ
                 val updatedDeferred = async { document.parseHomePageList("section#single-home", "Mới cập nhật", baseUrl) }
                 val upcomingDeferred = async { document.parseHomePageList("section#new-home", "Sắp chiếu", baseUrl) }
                 val hotDeferred = async {
@@ -137,7 +134,6 @@ class AnimeVietsubProvider : MainAPI() {
             val infoDocument = app.get(url, headers = mapOf("Referer" to baseUrl)).document
 
             val genres = infoDocument.getGenres()
-            // Tối ưu: Chỉ tải trang xem phim nếu phim không phải là "Sắp chiếu"
             val watchPageDoc = if (!genres.any { it.equals("Anime sắp chiếu", ignoreCase = true) }) {
                 try {
                     val watchPageUrl = if (url.endsWith("/")) "${url}xem-phim.html" else "$url/xem-phim.html"
@@ -189,15 +185,13 @@ class AnimeVietsubProvider : MainAPI() {
                 throw ErrorLoadingException("Failed to get links from AJAX response: $ajaxResponse")
             }
             
-            // Tối ưu: Dùng coroutineScope để giải mã các link song song nếu cần
             coroutineScope {
                 playerResponse.link.forEach { linkSource ->
                     launch {
                         val fileUrl = linkSource.file ?: return@launch
-                        val streamUrl = if (fileUrl.isMediaUrl()) {
+                        val streamUrl = if (fileUrl.startsWith("http") && (fileUrl.contains(".m3u8") || fileUrl.contains(".mp4"))) {
                             fileUrl
                         } else {
-                            // Link đã được mã hóa, cần giải mã
                             val decryptApiUrl = "https://m3u8.013666.xyz/animevietsub/decrypt"
                             app.post(
                                 decryptApiUrl,
@@ -205,16 +199,19 @@ class AnimeVietsubProvider : MainAPI() {
                                 requestBody = fileUrl.toRequestBody("text/plain".toMediaTypeOrNull())
                             ).text.trim()
                         }
-
-                        if (streamUrl.isMediaUrl()) {
+                        
+                        val isMedia = streamUrl.startsWith("http") && (streamUrl.contains(".m3u8") || streamUrl.contains(".mp4"))
+                        if (isMedia) {
+                             // SỬA LỖI: Chuyển 'referer' và 'quality' vào trong khối lệnh
                             newExtractorLink(
                                 source = name,
                                 name = "$name - ${linkSource.label}",
                                 url = streamUrl,
-                                type = if (streamUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
-                                referer = episodePageUrl,
-                                quality = Qualities.Unknown.value
-                            ).let { 
+                                type = if (streamUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                            ) {
+                                this.referer = episodePageUrl
+                                this.quality = Qualities.Unknown.value
+                            }.let { 
                                 callback(it)
                                 foundLinks = true
                             }
@@ -232,9 +229,6 @@ class AnimeVietsubProvider : MainAPI() {
 
     // =================== HÀM PHỤ TRỢ (HELPERS) ===================
 
-    /**
-     * Tái cấu trúc: Hàm chuyên dùng để parse một danh sách phim từ trang chủ.
-     */
     private fun Document.parseHomePageList(selector: String, listName: String, baseUrl: String): HomePageList? {
         return this.selectFirst(selector)?.let { section ->
             val items = section.select("ul.MovieList.Rows li.TPostMv")
@@ -243,9 +237,6 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
 
-    /**
-     * Chuyển một phần tử HTML `<li>` thành object `SearchResponse`.
-     */
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): SearchResponse? {
         return try {
             val linkElement = this.selectFirst("article.TPost > a") ?: return null
@@ -257,7 +248,6 @@ class AnimeVietsubProvider : MainAPI() {
             }
             val posterUrl = fixUrl(posterUrlRaw, baseUrl)
             
-            // Tối ưu logic xác định TvType
             val isMovie = listOf("OVA", "ONA", "Movie", "Phim Lẻ").any { title.contains(it, true) } ||
                           this.selectFirst("span.mli-eps") == null
             
@@ -272,10 +262,6 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
 
-    /**
-     * Hàm chính để chuyển Document của trang chi tiết phim thành `LoadResponse`.
-     * Đã được tái cấu trúc để gọi các hàm con, giúp code rõ ràng hơn.
-     */
     private suspend fun Document.toLoadResponse(
         provider: MainAPI,
         infoUrl: String,
@@ -295,7 +281,6 @@ class AnimeVietsubProvider : MainAPI() {
             val actors = this.extractActors(baseUrl)
             val recommendations = this.extractRecommendations(provider, baseUrl)
 
-            // Xử lý trường hợp phim sắp chiếu
             if (tags.any { it.equals("Anime sắp chiếu", ignoreCase = true) }) {
                 Log.i(name, "'$title' is an upcoming anime. Returning LoadResponse without episodes.")
                 return provider.newAnimeLoadResponse(title, infoUrl, TvType.Anime) {
@@ -307,7 +292,6 @@ class AnimeVietsubProvider : MainAPI() {
             val episodes = watchPageDoc?.parseEpisodes(baseUrl, infoUrl) ?: emptyList()
             val status = this.getShowStatus(episodes.size)
             
-            // Logic cuối cùng để xác định cấu trúc và loại phim
             val isSeries = episodes.size > 1 || status == ShowStatus.Ongoing
             val finalTvType = this.determineFinalTvType(title, tags, episodes.size)
 
@@ -424,7 +408,7 @@ class AnimeVietsubProvider : MainAPI() {
             country == "nhật bản" -> TvType.Anime
             country == "trung quốc" -> TvType.Cartoon
             genres.any { it.contains("hoạt hình", true) } -> TvType.Cartoon
-            else -> TvType.Anime // Mặc định là Anime cho provider này
+            else -> TvType.Anime
         }
     }
 
@@ -432,8 +416,8 @@ class AnimeVietsubProvider : MainAPI() {
         return this.selectFirst("a.watch_button_more[href*=xem-phim]")?.attr("href")
             ?.substringAfterLast("a")?.substringBefore("/")
             ?: infoUrl.substringAfterLast("/")?.substringBefore("-")?.filter { it.isDigit() }
-                .ifEmpty { infoUrl.substringAfterLast("-")?.filter { it.isDigit() } }
-                .takeIf { it.isNotBlank() }
+                ?.ifEmpty { infoUrl.substringAfterLast("-")?.filter { it.isDigit() } }
+                ?.takeIf { it.isNotBlank() }
     }
 
     private fun Document.parseEpisodes(baseUrl: String, infoUrl: String): List<Episode> {
@@ -455,9 +439,13 @@ class AnimeVietsubProvider : MainAPI() {
     data class EpisodeData(val url: String, val dataId: String?, val duHash: String?)
     data class AjaxPlayerResponse(val success: Int?, val link: List<LinkSource>?)
     data class LinkSource(val file: String?, val type: String?, val label: String?)
-
-    private fun String?.encodeUri(): String = this?.let { URLEncoder.encode(it, "UTF-8") } ?: ""
-    private fun String?.isMediaUrl(): Boolean = this?.startsWith("http") == true && (this.contains(".m3u8") || this.contains(".mp4"))
+    
+    // SỬA LỖI: Hoàn trả lại hàm gốc của người dùng, đã được chứng minh là hoạt động
+    private fun String?.encodeUri(): String {
+        if (this == null) return ""
+        return try { URLEncoder.encode(this, "UTF-8").replace("+", "%20") }
+        catch (e: Exception) { Log.e("AnimeVietsubProvider", "Lỗi URL encode: $this", e); this }
+    }
 
     private fun fixUrl(url: String?, baseUrl: String): String? {
         if (url.isNullOrBlank()) return null
