@@ -1,4 +1,4 @@
-package recloudstream // Hoặc package bạn muốn dùng
+package recloudstream // Hoặc package của bạn
 
 // Import các lớp cần thiết
 import com.lagradost.cloudstream3.*
@@ -27,11 +27,14 @@ data class KitsuPoster(
     val small: String?,
     val tiny: String?
 ) {
+    // Helper property để lấy URL ảnh tốt nhất
     val bestUrl: String?
         get() = original ?: large ?: medium ?: small ?: tiny
 }
 
+// Data class cho phản hồi Ajax trong loadLinks
 data class AjaxPlayerResponse(val file: String?)
+
 
 // --- Định nghĩa lớp Provider ---
 class AnimetProvider : MainAPI() {
@@ -48,12 +51,17 @@ class AnimetProvider : MainAPI() {
         TvType.TvSeries
     )
 
+    // Cache cho baseUrl để giảm thiểu request không cần thiết
+    @Volatile
     private var baseUrl: String? = null
     private val baseUrlMutex = Mutex()
     private val defaultBaseUrl = "https://anime6.site"
 
     // === HELPER FUNCTIONS ===
 
+    /**
+     * Lấy và cache baseUrl một cách an toàn.
+     */
     private suspend fun getBaseUrl(): String {
         baseUrl?.let { return it }
         return baseUrlMutex.withLock {
@@ -80,8 +88,7 @@ class AnimetProvider : MainAPI() {
     }
 
     /**
-     * SỬA LỖI: Khôi phục lại logic xử lý URL gốc để tương thích với dynamic baseUrl.
-     * Hàm này sẽ tạo URL tuyệt đối một cách chính xác.
+     * Hàm helper để tạo URL tuyệt đối từ URL tương đối, sử dụng baseUrl động.
      */
     private fun fixUrlBased(url: String?, currentBaseUrl: String): String? {
         if (url.isNullOrBlank()) return null
@@ -89,15 +96,21 @@ class AnimetProvider : MainAPI() {
             url.startsWith("http") -> url
             url.startsWith("//") -> "https:$url"
             url.startsWith("/") -> "$currentBaseUrl$url"
-            else -> url // Giả định các trường hợp khác là URL đã hoàn chỉnh hoặc không hợp lệ.
+            else -> url
         }
     }
-
+    
+    /**
+     * Lấy URL ảnh gốc bằng cách loại bỏ phần kích thước (-150x150).
+     */
     private fun getOriginalImageUrl(thumbnailUrl: String?): String? {
         if (thumbnailUrl.isNullOrBlank()) return null
         return thumbnailUrl.replace(Regex("(-\\d+x\\d+)(?=\\.\\w+$)"), "")
     }
 
+    /**
+     * Tìm kiếm poster trên Kitsu API.
+     */
     private suspend fun getKitsuPoster(title: String): String? {
         Log.d(name, "Searching Kitsu for: $title")
         return try {
@@ -115,10 +128,12 @@ class AnimetProvider : MainAPI() {
             null
         }
     }
-
+    
+    /**
+     * Hàm hợp nhất để map một element HTML thành AnimeSearchResponse.
+     */
     private fun mapElementToSearchResponse(element: Element, currentBaseUrl: String, forceTvType: TvType? = null): AnimeSearchResponse? {
         val linkTag = element.selectFirst("a") ?: return null
-        // SỬA LỖI: Dùng lại hàm fixUrlBased
         val href = fixUrlBased(linkTag.attr("href"), currentBaseUrl) ?: return null
 
         val title = element.selectFirst("h2.Title, div.Title")?.text()?.trim()
@@ -127,7 +142,6 @@ class AnimetProvider : MainAPI() {
         if (title.isNullOrBlank()) return null
 
         val posterTag = element.selectFirst("div.Image figure img")
-        // SỬA LỖI: Dùng lại hàm fixUrlBased
         val posterUrl = posterTag?.let { img ->
             img.attr("data-src").ifBlank { img.attr("src") }
         }?.let { fixUrlBased(it, currentBaseUrl) }
@@ -192,11 +206,10 @@ class AnimetProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val currentBaseUrl = getBaseUrl()
-        val encodedQuery = URLEncoder.encode(query, "UTF-8")
-        val searchUrl = "$currentBaseUrl/tim-kiem/$encodedQuery.html"
-        
         return try {
+            val currentBaseUrl = getBaseUrl()
+            val encodedQuery = URLEncoder.encode(query, "UTF-8")
+            val searchUrl = "$currentBaseUrl/tim-kiem/$encodedQuery.html"
             app.get(searchUrl, referer = currentBaseUrl).document
                 .select("ul.MovieList li.TPostMv")
                 .mapNotNull { mapElementToSearchResponse(it, currentBaseUrl) }
@@ -214,18 +227,17 @@ class AnimetProvider : MainAPI() {
             val displayTitle = mainDocument.selectFirst("h1.Title, h2.SubTitle")?.text()
                 ?: throw ErrorLoadingException("Không tìm thấy tiêu đề")
 
+            // Lấy thông tin phim
             val description = mainDocument.selectFirst("article.TPost header div.Description")?.text()?.trim()
             val year = mainDocument.selectFirst("p.Info span.Date a")?.text()?.toIntOrNull()
             val rating = mainDocument.selectFirst("div#star")?.attr("data-score")?.toFloatOrNull()?.times(1000)?.toInt()
             val genres = mainDocument.select("div#MvTb-Info div.mvici-left ul.InfoList li:contains(Thể loại) a").mapNotNull { it.text() }
-
             val statusText = mainDocument.selectFirst("div#MvTb-Info div.mvici-left ul.InfoList li:contains(Trạng thái) span.Info")?.text()?.trim()
             val parsedStatus = when {
                 statusText?.contains("Đang tiến hành", true) == true -> ShowStatus.Ongoing
                 statusText?.contains("Hoàn thành", true) == true -> ShowStatus.Completed
                 else -> null
             }
-
             val tvType = when {
                 genres.any { it.contains("CN Animation", true) || it.contains("Donghua", true) } ||
                 displayTitle.contains("Donghua", true) || displayTitle.contains("(CN)", true) ||
@@ -235,32 +247,62 @@ class AnimetProvider : MainAPI() {
                 genres.any { it.contains("OVA", true) } -> TvType.OVA
                 else -> TvType.Anime
             }
-
-            // SỬA LỖI: Dùng lại hàm fixUrlBased
             val animetPoster = mainDocument.selectFirst("article.TPost img")?.attr("src")?.let {
                 fixUrlBased(getOriginalImageUrl(it), currentBaseUrl)
             }
-
             val finalPosterUrl = if (tvType in setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)) {
                 getKitsuPoster(displayTitle) ?: animetPoster
             } else {
                 animetPoster
             }
 
-            val episodes = mainDocument.select("ul.list-episode li.episode a.episode-link").mapNotNull { epElement ->
-                // SỬA LỖI: Dùng lại hàm fixUrlBased
+            // =================================================================
+            // NƠI CẬP NHẬT SELECTOR KHI WEBSITE THAY ĐỔI
+            // =================================================================
+
+            // --- LẤY DANH SÁCH TẬP PHIM ---
+            // Selector cũ: "ul.list-episode li.episode a.episode-link"
+            // HÃY THAY THẾ SELECTOR MỚI BẠN TÌM ĐƯỢC VÀO BIẾN DƯỚI ĐÂY
+            val episodeSelector = "div.episode_list ul.list-episode li a" 
+
+            Log.d(name, "Finding episodes with selector: '$episodeSelector'")
+            val episodeElements = mainDocument.select(episodeSelector)
+            if (episodeElements.isEmpty()) {
+                Log.w(name, "Episode list is EMPTY. Selector '$episodeSelector' is likely outdated. Please inspect the website's HTML.")
+            } else {
+                Log.d(name, "Found ${episodeElements.size} episode elements.")
+            }
+            
+            val episodes = episodeElements.mapNotNull { epElement ->
                 val epHref = fixUrlBased(epElement.attr("href"), currentBaseUrl) ?: return@mapNotNull null
-                val epIdentifier = epElement.attr("data-epname").trim().ifBlank { epElement.text().trim() }
+                val epIdentifier = epElement.attr("data-epname").trim().ifBlank {
+                    epElement.selectFirst("span.ep_name")?.text()?.trim() ?: epElement.text()?.trim()
+                }
                 if (epIdentifier.isBlank()) return@mapNotNull null
                 val epName = if (epIdentifier.equals("Full", true) || epIdentifier.equals("Movie", true)) epIdentifier else "Tập $epIdentifier"
                 newEpisode(epHref) { this.name = epName }
             }
 
+            // --- LẤY PHIM ĐỀ XUẤT ---
+            // Selector cũ: "div.season_item a:not(.active), div.MovieListRelated ul.MovieList li.TPostMv"
+            // HÃY THAY THẾ SELECTOR MỚI BẠN TÌM ĐƯỢC VÀO BIẾN DƯỚI ĐÂY
+            val recommendationSelector = "div.season_item a:not(.active), div.MovieListRelated ul.MovieList li"
+
+            Log.d(name, "Finding recommendations with selector: '$recommendationSelector'")
+            val recommendationElements = mainDocument.select(recommendationSelector)
+            if (recommendationElements.isEmpty()){
+                Log.w(name, "Recommendation list is EMPTY. Selector '$recommendationSelector' is likely outdated.")
+            } else {
+                Log.d(name, "Found ${recommendationElements.size} recommendation elements.")
+            }
+
             val recommendations = coroutineScope {
-                mainDocument.select("div.season_item a:not(.active), div.MovieListRelated ul.MovieList li.TPostMv").map { element ->
+                recommendationElements.map { element ->
                     async { mapElementToSearchResponse(element, currentBaseUrl) }
                 }.awaitAll().filterNotNull()
             }
+
+            // =================================================================
 
             val isMovie = tvType == TvType.AnimeMovie || tvType == TvType.OVA || (tvType == TvType.Anime && episodes.isEmpty())
             return if (isMovie) {
@@ -306,7 +348,6 @@ class AnimetProvider : MainAPI() {
                     url = m3u8Link,
                     type = ExtractorLinkType.M3U8
                 ) {
-                    // SỬA LỖI: Di chuyển referer và quality vào trong khối lambda
                     this.referer = currentBaseUrl
                     this.quality = Qualities.Unknown.value
                 }
