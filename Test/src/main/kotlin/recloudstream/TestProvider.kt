@@ -4,7 +4,8 @@ package recloudstream
 // Necessary imports from CloudStream and other libraries
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import org.jsoup.nodes.Element
+import com.fasterxml.jackson.annotation.JsonProperty
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 
 // Define the provider class, inheriting from MainAPI
 class Ihentai : MainAPI() {
@@ -15,83 +16,108 @@ class Ihentai : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
 
-    // Set the User-Agent that worked with your curl command.
+    // Set the User-Agent. This is crucial for bypassing basic checks.
     private val headers = mapOf(
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     )
 
-    // --- UTILITY FUNCTION TO PARSE ITEMS ---
-    // This function parses a single item from the homepage or search results.
-    private fun Element.toSearchResponse(): SearchResponse? {
-        val linkElement = this.selectFirst("a") ?: return null
-        val href = fixUrl(linkElement.attr("href"))
-        
-        val title = this.selectFirst("h2")?.text()?.trim() ?: return null
-        
-        val posterUrl = this.selectFirst("img")?.attr("src")
+    // ---- DATA CLASSES FOR JSON PARSING ----
+    // These classes map the structure of the JSON data from the website.
+    private data class Item(
+        @JsonProperty("name") val name: String?,
+        @JsonProperty("slug") val slug: String?,
+        @JsonProperty("thumbnail") val thumbnail: String?
+    )
 
-        return newAnimeSearchResponse(title, href, TvType.NSFW) {
-            this.posterUrl = posterUrl
-        }
+    private data class ItemDetails(
+        @JsonProperty("name") val name: String?,
+        @JsonProperty("slug") val slug: String?,
+        @JsonProperty("thumbnail") val thumbnail: String?,
+        @JsonProperty("description") val description: String?,
+        @JsonProperty("chapters") val chapters: List<Chapter>?
+    )
+
+    private data class Chapter(
+        @JsonProperty("name") val name: String?,
+        @JsonProperty("slug") val slug: String?
+    )
+
+    private data class NuxtData(
+        @JsonProperty("items") val items: List<Item>?,
+        @JsonProperty("item") val item: ItemDetails?
+    )
+    
+    // The data is nested inside an array, so we need to get the first element.
+    private data class NuxtPayload(
+        @JsonProperty("data") val data: List<NuxtData>?
+    )
+
+    private data class NuxtResponse(
+        @JsonProperty("payload") val payload: NuxtPayload?
+    )
+    
+    // ---- UTILITY FUNCTION ----
+    // Extracts the __NUXT_DATA__ JSON block from the HTML source
+    private fun getNuxtData(html: String): String? {
+        return Regex("""<script id="__NUXT_DATA__" type="application/json">(.*?)</script>""").find(html)?.groupValues?.get(1)
     }
-
+    
     // ---- CORE FUNCTIONS ----
-
+    
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = "$mainUrl/?page=$page"
-        val document = app.get(url, headers = headers).document
-
-        val sections = document.select("div.container > div.tw-mb-16")
-        val homePageList = mutableListOf<HomePageList>()
-
-        for (section in sections) {
-            val sectionTitle = section.selectFirst("h1")?.text()?.trim() ?: continue
-            // The items are inside a div with class "v-card" within each section
-            val items = section.select("div.v-card").mapNotNull {
-                it.toSearchResponse()
-            }
-            if (items.isNotEmpty()) {
-                homePageList.add(HomePageList(sectionTitle, items))
-            }
-        }
+        val document = app.get(url, headers = headers).text
         
-        return HomePageResponse(homePageList)
+        // Extract the JSON data from the HTML
+        val nuxtJson = getNuxtData(document) ?: return HomePageResponse(emptyList())
+        val response = parseJson<NuxtResponse>(nuxtJson)
+
+        // The main page content is in the 'items' array.
+        val items = response.payload?.data?.firstOrNull()?.items
+        
+        val homePageList = items?.mapNotNull { item ->
+            newAnimeSearchResponse(item.name ?: "", "$mainUrl/doc-truyen/${item.slug}") {
+                posterUrl = item.thumbnail
+            }
+        } ?: emptyList()
+
+        // The site has multiple sections but they are all the same, so we just show one.
+        return HomePageResponse(listOf(HomePageList("Mới cập nhật", homePageList)))
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/tim-kiem?q=$query"
-        val document = app.get(url, headers = headers).document
+        val document = app.get(url, headers = headers).text
+        
+        val nuxtJson = getNuxtData(document) ?: return emptyList()
+        val response = parseJson<NuxtResponse>(nuxtJson)
+        val items = response.payload?.data?.firstOrNull()?.items
 
-        // Corrected the selector for search results based on your `ihentai_search_output.html` file.
-        // The items are inside a div with class "film-list" and then each item is a "v-card".
-        return document.select("div.film-list div.v-card").mapNotNull {
-            it.toSearchResponse()
-        }
+        return items?.mapNotNull { item ->
+            newAnimeSearchResponse(item.name ?: "", "$mainUrl/doc-truyen/${item.slug}") {
+                posterUrl = item.thumbnail
+            }
+        } ?: emptyList()
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url, headers = headers).document
-
-        // Selectors based on your `ihentai_load_output.html` file.
-        val title = document.selectFirst("h1.tw-text-3xl")?.text()?.trim() ?: "Không có tiêu đề"
-        val posterUrl = document.selectFirst("div.grid > div:first-child img")?.attr("src")
+        val document = app.get(url, headers = headers).text
         
-        val plot = document.select("h3").find { it.text().contains("Nội dung") }
-            ?.nextElementSibling()?.text()?.trim()
+        val nuxtJson = getNuxtData(document) ?: throw ErrorLoadingException("Không thể tải dữ liệu truyện")
+        val item = parseJson<NuxtResponse>(nuxtJson).payload?.data?.firstOrNull()?.item
+            ?: throw ErrorLoadingException("Không tìm thấy thông tin truyện")
 
-        // Episodes are in a div with id "episode-list"
-        val episodes = document.select("div#episode-list a").mapNotNull { element ->
-            val href = fixUrl(element.attr("href"))
-            val name = element.text()?.trim() ?: "Tập"
-            
-            newEpisode(href) {
-                this.name = name
+        val title = item.name ?: "Không có tiêu đề"
+        
+        val episodes = item.chapters?.mapNotNull { chapter ->
+            newEpisode("$mainUrl/doc-truyen/${item.slug}/${chapter.slug}") {
+                name = chapter.name
             }
-        }.reversed()
+        }?.reversed()
 
-        return newTvSeriesLoadResponse(title, url, TvType.NSFW, episodes) {
-            this.posterUrl = posterUrl
-            this.plot = plot
+        return newTvSeriesLoadResponse(title, url, TvType.NSFW, episodes ?: emptyList()) {
+            this.posterUrl = item.thumbnail
+            this.plot = item.description
         }
     }
 
