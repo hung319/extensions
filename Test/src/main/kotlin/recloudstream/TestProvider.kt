@@ -6,16 +6,15 @@ import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
 
-// Đổi tên class lại thành "Ihentai" để khớp với file test của bạn
 class Ihentai : MainAPI() { 
-    // --- Thông tin cơ bản ---
-    override var mainUrl = "https://ihentai.ws"
+    // ---- METADATA ----
     override var name = "iHentai"
-    override val hasMainPage = true
+    override var mainUrl = "https://ihentai.ws"
     override var lang = "vi"
+    override val hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
     
-    // User-Agent để giả lập trình duyệt
+    // User-Agent để giả lập trình duyệt, rất quan trọng
     private val headers = mapOf(
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     )
@@ -71,7 +70,7 @@ class Ihentai : MainAPI() {
         }
     }
 
-    // --- Hàm tải thông tin chi tiết của phim/truyện ---
+    // --- Hàm tải thông tin chi tiết ---
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url, headers = headers).document
 
@@ -97,7 +96,7 @@ class Ihentai : MainAPI() {
         }
     }
 
-    // --- Hàm tải link xem phim (Tạm thời vô hiệu hóa) ---
+    // --- Hàm tải link (Tạm thời vô hiệu hóa) ---
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
