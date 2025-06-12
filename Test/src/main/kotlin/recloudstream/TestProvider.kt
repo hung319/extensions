@@ -6,7 +6,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import com.lagradost.cloudstream3.ExtractorLinkType // SỬA LỖI: Thêm dòng import này
+import com.lagradost.cloudstream3.utils.ExtractorLinkType // SỬA LỖI: Đường dẫn import chính xác
 import org.jsoup.Jsoup
 
 // Định nghĩa cấu trúc dữ liệu JSON để parse
@@ -164,7 +164,7 @@ class OphimProvider : MainAPI() {
                 source = this.name,
                 name = "${this.name} Vietsub",
                 url = data,
-                type = ExtractorLinkType.M3U8 // Giờ đây đã hợp lệ
+                type = ExtractorLinkType.M3U8 // Phải hoạt động với import mới
             ) {
                 this.referer = "$mainUrl/"
                 this.quality = Qualities.Unknown.value
