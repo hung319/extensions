@@ -5,10 +5,10 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import com.lagradost.cloudstream3.utils.newEpisode // SỬA: Import hàm newEpisode
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import org.jsoup.Jsoup
+import com.lagradost.cloudstream3.newEpisode // SỬA LỖI: Thử import từ package gốc
 
 // Định nghĩa cấu trúc dữ liệu JSON để parse
 data class OphimHomepage(
@@ -125,7 +125,7 @@ class OphimProvider : MainAPI() {
         return if (movieInfo.type == "series") {
             val episodes = detailData.episodes.flatMap { server ->
                 server.serverData.map { episodeData ->
-                    // SỬA: Dùng newEpisode và đổi tên tập
+                    // Sử dụng newEpisode theo yêu cầu
                     newEpisode(data = episodeData.linkM3u8) {
                         this.name = "Tập ${episodeData.name}"
                     }
@@ -163,7 +163,7 @@ class OphimProvider : MainAPI() {
         callback.invoke(
             newExtractorLink(
                 source = this.name,
-                name = "Vietsub", // SỬA: Đổi tên link
+                name = "Vietsub",
                 url = data,
                 type = ExtractorLinkType.M3U8
             ) {
