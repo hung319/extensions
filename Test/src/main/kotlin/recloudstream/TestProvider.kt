@@ -8,20 +8,16 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import org.jsoup.Jsoup
-import com.lagradost.cloudstream3.newEpisode // SỬA LỖI: Thử import từ package gốc
+import com.lagradost.cloudstream3.newEpisode
 
 // Định nghĩa cấu trúc dữ liệu JSON để parse
-data class OphimHomepage(
-    @JsonProperty("status") val status: Boolean,
-    @JsonProperty("items") val items: List<OphimItem>,
-    @JsonProperty("pathImage") val pathImage: String
-)
-
+// Dùng cho Trang chủ và cả Tìm kiếm
 data class OphimItem(
     @JsonProperty("name") val name: String,
     @JsonProperty("slug") val slug: String,
     @JsonProperty("poster_url") val posterUrl: String,
     @JsonProperty("year") val year: Int?,
+    // Dùng tmdb.type để phân biệt movie và tv series, an toàn hơn 'type'
     @JsonProperty("tmdb") val tmdb: TmdbInfo?
 )
 
@@ -29,6 +25,14 @@ data class TmdbInfo(
     @JsonProperty("type") val type: String?
 )
 
+// Dùng cho Trang chủ
+data class OphimHomepage(
+    @JsonProperty("status") val status: Boolean,
+    @JsonProperty("items") val items: List<OphimItem>,
+    @JsonProperty("pathImage") val pathImage: String
+)
+
+// Dùng cho Chi tiết phim
 data class OphimDetail(
     @JsonProperty("movie") val movie: MovieDetail,
     @JsonProperty("episodes") val episodes: List<EpisodeServer>
@@ -66,7 +70,26 @@ data class EpisodeData(
     @JsonProperty("link_m3u8") val linkM3u8: String
 )
 
+// Thêm các data class để parse dữ liệu JSON từ trang tìm kiếm
+data class NextData(
+    @JsonProperty("props") val props: Props
+)
+
+data class Props(
+    @JsonProperty("pageProps") val pageProps: PageProps
+)
+
+data class PageProps(
+    @JsonProperty("data") val data: SearchData
+)
+
+data class SearchData(
+    @JsonProperty("items") val items: List<OphimItem>
+)
+
+
 class OphimProvider : MainAPI() {
+    // Tên miền chính cho trang chủ và chi tiết phim
     override var mainUrl = "https://ophim1.com"
     override var name = "Ophim"
     override var lang = "vi"
@@ -110,6 +133,32 @@ class OphimProvider : MainAPI() {
         return newHomePageResponse(request.name, results)
     }
 
+    override suspend fun search(query: String): List<SearchResponse> {
+        // SỬA: Dùng tên miền ophim16.cc cố định cho chức năng tìm kiếm
+        val searchUrl = "https://ophim16.cc/tim-kiem?keyword=$query"
+        val doc = app.get(searchUrl).document
+
+        // Lấy dữ liệu từ thẻ script#__NEXT_DATA__
+        val scriptData = doc.selectFirst("script#__NEXT_DATA__")?.data()
+            ?: return emptyList()
+
+        // Parse dữ liệu JSON
+        val searchJson = parseJson<NextData>(scriptData)
+        val searchItems = searchJson.props.pageProps.data.items
+
+        return searchItems.map { item ->
+            val tvType = if (item.tmdb?.type == "tv") TvType.TvSeries else TvType.Movie
+            newMovieSearchResponse(
+                name = item.name,
+                url = getUrl("phim/${item.slug}"),
+                type = tvType
+            ) {
+                this.posterUrl = getImageUrl(item.posterUrl)
+                this.year = item.year
+            }
+        }
+    }
+
     override suspend fun load(url: String): LoadResponse {
         val response = app.get(url).text
         val detailData = parseJson<OphimDetail>(response)
@@ -125,7 +174,6 @@ class OphimProvider : MainAPI() {
         return if (movieInfo.type == "series") {
             val episodes = detailData.episodes.flatMap { server ->
                 server.serverData.map { episodeData ->
-                    // Sử dụng newEpisode theo yêu cầu
                     newEpisode(data = episodeData.linkM3u8) {
                         this.name = "Tập ${episodeData.name}"
                     }
@@ -167,7 +215,7 @@ class OphimProvider : MainAPI() {
                 url = data,
                 type = ExtractorLinkType.M3U8
             ) {
-                this.referer = "$mainUrl/"
+                this.referer = "$mainUrl/" // Referer vẫn có thể dùng mainUrl hoặc tên miền search đều được
                 this.quality = Qualities.Unknown.value
             }
         )
