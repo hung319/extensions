@@ -226,7 +226,6 @@ class AnimeVietsubProvider : MainAPI() {
                 ?.text()?.trim()?.takeIf { it.isNotBlank() }
     }
     
-    // Hàm này đã được cập nhật để sử dụng newAnimeLoadResponse cho các series Anime
     private suspend fun Document.toLoadResponse(
         provider: MainAPI,
         infoUrl: String,
@@ -494,21 +493,32 @@ class AnimeVietsubProvider : MainAPI() {
                     (finalTvType == TvType.Anime && episodesCount > 1 && !isSingleEpisodeActuallyMovie && !hasAnimeLeTag)
 
             return if (isSeriesStructure) {
-                // Nếu là series và có TvType là Anime, hãy dùng hàm chuyên dụng newAnimeLoadResponse
                 if (finalTvType == TvType.Anime) {
-                    provider.newAnimeLoadResponse(title, infoUrl, finalTvType, episodes = parsedEpisodes) {
-                        this.posterUrl = posterUrlForResponse; this.plot = description; this.tags = genres; this.year = year; this.rating = ratingValue; this.showStatus = currentShowStatus;
-                        this.actors = actorsDataList; this.recommendations = recommendations
+                    // Cú pháp đúng: gán `episodes` bên trong khối lệnh
+                    provider.newAnimeLoadResponse(title, infoUrl, finalTvType) {
+                        this.episodes = parsedEpisodes
+                        this.posterUrl = posterUrlForResponse
+                        this.plot = description
+                        this.tags = genres
+                        this.year = year
+                        this.rating = ratingValue
+                        this.showStatus = currentShowStatus
+                        this.actors = actorsDataList
+                        this.recommendations = recommendations
                     }
                 } else {
-                    // Nếu là các loại series khác (Cartoon, TvSeries), dùng hàm tổng quát
                     provider.newTvSeriesLoadResponse(title, infoUrl, finalTvType ?: TvType.TvSeries, episodes = parsedEpisodes) {
-                        this.posterUrl = posterUrlForResponse; this.plot = description; this.tags = genres; this.year = year; this.rating = ratingValue; this.showStatus = currentShowStatus;
-                        this.actors = actorsDataList; this.recommendations = recommendations
+                        this.posterUrl = posterUrlForResponse
+                        this.plot = description
+                        this.tags = genres
+                        this.year = year
+                        this.rating = ratingValue
+                        this.showStatus = currentShowStatus
+                        this.actors = actorsDataList
+                        this.recommendations = recommendations
                     }
                 }
             } else {
-                // Đối với phim lẻ (Movie), không có gì thay đổi
                 val actualMovieTvType = finalTvType ?: if(isJapaneseContext && (isMovieHintFromTitle || isSingleEpisodeActuallyMovie || hasAnimeLeTag)) TvType.Anime else TvType.Movie
 
                 val durationText = infoSection.select("li:has(strong:containsOwn(Thời lượng))")?.firstOrNull()?.ownText()?.trim()
