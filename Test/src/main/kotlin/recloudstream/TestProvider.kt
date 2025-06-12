@@ -5,47 +5,58 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 
-class Ihentai : MainAPI() { // Đã đổi tên lớp lại thành Ihentai
-    // --- Thông tin cơ bản ---
-    override var mainUrl = "https://ihentai.ws"
+class Ihentai : MainAPI() {
+    // ---- METADATA ----
     override var name = "iHentai"
-    override val hasMainPage = true
+    override var mainUrl = "https://ihentai.ws"
     override var lang = "vi"
+    override val hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
-    
-    // User-Agent để giả lập trình duyệt, rất quan trọng
+
+    // Set the User-Agent that worked with your curl command.
     private val headers = mapOf(
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     )
 
-    // Hàm helper để phân tích một thẻ item thành đối tượng SearchResponse
-    private fun parseSearchCard(element: Element): SearchResponse? {
+    // --- UTILITY FUNCTIONS TO PARSE ITEMS ---
+    // This function parses a single item from the homepage
+    private fun parseHomepageCard(element: Element): SearchResponse? {
         val linkElement = element.selectFirst("a") ?: return null
         val href = fixUrl(linkElement.attr("href"))
-        
-        // Lấy tiêu đề từ thẻ h2 hoặc h3
-        val title = element.selectFirst("h2, h3")?.text()?.trim() ?: return null
-        
-        // Lấy ảnh bìa
+        val title = element.selectFirst("div.v-card-text h2")?.text()?.trim() ?: return null
         val posterUrl = element.selectFirst("img")?.attr("src")
 
-        // Trả về đối tượng mà CloudStream có thể hiểu
         return newAnimeSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
         }
     }
 
-    // --- Hàm lấy trang chính ---
+    // This function parses a single item from the search results page
+    private fun parseSearchCard(element: Element): SearchResponse? {
+        val linkElement = element.selectFirst("a") ?: return null
+        val href = fixUrl(linkElement.attr("href"))
+        // On the search page, the title is in an h3 tag
+        val title = linkElement.selectFirst("h3")?.text()?.trim() ?: return null
+        val posterUrl = linkElement.selectFirst("img")?.attr("src")
+
+        return newAnimeSearchResponse(title, href, TvType.NSFW) {
+            this.posterUrl = posterUrl
+        }
+    }
+
+    // ---- CORE FUNCTIONS ----
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get("$mainUrl/?page=$page", headers = headers).document
+        val url = "$mainUrl/?page=$page"
+        val document = app.get(url, headers = headers).document
+
+        val sections = document.select("div.tw-mb-16") // Selector này đã đúng
         val homePageList = mutableListOf<HomePageList>()
 
-        // Lấy từng khu vực trên trang chủ
-        document.select("div.container > div.tw-mb-16").forEach { section ->
-            val sectionTitle = section.selectFirst("h1")?.text()?.trim() ?: return@forEach
-            // Lấy danh sách các item trong khu vực đó
-            val items = section.select("div.v-card").mapNotNull {
-                parseSearchCard(it)
+        for (section in sections) {
+            val sectionTitle = section.selectFirst("h1")?.text()?.trim() ?: continue
+            val items = section.select("div.tw-grid > div.v-card").mapNotNull {
+                parseHomepageCard(it) // Dùng hàm parse cho trang chủ
             }
             if (items.isNotEmpty()) {
                 homePageList.add(HomePageList(sectionTitle, items))
@@ -55,34 +66,32 @@ class Ihentai : MainAPI() { // Đã đổi tên lớp lại thành Ihentai
         return HomePageResponse(homePageList)
     }
 
-    // --- Hàm tìm kiếm ---
     override suspend fun search(query: String): List<SearchResponse> {
-        val document = app.get("$mainUrl/tim-kiem?q=$query", headers = headers).document
+        val url = "$mainUrl/tim-kiem?q=$query"
+        val document = app.get(url, headers = headers).document
+
+        // SỬA LẠI: Dùng selector đúng cho trang tìm kiếm từ file ihentai_search_output.html
         return document.select("div.film-list div.v-col").mapNotNull {
-            parseSearchCard(it)
+            parseSearchCard(it) // Dùng hàm parse cho trang tìm kiếm
         }
     }
 
-    // --- Hàm tải thông tin chi tiết của phim/truyện ---
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url, headers = headers).document
 
-        val title = document.selectFirst("h1.tw-text-3xl")?.text()?.trim()
-            ?: throw ErrorLoadingException("Không tìm thấy tiêu đề")
-        
+        // SỬA LẠI: Dùng các selector đúng cho trang load từ file ihentai_load_output.html
+        val title = document.selectFirst("h1.tw-text-3xl")?.text()?.trim() ?: throw ErrorLoadingException("Không tìm thấy tiêu đề")
         val posterUrl = document.selectFirst("div.grid > div:first-child img")?.attr("src")
-        
         val plot = document.select("h3:contains(Nội dung)").first()?.nextElementSibling()?.text()?.trim()
-        
         val genres = document.select("div.film-tag-list a.v-chip")?.mapNotNull { it.text()?.trim() }
 
-        // Lấy danh sách các tập
+        // Lấy danh sách các tập từ div#episode-list
         val episodes = document.select("div#episode-list a").mapNotNull { element ->
             newEpisode(fixUrl(element.attr("href"))) {
                 name = element.text().trim()
             }
         }.reversed()
-        
+
         return newTvSeriesLoadResponse(title, url, TvType.NSFW, episodes) {
             this.posterUrl = posterUrl
             this.plot = plot
@@ -90,7 +99,6 @@ class Ihentai : MainAPI() { // Đã đổi tên lớp lại thành Ihentai
         }
     }
 
-    // --- Hàm tải link xem phim (Tạm thời vô hiệu hóa) ---
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
