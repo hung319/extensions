@@ -2,16 +2,12 @@ package recloudstream
 
 // Import các lớp cần thiết
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.SubtitleFile
+import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-import java.net.URLEncoder
 
-class IhentaiProvider : MainAPI() { // Đổi tên class để tránh trùng lặp
+class Ihentai : MainAPI() { // Đã đổi tên lớp lại thành Ihentai
     // --- Thông tin cơ bản ---
-    override var mainUrl = "https://ihentai.ws" // Sử dụng tên miền .ws ổn định hơn
+    override var mainUrl = "https://ihentai.ws"
     override var name = "iHentai"
     override val hasMainPage = true
     override var lang = "vi"
@@ -24,7 +20,6 @@ class IhentaiProvider : MainAPI() { // Đổi tên class để tránh trùng l�
 
     // Hàm helper để phân tích một thẻ item thành đối tượng SearchResponse
     private fun parseSearchCard(element: Element): SearchResponse? {
-        // Tìm thẻ a chứa link và ảnh
         val linkElement = element.selectFirst("a") ?: return null
         val href = fixUrl(linkElement.attr("href"))
         
@@ -45,7 +40,7 @@ class IhentaiProvider : MainAPI() { // Đổi tên class để tránh trùng l�
         val document = app.get("$mainUrl/?page=$page", headers = headers).document
         val homePageList = mutableListOf<HomePageList>()
 
-        // Lấy từng khu vực ("Mới cập nhật", "Hentai 3D",...) trên trang chủ
+        // Lấy từng khu vực trên trang chủ
         document.select("div.container > div.tw-mb-16").forEach { section ->
             val sectionTitle = section.selectFirst("h1")?.text()?.trim() ?: return@forEach
             // Lấy danh sách các item trong khu vực đó
@@ -62,9 +57,7 @@ class IhentaiProvider : MainAPI() { // Đổi tên class để tránh trùng l�
 
     // --- Hàm tìm kiếm ---
     override suspend fun search(query: String): List<SearchResponse> {
-        val encodedQuery = URLEncoder.encode(query, "UTF-8")
-        val document = app.get("$mainUrl/tim-kiem?q=$encodedQuery", headers = headers).document
-        // Selector cho trang tìm kiếm là "div.film-list div.v-col"
+        val document = app.get("$mainUrl/tim-kiem?q=$query", headers = headers).document
         return document.select("div.film-list div.v-col").mapNotNull {
             parseSearchCard(it)
         }
@@ -83,7 +76,7 @@ class IhentaiProvider : MainAPI() { // Đổi tên class để tránh trùng l�
         
         val genres = document.select("div.film-tag-list a.v-chip")?.mapNotNull { it.text()?.trim() }
 
-        // Lấy danh sách các tập từ div#episode-list
+        // Lấy danh sách các tập
         val episodes = document.select("div#episode-list a").mapNotNull { element ->
             newEpisode(fixUrl(element.attr("href"))) {
                 name = element.text().trim()
