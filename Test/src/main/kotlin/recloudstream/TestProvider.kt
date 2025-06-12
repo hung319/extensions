@@ -14,6 +14,10 @@ class Ihentai : MainAPI() { // all providers must inherit from MainAPI
     override var mainUrl = "https://ihentai.ws"
     // The language of the provider
     override var lang = "vi"
+    
+    // This tells the app that the provider has a main page and should be shown on the home screen.
+    override val hasMainPage = true
+
     // The supported types of content. NSFW is for adult content.
     override val supportedTypes = setOf(
         TvType.NSFW
