@@ -1,4 +1,4 @@
-// File: IHentai.kt (DEBUG TOOL v4 - FINAL)
+// File: IHentai.kt (DEBUG TOOL v5 - FINAL)
 package recloudstream
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
@@ -29,44 +29,56 @@ class IHentai : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        return HomePageResponse(emptyList())
+        // Trả về một item debug duy nhất cho trang chủ
+        val debugUrl = "debug-homepage-key"
+        return HomePageResponse(listOf(
+            HomePageList("DEBUG HOMEPAGE", listOf(
+                newMovieSearchResponse("CLICK HERE to get HOMEPAGE DEBUG DATA", debugUrl)
+            ))
+        ))
     }
-    
-    // Các hàm load/loadLinks không cần thiết
-    override suspend fun load(url: String): LoadResponse? { return null }
+
     override suspend fun loadLinks(
         data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit
     ): Boolean { return false }
 
-    /**
-     * This function now fetches the JSON and splits it into chunks,
-     * displaying each chunk as the title of a search result.
-     */
     override suspend fun search(query: String): List<SearchResponse> {
-        val encodedQuery = URLEncoder.encode(query, "UTF-8")
-        val searchUrl = "$mainUrl/tim-kiem?keyword=$encodedQuery"
+        val debugUrl = "debug-search-key:$query"
+        return listOf(
+            newMovieSearchResponse("CLICK HERE to get SEARCH DEBUG DATA for '$query'", debugUrl)
+        )
+    }
+
+    override suspend fun load(url: String): LoadResponse? {
+        val isHomePage = url == "debug-homepage-key"
+        val isSearch = url.startsWith("debug-search-key:")
+        
+        if (!isHomePage && !isSearch) return null
+
+        val targetUrl = if (isHomePage) {
+            mainUrl
+        } else {
+            val query = url.removePrefix("debug-search-key:")
+            val encodedQuery = URLEncoder.encode(query, "UTF-8")
+            "$mainUrl/tim-kiem?keyword=$encodedQuery"
+        }
 
         try {
-            val document = app.get(searchUrl, headers = headers).text
-            val nuxtData = getNuxtData(document) ?: return listOf(
-                newMovieSearchResponse("ERROR: Could not find __NUXT_DATA__", "error1")
-            )
-
-            // Định dạng và chia nhỏ JSON
+            val document = app.get(targetUrl, headers = headers).text
+            val nuxtData = getNuxtData(document) ?: return newMovieLoadResponse("DEBUG", url, TvType.Movie, url) {
+                this.plot = "ERROR: Could not find __NUXT_DATA__ script tag."
+            }
+            
             val jsonObject: Any = mapper.readValue(nuxtData)
             val prettyJson = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(jsonObject)
-            val chunks = prettyJson.chunked(250) // Chia thành các phần nhỏ 250 ký tự
 
-            // Trả về mỗi phần như một kết quả tìm kiếm
-            return chunks.mapIndexed { index, chunk ->
-                newMovieSearchResponse("Part ${index + 1}/${chunks.size}: $chunk", "debug-part-$index")
+            return newMovieLoadResponse("DEBUG DATA", url, TvType.Movie, url) {
+                this.plot = "VUI LÒNG SAO CHÉP TOÀN BỘ NỘI DUNG BÊN DƯỚI VÀ GỬI LẠI CHO TÔI:\n\n--BEGIN JSON for ${if(isHomePage) "Homepage" else "Search"}--\n\n$prettyJson\n\n--END JSON--"
             }
 
         } catch (e: Exception) {
-            // Nếu có lỗi, hiển thị lỗi
-            val errorChunks = e.stackTraceToString().chunked(250)
-            return errorChunks.mapIndexed { index, chunk ->
-                 newMovieSearchResponse("ERROR ${index+1}: $chunk", "error-part-$index")
+            return newMovieLoadResponse("DEBUG ERROR", url, TvType.Movie, url) {
+                this.plot = "AN ERROR OCCURRED:\n\n${e.stackTraceToString()}"
             }
         }
     }
