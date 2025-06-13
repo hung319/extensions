@@ -69,9 +69,11 @@ class IHentai : MainAPI() {
         val document = app.get(mainUrl, headers = headers).text
         val nuxtData = getNuxtData(document) ?: return HomePageResponse(emptyList())
 
-        // [FIX] Sửa lỗi Deserialization: Phân tích nuxtData trực tiếp như một List<NuxtTray>
-        // vì JSON trên trang chủ là một mảng, không phải một đối tượng.
-        val trays = parseJson<List<NuxtTray>>(nuxtData)
+        // [FIX] Sửa lỗi Deserialization lần 2:
+        // Cấu trúc JSON là một mảng chứa các mảng ([ [tray1], [tray2]... ]).
+        // Ta cần parse nó thành List<List<NuxtTray>> rồi dùng flatMap để làm phẳng nó.
+        val nestedTrays = parseJson<List<List<NuxtTray>>>(nuxtData)
+        val trays = nestedTrays.flatten() // Biến [ [tray1], [tray2] ] thành [ tray1, tray2 ]
 
         val homePageList = trays.mapNotNull { tray ->
             val header = tray.name ?: "Unknown Category"
@@ -91,7 +93,6 @@ class IHentai : MainAPI() {
         val document = app.get(url, headers = headers).text
         val nuxtData = getNuxtData(document) ?: return emptyList()
 
-        // Cấu trúc JSON trên trang search khác, cần đi sâu vào "data" -> "0"
         val dataMap = parseJson<Map<String, Any>>(nuxtData)
         val itemsJson = (dataMap["data"] as? Map<*, *>)?.get("0")?.toString() ?: "[]"
         val items = parseJson<List<NuxtItem>>(itemsJson)
@@ -103,7 +104,6 @@ class IHentai : MainAPI() {
         val document = app.get(url, headers = headers).text
         val nuxtData = getNuxtData(document) ?: return null
 
-        // Tương tự trang search, cấu trúc JSON trên trang load cần đi sâu vào "data" -> "0"
         val dataMap = parseJson<Map<String, Any>>(nuxtData)
         val animeDataJson = (dataMap["data"] as? Map<*, *>)?.get("0")?.toString() ?: "{}"
         val animeData = parseJson<NuxtItem>(animeDataJson)
