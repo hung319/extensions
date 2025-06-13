@@ -1,10 +1,13 @@
-// File: IHentai.kt (DEBUG TOOL - POSTER FINAL)
+// File: IHentai.kt (DEBUG TOOL - Ktor POSTER)
 package recloudstream
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import io.ktor.client.request.* // Ktor imports
+import io.ktor.client.statement.*
+import io.ktor.http.*
 import org.jsoup.Jsoup
 import java.net.URLEncoder
 
@@ -28,22 +31,29 @@ class IHentai : MainAPI() {
         return Jsoup.parse(html).selectFirst("script[id=__NUXT_DATA__]")?.data()
     }
 
-    // Hàm tiện ích để POST log
+    // Hàm tiện ích để POST log sử dụng Ktor
     private suspend fun postLog(content: String, source: String) {
         val logUrl = "https://text.h4rs.pp.ua/upload/text/log.txt"
+        var fullLogContent = ""
         try {
             // Định dạng lại JSON cho dễ đọc trước khi gửi
             val jsonObject = mapper.readValue<Any>(content)
             val prettyJson = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(jsonObject)
-
-            val logContent = "--- LOG FROM IHENTAI PROVIDER (Source: $source) ---\n\n$prettyJson"
-            
-            // [FIX] Gửi dữ liệu dưới dạng Map<String, String> theo yêu cầu của hàm post
-            app.post(logUrl, data = mapOf("log" to logContent))
+            fullLogContent = "--- LOG FROM IHENTAI PROVIDER (Source: $source) ---\n\n$prettyJson"
         } catch (e: Exception) {
-            // Nếu có lỗi, gửi thông báo lỗi
-            val errorContent = "--- ERROR PARSING OR POSTING (Source: $source) ---\n\n${e.stackTraceToString()}"
-            app.post(logUrl, data = mapOf("log" to errorContent))
+            fullLogContent = "--- ERROR PARSING JSON (Source: $source) ---\n\n$content\n\n--- EXCEPTION ---\n\n${e.stackTraceToString()}"
+        }
+        
+        try {
+            // [FIX] Sử dụng Ktor client để gửi dữ liệu dạng text/plain
+            app.client.post(logUrl) {
+                headers {
+                    append(HttpHeaders.ContentType, ContentType.Text.Plain)
+                }
+                setBody(fullLogContent)
+            }.bodyAsText() // Thực thi request
+        } catch (e: Exception) {
+            // Ignored
         }
     }
     
