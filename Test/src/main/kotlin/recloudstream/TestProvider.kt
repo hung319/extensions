@@ -106,8 +106,8 @@ class IHentaiProvider : MainAPI() {
         val description = document.selectFirst("div.v-sheet.tw-p-5 > p.tw-text-sm")?.text()?.trim()
         val genres = document.select("div.v-sheet.tw-p-5 a.v-chip")?.mapNotNull { it.text()?.trim() }
 
-        // Fix: Sử dụng newEpisode thay vì constructor, thêm runTime = null nếu không có thông tin
-        val currentEpisode = newEpisode(data = url, name = title, runTime = null)
+        // Fix: Sử dụng newEpisode với các tham số đúng thứ tự: url, name, runTime
+        val currentEpisode = newEpisode(url, name = title, runTime = null)
         val episodes = listOf(currentEpisode)
         return newAnimeLoadResponse(title, url, TvType.NSFW) {
             this.posterUrl = posterUrl
