@@ -2,11 +2,13 @@ package com.lagradost.cloudstream3.hentai.providers
 
 // Import các lớp cần thiết
 import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.AppUtils.fixUrlNull
+import com.lagradost.cloudstream3.utils.AppUtils.fixUrl
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
-// import com.lagradost.cloudstream3.network.CloudflareKiller
 
 // --- Lớp Provider ---
 
@@ -18,7 +20,7 @@ class IHentaiProvider : MainAPI() {
     override var lang = "vi"
     override val supportedTypes = setOf(TvType.NSFW)
 
-    // *** Thêm User-Agent chung cho tất cả request ***
+    // Sửa lại User-Agent và định nghĩa headers
     private val userAgent = "Mozilla/5.0 (Linux; Android 14; SM-S711B Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.111 Mobile Safari/537.36"
     private val headers = mapOf("User-Agent" to userAgent)
 
@@ -41,19 +43,20 @@ class IHentaiProvider : MainAPI() {
             }
         }
         if (homePageList.isEmpty()) {
-              try {
-                  val latestItems = document.select("main.v-main div.v-container div.tw-grid > div.v-card").mapNotNull { element ->
-                      parseSearchCard(element)
-                  }
-                  if (latestItems.isNotEmpty()) {
+             try {
+                 val latestItems = document.select("main.v-main div.v-container div.tw-grid > div.v-card").mapNotNull { element ->
+                     parseSearchCard(element)
+                 }
+                 if (latestItems.isNotEmpty()) {
                     homePageList.add(HomePageList("Truyện Mới", latestItems))
-                  }
-              } catch(e: Exception) {
+                 }
+             } catch(e: Exception) {
                   e.printStackTrace()
-              }
+             }
         }
-        // Fix: Sử dụng newHomePageResponse thay vì constructor
-        return newHomePageResponse(homePageList)
+        // *** SỬA LỖI CẢNH BÁO: Dùng newHomePageResponse ***
+        // Cần map về đúng định dạng Pair<String, List<SearchResponse>>
+        return newHomePageResponse(homePageList.map { it.name to it.list }, hasNextPage = false)
     }
 
     // --- Hàm Helper: Phân tích thẻ Item ---
@@ -64,7 +67,7 @@ class IHentaiProvider : MainAPI() {
 
         val imageElement = linkElement.selectFirst("img.tw-w-full")
         var posterUrl = fixUrlNull(imageElement?.attr("src"))
-        if (posterUrl.isNullOrBlank()) { // Thêm fallback cho posterUrl nếu src không có
+        if (posterUrl.isNullOrBlank()) {
             posterUrl = fixUrlNull(imageElement?.attr("data-src"))
         }
 
@@ -74,7 +77,6 @@ class IHentaiProvider : MainAPI() {
         if (title.isNullOrBlank()) { title = linkElement.attr("title").trim() }
         if (title.isNullOrBlank()) return null
 
-        // URL của SearchResponse trỏ thẳng đến trang tập phim
         return newAnimeSearchResponse(title, fixUrl(href), TvType.NSFW) {
             this.posterUrl = posterUrl
         }
@@ -105,22 +107,25 @@ class IHentaiProvider : MainAPI() {
         val posterUrl = fixUrlNull(document.selectFirst("div.tw-grid div.tw-col-span-5 img")?.attr("src"))
         val description = document.selectFirst("div.v-sheet.tw-p-5 > p.tw-text-sm")?.text()?.trim()
         val genres = document.select("div.v-sheet.tw-p-5 a.v-chip")?.mapNotNull { it.text()?.trim() }
-
-        // Fix: Sử dụng newEpisode với các tham số đúng thứ tự: url, name, runTime
-        // Assuming the signature is newEpisode(url: String, name: String?, runTime: Int?)
-        val currentEpisode = newEpisode(url, title, null) // Pass title and null runTime positionally
-        val episodes = listOf(currentEpisode)
+        
         return newAnimeLoadResponse(title, url, TvType.NSFW) {
             this.posterUrl = posterUrl
             this.plot = description
             this.tags = genres
-            addEpisodes(DubStatus.Subbed, episodes)
+            
+            // *** SỬA LỖI CẢNH BÁO: Dùng newEpisode ***
+            // Tạo tập phim duy nhất bằng helper mới
+            val currentEpisode = newEpisode(url) {
+                this.name = title
+            }
+            addEpisodes(DubStatus.Subbed, listOf(currentEpisode))
         }
     }
 
     // --- Tải Link Xem Phim/Video (Sử dụng ExtractorLink trực tiếp) ---
+    @Suppress("DEPRECATION") // Giữ lại vì newExtractorLink có thể có vấn đề trong môi trường của bạn
     override suspend fun loadLinks(
-        data: String, // data là URL của trang tập phim
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
@@ -139,22 +144,23 @@ class IHentaiProvider : MainAPI() {
             val masterM3u8Url = "https://s2.mimix.cc/$videoId/master.m3u8"
             println("IHentaiProvider: Generated master M3U8 URL: $masterM3u8Url")
 
-            // Headers để tải M3U8 (Referer là trang iframe)
+            // Headers để tải M3U8
             val m3u8Headers = mapOf(
                 "Referer" to iframeSrc,
                 "User-Agent" to userAgent
             )
 
-            // Trực tiếp tạo ExtractorLink với URL M3U8 đã biết
+            // Trực tiếp tạo ExtractorLink với URL master M3U8
+            // Trình phát của CloudStream sẽ tự xử lý master playlist
             callback(
                 ExtractorLink(
                     source = name,
-                    name = "$name (M3U8)", // Tên hiển thị cho link
+                    name = "$name (M3U8)",
                     url = masterM3u8Url,
-                    referer = iframeSrc, // Referer vẫn là iframe
-                    quality = Qualities.Unknown.value, // Chất lượng có thể được điều chỉnh nếu bạn có thông tin
+                    referer = iframeSrc,
+                    quality = Qualities.Unknown.value, // Player sẽ tự chọn chất lượng
                     type = ExtractorLinkType.M3U8,
-                    headers = m3u8Headers // Truyền headers cho trình phát
+                    headers = m3u8Headers
                 )
             )
             return true
