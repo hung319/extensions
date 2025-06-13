@@ -15,10 +15,9 @@ class IhentaiProvider : MainAPI() {
     override var lang = "vi"
     override val supportedTypes = setOf(TvType.NSFW)
 
-    // User-Agent để giả lập trình duyệt, tăng tính ổn định
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 
-    // Data classes để parse JSON
+    // Data classes (không thay đổi)
     @Serializable
     data class NuxtData(val data: List<NuxtStateData>? = null)
     @Serializable
@@ -36,13 +35,11 @@ class IhentaiProvider : MainAPI() {
     @Serializable
     data class ChapterImage(val image_url: String)
 
-    // Hàm helper để lấy và phân tích dữ liệu JSON từ __NUXT_DATA__
+    // Hàm getNuxtData này sẽ được dùng cho các hàm search, load...
     private suspend fun getNuxtData(url: String): NuxtData? {
         val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
         val scriptData = document.selectFirst("#__NUXT_DATA__")?.data() ?: return null
-
         return try {
-            // Dữ liệu gốc là một Array, chúng ta cần lấy phần tử thứ 2 (index 1)
             val jsonArray = parseJson<List<JsonElement>>(scriptData)
             if (jsonArray.size > 1) {
                 parseJson<NuxtData>(jsonArray[1].toString())
@@ -55,19 +52,27 @@ class IhentaiProvider : MainAPI() {
         }
     }
 
+    // !!! PHIÊN BẢN GỠ LỖI - HIỂN THỊ DATA LÊN TIÊU ĐỀ !!!
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page == 1) mainUrl else "$mainUrl?page=$page"
-        val nuxtData = getNuxtData(url)
-        
-        val home = nuxtData?.data?.firstOrNull()?.latestAnimes?.data?.mapNotNull { item ->
-            newTvSeriesSearchResponse(item.name, "$mainUrl/phim/${item.slug}", TvType.NSFW) {
-                this.posterUrl = item.poster_url
-            }
-        } ?: emptyList()
 
-        return newHomePageResponse("Mới Cập Nhật", home)
+        // Lấy dữ liệu thô từ trang web để gỡ lỗi
+        val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
+        val scriptData = document.selectFirst("#__NUXT_DATA__")?.data()
+
+        // Tạo một list chứa duy nhất một mục, với tên là dữ liệu thô chúng ta lấy được
+        val debugList = HomePageList(
+            name = scriptData ?: ">>> SCRIPT DATA IS NULL OR EMPTY <<<", // Hiển thị dữ liệu lên đây
+            list = emptyList() // Danh sách phim tạm thời để trống
+        )
+
+        // Trả về response chỉ chứa mục gỡ lỗi này
+        return HomePageResponse(
+            list = listOf(debugList)
+        )
     }
-
+    
+    // Giữ nguyên các hàm khác để chúng vẫn hoạt động bình thường
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/tim-kiem?q=$query"
         val nuxtData = getNuxtData(url)
