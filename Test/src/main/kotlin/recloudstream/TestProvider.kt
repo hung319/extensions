@@ -5,7 +5,7 @@ import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import io.ktor.client.request.* // Ktor imports
+import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import org.jsoup.Jsoup
@@ -45,15 +45,15 @@ class IHentai : MainAPI() {
         }
         
         try {
-            // [FIX] Sử dụng Ktor client để gửi dữ liệu dạng text/plain
+            // Sử dụng Ktor client để gửi dữ liệu dạng text/plain
             app.client.post(logUrl) {
                 headers {
-                    append(HttpHeaders.ContentType, ContentType.Text.Plain)
+                    append(HttpHeaders.ContentType, ContentType.Text.Plain.withCharset(Charsets.UTF_8))
                 }
                 setBody(fullLogContent)
             }.bodyAsText() // Thực thi request
         } catch (e: Exception) {
-            // Ignored
+            // Nếu gửi cũng lỗi thì không làm gì cả để tránh crash
         }
     }
     
