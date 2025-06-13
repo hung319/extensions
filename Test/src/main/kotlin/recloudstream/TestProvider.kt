@@ -5,8 +5,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.AppUtils.fixUrlNull
-import com.lagradost.cloudstream3.utils.AppUtils.fixUrl
+// Không cần import AppUtils cho fixUrl/fixUrlNull nữa
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
 
@@ -20,7 +19,6 @@ class IHentaiProvider : MainAPI() {
     override var lang = "vi"
     override val supportedTypes = setOf(TvType.NSFW)
 
-    // Sửa lại User-Agent và định nghĩa headers
     private val userAgent = "Mozilla/5.0 (Linux; Android 14; SM-S711B Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.111 Mobile Safari/537.36"
     private val headers = mapOf("User-Agent" to userAgent)
 
@@ -54,13 +52,13 @@ class IHentaiProvider : MainAPI() {
                   e.printStackTrace()
              }
         }
-        // *** SỬA LỖI CẢNH BÁO: Dùng newHomePageResponse ***
-        // Cần map về đúng định dạng Pair<String, List<SearchResponse>>
-        return newHomePageResponse(homePageList.map { it.name to it.list }, hasNextPage = false)
+        // *** SỬA LỖI: Dùng newHomePageResponse với List<HomePageList> ***
+        return newHomePageResponse(homePageList, hasNextPage = false)
     }
 
     // --- Hàm Helper: Phân tích thẻ Item ---
     private fun parseSearchCard(element: Element): AnimeSearchResponse? {
+        // fixUrlNull và fixUrl giờ sẽ hoạt động vì chúng là extension function của MainAPI
         val linkElement = element.selectFirst("a:has(img.tw-w-full)") ?: return null
         val href = fixUrlNull(linkElement.attr("href")) ?: return null
         if (href.isBlank() || href == "/") { return null }
@@ -113,8 +111,7 @@ class IHentaiProvider : MainAPI() {
             this.plot = description
             this.tags = genres
             
-            // *** SỬA LỖI CẢNH BÁO: Dùng newEpisode ***
-            // Tạo tập phim duy nhất bằng helper mới
+            // Dùng newEpisode để tạo tập phim
             val currentEpisode = newEpisode(url) {
                 this.name = title
             }
@@ -123,7 +120,7 @@ class IHentaiProvider : MainAPI() {
     }
 
     // --- Tải Link Xem Phim/Video (Sử dụng ExtractorLink trực tiếp) ---
-    @Suppress("DEPRECATION") // Giữ lại vì newExtractorLink có thể có vấn đề trong môi trường của bạn
+    @Suppress("DEPRECATION")
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -140,7 +137,7 @@ class IHentaiProvider : MainAPI() {
                 throw RuntimeException("Không thể trích xuất videoId từ iframe src: $iframeSrc")
             }
 
-            // Tạo URL master playlist mới
+            // Tạo URL master playlist
             val masterM3u8Url = "https://s2.mimix.cc/$videoId/master.m3u8"
             println("IHentaiProvider: Generated master M3U8 URL: $masterM3u8Url")
 
@@ -151,7 +148,6 @@ class IHentaiProvider : MainAPI() {
             )
 
             // Trực tiếp tạo ExtractorLink với URL master M3U8
-            // Trình phát của CloudStream sẽ tự xử lý master playlist
             callback(
                 ExtractorLink(
                     source = name,
