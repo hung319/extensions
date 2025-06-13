@@ -1,36 +1,29 @@
 package com.lagradost.cloudstream3.hentai.providers
 
 // Import các lớp cần thiết
-import android.content.Context
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
-import com.lagradost.cloudstream3.plugins.Plugin
-import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.M3u8Helper
-import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.AppUtils.fixUrlNull
-import com.lagradost.cloudstream3.utils.AppUtils.fixUrl
+import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
+// import com.lagradost.cloudstream3.network.CloudflareKiller
 
-@CloudstreamPlugin
-class IHentaiPlugin: Plugin() {
-    override fun load(context: Context) {
-        registerMainAPI(IHentaiProvider())
-    }
-}
+// --- Lớp Provider ---
 
 class IHentaiProvider : MainAPI() {
+    // --- Thông tin cơ bản ---
     override var mainUrl = "https://ihentai.ws"
     override var name = "iHentai"
     override val hasMainPage = true
     override var lang = "vi"
     override val supportedTypes = setOf(TvType.NSFW)
 
+    // *** Thêm User-Agent chung cho tất cả request ***
     private val userAgent = "Mozilla/5.0 (Linux; Android 14; SM-S711B Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.111 Mobile Safari/537.36"
     private val headers = mapOf("User-Agent" to userAgent)
 
+    // --- Trang chính (Dùng parse HTML) ---
     override suspend fun getMainPage(page: Int, request : MainPageRequest): HomePageResponse {
         val document = app.get(mainUrl, headers = headers).document
         val homePageList = mutableListOf<HomePageList>()
@@ -63,10 +56,11 @@ class IHentaiProvider : MainAPI() {
         return HomePageResponse(homePageList)
     }
 
+    // --- Hàm Helper: Phân tích thẻ Item ---
     private fun parseSearchCard(element: Element): AnimeSearchResponse? {
         val linkElement = element.selectFirst("a:has(img.tw-w-full)") ?: return null
         val href = fixUrlNull(linkElement.attr("href")) ?: return null
-        if (href.isBlank() || href == "/") return null
+        if (href.isBlank() || href == "/") { return null }
 
         val imageElement = linkElement.selectFirst("img.tw-w-full")
         val posterUrl = fixUrlNull(imageElement?.attr("src"))
@@ -76,11 +70,13 @@ class IHentaiProvider : MainAPI() {
         if (title.isNullOrBlank()) { title = linkElement.attr("title").trim() }
         if (title.isNullOrBlank()) return null
 
+        // URL của SearchResponse trỏ thẳng đến trang tập phim
         return newAnimeSearchResponse(title, fixUrl(href), TvType.NSFW) {
             this.posterUrl = posterUrl
         }
     }
 
+    // --- Tìm kiếm (Dùng parse HTML) ---
     override suspend fun search(query: String): List<SearchResponse> {
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
         val searchUrl = "$mainUrl/search?s=$encodedQuery"
@@ -96,6 +92,7 @@ class IHentaiProvider : MainAPI() {
         }
     }
 
+    // --- Tải thông tin chi tiết (Dùng parse HTML, chỉ 1 tập) ---
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url, headers = headers).document
         val title = document.selectFirst("div.tw-mb-3 > h1.tw-text-lg")?.text()?.trim()
@@ -114,10 +111,10 @@ class IHentaiProvider : MainAPI() {
         }
     }
 
-    // --- Tải Link Xem Phim/Video (Sử dụng M3u8Helper) ---
+    // --- Tải Link Xem Phim/Video (*** Dùng M3u8Helper ***) ---
     @Suppress("DEPRECATION")
     override suspend fun loadLinks(
-        data: String,
+        data: String, // data là URL của trang tập phim
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
@@ -132,10 +129,9 @@ class IHentaiProvider : MainAPI() {
                 throw RuntimeException("Không thể trích xuất videoId từ iframe src: $iframeSrc")
             }
 
-            // Tạo URL master playlist theo cấu trúc bạn yêu cầu
+            // Tạo URL master playlist mới
             val masterM3u8Url = "https://s2.mimix.cc/$videoId/master.m3u8"
             println("IHentaiProvider: Generated master M3U8 URL: $masterM3u8Url")
-            println("IHentaiProvider: This URL previously failed with 404. Retrying as requested.")
 
             // Headers để tải M3U8 (Referer là trang iframe)
             val m3u8Headers = mapOf(
@@ -144,20 +140,28 @@ class IHentaiProvider : MainAPI() {
             )
 
             // Dùng M3u8Helper để lấy các luồng video từ master playlist
-            M3u8Helper.generateM3u8(
-                this.name, // Nguồn
-                masterM3u8Url, // URL master
-                iframeSrc, // Referer
-                headers = m3u8Headers // Headers
+            M3u8Helper.m3u8Generation(
+                M3u8Helper.M3u8Stream(
+                    streamUrl = masterM3u8Url,
+                    headers = m3u8Headers
+                )
             ).forEach { stream ->
-                // stream ở đây đã là một ExtractorLink được M3u8Helper tạo sẵn
-                println("IHentaiProvider: Found stream -> Quality: ${stream.quality}p, URL: ${stream.url}")
-                callback(stream)
+                // Tạo ExtractorLink cho mỗi luồng chất lượng
+                callback(
+                    ExtractorLink(
+                        source = name,
+                        name = "$name - ${stream.quality}p", // Lấy chất lượng từ stream
+                        url = stream.streamUrl, // Lấy URL cuối cùng từ stream
+                        referer = iframeSrc, // Referer vẫn là iframe
+                        quality = stream.quality ?: Qualities.Unknown.value,
+                        type = ExtractorLinkType.M3U8,
+                        headers = m3u8Headers // Truyền headers cho trình phát
+                    )
+                )
             }
             return true
         } catch (e: Exception) {
             e.printStackTrace()
-            println("IHentaiProvider: Failed to process M3U8 link. Error: ${e.message}")
             return false
         }
     }
