@@ -1,7 +1,8 @@
-// File: IHentai.kt (DEBUG TOOL - POSTER VERSION)
+// File: IHentai.kt (DEBUG TOOL - POSTER FINAL)
 package recloudstream
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import com.fasterxml.jackson.module.kotlin.readValue
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import org.jsoup.Jsoup
@@ -15,6 +16,8 @@ class IHentai : MainAPI() {
     override val supportedTypes = setOf(
         TvType.NSFW
     )
+
+    private val mapper = jacksonObjectMapper()
 
     private val headers = mapOf(
         "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
@@ -30,17 +33,17 @@ class IHentai : MainAPI() {
         val logUrl = "https://text.h4rs.pp.ua/upload/text/log.txt"
         try {
             // Định dạng lại JSON cho dễ đọc trước khi gửi
-            val mapper = jacksonObjectMapper()
-            val jsonObject = mapper.readValue(content, Any::class.java)
+            val jsonObject = mapper.readValue<Any>(content)
             val prettyJson = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(jsonObject)
 
             val logContent = "--- LOG FROM IHENTAI PROVIDER (Source: $source) ---\n\n$prettyJson"
             
-            // Gửi dữ liệu dưới dạng text
-            app.post(logUrl, data = logContent, headers = mapOf("Content-Type" to "text/plain"))
+            // [FIX] Gửi dữ liệu dưới dạng Map<String, String> theo yêu cầu của hàm post
+            app.post(logUrl, data = mapOf("log" to logContent))
         } catch (e: Exception) {
             // Nếu có lỗi, gửi thông báo lỗi
-            app.post(logUrl, data = "--- ERROR PARSING OR POSTING (Source: $source) ---\n\n${e.stackTraceToString()}")
+            val errorContent = "--- ERROR PARSING OR POSTING (Source: $source) ---\n\n${e.stackTraceToString()}"
+            app.post(logUrl, data = mapOf("log" to errorContent))
         }
     }
     
