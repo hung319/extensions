@@ -8,7 +8,6 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import org.jsoup.Jsoup
 
 // Data classes to map the JSON structure from __NUXT_DATA__
-// Note: Removed NuxtTray as its structure was too inconsistent.
 data class NuxtItem(
     val name: String?,
     val slug: String?,
@@ -19,6 +18,10 @@ data class NuxtItem(
 data class NuxtEpisodeShort(
     val slug: String?,
     val name: String?,
+)
+
+data class NuxtSource(
+    val src: String?
 )
 
 class IHentai : MainAPI() {
@@ -32,7 +35,8 @@ class IHentai : MainAPI() {
     )
 
     private val headers = mapOf(
-        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36"
+        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
+        "Referer" to "$mainUrl/"
     )
 
     private fun getNuxtData(html: String): String? {
@@ -56,21 +60,18 @@ class IHentai : MainAPI() {
         val nuxtData = getNuxtData(document) ?: return HomePageResponse(emptyList())
 
         return try {
-            // [REWRITE] Tự động tìm kiếm khối dữ liệu của trang chủ.
-            // Dữ liệu trang chủ là một List, có phần tử đầu tiên cũng là một List.
-            val rootList = parseJson<List<Any?>>(nuxtData)
-            val traysContainer = rootList.find { it is List<*> } as? List<*> ?: return HomePageResponse(emptyList())
+            val state = parseJson<Map<String, Any?>>(nuxtData)["state"] as? Map<*, *>
+            val home = state?.get("home") as? Map<*, *>
+            val trays = home?.get("trays") as? List<*> ?: return HomePageResponse(emptyList())
 
-            val homePageList = traysContainer.mapNotNull { trayItem ->
-                val trayMap = (trayItem as? List<*>)?.getOrNull(0) as? Map<*, *> ?: return@mapNotNull null
-                
+            val homePageList = trays.mapNotNull { trayItem ->
+                val trayMap = trayItem as? Map<*,*> ?: return@mapNotNull null
                 val header = trayMap["name"] as? String ?: "Unknown Category"
                 val itemsList = trayMap["items"] as? List<*> ?: return@mapNotNull null
 
                 val list = itemsList.mapNotNull { item ->
-                    val itemMap = item as? Map<*,*> ?: return@mapNotNull null
                     try {
-                        parseJson<NuxtItem>(itemMap.toJson()).toSearchResponse()
+                        parseJson<NuxtItem>((item as? Map<*, *>)?.toJson()).toSearchResponse()
                     } catch (e: Exception) { null }
                 }
 
@@ -88,17 +89,14 @@ class IHentai : MainAPI() {
         val nuxtData = getNuxtData(document) ?: return emptyList()
 
         return try {
-            // [REWRITE] Tự động tìm kiếm khối dữ liệu của trang tìm kiếm.
-            // Dữ liệu trang tìm kiếm là một Map, chứa một value là List các item.
-            val dataMap = parseJson<Map<String, Any?>>(nuxtData)
-            val itemsList = dataMap.values.find {
-                (it as? List<*>)?.getOrNull(0) is Map<*, *>
-            } as? List<*> ?: return emptyList()
+            val state = parseJson<Map<String, Any?>>(nuxtData)["state"] as? Map<*, *>
+            val search = state?.get("search") as? Map<*, *>
+            val result = search?.get("result") as? Map<*, *>
+            val itemsList = result?.get("items") as? List<*> ?: return emptyList()
 
             itemsList.mapNotNull { item ->
-                val itemMap = item as? Map<*, *> ?: return@mapNotNull null
                 try {
-                    parseJson<NuxtItem>(itemMap.toJson()).toSearchResponse()
+                    parseJson<NuxtItem>((item as? Map<*,*>)?.toJson()).toSearchResponse()
                 } catch (e: Exception) { null }
             }
         } catch (e: Exception) {
@@ -111,15 +109,11 @@ class IHentai : MainAPI() {
         val nuxtData = getNuxtData(document) ?: return null
 
         return try {
-            // [REWRITE] Tự động tìm kiếm khối dữ liệu của trang phim.
-            // Dữ liệu trang phim là một Map, chứa một value là object anime chi tiết.
-            val dataMap = parseJson<Map<String, Any?>>(nuxtData)
-            val animeDataMap = dataMap.values.find {
-                (it as? Map<*, *>)?.containsKey("episodes") == true
-            } as? Map<*, *> ?: return null
-            
+            val state = parseJson<Map<String, Any?>>(nuxtData)["state"] as? Map<*, *>
+            val anime = state?.get("anime") as? Map<*, *>
+            val animeDataMap = anime?.get("detail") as? Map<*, *> ?: return null
             val animeData = parseJson<NuxtItem>(animeDataMap.toJson())
-            
+
             val title = animeData.name ?: return null
             val slug = animeData.slug ?: return null
             val posterUrl = animeData.poster?.let { if (it.startsWith("/")) "$mainUrl$it" else it }
@@ -147,7 +141,41 @@ class IHentai : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Placeholder
+        // [PLACEHOLDER] Tạm thời vô hiệu hóa theo yêu cầu để kiểm tra các hàm khác.
+        // Logic đúng đã được comment lại bên dưới để dùng sau.
         return false
+
+        /*
+        val document = app.get(data, headers = headers).text
+        val nuxtData = getNuxtData(document) ?: return false
+
+        try {
+            val state = parseJson<Map<String, Any?>>(nuxtData)["state"] as? Map<*, *>
+            val player = state?.get("player") as? Map<*, *>
+            val sourcesList = player?.get("sources") as? List<*> ?: return false
+
+            sourcesList.forEach { sourceItem ->
+                try {
+                    val source = parseJson<NuxtSource>((sourceItem as? Map<*,*>)?.toJson())
+                    val videoUrl = source.src ?: return@forEach
+                    callback.invoke(
+                        ExtractorLink(
+                            this.name, // source
+                            "iHentai Server", // name
+                            videoUrl,
+                            referer = mainUrl,
+                            quality = Qualities.Unknown.value,
+                            isM3u8 = videoUrl.contains(".m3u8")
+                        )
+                    )
+                } catch (e: Exception) {
+                    // Continue to next source if one fails
+                }
+            }
+        } catch (e: Exception) {
+            return false
+        }
+        return true
+        */
     }
 }
