@@ -1,12 +1,12 @@
-// File: IhentaiProvider/src/main/kotlin/recloudstream/IhentaiProvider.kt
+// Đặt trong file: IhentaiProvider/src/main/kotlin/recloudstream/IhentaiProvider.kt
 
 package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
 
 class IhentaiProvider : MainAPI() {
     override var name = "iHentai"
@@ -15,10 +15,10 @@ class IhentaiProvider : MainAPI() {
     override var lang = "vi"
     override val supportedTypes = setOf(TvType.NSFW)
 
-    // [NEW] Định nghĩa một User-Agent để giả lập trình duyệt
+    // User-Agent để giả lập trình duyệt, tăng tính ổn định
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 
-    // Data classes (không thay đổi)
+    // Data classes để parse JSON
     @Serializable
     data class NuxtData(val data: List<NuxtStateData>? = null)
     @Serializable
@@ -36,12 +36,13 @@ class IhentaiProvider : MainAPI() {
     @Serializable
     data class ChapterImage(val image_url: String)
 
+    // Hàm helper để lấy và phân tích dữ liệu JSON từ __NUXT_DATA__
     private suspend fun getNuxtData(url: String): NuxtData? {
-        // [FIX] Thêm headers chứa User-Agent vào mỗi request
         val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
         val scriptData = document.selectFirst("#__NUXT_DATA__")?.data() ?: return null
 
         return try {
+            // Dữ liệu gốc là một Array, chúng ta cần lấy phần tử thứ 2 (index 1)
             val jsonArray = parseJson<List<JsonElement>>(scriptData)
             if (jsonArray.size > 1) {
                 parseJson<NuxtData>(jsonArray[1].toString())
