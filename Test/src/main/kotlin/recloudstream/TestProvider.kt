@@ -2,9 +2,9 @@
 package recloudstream
 
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import com.fasterxml.jackson.module.kotlin.readValue
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import com.lagradost.cloudstream3.common.mapper // [FIX] Import chính xác mapper từ common
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import org.jsoup.Jsoup
 
@@ -30,6 +30,9 @@ class IHentai : MainAPI() {
     override val supportedTypes = setOf(
         TvType.NSFW
     )
+    
+    // [FIX] Tự tạo một mapper nội bộ để không phụ thuộc vào thư viện ngoài
+    private val mapper = jacksonObjectMapper()
 
     private val headers = mapOf(
         "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
@@ -57,9 +60,8 @@ class IHentai : MainAPI() {
         val nuxtData = getNuxtData(document) ?: return HomePageResponse(emptyList())
 
         return try {
-            val data = parseJson<Map<String, Any?>>(nuxtData)["data"] as? Map<*, *> ?: return HomePageResponse(emptyList())
+            val data = mapper.readValue<Map<String, Any?>>(nuxtData)["data"] as? Map<*, *> ?: return HomePageResponse(emptyList())
             
-            // Dữ liệu trang chủ là các value trong object "data"
             data.values.mapNotNull { trayItem ->
                 val trayMap = (trayItem as? List<*>)?.getOrNull(0) as? Map<*, *> ?: return@mapNotNull null
                 val header = trayMap["name"] as? String ?: return@mapNotNull null
@@ -85,8 +87,7 @@ class IHentai : MainAPI() {
         val nuxtData = getNuxtData(document) ?: return emptyList()
 
         return try {
-            val data = parseJson<Map<String, Any?>>(nuxtData)["data"] as? Map<*, *> ?: return emptyList()
-            // Dữ liệu search nằm trong key "0"
+            val data = mapper.readValue<Map<String, Any?>>(nuxtData)["data"] as? Map<*, *> ?: return emptyList()
             val itemsList = data["0"] as? List<*> ?: return emptyList()
 
             itemsList.mapNotNull { item ->
@@ -105,8 +106,7 @@ class IHentai : MainAPI() {
         val nuxtData = getNuxtData(document) ?: return null
 
         return try {
-            val data = parseJson<Map<String, Any?>>(nuxtData)["data"] as? Map<*, *> ?: return null
-            // Dữ liệu chi tiết phim nằm trong key "0"
+            val data = mapper.readValue<Map<String, Any?>>(nuxtData)["data"] as? Map<*, *> ?: return null
             val animeDataMap = data["0"] as? Map<*, *> ?: return null
             val animeData = mapper.convertValue(animeDataMap, NuxtItem::class.java)
 
