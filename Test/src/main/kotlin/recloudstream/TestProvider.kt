@@ -3,10 +3,7 @@ package recloudstream
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
-// [FIX] Sử dụng các import tường minh và chính xác thay cho wildcard
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import com.lagradost.cloudstream3.utils.AppUtils.toJson
-import com.lagradost.cloudstream3.utils.AppUtils.mapper
+import com.lagradost.cloudstream3.utils.AppUtils // [FIX] Chỉ import AppUtils
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import org.jsoup.Jsoup
 
@@ -63,7 +60,7 @@ class IHentai : MainAPI() {
         val nuxtData = getNuxtData(document) ?: return HomePageResponse(emptyList())
 
         return try {
-            val state = parseJson<Map<String, Any?>>(nuxtData)["state"] as? Map<*, *>
+            val state = AppUtils.parseJson<Map<String, Any?>>(nuxtData)["state"] as? Map<*, *>
             val home = state?.get("home") as? Map<*, *>
             val trays = home?.get("trays") as? List<*> ?: return HomePageResponse(emptyList())
 
@@ -75,7 +72,8 @@ class IHentai : MainAPI() {
                 val list = itemsList.mapNotNull { item ->
                     val itemMap = item as? Map<*,*> ?: return@mapNotNull null
                     try {
-                        mapper.convertValue(itemMap, NuxtItem::class.java).toSearchResponse()
+                        // [FIX] Gọi trực tiếp AppUtils.mapper
+                        AppUtils.mapper.convertValue(itemMap, NuxtItem::class.java).toSearchResponse()
                     } catch (e: Exception) { null }
                 }
 
@@ -93,7 +91,7 @@ class IHentai : MainAPI() {
         val nuxtData = getNuxtData(document) ?: return emptyList()
 
         return try {
-            val state = parseJson<Map<String, Any?>>(nuxtData)["state"] as? Map<*, *>
+            val state = AppUtils.parseJson<Map<String, Any?>>(nuxtData)["state"] as? Map<*, *>
             val search = state?.get("search") as? Map<*, *>
             val result = search?.get("result") as? Map<*, *>
             val itemsList = result?.get("items") as? List<*> ?: return emptyList()
@@ -101,7 +99,8 @@ class IHentai : MainAPI() {
             itemsList.mapNotNull { item ->
                 val itemMap = item as? Map<*,*> ?: return@mapNotNull null
                 try {
-                    mapper.convertValue(itemMap, NuxtItem::class.java).toSearchResponse()
+                    // [FIX] Gọi trực tiếp AppUtils.mapper
+                    AppUtils.mapper.convertValue(itemMap, NuxtItem::class.java).toSearchResponse()
                 } catch (e: Exception) { null }
             }
         } catch (e: Exception) {
@@ -114,11 +113,12 @@ class IHentai : MainAPI() {
         val nuxtData = getNuxtData(document) ?: return null
 
         return try {
-            val state = parseJson<Map<String, Any?>>(nuxtData)["state"] as? Map<*, *>
+            val state = AppUtils.parseJson<Map<String, Any?>>(nuxtData)["state"] as? Map<*, *>
             val anime = state?.get("anime") as? Map<*, *>
             val animeDataMap = anime?.get("detail") as? Map<*, *> ?: return null
             
-            val animeData = mapper.convertValue(animeDataMap, NuxtItem::class.java)
+            // [FIX] Gọi trực tiếp AppUtils.mapper
+            val animeData = AppUtils.mapper.convertValue(animeDataMap, NuxtItem::class.java)
 
             val title = animeData.name ?: return null
             val slug = animeData.slug ?: return null
