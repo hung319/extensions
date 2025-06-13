@@ -1,4 +1,4 @@
-// Đặt trong file: IhentaiProvider/src/main/kotlin/recloudstream/IhentaiProvider.kt
+// File: IhentaiProvider/src/main/kotlin/recloudstream/IhentaiProvider.kt
 
 package recloudstream
 
@@ -34,8 +34,7 @@ class IhentaiProvider : MainAPI() {
     data class ChapterDetail(val images: List<ChapterImage> = emptyList())
     @Serializable
     data class ChapterImage(val image_url: String)
-
-    // Hàm getNuxtData này sẽ được dùng cho các hàm search, load...
+    
     private suspend fun getNuxtData(url: String): NuxtData? {
         val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
         val scriptData = document.selectFirst("#__NUXT_DATA__")?.data() ?: return null
@@ -56,27 +55,23 @@ class IhentaiProvider : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page == 1) mainUrl else "$mainUrl?page=$page"
 
-        // Lấy dữ liệu thô từ trang web để gỡ lỗi
         val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
         val scriptData = document.selectFirst("#__NUXT_DATA__")?.data()
 
-        // Tạo một list chứa duy nhất một mục, với tên là dữ liệu thô chúng ta lấy được
+        // [FIX] Đổi tên tham số từ "list" thành "items" theo API mới của Cloudstream
         val debugList = HomePageList(
-            name = scriptData ?: ">>> SCRIPT DATA IS NULL OR EMPTY <<<", // Hiển thị dữ liệu lên đây
-            list = emptyList() // Danh sách phim tạm thời để trống
+            name = scriptData ?: ">>> SCRIPT DATA IS NULL OR EMPTY <<<",
+            items = emptyList() 
         )
 
-        // Trả về response chỉ chứa mục gỡ lỗi này
         return HomePageResponse(
             list = listOf(debugList)
         )
     }
     
-    // Giữ nguyên các hàm khác để chúng vẫn hoạt động bình thường
+    // Các hàm khác giữ nguyên để đảm bảo hoạt động sau khi gỡ lỗi xong
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$mainUrl/tim-kiem?q=$query"
         val nuxtData = getNuxtData(url)
-
         return nuxtData?.data?.firstOrNull()?.animes?.data?.mapNotNull { item ->
             newTvSeriesSearchResponse(item.name, "$mainUrl/phim/${item.slug}", TvType.NSFW) {
                 this.posterUrl = item.poster_url
