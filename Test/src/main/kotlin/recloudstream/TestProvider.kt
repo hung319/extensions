@@ -1,4 +1,4 @@
-// File: IHentai.kt (DEBUG TOOL v2)
+// File: IHentai.kt (DEBUG TOOL v3 - FINAL)
 package recloudstream
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
@@ -6,6 +6,7 @@ import com.fasterxml.jackson.module.kotlin.readValue
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import org.jsoup.Jsoup
+import java.net.URLEncoder
 
 class IHentai : MainAPI() {
     override var name = "iHentai (DEBUG TOOL)"
@@ -27,12 +28,10 @@ class IHentai : MainAPI() {
         return Jsoup.parse(html).selectFirst("script[id=__NUXT_DATA__]")?.data()
     }
 
-    // Trang chủ tạm thời trống
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         return HomePageResponse(emptyList())
     }
 
-    // [FIX] Sửa lại chữ ký hàm cho đúng và giữ nó làm placeholder
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -42,9 +41,7 @@ class IHentai : MainAPI() {
         return false
     }
 
-    // [REWRITE] search chỉ trả về một item giả để kích hoạt hàm load
     override suspend fun search(query: String): List<SearchResponse> {
-        // Tạo một URL giả chứa từ khóa tìm kiếm để hàm load có thể sử dụng
         val debugUrl = "debug-data-key:$query"
         return listOf(
             newMovieSearchResponse(
@@ -54,31 +51,28 @@ class IHentai : MainAPI() {
         )
     }
 
-    // [REWRITE] load sẽ thực hiện công việc lấy và hiển thị JSON
     override suspend fun load(url: String): LoadResponse? {
-        // Kiểm tra xem đây có phải là yêu cầu debug không
         if (!url.startsWith("debug-data-key:")) return null
 
         val query = url.removePrefix("debug-data-key:")
-        val searchUrl = "$mainUrl/tim-kiem?keyword=$query"
+        // [FIX] Mã hóa ký tự tiếng Việt trong query để tạo URL hợp lệ
+        val encodedQuery = URLEncoder.encode(query, "UTF-8")
+        val searchUrl = "$mainUrl/tim-kiem?keyword=$encodedQuery"
 
         try {
             val document = app.get(searchUrl, headers = headers).text
             val nuxtData = getNuxtData(document) ?: return newMovieLoadResponse("DEBUG RESULT", url, TvType.Movie, url) {
                 this.plot = "ERROR: Could not find __NUXT_DATA__ script tag on the page."
             }
-
-            // Định dạng lại JSON cho dễ đọc
+            
             val jsonObject: Any = mapper.readValue(nuxtData)
             val prettyJson = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(jsonObject)
 
-            // Trả về một trang chi tiết chứa toàn bộ JSON trong phần mô tả
             return newMovieLoadResponse("DEBUG DATA", url, TvType.Movie, url) {
                 this.plot = "VUI LÒNG SAO CHÉP TOÀN BỘ NỘI DUNG BÊN DƯỚI VÀ GỬI LẠI CHO TÔI:\n\n--BEGIN JSON--\n\n$prettyJson\n\n--END JSON--"
             }
 
         } catch (e: Exception) {
-            // Nếu có lỗi, hiển thị lỗi trong phần mô tả
             return newMovieLoadResponse("DEBUG RESULT", url, TvType.Movie, url) {
                 this.plot = "AN ERROR OCCURRED:\n\n${e.stackTraceToString()}"
             }
