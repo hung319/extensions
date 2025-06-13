@@ -1,97 +1,109 @@
-// File: IHentai.kt (DEBUG TOOL - FILE LOGGER)
+// File: IhentaiProvider/src/main/kotlin/recloudstream/IhentaiProvider.kt
+
 package recloudstream
 
-import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
-import com.fasterxml.jackson.module.kotlin.readValue
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import org.jsoup.Jsoup
-import java.net.URLEncoder
-import java.io.File
-import android.os.Environment
+import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import kotlinx.serialization.Serializable
 
-class IHentai : MainAPI() {
-    override var name = "iHentai (File Logger)"
+class IhentaiProvider : MainAPI() {
+    override var name = "iHentai"
     override var mainUrl = "https://ihentai.ws"
+    override var hasMainPage = true
     override var lang = "vi"
-    override val hasMainPage = true
-    override val supportedTypes = setOf(
-        TvType.NSFW
-    )
+    // Thay đổi TvType tại đây
+    override val supportedTypes = setOf(TvType.NSFW) // <-- ĐÃ THAY ĐỔI
 
-    private val mapper = jacksonObjectMapper()
+    // Data classes để parse JSON (không thay đổi)
+    @Serializable
+    data class NuxtData(val data: List<NuxtStateData>? = null)
+    @Serializable
+    data class NuxtStateData(val latestAnimes: AnimeList? = null, val animes: AnimeList? = null, val anime: AnimeDetail? = null, val chapters: List<ChapterItem>? = null, val chapter: ChapterDetail? = null)
+    @Serializable
+    data class AnimeList(val data: List<AnimeItem> = emptyList())
+    @Serializable
+    data class AnimeItem(val name: String, val slug: String, val poster_url: String? = null)
+    @Serializable
+    data class AnimeDetail(val name: String, val slug: String, val description: String? = null, val poster_url: String? = null)
+    @Serializable
+    data class ChapterItem(val id: Int, val name: String, val slug: String)
+    @Serializable
+    data class ChapterDetail(val images: List<ChapterImage> = emptyList())
+    @Serializable
+    data class ChapterImage(val image_url: String)
 
-    private val headers = mapOf(
-        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
-        "Referer" to "$mainUrl/"
-    )
-
-    private fun getNuxtData(html: String): String? {
-        return Jsoup.parse(html).selectFirst("script[id=__NUXT_DATA__]")?.data()
+    private suspend fun getNuxtData(url: String): NuxtData? {
+        val document = app.get(url).document
+        val scriptData = document.selectFirst("#__NUXT_DATA__")?.data() ?: return null
+        return parseJson<NuxtData>(scriptData)
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val debugUrl = "log-homepage-data"
-        return HomePageResponse(listOf(
-            HomePageList("DEBUG TOOL", listOf(
-                newMovieSearchResponse("CLICK HERE to LOG HOMEPAGE DATA", debugUrl)
-            ))
-        ))
+        val url = if (page == 1) mainUrl else "$mainUrl?page=$page"
+        val nuxtData = getNuxtData(url)
+        
+        val home = nuxtData?.data?.firstOrNull()?.latestAnimes?.data?.mapNotNull { item ->
+            // Sử dụng newAnimeSearchResponse nhưng đổi TvType
+            newAnimeSearchResponse(item.name, "$mainUrl/phim/${item.slug}", TvType.NSFW) { // <-- ĐÃ THAY ĐỔI
+                this.posterUrl = item.poster_url
+            }
+        } ?: emptyList()
+
+        return newHomePageResponse("Mới Cập Nhật", home)
     }
-    
+
     override suspend fun search(query: String): List<SearchResponse> {
-        val debugUrl = "log-search-data:$query"
-        return listOf(
-            newMovieSearchResponse("CLICK HERE to LOG SEARCH DATA for '$query'", debugUrl)
-        )
+        val url = "$mainUrl/tim-kiem?q=$query"
+        val nuxtData = getNuxtData(url)
+
+        return nuxtData?.data?.firstOrNull()?.animes?.data?.mapNotNull { item ->
+            // Sử dụng newAnimeSearchResponse nhưng đổi TvType
+            newAnimeSearchResponse(item.name, "$mainUrl/phim/${item.slug}", TvType.NSFW) { // <-- ĐÃ THAY ĐỔI
+                this.posterUrl = item.poster_url
+            }
+        } ?: emptyList()
+    }
+
+    override suspend fun load(url: String): LoadResponse {
+        val nuxtData = getNuxtData(url)
+        val anime = nuxtData?.data?.firstOrNull()?.anime ?: return newAnimeLoadResponse("", "", TvType.NSFW, emptyList())
+        val chapters = nuxtData.data.firstOrNull()?.chapters ?: emptyList()
+
+        val episodes = chapters.map { chapter ->
+            val episodeUrl = "$mainUrl/xem-phim/${anime.slug}/${chapter.slug}"
+            newEpisode(episodeUrl) {
+                this.name = chapter.name
+            }
+        }.reversed()
+
+        // Sử dụng newAnimeLoadResponse nhưng đổi TvType
+        return newAnimeLoadResponse(anime.name, url, TvType.NSFW, episodes) { // <-- ĐÃ THAY ĐỔI
+            this.posterUrl = anime.poster_url
+            this.plot = anime.description
+        }
     }
 
     override suspend fun loadLinks(
-        data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit
-    ): Boolean { return false }
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val nuxtData = getNuxtData(data)
+        val images = nuxtData?.data?.firstOrNull()?.chapter?.images ?: emptyList()
 
-    override suspend fun load(url: String): LoadResponse? {
-        val isHomePage = url == "log-homepage-data"
-        val isSearch = url.startsWith("log-search-data:")
-        
-        if (!isHomePage && !isSearch) return null
-
-        val (fetchUrl, logSource) = if (isHomePage) {
-            mainUrl to "Homepage"
-        } else {
-            val query = url.removePrefix("log-search-data:")
-            val encodedQuery = URLEncoder.encode(query, "UTF-8")
-            "$mainUrl/search?s=$encodedQuery" to "Search for '$query'"
+        images.forEach { image ->
+            callback(
+                ExtractorLink(
+                    source = this.name,
+                    name = "iHentai Image",
+                    url = image.image_url,
+                    referer = "$mainUrl/",
+                    quality = Qualities.Unknown.value,
+                )
+            )
         }
-
-        var plot: String
-        try {
-            val document = app.get(fetchUrl, headers = headers).text
-            val nuxtData = getNuxtData(document) ?: "ERROR: Could not find __NUXT_DATA__ script tag."
-            
-            val logFile = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "cloudstream_ihentai_log.txt")
-            
-            // Định dạng và ghi file
-            try {
-                val jsonObject: Any = mapper.readValue(nuxtData)
-                val prettyJson = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(jsonObject)
-                val logContent = "--- LOG FOR: $logSource ---\n\n$prettyJson\n\n"
-                logFile.appendText(logContent, Charsets.UTF_8)
-                plot = "SUCCESS: Data for '$logSource' has been written to 'Download/cloudstream_ihentai_log.txt'"
-            } catch (e: Exception) {
-                val errorContent = "--- FAILED TO PARSE JSON FOR: $logSource ---\n\n${e.stackTraceToString()}\n\n--- RAW DATA ---\n\n$nuxtData\n\n"
-                logFile.appendText(errorContent, Charsets.UTF_8)
-                plot = "ERROR: Failed to parse JSON, but raw data has been written to 'Download/cloudstream_ihentai_log.txt'"
-            }
-        } catch (e: Exception) {
-            val logFile = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "cloudstream_ihentai_log.txt")
-            val errorContent = "--- FAILED TO FETCH URL FOR: $logSource ---\n\n${e.stackTraceToString()}\n\n"
-            logFile.appendText(errorContent, Charsets.UTF_8)
-            plot = "FATAL ERROR: Could not fetch URL. Error details written to 'Download/cloudstream_ihentai_log.txt'"
-        }
-
-        return newMovieLoadResponse("DEBUGGER", url, TvType.Movie, url) {
-            this.plot = plot
-        }
+        return true
     }
 }
