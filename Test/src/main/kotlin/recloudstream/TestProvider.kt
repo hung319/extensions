@@ -48,11 +48,11 @@ class IHentai : MainAPI() {
     private val headers = mapOf(
         "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36"
     )
-    
+
     private fun getNuxtData(html: String): String? {
         return Jsoup.parse(html).selectFirst("script[id=__NUXT_DATA__]")?.data()
     }
-    
+
     private fun NuxtItem.toSearchResponse(): SearchResponse? {
         val slug = this.slug ?: return null
         val title = this.name ?: "N/A"
@@ -68,11 +68,11 @@ class IHentai : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(mainUrl, headers = headers).text
         val nuxtData = getNuxtData(document) ?: return HomePageResponse(emptyList())
-        
-        val trays = parseJson<List<NuxtTray>>(
-            (parseJson<Map<*,*>>(nuxtData)["data"] as? Map<*, *>)?.get("1")?.toString() ?: "[]"
-        )
-        
+
+        // [FIX] Sửa lỗi Deserialization: Phân tích nuxtData trực tiếp như một List<NuxtTray>
+        // vì JSON trên trang chủ là một mảng, không phải một đối tượng.
+        val trays = parseJson<List<NuxtTray>>(nuxtData)
+
         val homePageList = trays.mapNotNull { tray ->
             val header = tray.name ?: "Unknown Category"
             val list = tray.items?.mapNotNull { it.toSearchResponse() }
@@ -82,7 +82,7 @@ class IHentai : MainAPI() {
                 null
             }
         }
-        
+
         return HomePageResponse(homePageList)
     }
 
@@ -90,10 +90,11 @@ class IHentai : MainAPI() {
         val url = "$mainUrl/tim-kiem?keyword=$query"
         val document = app.get(url, headers = headers).text
         val nuxtData = getNuxtData(document) ?: return emptyList()
-        
-        val items = parseJson<List<NuxtItem>>(
-             (parseJson<Map<*,*>>(nuxtData)["data"] as? Map<*, *>)?.get("0")?.toString() ?: "[]"
-        )
+
+        // Cấu trúc JSON trên trang search khác, cần đi sâu vào "data" -> "0"
+        val dataMap = parseJson<Map<String, Any>>(nuxtData)
+        val itemsJson = (dataMap["data"] as? Map<*, *>)?.get("0")?.toString() ?: "[]"
+        val items = parseJson<List<NuxtItem>>(itemsJson)
 
         return items.mapNotNull { it.toSearchResponse() }
     }
@@ -101,15 +102,17 @@ class IHentai : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, headers = headers).text
         val nuxtData = getNuxtData(document) ?: return null
-        
-        val animeData = parseJson<NuxtItem>(
-            (parseJson<Map<*,*>>(nuxtData)["data"] as? Map<*, *>)?.get("0")?.toString() ?: "{}"
-        )
+
+        // Tương tự trang search, cấu trúc JSON trên trang load cần đi sâu vào "data" -> "0"
+        val dataMap = parseJson<Map<String, Any>>(nuxtData)
+        val animeDataJson = (dataMap["data"] as? Map<*, *>)?.get("0")?.toString() ?: "{}"
+        val animeData = parseJson<NuxtItem>(animeDataJson)
+
 
         val title = animeData.name ?: return null
         val slug = animeData.slug ?: return null
         val posterUrl = animeData.poster?.let { if (it.startsWith("/")) "$mainUrl$it" else it }
-        
+
         val episodes = animeData.episodes?.mapNotNull { ep ->
             val epSlug = ep.slug ?: return@mapNotNull null
             val epName = ep.name ?: "Episode"
@@ -136,24 +139,6 @@ class IHentai : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // --- LOGIC CŨ ĐƯỢC COMMENT LẠI ---
-        /*
-        val document = app.get(data, headers = headers).text
-        val nuxtData = getNuxtData(document) ?: return false
-
-        val episodeData = parseJson<NuxtEpisodeData>(
-             (parseJson<Map<*,*>>(nuxtData)["data"] as? Map<*, *>)?.get("0")?.toString() ?: "{}"
-        )
-
-        var hasLoaded = false
-        episodeData.sources?.forEach { source ->
-            val videoUrl = source.src ?: return@forEach
-            loadExtractor(videoUrl, data, subtitleCallback, callback)
-            hasLoaded = true
-        }
-        return hasLoaded
-        */
-
         // Placeholder: Luôn trả về false để báo hiệu không tìm thấy link
         return false
     }
