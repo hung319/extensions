@@ -3,7 +3,6 @@ package com.lagradost.cloudstream3.hentai.providers
 // Import các lớp cần thiết
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.M3u8Helper
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
@@ -138,22 +137,14 @@ class IHentaiProvider : MainAPI() {
                 "Referer" to iframeSrc,
                 "User-Agent" to userAgent
             )
-
-            // Dùng M3u8Helper để lấy các luồng video từ master playlist
-            M3u8Helper.m3u8Generation(
-                M3u8Helper.M3u8Stream(
-                    streamUrl = masterM3u8Url,
-                    headers = m3u8Headers
-                )
-            ).forEach { stream ->
+            
                 // Tạo ExtractorLink cho mỗi luồng chất lượng
                 callback(
                     ExtractorLink(
                         source = name,
                         name = "$name - ${stream.quality}p", // Lấy chất lượng từ stream
-                        url = stream.streamUrl, // Lấy URL cuối cùng từ stream
-                        referer = iframeSrc, // Referer vẫn là iframe
-                        quality = stream.quality ?: Qualities.Unknown.value,
+                        url = masterM3u8Url, // Lấy URL cuối cùng từ stream
+                        referer = mainurl, // Referer vẫn là iframe
                         type = ExtractorLinkType.M3U8,
                         headers = m3u8Headers // Truyền headers cho trình phát
                     )
