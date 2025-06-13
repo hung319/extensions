@@ -3,7 +3,11 @@ package recloudstream
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.* // [FIX] Thay thế các import riêng lẻ bằng wildcard để đảm bảo nạp đúng 'mapper' và các tiện ích khác.
+// [FIX] Sử dụng các import tường minh và chính xác thay cho wildcard
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
+import com.lagradost.cloudstream3.utils.AppUtils.mapper
+import com.lagradost.cloudstream3.utils.ExtractorLink
 import org.jsoup.Jsoup
 
 // Data classes to map the JSON structure from __NUXT_DATA__
