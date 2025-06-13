@@ -12,10 +12,9 @@ class IhentaiProvider : MainAPI() {
     override var mainUrl = "https://ihentai.ws"
     override var hasMainPage = true
     override var lang = "vi"
-    // Thay đổi TvType tại đây
-    override val supportedTypes = setOf(TvType.NSFW) // <-- ĐÃ THAY ĐỔI
+    override val supportedTypes = setOf(TvType.NSFW)
 
-    // Data classes để parse JSON (không thay đổi)
+    // Data classes (không thay đổi)
     @Serializable
     data class NuxtData(val data: List<NuxtStateData>? = null)
     @Serializable
@@ -44,11 +43,11 @@ class IhentaiProvider : MainAPI() {
         val nuxtData = getNuxtData(url)
         
         val home = nuxtData?.data?.firstOrNull()?.latestAnimes?.data?.mapNotNull { item ->
-            // Sử dụng newAnimeSearchResponse nhưng đổi TvType
-            newAnimeSearchResponse(item.name, "$mainUrl/phim/${item.slug}", TvType.NSFW) { // <-- ĐÃ THAY ĐỔI
+            newAnimeSearchResponse(item.name, "$mainUrl/phim/${item.slug}", TvType.NSFW) {
                 this.posterUrl = item.poster_url
             }
-        } ?: emptyList()
+        // [FIX] Sửa lỗi type inference
+        } ?: emptyList<SearchResponse>() 
 
         return newHomePageResponse("Mới Cập Nhật", home)
     }
@@ -57,18 +56,19 @@ class IhentaiProvider : MainAPI() {
         val url = "$mainUrl/tim-kiem?q=$query"
         val nuxtData = getNuxtData(url)
 
+        // [FIX] Sửa lỗi type inference
         return nuxtData?.data?.firstOrNull()?.animes?.data?.mapNotNull { item ->
-            // Sử dụng newAnimeSearchResponse nhưng đổi TvType
-            newAnimeSearchResponse(item.name, "$mainUrl/phim/${item.slug}", TvType.NSFW) { // <-- ĐÃ THAY ĐỔI
+            newAnimeSearchResponse(item.name, "$mainUrl/phim/${item.slug}", TvType.NSFW) {
                 this.posterUrl = item.poster_url
             }
-        } ?: emptyList()
+        } ?: emptyList<SearchResponse>()
     }
 
     override suspend fun load(url: String): LoadResponse {
         val nuxtData = getNuxtData(url)
-        val anime = nuxtData?.data?.firstOrNull()?.anime ?: return newAnimeLoadResponse("", "", TvType.NSFW, emptyList())
-        val chapters = nuxtData.data.firstOrNull()?.chapters ?: emptyList()
+        // [FIX] Sửa lỗi type inference
+        val anime = nuxtData?.data?.firstOrNull()?.anime ?: return newAnimeLoadResponse("", "", TvType.NSFW, emptyList<Episode>())
+        val chapters = nuxtData.data.firstOrNull()?.chapters ?: emptyList<ChapterItem>()
 
         val episodes = chapters.map { chapter ->
             val episodeUrl = "$mainUrl/xem-phim/${anime.slug}/${chapter.slug}"
@@ -77,8 +77,7 @@ class IhentaiProvider : MainAPI() {
             }
         }.reversed()
 
-        // Sử dụng newAnimeLoadResponse nhưng đổi TvType
-        return newAnimeLoadResponse(anime.name, url, TvType.NSFW, episodes) { // <-- ĐÃ THAY ĐỔI
+        return newAnimeLoadResponse(anime.name, url, TvType.NSFW, episodes) {
             this.posterUrl = anime.poster_url
             this.plot = anime.description
         }
@@ -91,11 +90,12 @@ class IhentaiProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val nuxtData = getNuxtData(data)
-        val images = nuxtData?.data?.firstOrNull()?.chapter?.images ?: emptyList()
+        val images = nuxtData?.data?.firstOrNull()?.chapter?.images ?: emptyList<ChapterImage>()
 
         images.forEach { image ->
+            // [FIX] Sửa lỗi deprecated constructor
             callback(
-                ExtractorLink(
+                newExtractorLink(
                     source = this.name,
                     name = "iHentai Image",
                     url = image.image_url,
