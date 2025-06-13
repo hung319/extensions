@@ -1,14 +1,20 @@
 package com.lagradost.cloudstream3.hentai.providers
 
-// Import các lớp cần thiết
+// Import các lớp cần thiết cho cả Provider và Extractor
 import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.api.ExtractorApi
+import com.lagradost.cloudstream3.api.ExtractorLink
+import com.lagradost.cloudstream3.api.extractors.Extractor
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.M3u8Helper
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
+import java.util.Base64
 
-// --- Định nghĩa lớp Provider ---
+// =================================================================================
+// --- PHẦN 1: PROVIDER CHÍNH (TÌM KIẾM, HIỂN THỊ THÔNG TIN) ---
+// =================================================================================
 
 class IHentaiProvider : MainAPI() {
     // --- Thông tin cơ bản ---
@@ -108,7 +114,7 @@ class IHentaiProvider : MainAPI() {
         }
     }
 
-    // --- Tải Link Xem Phim/Video (Sử dụng M3u8Helper) ---
+    // --- Tải Link (Tạo link ảo .local) ---
     @Suppress("DEPRECATION")
     override suspend fun loadLinks(
         data: String,
@@ -126,39 +132,97 @@ class IHentaiProvider : MainAPI() {
                 throw RuntimeException("Không thể trích xuất videoId từ iframe src: $iframeSrc")
             }
 
-            // Tạo URL master playlist
+            // 1. Tạo URL master playlist thật
             val masterM3u8Url = "https://s2.mimix.cc/$videoId/master.m3u8"
 
-            // Headers để tải M3U8 (Referer là trang iframe)
-            val m3u8Headers = mapOf(
-                "Referer" to iframeSrc,
-                "User-Agent" to userAgent
-            )
+            // 2. Mã hóa link thật và referer bằng Base64
+            val masterUrlEncoded = Base64.getEncoder().encodeToString(masterM3u8Url.toByteArray(Charsets.UTF_8))
+            val refererEncoded = Base64.getEncoder().encodeToString(iframeSrc.toByteArray(Charsets.UTF_8))
 
-            // Dùng M3u8Helper để lấy các luồng video từ master playlist
-            M3u8Helper.m3u8Generation(
-                M3u8Helper.M3u8Stream(
-                    streamUrl = masterM3u8Url,
-                    headers = m3u8Headers
+            // 3. Tạo link ảo .local
+            val virtualUrl = "https://ihentai.local/proxy.m3u8?url=$masterUrlEncoded&referer=$refererEncoded"
+            println("IHentaiProvider: Generated virtual URL: $virtualUrl")
+
+            // 4. Gọi callback với link ảo này. Extractor IHentaiExtractor sẽ xử lý nó.
+            callback(
+                ExtractorLink(
+                    source = this.name,
+                    name = "iHentai Server", // Chỉ cần 1 server
+                    url = virtualUrl, // URL là link ảo
+                    referer = data, // Referer là trang chứa iframe
+                    quality = Qualities.Unknown.value, // Chất lượng sẽ được Extractor xác định
+                    isM3u8 = true // Báo cho trình phát biết đây là M3U8
                 )
-            ).forEach { stream ->
-                // Tạo ExtractorLink cho mỗi luồng chất lượng
-                callback(
-                    ExtractorLink(
-                        source = this.name,
-                        name = "$name - ${stream.quality}p", // Lấy chất lượng từ stream
-                        url = stream.streamUrl, // Lấy URL cuối cùng từ stream
-                        referer = iframeSrc, // Referer vẫn là iframe
-                        quality = stream.quality ?: Qualities.Unknown.value,
-                        type = ExtractorLinkType.M3U8,
-                        headers = stream.headers // Pass along headers M3u8Helper có thể đã thêm
-                    )
-                )
-            }
+            )
             return true
+
         } catch (e: Exception) {
             e.printStackTrace()
             return false
+        }
+    }
+}
+
+
+// =================================================================================
+// --- PHẦN 2: EXTRACTOR XỬ LÝ LINK ẢO .local ---
+// =================================================================================
+
+// Lớp Extractor để xử lý domain ảo "ihentai.local"
+open class IHentaiExtractor : Extractor() {
+    override val name = "IHentaiExtractor"
+    override val mainUrl = "https://ihentai.local" // Domain ảo mà extractor này sẽ xử lý
+    override val requiresReferer = true
+
+    // Hàm getUrl sẽ được gọi khi trình phát cố gắng mở link .local
+    @Suppress("DEPRECATION")
+    override suspend fun getUrl(
+        url: String, // Đây là link ảo, ví dụ: https://ihentai.local/proxy.m3u8?url=...&referer=...
+        referer: String?,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit,
+        headers: Map<String, String>?
+    ) {
+        try {
+            // Phân tích link ảo để lấy dữ liệu đã mã hóa
+            val masterUrlEncoded = url.substringAfter("url=").substringBefore("&")
+            val refererEncoded = url.substringAfter("referer=")
+
+            // Giải mã Base64 để lấy lại link thật
+            val masterUrl = String(Base64.getDecoder().decode(masterUrlEncoded))
+            val iframeReferer = String(Base64.getDecoder().decode(refererEncoded))
+
+            println("IHentaiExtractor: Decoded masterM3u8Url -> $masterUrl")
+            println("IHentaiExtractor: Decoded referer -> $iframeReferer")
+
+            // Tạo headers để tải master M3U8
+            val m3u8Headers = mapOf(
+                "Referer" to iframeReferer,
+                "User-Agent" to "Mozilla/5.0 (Linux; Android 14; SM-S711B Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.111 Mobile Safari/537.36"
+            )
+
+            // Dùng M3u8Helper để phân giải master playlist và lấy các link chất lượng
+            M3u8Helper.m3u8Generation(
+                M3u8Helper.M3u8Stream(
+                    streamUrl = masterUrl,
+                    headers = m3u8Headers
+                )
+            ).forEach { stream ->
+                // Gọi callback với các link video cuối cùng
+                callback.invoke(
+                    ExtractorLink(
+                        this.name,
+                        "${this.name} - ${stream.quality}p",
+                        stream.streamUrl,
+                        iframeReferer,
+                        stream.quality ?: Qualities.Unknown.value,
+                        type = ExtractorLinkType.M3U8,
+                        headers = stream.headers // Pass along headers M3u8Helper có thể đã thêm/thay đổi
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 }
