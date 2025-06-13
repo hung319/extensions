@@ -3,7 +3,6 @@ package com.lagradost.cloudstream3.hentai.providers
 // Import các lớp cần thiết
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-// M3u8Helper không còn cần nữa
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
@@ -20,7 +19,7 @@ class IHentaiProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.NSFW)
 
     // *** Thêm User-Agent chung cho tất cả request ***
-    private val userAgent = "Mozilla/5.5 (Linux; Android 14; SM-S711B Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.111 Mobile Safari/537.36"
+    private val userAgent = "Mozilla/5.0 (Linux; Android 14; SM-S711B Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.111 Mobile Safari/537.36"
     private val headers = mapOf("User-Agent" to userAgent)
 
     // --- Trang chính (Dùng parse HTML) ---
@@ -53,7 +52,8 @@ class IHentaiProvider : MainAPI() {
                   e.printStackTrace()
               }
         }
-        return HomePageResponse(homePageList)
+        // Fix: Sử dụng newHomePageResponse thay vì constructor
+        return newHomePageResponse(homePageList)
     }
 
     // --- Hàm Helper: Phân tích thẻ Item ---
@@ -105,7 +105,9 @@ class IHentaiProvider : MainAPI() {
         val posterUrl = fixUrlNull(document.selectFirst("div.tw-grid div.tw-col-span-5 img")?.attr("src"))
         val description = document.selectFirst("div.v-sheet.tw-p-5 > p.tw-text-sm")?.text()?.trim()
         val genres = document.select("div.v-sheet.tw-p-5 a.v-chip")?.mapNotNull { it.text()?.trim() }
-        val currentEpisode = Episode(data = url, name = title)
+
+        // Fix: Sử dụng newEpisode thay vì constructor, thêm runTime = null nếu không có thông tin
+        val currentEpisode = newEpisode(data = url, name = title, runTime = null)
         val episodes = listOf(currentEpisode)
         return newAnimeLoadResponse(title, url, TvType.NSFW) {
             this.posterUrl = posterUrl
