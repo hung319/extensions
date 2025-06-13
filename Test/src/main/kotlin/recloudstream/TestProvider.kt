@@ -68,7 +68,7 @@ class IHentai : MainAPI() {
         return try {
             val data = mapper.readValue<Map<String, Any?>>(nuxtData)["data"] as? Map<*, *> ?: return HomePageResponse(emptyList())
             
-            val homePageList = data.values.mapNotNull { trayItem ->
+            data.values.mapNotNull { trayItem ->
                 val trayMap = (trayItem as? List<*>)?.getOrNull(0) as? Map<*, *> ?: return@mapNotNull null
                 val header = trayMap["name"] as? String ?: return@mapNotNull null
                 val itemsList = trayMap["items"] as? List<*> ?: return@mapNotNull null
@@ -81,7 +81,7 @@ class IHentai : MainAPI() {
                 }
                 if (list.isNotEmpty()) HomePageList(header, list) else null
             }
-            HomePageResponse(homePageList)
+            .let { HomePageResponse(it) }
         } catch (e: Exception) {
             HomePageResponse(emptyList())
         }
