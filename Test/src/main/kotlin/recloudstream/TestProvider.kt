@@ -61,13 +61,12 @@ class IHentai : MainAPI() {
         val nuxtData = getNuxtData(document) ?: return HomePageResponse(emptyList())
 
         return try {
-            val state = parseJson<Map<String, Any?>>(nuxtData)["state"] as? Map<*, *>
-            val home = state?.get("home") as? Map<*, *>
-            val trays = home?.get("trays") as? List<*> ?: return HomePageResponse(emptyList())
-
-            val homePageList = trays.mapNotNull { trayItem ->
-                val trayMap = trayItem as? Map<*, *> ?: return@mapNotNull null
-                val header = trayMap["name"] as? String ?: "Unknown Category"
+            val dataList = parseJson<Map<String, List<Any?>>>(nuxtData)["data"] ?: return HomePageResponse(emptyList())
+            
+            val homePageList = dataList.mapNotNull { trayItem ->
+                val trayList = trayItem as? List<*> ?: return@mapNotNull null
+                val trayMap = trayList.getOrNull(0) as? Map<*, *> ?: return@mapNotNull null
+                val header = trayMap["name"] as? String ?: return@mapNotNull null
                 val itemsList = trayMap["items"] as? List<*> ?: return@mapNotNull null
 
                 val list = itemsList.mapNotNull { item ->
@@ -76,6 +75,7 @@ class IHentai : MainAPI() {
                         parseJson<NuxtItem>(itemMap.toJson()).toSearchResponse()
                     } catch (e: Exception) { null }
                 }
+
                 if (list.isNotEmpty()) HomePageList(header, list) else null
             }
             HomePageResponse(homePageList)
@@ -90,10 +90,8 @@ class IHentai : MainAPI() {
         val nuxtData = getNuxtData(document) ?: return emptyList()
 
         return try {
-            val state = parseJson<Map<String, Any?>>(nuxtData)["state"] as? Map<*, *>
-            val search = state?.get("search") as? Map<*, *>
-            val result = search?.get("result") as? Map<*, *>
-            val itemsList = result?.get("items") as? List<*> ?: return emptyList()
+            val dataList = parseJson<Map<String, List<Any?>>>(nuxtData)["data"] ?: return emptyList()
+            val itemsList = dataList.find { (it as? List<*>)?.getOrNull(0) is Map<*, *> } as? List<*> ?: return emptyList()
 
             itemsList.mapNotNull { item ->
                 try {
@@ -111,9 +109,8 @@ class IHentai : MainAPI() {
         val nuxtData = getNuxtData(document) ?: return null
 
         return try {
-            val state = parseJson<Map<String, Any?>>(nuxtData)["state"] as? Map<*, *>
-            val anime = state?.get("anime") as? Map<*, *>
-            val animeDataMap = anime?.get("detail") as? Map<*, *> ?: return null
+            val dataList = parseJson<Map<String, List<Any?>>>(nuxtData)["data"] ?: return null
+            val animeDataMap = dataList.find { (it as? Map<*, *>)?.containsKey("episodes") == true } as? Map<*, *> ?: return null
             val animeData = parseJson<NuxtItem>(animeDataMap.toJson())
 
             val title = animeData.name ?: return null
@@ -143,14 +140,11 @@ class IHentai : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // [PLACEHOLDER] Tạm thời vô hiệu hóa theo yêu cầu.
-        // Logic đúng đã được comment lại để dùng sau khi các hàm khác đã ổn định.
-        return false
-        /*
         val document = app.get(data, headers = headers).text
         val nuxtData = getNuxtData(document) ?: return false
 
         try {
+            // Dữ liệu link vẫn nằm trong "state", tách biệt với "data"
             val state = parseJson<Map<String, Any?>>(nuxtData)["state"] as? Map<*, *>
             val player = state?.get("player") as? Map<*, *>
             val sourcesList = player?.get("sources") as? List<*> ?: return false
@@ -178,6 +172,5 @@ class IHentai : MainAPI() {
             return false
         }
         return true
-        */
     }
 }
