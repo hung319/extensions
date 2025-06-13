@@ -5,10 +5,10 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.Jsoup
 
 // Data classes to map the JSON structure from __NUXT_DATA__
+// Note: Removed NuxtTray as its structure was too inconsistent.
 data class NuxtItem(
     val name: String?,
     val slug: String?,
@@ -19,11 +19,6 @@ data class NuxtItem(
 data class NuxtEpisodeShort(
     val slug: String?,
     val name: String?,
-)
-
-data class NuxtTray(
-    val name: String?,
-    val items: List<NuxtItem>?
 )
 
 class IHentai : MainAPI() {
@@ -61,22 +56,25 @@ class IHentai : MainAPI() {
         val nuxtData = getNuxtData(document) ?: return HomePageResponse(emptyList())
 
         return try {
-            // [REWRITE] Logic mới cho getMainPage
-            val dataMap = parseJson<Map<String, Any>>(nuxtData)
-            val dataList = dataMap["data"] as? List<*> ?: return HomePageResponse(emptyList())
+            // [REWRITE] Tự động tìm kiếm khối dữ liệu của trang chủ.
+            // Dữ liệu trang chủ là một List, có phần tử đầu tiên cũng là một List.
+            val rootList = parseJson<List<Any?>>(nuxtData)
+            val traysContainer = rootList.find { it is List<*> } as? List<*> ?: return HomePageResponse(emptyList())
 
-            val homePageList = dataList.mapNotNull { item ->
-                val trayList = item as? List<*>
-                val trayMap = trayList?.getOrNull(0) as? Map<*, *> ?: return@mapNotNull null
+            val homePageList = traysContainer.mapNotNull { trayItem ->
+                val trayMap = (trayItem as? List<*>)?.getOrNull(0) as? Map<*, *> ?: return@mapNotNull null
+                
+                val header = trayMap["name"] as? String ?: "Unknown Category"
+                val itemsList = trayMap["items"] as? List<*> ?: return@mapNotNull null
 
-                val tray = try {
-                    parseJson<NuxtTray>(mapper.writeValueAsString(trayMap))
-                } catch (e: Exception) { return@mapNotNull null }
+                val list = itemsList.mapNotNull { item ->
+                    val itemMap = item as? Map<*,*> ?: return@mapNotNull null
+                    try {
+                        parseJson<NuxtItem>(itemMap.toJson()).toSearchResponse()
+                    } catch (e: Exception) { null }
+                }
 
-                val header = tray.name ?: "Unknown Category"
-                val list = tray.items?.mapNotNull { it.toSearchResponse() }
-
-                if (!list.isNullOrEmpty()) HomePageList(header, list) else null
+                if (list.isNotEmpty()) HomePageList(header, list) else null
             }
             HomePageResponse(homePageList)
         } catch (e: Exception) {
@@ -90,16 +88,18 @@ class IHentai : MainAPI() {
         val nuxtData = getNuxtData(document) ?: return emptyList()
 
         return try {
-            // [REWRITE] Logic mới cho search
-            val dataMap = parseJson<Map<String, Any>>(nuxtData)
-            val dataList = dataMap["data"] as? List<*> ?: return emptyList()
+            // [REWRITE] Tự động tìm kiếm khối dữ liệu của trang tìm kiếm.
+            // Dữ liệu trang tìm kiếm là một Map, chứa một value là List các item.
+            val dataMap = parseJson<Map<String, Any?>>(nuxtData)
+            val itemsList = dataMap.values.find {
+                (it as? List<*>)?.getOrNull(0) is Map<*, *>
+            } as? List<*> ?: return emptyList()
 
-            dataList.mapNotNull { item ->
+            itemsList.mapNotNull { item ->
                 val itemMap = item as? Map<*, *> ?: return@mapNotNull null
-                val searchItem = try {
-                    parseJson<NuxtItem>(itemMap.toJson())
-                } catch (e: Exception) { return@mapNotNull null }
-                searchItem.toSearchResponse()
+                try {
+                    parseJson<NuxtItem>(itemMap.toJson()).toSearchResponse()
+                } catch (e: Exception) { null }
             }
         } catch (e: Exception) {
             emptyList()
@@ -111,12 +111,15 @@ class IHentai : MainAPI() {
         val nuxtData = getNuxtData(document) ?: return null
 
         return try {
-            // [REWRITE] Logic mới cho load
-            val dataMap = parseJson<Map<String, Any>>(nuxtData)
-            val dataList = dataMap["data"] as? List<*> ?: return null
-            val animeDataMap = dataList.getOrNull(0) as? Map<*, *> ?: return null
+            // [REWRITE] Tự động tìm kiếm khối dữ liệu của trang phim.
+            // Dữ liệu trang phim là một Map, chứa một value là object anime chi tiết.
+            val dataMap = parseJson<Map<String, Any?>>(nuxtData)
+            val animeDataMap = dataMap.values.find {
+                (it as? Map<*, *>)?.containsKey("episodes") == true
+            } as? Map<*, *> ?: return null
+            
             val animeData = parseJson<NuxtItem>(animeDataMap.toJson())
-
+            
             val title = animeData.name ?: return null
             val slug = animeData.slug ?: return null
             val posterUrl = animeData.poster?.let { if (it.startsWith("/")) "$mainUrl$it" else it }
@@ -144,7 +147,7 @@ class IHentai : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Placeholder: Luôn trả về false để báo hiệu không tìm thấy link
+        // Placeholder
         return false
     }
 }
