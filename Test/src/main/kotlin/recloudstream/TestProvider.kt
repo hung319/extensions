@@ -3,7 +3,8 @@ package recloudstream
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.AppUtils // [FIX] Chỉ import AppUtils
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import org.jsoup.Jsoup
 
@@ -60,7 +61,7 @@ class IHentai : MainAPI() {
         val nuxtData = getNuxtData(document) ?: return HomePageResponse(emptyList())
 
         return try {
-            val state = AppUtils.parseJson<Map<String, Any?>>(nuxtData)["state"] as? Map<*, *>
+            val state = parseJson<Map<String, Any?>>(nuxtData)["state"] as? Map<*, *>
             val home = state?.get("home") as? Map<*, *>
             val trays = home?.get("trays") as? List<*> ?: return HomePageResponse(emptyList())
 
@@ -70,13 +71,11 @@ class IHentai : MainAPI() {
                 val itemsList = trayMap["items"] as? List<*> ?: return@mapNotNull null
 
                 val list = itemsList.mapNotNull { item ->
-                    val itemMap = item as? Map<*,*> ?: return@mapNotNull null
                     try {
-                        // [FIX] Gọi trực tiếp AppUtils.mapper
-                        AppUtils.mapper.convertValue(itemMap, NuxtItem::class.java).toSearchResponse()
+                        val itemMap = item as? Map<*, *> ?: return@mapNotNull null
+                        parseJson<NuxtItem>(itemMap.toJson()).toSearchResponse()
                     } catch (e: Exception) { null }
                 }
-
                 if (list.isNotEmpty()) HomePageList(header, list) else null
             }
             HomePageResponse(homePageList)
@@ -91,16 +90,15 @@ class IHentai : MainAPI() {
         val nuxtData = getNuxtData(document) ?: return emptyList()
 
         return try {
-            val state = AppUtils.parseJson<Map<String, Any?>>(nuxtData)["state"] as? Map<*, *>
+            val state = parseJson<Map<String, Any?>>(nuxtData)["state"] as? Map<*, *>
             val search = state?.get("search") as? Map<*, *>
             val result = search?.get("result") as? Map<*, *>
             val itemsList = result?.get("items") as? List<*> ?: return emptyList()
 
             itemsList.mapNotNull { item ->
-                val itemMap = item as? Map<*,*> ?: return@mapNotNull null
                 try {
-                    // [FIX] Gọi trực tiếp AppUtils.mapper
-                    AppUtils.mapper.convertValue(itemMap, NuxtItem::class.java).toSearchResponse()
+                    val itemMap = item as? Map<*, *> ?: return@mapNotNull null
+                    parseJson<NuxtItem>(itemMap.toJson()).toSearchResponse()
                 } catch (e: Exception) { null }
             }
         } catch (e: Exception) {
@@ -113,12 +111,10 @@ class IHentai : MainAPI() {
         val nuxtData = getNuxtData(document) ?: return null
 
         return try {
-            val state = AppUtils.parseJson<Map<String, Any?>>(nuxtData)["state"] as? Map<*, *>
+            val state = parseJson<Map<String, Any?>>(nuxtData)["state"] as? Map<*, *>
             val anime = state?.get("anime") as? Map<*, *>
             val animeDataMap = anime?.get("detail") as? Map<*, *> ?: return null
-            
-            // [FIX] Gọi trực tiếp AppUtils.mapper
-            val animeData = AppUtils.mapper.convertValue(animeDataMap, NuxtItem::class.java)
+            val animeData = parseJson<NuxtItem>(animeDataMap.toJson())
 
             val title = animeData.name ?: return null
             val slug = animeData.slug ?: return null
@@ -131,7 +127,7 @@ class IHentai : MainAPI() {
                 newEpisode(epUrl) { this.name = epName }
             }?.reversed()
 
-            if (!episodes.isNullOrEmpty()) {
+            if (episodes?.isNotEmpty() == true) {
                 newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) { this.posterUrl = posterUrl }
             } else {
                 newMovieLoadResponse(title, url, TvType.Movie, url) { this.posterUrl = posterUrl }
@@ -147,7 +143,41 @@ class IHentai : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // [PLACEHOLDER] Tạm thời vô hiệu hóa theo yêu cầu
+        // [PLACEHOLDER] Tạm thời vô hiệu hóa theo yêu cầu.
+        // Logic đúng đã được comment lại để dùng sau khi các hàm khác đã ổn định.
         return false
+        /*
+        val document = app.get(data, headers = headers).text
+        val nuxtData = getNuxtData(document) ?: return false
+
+        try {
+            val state = parseJson<Map<String, Any?>>(nuxtData)["state"] as? Map<*, *>
+            val player = state?.get("player") as? Map<*, *>
+            val sourcesList = player?.get("sources") as? List<*> ?: return false
+
+            sourcesList.forEach { sourceItem ->
+                try {
+                    val sourceMap = sourceItem as? Map<*, *> ?: return@forEach
+                    val source = parseJson<NuxtSource>(sourceMap.toJson())
+                    val videoUrl = source.src ?: return@forEach
+                    callback.invoke(
+                        ExtractorLink(
+                            this.name,
+                            "iHentai Server",
+                            videoUrl,
+                            referer = mainUrl,
+                            quality = Qualities.Unknown.value,
+                            isM3u8 = videoUrl.contains(".m3u8")
+                        )
+                    )
+                } catch (e: Exception) {
+                    // Ignored
+                }
+            }
+        } catch (e: Exception) {
+            return false
+        }
+        return true
+        */
     }
 }
