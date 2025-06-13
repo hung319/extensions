@@ -43,10 +43,11 @@ class IhentaiProvider : MainAPI() {
         val nuxtData = getNuxtData(url)
         
         val home = nuxtData?.data?.firstOrNull()?.latestAnimes?.data?.mapNotNull { item ->
-            newAnimeSearchResponse(item.name, "$mainUrl/phim/${item.slug}", TvType.NSFW) {
-                this.posterUrl = item.poster_url
-            }
-        } ?: emptyList<SearchResponse>()
+            // [FIX] Tạo object một cách tường minh để tránh lỗi
+            val searchResponse = newAnimeSearchResponse(item.name, "$mainUrl/phim/${item.slug}", TvType.NSFW)
+            searchResponse.posterUrl = item.poster_url
+            searchResponse
+        } ?: emptyList()
 
         return newHomePageResponse("Mới Cập Nhật", home)
     }
@@ -56,16 +57,16 @@ class IhentaiProvider : MainAPI() {
         val nuxtData = getNuxtData(url)
 
         return nuxtData?.data?.firstOrNull()?.animes?.data?.mapNotNull { item ->
-            newAnimeSearchResponse(item.name, "$mainUrl/phim/${item.slug}", TvType.NSFW) {
-                this.posterUrl = item.poster_url
-            }
-        } ?: emptyList<SearchResponse>()
+            // [FIX] Tạo object một cách tường minh để tránh lỗi
+            val searchResponse = newAnimeSearchResponse(item.name, "$mainUrl/phim/${item.slug}", TvType.NSFW)
+            searchResponse.posterUrl = item.poster_url
+            searchResponse
+        } ?: emptyList()
     }
 
     override suspend fun load(url: String): LoadResponse {
         val nuxtData = getNuxtData(url)
         
-        // [FIX] Tách nhỏ câu lệnh để trình biên dịch dễ hiểu hơn, tránh lỗi "Argument type mismatch"
         val anime = nuxtData?.data?.firstOrNull()?.anime
             ?: return newAnimeLoadResponse("", "", TvType.NSFW, emptyList())
 
@@ -78,10 +79,11 @@ class IhentaiProvider : MainAPI() {
             }
         }.reversed()
 
-        return newAnimeLoadResponse(anime.name, url, TvType.NSFW, episodes) {
-            this.posterUrl = anime.poster_url
-            this.plot = anime.description
-        }
+        // [FIX] Tạo object tường minh và gán thuộc tính để tránh lỗi
+        val loadData = newAnimeLoadResponse(anime.name, url, TvType.NSFW, episodes)
+        loadData.posterUrl = anime.poster_url
+        loadData.plot = anime.description
+        return loadData
     }
 
     override suspend fun loadLinks(
@@ -94,17 +96,18 @@ class IhentaiProvider : MainAPI() {
         val images = nuxtData?.data?.firstOrNull()?.chapter?.images ?: emptyList()
 
         images.forEach { image ->
-            // [FIX] Sửa lỗi API deprecated.
-            // Sử dụng hàm `newExtractorLink` và đặt `referer` vào trong `headers`.
-            newExtractorLink(
-                source = this.name,
-                name = "iHentai Image",
-                url = image.image_url,
-                // `referer` giờ là một phần của `headers`
-                headers = mapOf("Referer" to mainUrl)
-            ).let {
-                callback(it)
-            }
+            // [FIX] Sửa lỗi API. Tạo object rồi gán thuộc tính referer.
+            callback(
+                ExtractorLink(
+                    source = this.name,
+                    name = "iHentai Image",
+                    url = image.image_url,
+                    referer = "", // Để trống và gán ở dòng dưới
+                    quality = Qualities.Unknown.value
+                ).apply {
+                    this.referer = mainUrl
+                }
+            )
         }
         return true
     }
