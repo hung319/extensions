@@ -1,16 +1,16 @@
-package com.lagradost.cloudstream3.hentai.providers
+package com.lagradost.cloudstream3.hentai.providers 
 
 import android.content.Context
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
+// Import này có thể cần thiết nếu registerMainAPI là extension function
+// import com.lagradost.cloudstream3.plugins.PluginManager.registerMainAPI
 
-@CloudstreamPlugin
-class TestPlugin: Plugin() {
+@CloudstreamPlugin // Đánh dấu đây là plugin
+class TestPlugin: Plugin() { // Kế thừa Plugin
     override fun load(context: Context) {
-        // Đăng ký Provider để duyệt và tìm kiếm
-        registerMainAPI(IHentaiProvider()) // Đảm bảo tên lớp này khớp với file trên
-
-        // Đăng ký Extractor để xử lý link ảo .local
-        registerExtractorAPI(IHentaiExtractor())
+        // Tất cả provider nên được thêm vào theo cách này.
+        // Đăng ký AnimeHayProvider
+        registerMainAPI(IHentaiProvider()) // Gọi đăng ký provider ở đây
     }
 }
