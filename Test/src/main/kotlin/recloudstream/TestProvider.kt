@@ -46,8 +46,7 @@ class IhentaiProvider : MainAPI() {
             newAnimeSearchResponse(item.name, "$mainUrl/phim/${item.slug}", TvType.NSFW) {
                 this.posterUrl = item.poster_url
             }
-        // [FIX] Sửa lỗi type inference
-        } ?: emptyList<SearchResponse>() 
+        } ?: emptyList<SearchResponse>()
 
         return newHomePageResponse("Mới Cập Nhật", home)
     }
@@ -56,7 +55,6 @@ class IhentaiProvider : MainAPI() {
         val url = "$mainUrl/tim-kiem?q=$query"
         val nuxtData = getNuxtData(url)
 
-        // [FIX] Sửa lỗi type inference
         return nuxtData?.data?.firstOrNull()?.animes?.data?.mapNotNull { item ->
             newAnimeSearchResponse(item.name, "$mainUrl/phim/${item.slug}", TvType.NSFW) {
                 this.posterUrl = item.poster_url
@@ -66,9 +64,12 @@ class IhentaiProvider : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse {
         val nuxtData = getNuxtData(url)
-        // [FIX] Sửa lỗi type inference
-        val anime = nuxtData?.data?.firstOrNull()?.anime ?: return newAnimeLoadResponse("", "", TvType.NSFW, emptyList<Episode>())
-        val chapters = nuxtData.data.firstOrNull()?.chapters ?: emptyList<ChapterItem>()
+        
+        // [FIX] Tách nhỏ câu lệnh để trình biên dịch dễ hiểu hơn, tránh lỗi "Argument type mismatch"
+        val anime = nuxtData?.data?.firstOrNull()?.anime
+            ?: return newAnimeLoadResponse("", "", TvType.NSFW, emptyList())
+
+        val chapters = nuxtData.data?.firstOrNull()?.chapters ?: emptyList()
 
         val episodes = chapters.map { chapter ->
             val episodeUrl = "$mainUrl/xem-phim/${anime.slug}/${chapter.slug}"
@@ -90,19 +91,20 @@ class IhentaiProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val nuxtData = getNuxtData(data)
-        val images = nuxtData?.data?.firstOrNull()?.chapter?.images ?: emptyList<ChapterImage>()
+        val images = nuxtData?.data?.firstOrNull()?.chapter?.images ?: emptyList()
 
         images.forEach { image ->
-            // [FIX] Sửa lỗi deprecated constructor
-            callback(
-                newExtractorLink(
-                    source = this.name,
-                    name = "iHentai Image",
-                    url = image.image_url,
-                    referer = "$mainUrl/",
-                    quality = Qualities.Unknown.value,
-                )
-            )
+            // [FIX] Sửa lỗi API deprecated.
+            // Sử dụng hàm `newExtractorLink` và đặt `referer` vào trong `headers`.
+            newExtractorLink(
+                source = this.name,
+                name = "iHentai Image",
+                url = image.image_url,
+                // `referer` giờ là một phần của `headers`
+                headers = mapOf("Referer" to mainUrl)
+            ).let {
+                callback(it)
+            }
         }
         return true
     }
