@@ -1,27 +1,29 @@
 // File: IHentai.kt
 package recloudstream
 
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.mapper
 import org.jsoup.Jsoup
 
 // Data classes to map the JSON structure from __NUXT_DATA__
 data class NuxtItem(
-    val name: String?,
-    val slug: String?,
-    val poster: String?,
-    val episodes: List<NuxtEpisodeShort>?
+    @JsonProperty("name") val name: String?,
+    @JsonProperty("slug") val slug: String?,
+    @JsonProperty("poster") val poster: String?,
+    @JsonProperty("episodes") val episodes: List<NuxtEpisodeShort>?
 )
 
 data class NuxtEpisodeShort(
-    val slug: String?,
-    val name: String?,
+    @JsonProperty("slug") val slug: String?,
+    @JsonProperty("name") val name: String?,
 )
 
 data class NuxtSource(
-    val src: String?
+    @JsonProperty("src") val src: String?
 )
 
 class IHentai : MainAPI() {
@@ -65,13 +67,15 @@ class IHentai : MainAPI() {
             val trays = home?.get("trays") as? List<*> ?: return HomePageResponse(emptyList())
 
             val homePageList = trays.mapNotNull { trayItem ->
-                val trayMap = trayItem as? Map<*,*> ?: return@mapNotNull null
+                val trayMap = trayItem as? Map<*, *> ?: return@mapNotNull null
                 val header = trayMap["name"] as? String ?: "Unknown Category"
                 val itemsList = trayMap["items"] as? List<*> ?: return@mapNotNull null
 
                 val list = itemsList.mapNotNull { item ->
+                    val itemMap = item as? Map<*,*> ?: return@mapNotNull null
                     try {
-                        parseJson<NuxtItem>((item as? Map<*, *>)?.toJson()).toSearchResponse()
+                        // [FIX] Sử dụng mapper.convertValue để chuyển đổi trực tiếp và an toàn
+                        mapper.convertValue(itemMap, NuxtItem::class.java).toSearchResponse()
                     } catch (e: Exception) { null }
                 }
 
@@ -95,8 +99,10 @@ class IHentai : MainAPI() {
             val itemsList = result?.get("items") as? List<*> ?: return emptyList()
 
             itemsList.mapNotNull { item ->
+                val itemMap = item as? Map<*,*> ?: return@mapNotNull null
                 try {
-                    parseJson<NuxtItem>((item as? Map<*,*>)?.toJson()).toSearchResponse()
+                    // [FIX] Sử dụng mapper.convertValue để chuyển đổi trực tiếp và an toàn
+                    mapper.convertValue(itemMap, NuxtItem::class.java).toSearchResponse()
                 } catch (e: Exception) { null }
             }
         } catch (e: Exception) {
@@ -112,6 +118,7 @@ class IHentai : MainAPI() {
             val state = parseJson<Map<String, Any?>>(nuxtData)["state"] as? Map<*, *>
             val anime = state?.get("anime") as? Map<*, *>
             val animeDataMap = anime?.get("detail") as? Map<*, *> ?: return null
+            // Ở đây có thể dùng parseJson vì ta đã có Map tường minh
             val animeData = parseJson<NuxtItem>(animeDataMap.toJson())
 
             val title = animeData.name ?: return null
@@ -141,41 +148,7 @@ class IHentai : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // [PLACEHOLDER] Tạm thời vô hiệu hóa theo yêu cầu để kiểm tra các hàm khác.
-        // Logic đúng đã được comment lại bên dưới để dùng sau.
+        // [PLACEHOLDER] Tạm thời vô hiệu hóa theo yêu cầu
         return false
-
-        /*
-        val document = app.get(data, headers = headers).text
-        val nuxtData = getNuxtData(document) ?: return false
-
-        try {
-            val state = parseJson<Map<String, Any?>>(nuxtData)["state"] as? Map<*, *>
-            val player = state?.get("player") as? Map<*, *>
-            val sourcesList = player?.get("sources") as? List<*> ?: return false
-
-            sourcesList.forEach { sourceItem ->
-                try {
-                    val source = parseJson<NuxtSource>((sourceItem as? Map<*,*>)?.toJson())
-                    val videoUrl = source.src ?: return@forEach
-                    callback.invoke(
-                        ExtractorLink(
-                            this.name, // source
-                            "iHentai Server", // name
-                            videoUrl,
-                            referer = mainUrl,
-                            quality = Qualities.Unknown.value,
-                            isM3u8 = videoUrl.contains(".m3u8")
-                        )
-                    )
-                } catch (e: Exception) {
-                    // Continue to next source if one fails
-                }
-            }
-        } catch (e: Exception) {
-            return false
-        }
-        return true
-        */
     }
 }
