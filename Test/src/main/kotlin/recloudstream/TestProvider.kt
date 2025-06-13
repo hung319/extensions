@@ -6,7 +6,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.mapper
+import com.lagradost.cloudstream3.utils.mapper // [FIX] Bổ sung import còn thiếu cho 'mapper'
 import org.jsoup.Jsoup
 
 // Data classes to map the JSON structure from __NUXT_DATA__
@@ -74,7 +74,6 @@ class IHentai : MainAPI() {
                 val list = itemsList.mapNotNull { item ->
                     val itemMap = item as? Map<*,*> ?: return@mapNotNull null
                     try {
-                        // [FIX] Sử dụng mapper.convertValue để chuyển đổi trực tiếp và an toàn
                         mapper.convertValue(itemMap, NuxtItem::class.java).toSearchResponse()
                     } catch (e: Exception) { null }
                 }
@@ -101,7 +100,6 @@ class IHentai : MainAPI() {
             itemsList.mapNotNull { item ->
                 val itemMap = item as? Map<*,*> ?: return@mapNotNull null
                 try {
-                    // [FIX] Sử dụng mapper.convertValue để chuyển đổi trực tiếp và an toàn
                     mapper.convertValue(itemMap, NuxtItem::class.java).toSearchResponse()
                 } catch (e: Exception) { null }
             }
@@ -118,7 +116,6 @@ class IHentai : MainAPI() {
             val state = parseJson<Map<String, Any?>>(nuxtData)["state"] as? Map<*, *>
             val anime = state?.get("anime") as? Map<*, *>
             val animeDataMap = anime?.get("detail") as? Map<*, *> ?: return null
-            // Ở đây có thể dùng parseJson vì ta đã có Map tường minh
             val animeData = parseJson<NuxtItem>(animeDataMap.toJson())
 
             val title = animeData.name ?: return null
