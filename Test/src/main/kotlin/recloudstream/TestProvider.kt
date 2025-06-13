@@ -3,10 +3,7 @@ package recloudstream
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import com.lagradost.cloudstream3.utils.AppUtils.toJson
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.mapper // [FIX] Bổ sung import còn thiếu cho 'mapper'
+import com.lagradost.cloudstream3.utils.* // [FIX] Thay thế các import riêng lẻ bằng wildcard để đảm bảo nạp đúng 'mapper' và các tiện ích khác.
 import org.jsoup.Jsoup
 
 // Data classes to map the JSON structure from __NUXT_DATA__
@@ -116,7 +113,8 @@ class IHentai : MainAPI() {
             val state = parseJson<Map<String, Any?>>(nuxtData)["state"] as? Map<*, *>
             val anime = state?.get("anime") as? Map<*, *>
             val animeDataMap = anime?.get("detail") as? Map<*, *> ?: return null
-            val animeData = parseJson<NuxtItem>(animeDataMap.toJson())
+            
+            val animeData = mapper.convertValue(animeDataMap, NuxtItem::class.java)
 
             val title = animeData.name ?: return null
             val slug = animeData.slug ?: return null
