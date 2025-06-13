@@ -15,6 +15,9 @@ class IhentaiProvider : MainAPI() {
     override var lang = "vi"
     override val supportedTypes = setOf(TvType.NSFW)
 
+    // [NEW] Định nghĩa một User-Agent để giả lập trình duyệt
+    private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+
     // Data classes (không thay đổi)
     @Serializable
     data class NuxtData(val data: List<NuxtStateData>? = null)
@@ -33,24 +36,19 @@ class IhentaiProvider : MainAPI() {
     @Serializable
     data class ChapterImage(val image_url: String)
 
-    // [FIX] Cập nhật hàm getNuxtData để xử lý đúng cấu trúc JSON dạng Array
     private suspend fun getNuxtData(url: String): NuxtData? {
-        val document = app.get(url).document
+        // [FIX] Thêm headers chứa User-Agent vào mỗi request
+        val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
         val scriptData = document.selectFirst("#__NUXT_DATA__")?.data() ?: return null
 
         return try {
-            // 1. Parse toàn bộ dữ liệu thành một List<JsonElement>
             val jsonArray = parseJson<List<JsonElement>>(scriptData)
-
-            // 2. Dữ liệu ta cần là phần tử thứ hai (index 1), là một Object
             if (jsonArray.size > 1) {
-                // 3. Chuyển phần tử đó về lại dạng String rồi parse thành NuxtData
                 parseJson<NuxtData>(jsonArray[1].toString())
             } else {
                 null
             }
         } catch (e: Exception) {
-            // In ra lỗi nếu có vấn đề, và trả về null để không làm crash app
             e.printStackTrace()
             null
         }
