@@ -17,7 +17,7 @@ class IhentaiProvider : MainAPI() {
 
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 
-    // Data classes (không thay đổi)
+    // Data classes
     @Serializable
     data class NuxtData(val data: List<NuxtStateData>? = null)
     @Serializable
@@ -34,7 +34,7 @@ class IhentaiProvider : MainAPI() {
     data class ChapterDetail(val images: List<ChapterImage> = emptyList())
     @Serializable
     data class ChapterImage(val image_url: String)
-    
+
     private suspend fun getNuxtData(url: String): NuxtData? {
         val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
         val scriptData = document.selectFirst("#__NUXT_DATA__")?.data() ?: return null
@@ -54,24 +54,25 @@ class IhentaiProvider : MainAPI() {
     // !!! PHIÊN BẢN GỠ LỖI - HIỂN THỊ DATA LÊN TIÊU ĐỀ !!!
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page == 1) mainUrl else "$mainUrl?page=$page"
-
         val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
         val scriptData = document.selectFirst("#__NUXT_DATA__")?.data()
 
-        // [FIX] Đổi tên tham số từ "list" thành "items" theo API mới của Cloudstream
+        // [FIX] Sửa lại tên tham số thành "list" và chỉ định rõ kiểu dữ liệu
         val debugList = HomePageList(
             name = scriptData ?: ">>> SCRIPT DATA IS NULL OR EMPTY <<<",
-            items = emptyList() 
+            list = emptyList<SearchResponse>()
         )
 
         return HomePageResponse(
             list = listOf(debugList)
         )
     }
-    
-    // Các hàm khác giữ nguyên để đảm bảo hoạt động sau khi gỡ lỗi xong
+
     override suspend fun search(query: String): List<SearchResponse> {
+        // [FIX] Thêm lại dòng định nghĩa 'url' đã bị thiếu
+        val url = "$mainUrl/tim-kiem?q=$query"
         val nuxtData = getNuxtData(url)
+
         return nuxtData?.data?.firstOrNull()?.animes?.data?.mapNotNull { item ->
             newTvSeriesSearchResponse(item.name, "$mainUrl/phim/${item.slug}", TvType.NSFW) {
                 this.posterUrl = item.poster_url
@@ -81,7 +82,6 @@ class IhentaiProvider : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse {
         val nuxtData = getNuxtData(url)
-        
         val anime = nuxtData?.data?.firstOrNull()?.anime
             ?: return newTvSeriesLoadResponse("", url, TvType.NSFW, emptyList())
 
