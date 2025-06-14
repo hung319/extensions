@@ -1,18 +1,13 @@
 package com.lagradost.cloudstream3.hentai.providers
 
-// Import các lớp cần thiết
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
-// fixUrl và fixUrlNull là extension function của MainAPI, không cần import từ AppUtils
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
 
-// --- Lớp Provider ---
-
 class IHentaiProvider : MainAPI() {
-    // --- Thông tin cơ bản ---
     override var mainUrl = "https://ihentai.ws"
     override var name = "iHentai"
     override val hasMainPage = true
@@ -22,7 +17,6 @@ class IHentaiProvider : MainAPI() {
     private val userAgent = "Mozilla/5.0 (Linux; Android 14; SM-S711B Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.111 Mobile Safari/537.36"
     private val headers = mapOf("User-Agent" to userAgent)
 
-    // --- Trang chính (Dùng parse HTML) ---
     override suspend fun getMainPage(page: Int, request : MainPageRequest): HomePageResponse {
         val document = app.get(mainUrl, headers = headers).document
         val homePageList = mutableListOf<HomePageList>()
@@ -52,14 +46,12 @@ class IHentaiProvider : MainAPI() {
                   e.printStackTrace()
              }
         }
-        // Sửa lỗi cảnh báo: Dùng newHomePageResponse với List<HomePageList>
-        return newHomePageResponse(homePageList, hasNextPage = false)
+        // *** SỬA LỖI Ở ĐÂY: Dùng hasNext thay vì hasNextPage ***
+        return newHomePageResponse(homePageList, hasNext = false)
     }
 
-    // --- Hàm Helper: Phân tích thẻ Item ---
     private fun parseSearchCard(element: Element): AnimeSearchResponse? {
         val linkElement = element.selectFirst("a:has(img.tw-w-full)") ?: return null
-        // fixUrlNull và fixUrl giờ sẽ hoạt động vì chúng là extension function của MainAPI
         val href = fixUrlNull(linkElement.attr("href")) ?: return null
         if (href.isBlank() || href == "/") { return null }
 
@@ -80,7 +72,6 @@ class IHentaiProvider : MainAPI() {
         }
     }
 
-    // --- Tìm kiếm (Dùng parse HTML) ---
     override suspend fun search(query: String): List<SearchResponse> {
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
         val searchUrl = "$mainUrl/search?s=$encodedQuery"
@@ -96,7 +87,6 @@ class IHentaiProvider : MainAPI() {
         }
     }
 
-    // --- Tải thông tin chi tiết (Dùng parse HTML, chỉ 1 tập) ---
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url, headers = headers).document
         val title = document.selectFirst("div.tw-mb-3 > h1.tw-text-lg")?.text()?.trim()
@@ -111,7 +101,6 @@ class IHentaiProvider : MainAPI() {
             this.plot = description
             this.tags = genres
             
-            // Sửa lỗi cảnh báo: Dùng newEpisode
             val currentEpisode = newEpisode(url) {
                 this.name = title
             }
@@ -119,7 +108,6 @@ class IHentaiProvider : MainAPI() {
         }
     }
 
-    // --- Tải Link Xem Phim/Video (Sử dụng ExtractorLink trực tiếp) ---
     @Suppress("DEPRECATION")
     override suspend fun loadLinks(
         data: String,
@@ -138,22 +126,19 @@ class IHentaiProvider : MainAPI() {
             }
 
             val masterM3u8Url = "https://s2.mimix.cc/$videoId/master.m3u8"
-            println("IHentaiProvider: Generated master M3U8 URL: $masterM3u8Url")
-
+            
             val m3u8Headers = mapOf(
                 "Referer" to iframeSrc,
                 "User-Agent" to userAgent
             )
-
-            // Trực tiếp tạo ExtractorLink với URL master M3U8
-            // Trình phát của CloudStream sẽ tự xử lý master playlist
+            
             callback(
                 ExtractorLink(
                     source = name,
                     name = "$name (M3U8)",
                     url = masterM3u8Url,
                     referer = iframeSrc,
-                    quality = Qualities.Unknown.value, // Player sẽ tự chọn chất lượng
+                    quality = Qualities.Unknown.value,
                     type = ExtractorLinkType.M3U8,
                     headers = m3u8Headers
                 )
