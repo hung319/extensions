@@ -1,13 +1,25 @@
 package com.lagradost.cloudstream3.hentai.providers
 
+// Import các lớp cần thiết
+import android.content.Context
 import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
+import com.lagradost.cloudstream3.plugins.Plugin
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
 
+@CloudstreamPlugin
+class IHentaiPlugin: Plugin() {
+    override fun load(context: Context) {
+        registerMainAPI(IHentaiProvider())
+    }
+}
+
 class IHentaiProvider : MainAPI() {
+    // --- Thông tin cơ bản ---
     override var mainUrl = "https://ihentai.ws"
     override var name = "iHentai"
     override val hasMainPage = true
@@ -17,6 +29,7 @@ class IHentaiProvider : MainAPI() {
     private val userAgent = "Mozilla/5.0 (Linux; Android 14; SM-S711B Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.111 Mobile Safari/537.36"
     private val headers = mapOf("User-Agent" to userAgent)
 
+    // --- Trang chính (Dùng parse HTML) ---
     override suspend fun getMainPage(page: Int, request : MainPageRequest): HomePageResponse {
         val document = app.get(mainUrl, headers = headers).document
         val homePageList = mutableListOf<HomePageList>()
@@ -46,10 +59,10 @@ class IHentaiProvider : MainAPI() {
                   e.printStackTrace()
              }
         }
-        // *** SỬA LỖI Ở ĐÂY: Dùng hasNext thay vì hasNextPage ***
         return newHomePageResponse(homePageList, hasNext = false)
     }
 
+    // --- Hàm Helper: Phân tích thẻ Item ---
     private fun parseSearchCard(element: Element): AnimeSearchResponse? {
         val linkElement = element.selectFirst("a:has(img.tw-w-full)") ?: return null
         val href = fixUrlNull(linkElement.attr("href")) ?: return null
@@ -72,6 +85,7 @@ class IHentaiProvider : MainAPI() {
         }
     }
 
+    // --- Tìm kiếm (Dùng parse HTML) ---
     override suspend fun search(query: String): List<SearchResponse> {
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
         val searchUrl = "$mainUrl/search?s=$encodedQuery"
@@ -87,6 +101,7 @@ class IHentaiProvider : MainAPI() {
         }
     }
 
+    // --- Tải thông tin chi tiết (*** THAY ĐỔI: Dùng MovieLoadResponse ***) ---
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url, headers = headers).document
         val title = document.selectFirst("div.tw-mb-3 > h1.tw-text-lg")?.text()?.trim()
@@ -95,19 +110,23 @@ class IHentaiProvider : MainAPI() {
         val posterUrl = fixUrlNull(document.selectFirst("div.tw-grid div.tw-col-span-5 img")?.attr("src"))
         val description = document.selectFirst("div.v-sheet.tw-p-5 > p.tw-text-sm")?.text()?.trim()
         val genres = document.select("div.v-sheet.tw-p-5 a.v-chip")?.mapNotNull { it.text()?.trim() }
-        
-        return newAnimeLoadResponse(title, url, TvType.NSFW) {
+
+        // Thay vì newAnimeLoadResponse, chúng ta dùng newMovieLoadResponse
+        return newMovieLoadResponse(
+            name = title,
+            url = url, // URL của trang này
+            type = TvType.NSFW,
+            dataUrl = url // URL này sẽ được truyền cho loadLinks
+        ) {
+            // Thêm các thông tin chi tiết khác
             this.posterUrl = posterUrl
             this.plot = description
             this.tags = genres
-            
-            val currentEpisode = newEpisode(url) {
-                this.name = title
-            }
-            addEpisodes(DubStatus.Subbed, listOf(currentEpisode))
+            // Không cần addEpisodes nữa
         }
     }
 
+    // --- Tải Link Xem Phim/Video (Giữ nguyên, không thay đổi) ---
     @Suppress("DEPRECATION")
     override suspend fun loadLinks(
         data: String,
