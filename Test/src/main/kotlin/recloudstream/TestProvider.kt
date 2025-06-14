@@ -100,8 +100,17 @@ class MotChillProvider : MainAPI() {
             else -> null
         }
     }
-    
-    // ... (getMainPage, search, load functions giữ nguyên)
+
+    private fun getQualityForLink(url: String): Int {
+        return when {
+            url.contains("1080p", ignoreCase = true) -> Qualities.P1080.value
+            url.contains("720p", ignoreCase = true) -> Qualities.P720.value
+            url.contains("480p", ignoreCase = true) -> Qualities.P480.value
+            url.contains("360p", ignoreCase = true) -> Qualities.P360.value
+            else -> Qualities.Unknown.value
+        }
+    }
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         if (page > 1) return newHomePageResponse(listOf(), false)
         val document = app.get(mainUrl, interceptor = cfKiller).document
@@ -236,62 +245,29 @@ class MotChillProvider : MainAPI() {
         }
         val currentSyncData = mutableMapOf("url" to url)
         if (isTvSeries || (episodes.size > 1 && !episodes.all { it.name == title })) {
-            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes.distinctBy { it.data }.toList()) {
-                this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = genres.distinct().toList(); this.recommendations = recommendations; this.syncData = currentSyncData; /*this.contentRating = null */
+            // *** SỬA LỖI Ở ĐÂY: Thêm this.name làm tham số 'source' ***
+            return newTvSeriesLoadResponse(
+                title,
+                url,
+                this.name, // Thêm tham số 'source'
+                TvType.TvSeries,
+                episodes.distinctBy { it.data }.toList()
+            ) {
+                this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = genres.distinct().toList(); this.recommendations = recommendations; this.syncData = currentSyncData
             }
         } else {
             val movieDataUrl = episodes.firstOrNull()?.data ?: url
-            return newMovieLoadResponse(title, url, TvType.Movie, movieDataUrl) {
-                this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = genres.distinct().toList(); this.recommendations = recommendations; this.syncData = currentSyncData; /*this.contentRating = null */
+            // *** SỬA LỖI Ở ĐÂY: Thêm this.name làm tham số 'source' ***
+            return newMovieLoadResponse(
+                title,
+                url,
+                this.name, // Thêm tham số 'source'
+                TvType.Movie,
+                movieDataUrl
+            ) {
+                this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = genres.distinct().toList(); this.recommendations = recommendations; this.syncData = currentSyncData
             }
         }
-    }
-    
-    // *** HÀM HELPER ĐƯỢC ĐỊNH NGHĨA LẠI Ở ĐÂY ***
-    private suspend fun extractAndSubmitM3u8(
-        sourceName: String,
-        targetUrl: String,
-        referer: String,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        // Step 1: Check if the target is a play2.php page
-        if (targetUrl.contains("play2.php")) {
-            val pageDocument = app.get(targetUrl, interceptor = cfKiller, referer = referer).document
-            val scriptElements = pageDocument.select("script:containsData(CryptoJSAesDecrypt)")
-            for (scriptElement in scriptElements) {
-                val scriptContent = scriptElement.html()
-                val trailerRegex = Regex("""function\s+trailer\s*\(\s*\)\s*\{\s*return\s+CryptoJSAesDecrypt\(\s*'Encrypt'\s*,\s*`([^`]*)`\s*\)\s*;\s*\}""")
-                val matchResult = trailerRegex.find(scriptContent)
-                if (matchResult != null) {
-                    val encryptedJsonString = matchResult.groupValues[1]
-                    if (encryptedJsonString.startsWith("{") && encryptedJsonString.endsWith("}")) {
-                        val decryptedLink = cryptoJSAesDecrypt("Encrypt", encryptedJsonString)
-                        if (decryptedLink != null && decryptedLink.contains(".m3u8", ignoreCase = true)) {
-                            // Step 2: Pass the decrypted M3U8 link to M3u8Helper2
-                            M3u8Helper2.generateM3u8(
-                                name = sourceName,
-                                streamUrl = decryptedLink,
-                                referer = targetUrl, // Referer is the play2.php page
-                                headers = defaultHeaders
-                            ).forEach(callback)
-                            return true
-                        }
-                    }
-                }
-            }
-        } 
-        // Step 3: Check if the target is already a direct M3U8 link
-        else if (targetUrl.contains(".m3u8", ignoreCase = true)) {
-            M3u8Helper2.generateM3u8(
-                name = sourceName,
-                streamUrl = targetUrl,
-                referer = referer,
-                headers = defaultHeaders
-            ).forEach(callback)
-            return true
-        }
-        println("$name: Failed to extract M3U8 from $sourceName ($targetUrl)")
-        return false
     }
 
     override suspend fun loadLinks(
@@ -319,7 +295,7 @@ class MotChillProvider : MainAPI() {
 
         if (iframeUrlPlayerPage.isNullOrBlank()) {
             println("$name: Could not get iframeUrlPlayerPage from $data. Trying initial JWPlayer fallback.")
-            return false // Simplified fallback
+            return false 
         }
         
         val absoluteIframeUrlPlayerPage = fixUrl(iframeUrlPlayerPage) 
@@ -339,10 +315,40 @@ class MotChillProvider : MainAPI() {
             val serverUrlStringFromButton = urlRegex.find(onclickAttr)?.groupValues?.get(1)
 
             if (!serverUrlStringFromButton.isNullOrBlank()) {
-                val fullServerUrlTarget = fixUrl(serverUrlStringFromButton) // *** SỬA LỖI Ở ĐÂY ***
-                // Gọi hàm helper mới
-                if (extractAndSubmitM3u8(serverName, fullServerUrlTarget, absoluteIframeUrlPlayerPage, callback)) {
+                val fullServerUrlTarget = fixUrl(serverUrlStringFromButton)
+                var directVideoUrl: String? = null
+
+                if (fullServerUrlTarget.contains("play2.php")) { 
+                    val pageDocument = app.get(fullServerUrlTarget, interceptor = cfKiller, referer = absoluteIframeUrlPlayerPage).document
+                    val scriptElements = pageDocument.select("script:containsData(CryptoJSAesDecrypt)")
+                    for (scriptElement in scriptElements) {
+                        val scriptContent = scriptElement.html()
+                        val trailerRegex = Regex("""function\s+trailer\s*\(\s*\)\s*\{\s*return\s+CryptoJSAesDecrypt\(\s*'Encrypt'\s*,\s*`([^`]*)`\s*\)\s*;\s*\}""")
+                        val matchResult = trailerRegex.find(scriptContent)
+                        if (matchResult != null) {
+                            val encryptedJsonString = matchResult.groupValues[1]
+                            if (encryptedJsonString.startsWith("{") && encryptedJsonString.endsWith("}")) {
+                                directVideoUrl = cryptoJSAesDecrypt("Encrypt", encryptedJsonString)
+                                if (directVideoUrl != null) break
+                            }
+                        }
+                    }
+                } else if (fullServerUrlTarget.startsWith("http") && (fullServerUrlTarget.contains(".m3u8", ignoreCase = true) || fullServerUrlTarget.contains(".mp4", ignoreCase = true))) { 
+                    directVideoUrl = fullServerUrlTarget
+                }
+
+                if (directVideoUrl != null && directVideoUrl.contains(".m3u8", ignoreCase = true)) {
+                    val refererForM3u8 = if (fullServerUrlTarget.contains("play2.php")) fullServerUrlTarget else absoluteIframeUrlPlayerPage
+                    // *** SỬA Ở ĐÂY ***
+                    M3u8Helper2.generateM3u8(
+                        source = serverName,
+                        streamUrl = directVideoUrl,
+                        referer = refererForM3u8,
+                        headers = defaultHeaders
+                    ).forEach(callback)
                     foundAnyLink = true
+                } else {
+                     println("$name: Skipped or failed to extract from server: $serverName ($fullServerUrlTarget)")
                 }
             }
         }
