@@ -1,12 +1,22 @@
 package com.lagradost.cloudstream3.hentai.providers
 
 // Import các lớp cần thiết
+import android.content.Context
 import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
+import com.lagradost.cloudstream3.plugins.Plugin
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
+
+@CloudstreamPlugin
+class IHentaiPlugin: Plugin() {
+    override fun load(context: Context) {
+        registerMainAPI(IHentaiProvider())
+    }
+}
 
 class IHentaiProvider : MainAPI() {
     // --- Thông tin cơ bản ---
@@ -91,7 +101,7 @@ class IHentaiProvider : MainAPI() {
         }
     }
 
-    // --- Tải thông tin chi tiết (*** THÊM LOGIC LẤY GỢI Ý ***) ---
+    // --- Tải thông tin chi tiết (*** THÊM LOGIC LẤY TẤT CẢ GỢI Ý ***) ---
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url, headers = headers).document
         val title = document.selectFirst("div.tw-mb-3 > h1.tw-text-lg")?.text()?.trim()
@@ -101,22 +111,27 @@ class IHentaiProvider : MainAPI() {
         val description = document.selectFirst("div.v-sheet.tw-p-5 > p.tw-text-sm")?.text()?.trim()
         val genres = document.select("div.v-sheet.tw-p-5 a.v-chip")?.mapNotNull { it.text()?.trim() }
 
-        // --- BẮT ĐẦU LOGIC LẤY PHIM GỢI Ý ---
-        // Tìm khu vực "Phim gợi ý"
-        val recommendationsSection = document.select("div.tw-mb-5:has(h2:contains(Phim gợi ý))").firstOrNull()
-        val recommendations = recommendationsSection?.select("div.tw-relative.tw-grid")?.mapNotNull { item ->
-            val recTitle = item.selectFirst("h3 a")?.text()?.trim()
-            val recUrl = fixUrlNull(item.selectFirst("h3 a")?.attr("href"))
-            val recPoster = fixUrlNull(item.selectFirst("img")?.attr("src"))
+        // --- BẮT ĐẦU LOGIC LẤY TẤT CẢ PHIM GỢI Ý ---
+        val recommendations = mutableListOf<SearchResponse>()
+        // Chọn tất cả các mục có thẻ h2 trong cột bên phải
+        document.select("div.tw-col-span-3.lg\\:tw-col-span-1 > div.tw-mb-5:has(h2)")
+            .forEach { section ->
+                // Lặp qua từng item trong mỗi mục
+                section.select("div.tw-relative.tw-grid").forEach { item ->
+                    val recTitle = item.selectFirst("h3 a")?.text()?.trim()
+                    val recUrl = fixUrlNull(item.selectFirst("h3 a")?.attr("href"))
+                    val recPoster = fixUrlNull(item.selectFirst("img")?.attr("src"))
 
-            if (recTitle != null && recUrl != null) {
-                newAnimeSearchResponse(recTitle, recUrl, TvType.NSFW) {
-                    this.posterUrl = recPoster
+                    if (recTitle != null && recUrl != null) {
+                        // Thêm vào danh sách recommendations
+                        recommendations.add(
+                            newAnimeSearchResponse(recTitle, recUrl, TvType.NSFW) {
+                                this.posterUrl = recPoster
+                            }
+                        )
+                    }
                 }
-            } else {
-                null
-            }
-        } ?: emptyList()
+        }
         // --- KẾT THÚC LOGIC LẤY PHIM GỢI Ý ---
         
         return newMovieLoadResponse(
@@ -128,8 +143,8 @@ class IHentaiProvider : MainAPI() {
             this.posterUrl = posterUrl
             this.plot = description
             this.tags = genres
-            // Thêm danh sách gợi ý vào response
-            this.recommendations = recommendations
+            // Thêm danh sách gợi ý đã gộp vào response, loại bỏ các mục trùng lặp
+            this.recommendations = recommendations.distinctBy { it.url }
         }
     }
 
