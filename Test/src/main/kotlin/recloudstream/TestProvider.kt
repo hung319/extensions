@@ -91,7 +91,7 @@ class IHentaiProvider : MainAPI() {
         }
     }
 
-    // --- Tải thông tin chi tiết (Dùng MovieLoadResponse) ---
+    // --- Tải thông tin chi tiết (*** THÊM LOGIC LẤY GỢI Ý ***) ---
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url, headers = headers).document
         val title = document.selectFirst("div.tw-mb-3 > h1.tw-text-lg")?.text()?.trim()
@@ -100,6 +100,24 @@ class IHentaiProvider : MainAPI() {
         val posterUrl = fixUrlNull(document.selectFirst("div.tw-grid div.tw-col-span-5 img")?.attr("src"))
         val description = document.selectFirst("div.v-sheet.tw-p-5 > p.tw-text-sm")?.text()?.trim()
         val genres = document.select("div.v-sheet.tw-p-5 a.v-chip")?.mapNotNull { it.text()?.trim() }
+
+        // --- BẮT ĐẦU LOGIC LẤY PHIM GỢI Ý ---
+        // Tìm khu vực "Phim gợi ý"
+        val recommendationsSection = document.select("div.tw-mb-5:has(h2:contains(Phim gợi ý))").firstOrNull()
+        val recommendations = recommendationsSection?.select("div.tw-relative.tw-grid")?.mapNotNull { item ->
+            val recTitle = item.selectFirst("h3 a")?.text()?.trim()
+            val recUrl = fixUrlNull(item.selectFirst("h3 a")?.attr("href"))
+            val recPoster = fixUrlNull(item.selectFirst("img")?.attr("src"))
+
+            if (recTitle != null && recUrl != null) {
+                newAnimeSearchResponse(recTitle, recUrl, TvType.NSFW) {
+                    this.posterUrl = recPoster
+                }
+            } else {
+                null
+            }
+        } ?: emptyList()
+        // --- KẾT THÚC LOGIC LẤY PHIM GỢI Ý ---
         
         return newMovieLoadResponse(
             name = title,
@@ -110,6 +128,8 @@ class IHentaiProvider : MainAPI() {
             this.posterUrl = posterUrl
             this.plot = description
             this.tags = genres
+            // Thêm danh sách gợi ý vào response
+            this.recommendations = recommendations
         }
     }
 
