@@ -1,22 +1,12 @@
 package com.lagradost.cloudstream3.hentai.providers
 
 // Import các lớp cần thiết
-import android.content.Context
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
-import com.lagradost.cloudstream3.plugins.Plugin
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
-
-@CloudstreamPlugin
-class IHentaiPlugin: Plugin() {
-    override fun load(context: Context) {
-        registerMainAPI(IHentaiProvider())
-    }
-}
 
 class IHentaiProvider : MainAPI() {
     // --- Thông tin cơ bản ---
@@ -101,7 +91,7 @@ class IHentaiProvider : MainAPI() {
         }
     }
 
-    // --- Tải thông tin chi tiết (*** THAY ĐỔI: Dùng MovieLoadResponse ***) ---
+    // --- Tải thông tin chi tiết (Dùng MovieLoadResponse) ---
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url, headers = headers).document
         val title = document.selectFirst("div.tw-mb-3 > h1.tw-text-lg")?.text()?.trim()
@@ -110,23 +100,20 @@ class IHentaiProvider : MainAPI() {
         val posterUrl = fixUrlNull(document.selectFirst("div.tw-grid div.tw-col-span-5 img")?.attr("src"))
         val description = document.selectFirst("div.v-sheet.tw-p-5 > p.tw-text-sm")?.text()?.trim()
         val genres = document.select("div.v-sheet.tw-p-5 a.v-chip")?.mapNotNull { it.text()?.trim() }
-
-        // Thay vì newAnimeLoadResponse, chúng ta dùng newMovieLoadResponse
+        
         return newMovieLoadResponse(
             name = title,
-            url = url, // URL của trang này
+            url = url,
             type = TvType.NSFW,
-            dataUrl = url // URL này sẽ được truyền cho loadLinks
+            dataUrl = url
         ) {
-            // Thêm các thông tin chi tiết khác
             this.posterUrl = posterUrl
             this.plot = description
             this.tags = genres
-            // Không cần addEpisodes nữa
         }
     }
 
-    // --- Tải Link Xem Phim/Video (Giữ nguyên, không thay đổi) ---
+    // --- Tải Link Xem Phim/Video ---
     @Suppress("DEPRECATION")
     override suspend fun loadLinks(
         data: String,
