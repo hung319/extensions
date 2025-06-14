@@ -11,13 +11,6 @@ import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
 
-@CloudstreamPlugin
-class IHentaiPlugin: Plugin() {
-    override fun load(context: Context) {
-        registerMainAPI(IHentaiProvider())
-    }
-}
-
 class IHentaiProvider : MainAPI() {
     // --- Thông tin cơ bản ---
     override var mainUrl = "https://ihentai.ws"
