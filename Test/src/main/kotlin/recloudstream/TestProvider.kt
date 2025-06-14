@@ -233,17 +233,19 @@ class MotChillProvider : MainAPI() {
                     else finalEpisodeName = episodeNameSource
                 }
                 if (episodeLink.isNotBlank()) {
-                    episodes.add(newEpisode(episodeLink) {this.name = finalEpisodeName; /*this.runtime = 0 */})
+                    episodes.add(newEpisode(episodeLink) {this.name = finalEpisodeName;})
                 }
             }
         } else {
             document.selectFirst("a#btn-film-watch.btn-red[href]")?.let { watchButton ->
                  val attrHref = watchButton.attr("href")
                 val movieWatchLink = if(attrHref.isNullOrBlank()) "" else fixUrl(attrHref)
-                if (movieWatchLink.isNotBlank()) episodes.add(newEpisode(movieWatchLink) {this.name = title; /*this.runtime = 0*/})
+                if (movieWatchLink.isNotBlank()) episodes.add(newEpisode(movieWatchLink) {this.name = title;})
             }
         }
         val currentSyncData = mutableMapOf("url" to url)
+        
+        // *** START FIX ***
         if (isTvSeries || (episodes.size > 1 && !episodes.all { it.name == title })) {
             return newTvSeriesLoadResponse(
                 title,
@@ -251,7 +253,13 @@ class MotChillProvider : MainAPI() {
                 TvType.TvSeries,
                 episodes.distinctBy { it.data }.toList()
             ) {
-                this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = genres.distinct().toList(); this.recommendations = recommendations; this.syncData = currentSyncData
+                // apiName is implicit
+                this.posterUrl = poster
+                this.year = year
+                this.plot = plot
+                this.tags = genres.distinct().toList()
+                this.recommendations = recommendations
+                this.syncData = currentSyncData
             }
         } else {
             val movieDataUrl = episodes.firstOrNull()?.data ?: url
@@ -261,59 +269,44 @@ class MotChillProvider : MainAPI() {
                 TvType.Movie,
                 movieDataUrl
             ) {
-                this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = genres.distinct().toList(); this.recommendations = recommendations; this.syncData = currentSyncData
+                // apiName is implicit
+                this.posterUrl = poster
+                this.year = year
+                this.plot = plot
+                this.tags = genres.distinct().toList()
+                this.recommendations = recommendations
+                this.syncData = currentSyncData
             }
         }
+        // *** END FIX ***
     }
-    
-    // *** HÀM HELPER ĐƯỢC ĐỊNH NGHĨA LẠI Ở ĐÂY ***
-    private suspend fun extractAndSubmitM3u8(
-        sourceName: String,
-        targetUrl: String,
-        referer: String,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        var directVideoUrl: String? = null
-        if (targetUrl.contains("play2.php")) {
-            try {
-                println("$name: Extracting video from play2 page: $targetUrl (GET Referer: $referer)")
-                val pageDocument = app.get(targetUrl, interceptor = cfKiller, referer = referer).document
-                val scriptElements = pageDocument.select("script:containsData(CryptoJSAesDecrypt)")
-                for (scriptElement in scriptElements) {
-                    val scriptContent = scriptElement.html()
-                    val trailerRegex = Regex("""function\s+trailer\s*\(\s*\)\s*\{\s*return\s+CryptoJSAesDecrypt\(\s*'Encrypt'\s*,\s*`([^`]*)`\s*\)\s*;\s*\}""")
-                    val matchResult = trailerRegex.find(scriptContent)
-                    if (matchResult != null) {
-                        val encryptedJsonString = matchResult.groupValues[1]
-                        if (encryptedJsonString.startsWith("{") && encryptedJsonString.endsWith("}")) {
-                            directVideoUrl = cryptoJSAesDecrypt("Encrypt", encryptedJsonString)
-                            if (directVideoUrl != null) break
+
+    private suspend fun extractVideoFromPlay2Page(pageUrl: String, pageRefererForGet: String): String? {
+        try {
+            println("$name: Extracting video from play2 page: $pageUrl (GET Referer: $pageRefererForGet)")
+            val pageDocument = app.get(pageUrl, interceptor = cfKiller, referer = pageRefererForGet).document
+            val scriptElements = pageDocument.select("script:containsData(CryptoJSAesDecrypt)")
+            for (scriptElement in scriptElements) {
+                val scriptContent = scriptElement.html()
+                val trailerRegex = Regex("""function\s+trailer\s*\(\s*\)\s*\{\s*return\s+CryptoJSAesDecrypt\(\s*'Encrypt'\s*,\s*`([^`]*)`\s*\)\s*;\s*\}""")
+                val matchResult = trailerRegex.find(scriptContent)
+                if (matchResult != null) {
+                    val encryptedJsonString = matchResult.groupValues[1]
+                    if (encryptedJsonString.startsWith("{") && encryptedJsonString.endsWith("}")) {
+                        val decryptedLink = cryptoJSAesDecrypt("Encrypt", encryptedJsonString)
+                        if (decryptedLink != null) {
+                            println("$name: Successfully decrypted video link from $pageUrl: $decryptedLink")
+                            return decryptedLink
                         }
                     }
                 }
-            } catch (e: Exception) {
-                println("$name: Error fetching/parsing play2 page $targetUrl: ${e.message}")
             }
-        } else if (targetUrl.startsWith("http") && (targetUrl.contains(".m3u8", ignoreCase = true) || targetUrl.contains(".mp4", ignoreCase = true))) {
-            directVideoUrl = targetUrl
+            println("$name: No trailer function or encrypted JSON found in $pageUrl")
+        } catch (e: Exception) {
+            println("$name: Error fetching/parsing play2 page $pageUrl: ${e.message}")
         }
-
-        if (directVideoUrl != null) {
-            println("$name: Found source for $sourceName: $directVideoUrl")
-            // Sử dụng M3u8Helper2 vì nó ổn định hơn
-            M3u8Helper2.generateM3u8(
-                name = sourceName,
-                streamUrl = directVideoUrl,
-                referer = referer,
-                headers = defaultHeaders
-            ).forEach(callback)
-            return true
-        }
-
-        println("$name: Failed to extract direct link for $sourceName ($targetUrl)")
-        return false
+        return null
     }
-
 
     override suspend fun loadLinks(
         data: String, 
@@ -360,11 +353,26 @@ class MotChillProvider : MainAPI() {
             val serverUrlStringFromButton = urlRegex.find(onclickAttr)?.groupValues?.get(1)
 
             if (!serverUrlStringFromButton.isNullOrBlank()) {
-                val fullServerUrlTarget = fixUrl(serverUrlStringFromButton) // *** ĐÃ SỬA LỖI NÀY ***
-                
-                // *** GỌI HÀM HELPER MỚI ***
-                if (this.extractAndSubmitM3u8(serverName, fullServerUrlTarget, absoluteIframeUrlPlayerPage, callback)) {
+                val fullServerUrlTarget = fixUrl(serverUrlStringFromButton)
+                var directVideoUrl: String? = null
+
+                if (fullServerUrlTarget.contains("play2.php")) { 
+                    directVideoUrl = extractVideoFromPlay2Page(fullServerUrlTarget, absoluteIframeUrlPlayerPage) 
+                } else if (fullServerUrlTarget.startsWith("http") && (fullServerUrlTarget.contains(".m3u8", ignoreCase = true) || fullServerUrlTarget.contains(".mp4", ignoreCase = true))) { 
+                    directVideoUrl = fullServerUrlTarget
+                }
+
+                if (directVideoUrl != null && directVideoUrl.contains(".m3u8", ignoreCase = true)) {
+                    val refererForM3u8 = if (fullServerUrlTarget.contains("play2.php")) fullServerUrlTarget else absoluteIframeUrlPlayerPage
+                    M3u8Helper2.generateM3u8(
+                        name = serverName,
+                        streamUrl = directVideoUrl,
+                        referer = refererForM3u8,
+                        headers = defaultHeaders
+                    ).forEach(callback)
                     foundAnyLink = true
+                } else {
+                     println("$name: Skipped or failed to extract from server: $serverName ($fullServerUrlTarget)")
                 }
             }
         }
