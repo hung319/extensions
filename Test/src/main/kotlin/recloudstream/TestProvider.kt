@@ -13,16 +13,33 @@ import org.jsoup.Jsoup
 // Đặt tên class theo tên provider, ví dụ: VlxProvider
 class VlxProvider : MainAPI() {
     override var name = "Vlx"
-    override var mainUrl = "https://vlxx.bz"
+    // THAY ĐỔI 1: Đặt mainUrl thành trang gốc
+    override var mainUrl = "https://vlxx.com"
     override var hasMainPage = true
     override var supportedTypes = setOf(TvType.NSFW)
     override var lang = "vi"
+
+    // THAY ĐỔI 2: Thêm biến để lưu baseUrl động
+    private var baseUrl: String? = null
+
+    // THAY ĐỔI 3: Hàm để lấy baseUrl động. Nó sẽ chỉ chạy một lần.
+    private suspend fun getBaseUrl(): String {
+        if (baseUrl == null) {
+            val document = app.get(mainUrl).document
+            // Tìm thẻ <a> có class là "button" để lấy href
+            val realUrl = document.selectFirst("a.button")?.attr("href")?.trimEnd('/') ?: mainUrl
+            baseUrl = realUrl
+        }
+        return baseUrl!!
+    }
 
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        val url = if (page == 1) mainUrl else "$mainUrl/new/$page/"
+        // THAY ĐỔI 4: Sử dụng getBaseUrl() thay vì mainUrl
+        val currentBaseUrl = getBaseUrl()
+        val url = if (page == 1) currentBaseUrl else "$currentBaseUrl/new/$page/"
         val document = app.get(url).document
         
         val home = document.select("div.video-item").mapNotNull {
@@ -33,7 +50,8 @@ class VlxProvider : MainAPI() {
     }
     
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/search/$query/"
+        // THAY ĐỔI 4: Sử dụng getBaseUrl() thay vì mainUrl
+        val searchUrl = "${getBaseUrl()}/search/$query/"
         val document = app.get(searchUrl).document
 
         return document.select("div.video-item").mapNotNull {
@@ -42,6 +60,7 @@ class VlxProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        // Hàm load nhận url tuyệt đối từ search/getMainPage nên không cần thay đổi
         val document = app.get(url).document
 
         val title = document.selectFirst("h2#page-title")?.text()?.trim() ?: return null
@@ -69,7 +88,6 @@ class VlxProvider : MainAPI() {
         
         val videoId = document.selectFirst("div#video")?.attr("data-id") ?: return false
         
-        // Mặc định lặp 2 lần cho Server 1 và Server 2
         (1..2).forEach { serverNum ->
             try {
                 val postData = mapOf(
@@ -79,14 +97,14 @@ class VlxProvider : MainAPI() {
                 )
                 
                 val headers = mapOf("X-Requested-With" to "XMLHttpRequest", "Referer" to data)
-                val ajaxUrl = "$mainUrl/ajax.php"
+                // THAY ĐỔI 4: Sử dụng getBaseUrl() thay vì mainUrl
+                val ajaxUrl = "${getBaseUrl()}/ajax.php"
                 val ajaxResponse = app.post(ajaxUrl, data = postData, headers = headers).parsed<PlayerResponse>()
                 
                 val iframeDocument = Jsoup.parse(ajaxResponse.player)
                 val iframeSrc = iframeDocument.selectFirst("iframe")?.attr("src")
 
                 if (iframeSrc != null) {
-                    // SỬA ĐỔI: Thêm header vào request GET đến trang iframe
                     val iframeHeaders = mapOf(
                         "Referer" to data,
                         "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Mobile Safari/537.36"
@@ -120,10 +138,16 @@ class VlxProvider : MainAPI() {
         return true
     }
     
-    private fun Element.toSearchResult(): SearchResponse? {
+    // THAY ĐỔI 5: Cập nhật hàm toSearchResult để xử lý link tương đối
+    private suspend fun Element.toSearchResult(): SearchResponse? {
         val linkTag = this.selectFirst("a") ?: return null
-        val href = linkTag.attr("href")
+        var href = linkTag.attr("href")
         if (href.isBlank()) return null
+        
+        // Nếu href không phải là link tuyệt đối, hãy thêm baseUrl vào
+        if (!href.startsWith("http")) {
+            href = "${getBaseUrl()}$href"
+        }
         
         val title = linkTag.attr("title").trim()
         val posterUrl = this.selectFirst("img.video-image")?.attr("data-original")
