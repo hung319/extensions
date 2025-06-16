@@ -1,242 +1,135 @@
-package recloudstream
+// Đặt file này trong thư mục 'app/src/main/java/com/lagradost/cloudstream3/movieprovider/'
+// hoặc thư mục tương ứng trong project của bạn.
+package com.lagradost.cloudstream3.movieprovider // Thay đổi package name nếu cần
 
-import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import com.lagradost.cloudstream3.utils.newExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import org.jsoup.Jsoup
-import com.lagradost.cloudstream3.newEpisode
+import org.jsoup.nodes.Element
 
-data class OphimItem(
-    @JsonProperty("name") val name: String,
-    @JsonProperty("slug") val slug: String,
-    @JsonProperty("poster_url") val posterUrl: String?,
-    @JsonProperty("thumb_url") val thumbUrl: String?,
-    @JsonProperty("year") val year: Int?,
-    @JsonProperty("type") val type: String?,
-    @JsonProperty("tmdb") val tmdb: TmdbInfo?
-)
-
-data class TmdbInfo(
-    @JsonProperty("type") val type: String?
-)
-
-data class OphimHomepage(
-    @JsonProperty("status") val status: Boolean,
-    @JsonProperty("items") val items: List<OphimItem>,
-    @JsonProperty("pathImage") val pathImage: String
-)
-
-data class OphimDetail(
-    @JsonProperty("movie") val movie: MovieDetail,
-    @JsonProperty("episodes") val episodes: List<EpisodeServer>
-)
-
-data class MovieDetail(
-    @JsonProperty("name") val name: String,
-    @JsonProperty("origin_name") val originName: String,
-    @JsonProperty("content") val content: String,
-    @JsonProperty("poster_url") val posterUrl: String,
-    @JsonProperty("thumb_url") val thumbUrl: String,
-    @JsonProperty("year") val year: Int?,
-    @JsonProperty("actor") val actor: List<String>?,
-    @JsonProperty("category") val category: List<Category>?,
-    @JsonProperty("country") val country: List<Country>?,
-    @JsonProperty("type") val type: String
-)
-
-data class Category(
-    @JsonProperty("name") val name: String
-)
-
-data class Country(
-    @JsonProperty("name") val name: String
-)
-
-data class EpisodeServer(
-    @JsonProperty("server_name") val serverName: String,
-    @JsonProperty("server_data") val serverData: List<EpisodeData>
-)
-
-data class EpisodeData(
-    @JsonProperty("name") val name: String,
-    @JsonProperty("slug") val slug: String,
-    @JsonProperty("link_m3u8") val linkM3u8: String
-)
-
-data class NextData(
-    @JsonProperty("props") val props: Props
-)
-
-data class Props(
-    @JsonProperty("pageProps") val pageProps: PageProps
-)
-
-data class PageProps(
-    @JsonProperty("data") val data: SearchData
-)
-
-data class SearchData(
-    @JsonProperty("items") val items: List<OphimItem>
-)
-
-class OphimProvider : MainAPI() {
-    override var mainUrl = "https://ophim1.com"
-    override var name = "Ophim"
+// Đặt tên class theo tên provider, ví dụ: VlxProvider
+class VlxProvider : MainAPI() {
+    override var name = "Vlx"
+    override var mainUrl = "https://vlxx.bz"
+    override var supportedTypes = setOf(
+        TvType.Movie,
+        TvType.TvSeries
+    )
     override var lang = "vi"
-    override val hasMainPage = true
-    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime)
 
-    private fun getUrl(path: String): String {
-        return if (path.startsWith("http")) path else "$mainUrl/$path"
+    // Hàm này dùng để tải trang chủ
+    override suspend fun getMainPage(
+        page: Int,
+        request: MainPageRequest
+    ): HomePageResponse {
+        val url = if (page == 1) mainUrl else "$mainUrl/new/$page/"
+        val document = app.get(url).document
+        
+        // Selector đúng cho các item trên trang chủ
+        val home = document.select("div.video-item").mapNotNull {
+            it.toSearchResult()
+        }
+
+        return newHomePageResponse(request.name, home)
     }
     
-    private fun getImageUrl(path: String?, basePath: String? = null): String? {
-        if (path.isNullOrBlank()) return null
-        val trimmedPath = path.trim()
-        return if (trimmedPath.startsWith("http")) {
-            trimmedPath
-        } 
-        else {
-            (basePath ?: "https://img.ophim.live/uploads/movies/") + trimmedPath
-        }
-    }
-
-    private fun getTvType(item: OphimItem): TvType {
-        return when (item.type) {
-            "hoathinh" -> TvType.Anime
-            "series" -> TvType.TvSeries
-            else -> {
-                if (item.tmdb?.type == "tv") TvType.TvSeries else TvType.Movie
-            }
-        }
-    }
-
-    override val mainPage = mainPageOf(
-        "$mainUrl/danh-sach/phim-moi-cap-nhat?page=" to "Phim mới cập nhật"
-    )
-
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = request.data + page
-        val response = app.get(url).text
-        val homepageData = parseJson<OphimHomepage>(response)
-
-        val imageBasePath = homepageData.pathImage
-
-        val results = homepageData.items.mapNotNull { item ->
-            val imageUrl = if (item.thumbUrl.isNullOrBlank()) item.posterUrl else item.thumbUrl
-            
-            // SỬA: Quay lại dùng newMovieSearchResponse để hết cảnh báo
-            newMovieSearchResponse(
-                name = item.name,
-                url = getUrl("phim/${item.slug}"),
-                type = getTvType(item),
-            ) {
-                this.posterUrl = getImageUrl(imageUrl, imageBasePath)
-                this.year = item.year
-            }
-        }
-        return newHomePageResponse(request.name, results)
-    }
-
+    // Hàm này dùng để tìm kiếm
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchDomain = "https://ophim16.cc"
-        val searchUrl = "$searchDomain/tim-kiem?keyword=$query"
-        val doc = app.get(searchUrl).document
+        val searchUrl = "$mainUrl/search/$query/"
+        val document = app.get(searchUrl).document
 
-        val scriptData = doc.selectFirst("script#__NEXT_DATA__")?.data()
-            ?: return emptyList()
-
-        val searchJson = parseJson<NextData>(scriptData)
-        val searchItems = searchJson.props.pageProps.data.items
-
-        return searchItems.map { item ->
-            val imageUrl = if (item.thumbUrl.isNullOrBlank()) item.posterUrl else item.thumbUrl
-            
-            // SỬA: Quay lại dùng newMovieSearchResponse để hết cảnh báo
-            newMovieSearchResponse(
-                name = item.name,
-                url = getUrl("phim/${item.slug}"),
-                type = getTvType(item),
-            ) {
-                this.posterUrl = getImageUrl(imageUrl)
-                this.year = item.year
-            }
+        // Selector đúng cho các item trên trang tìm kiếm
+        return document.select("div.video-item").mapNotNull {
+            it.toSearchResult()
         }
     }
 
-    override suspend fun load(url: String): LoadResponse {
-        val response = app.get(url).text
-        val detailData = parseJson<OphimDetail>(response)
-        val movieInfo = detailData.movie
+    // Hàm này dùng để lấy thông tin chi tiết của phim
+    override suspend fun load(url: String): LoadResponse? {
+        val document = app.get(url).document
 
-        val title = movieInfo.name
-        val poster = if (movieInfo.posterUrl.isBlank()) movieInfo.thumbUrl else movieInfo.posterUrl
+        val title = document.selectFirst("h2#page-title")?.text()?.trim() ?: return null
+        val posterUrl = document.selectFirst("meta[property=og:image]")?.attr("content")
+        val plot = document.selectFirst("div.video-description")?.text()?.trim()
         
-        val posterUrl = getImageUrl(poster)
-        val backgroundPosterUrl = getImageUrl(movieInfo.thumbUrl)
-        val year = movieInfo.year
-        val plot = Jsoup.parse(movieInfo.content).text()
-        val tags = movieInfo.category?.map { it.name }
-        val actors = movieInfo.actor?.map { ActorData(Actor(it)) }
-
-        return when (movieInfo.type) {
-            "hoathinh", "series" -> {
-                val episodes = detailData.episodes.flatMap { server ->
-                    server.serverData.map { episodeData ->
-                        newEpisode(data = episodeData.linkM3u8) {
-                            this.name = "Tập ${episodeData.name}"
-                        }
-                    }
-                }
-                val tvType = if (movieInfo.type == "hoathinh") TvType.Anime else TvType.TvSeries
-                newTvSeriesLoadResponse(title, url, tvType, episodes) {
-                    this.posterUrl = posterUrl
-                    this.backgroundPosterUrl = backgroundPosterUrl
-                    this.year = year
-                    this.plot = plot
-                    this.tags = tags
-                    this.actors = actors
-                }
-            }
-            else -> { 
-                newMovieLoadResponse(
-                    title,
-                    url,
-                    TvType.Movie,
-                    detailData.episodes.firstOrNull()?.serverData?.firstOrNull()?.linkM3u8
-                ) {
-                    this.posterUrl = posterUrl
-                    this.backgroundPosterUrl = backgroundPosterUrl
-                    this.year = year
-                    this.plot = plot
-                    this.tags = tags
-                    this.actors = actors
-                }
-            }
+        return newMovieLoadResponse(title, url, TvType.Movie, url) {
+            this.posterUrl = posterUrl
+            this.plot = plot
         }
     }
 
+    // Regex để trích xuất json từ script
+    private val sourcesRegex = Regex("""sources:\s*(\[.*?\])""")
+
+    // Hàm này dùng để lấy link stream cuối cùng
     override suspend fun loadLinks(
-        data: String,
+        data: String, // Đây là URL của trang chi tiết phim
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        callback.invoke(
-            newExtractorLink(
-                source = this.name,
-                name = "Vietsub",
-                url = data,
-                type = ExtractorLinkType.M3U8
-            ) {
-                this.referer = "$mainUrl/"
-                this.quality = Qualities.Unknown.value
+        val document = app.get(data).document
+        
+        val videoId = document.selectFirst("div#video")?.attr("data-id") ?: return false
+        val servers = document.select("li.video-server")
+        
+        servers.apmap { serverElement ->
+            val onclickAttr = serverElement.attr("onclick")
+            val serverNum = Regex("""server\((\d+),""").find(onclickAttr)?.groupValues?.get(1)
+            
+            if (serverNum != null) {
+                val playerPageUrl = "$mainUrl/ajax.php?&id=$videoId&sv=$serverNum"
+                
+                try {
+                    val playerDoc = app.get(playerPageUrl).document
+                    val script = playerDoc.select("script").find { it.data().contains("window.\$\$ops") }?.data() ?: ""
+                    val sourcesJson = sourcesRegex.find(script)?.groupValues?.get(1) ?: return@apmap
+
+                    val sources = parseJson<List<VideoSource>>(sourcesJson)
+                    sources.forEach { source ->
+                        if (source.file.isNotBlank()) {
+                            // =================== PHẦN ĐƯỢC CẬP NHẬT =================== //
+                            callback.invoke(
+                                ExtractorLink(
+                                    source = this.name, // Tên provider
+                                    name = "${this.name} Server $serverNum", // Tên nguồn, ví dụ "Vlx Server 1"
+                                    url = source.file,
+                                    referer = mainUrl,
+                                    quality = Qualities.Unknown.value,
+                                    // Thay isM3u8 = true bằng type = ExtractorLinkType.M3U8
+                                    // Dựa vào HTML, trang trả về type là "hls"
+                                    type = ExtractorLinkType.M3U8
+                                )
+                            )
+                            // ========================================================== //
+                        }
+                    }
+                } catch (e: Exception) {
+                    // Bỏ qua nếu có lỗi
+                }
             }
-        )
+        }
+        
         return true
+    }
+    
+    // Data class để parse JSON từ player
+    data class VideoSource(
+        val file: String,
+        val type: String
+    )
+
+    // Hàm tiện ích để chuyển đổi một element HTML thành SearchResponse
+    private fun Element.toSearchResult(): SearchResponse? {
+        val linkTag = this.selectFirst("a") ?: return null
+        val href = linkTag.attr("href")
+        if (href.isBlank()) return null
+        
+        val title = linkTag.attr("title").trim()
+        val posterUrl = this.selectFirst("img.video-image")?.attr("data-original")
+
+        return newMovieSearchResponse(title, href, TvType.Movie) {
+            this.posterUrl = posterUrl
+        }
     }
 }
