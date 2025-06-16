@@ -3,7 +3,7 @@
 package com.lagradost.cloudstream3.movieprovider // Thay đổi package name nếu cần
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.AppUtils // SỬA LỖI: Thêm import theo yêu cầu
+import com.lagradost.cloudstream3.utils.AppUtils
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
@@ -13,10 +13,13 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 class VlxProvider : MainAPI() {
     override var name = "Vlx"
     override var mainUrl = "https://vlxx.bz"
-    override var supportedTypes = setOf(
-        TvType.Movie,
-        TvType.TvSeries
-    )
+
+    // THAY ĐỔI 1: Thêm hasMainPage
+    override var hasMainPage = true
+    
+    // THAY ĐỔI 2: Đổi supportedTypes thành NSFW
+    override var supportedTypes = setOf(TvType.NSFW)
+
     override var lang = "vi"
 
     override suspend fun getMainPage(
@@ -24,7 +27,6 @@ class VlxProvider : MainAPI() {
         request: MainPageRequest
     ): HomePageResponse {
         val url = if (page == 1) mainUrl else "$mainUrl/new/$page/"
-        // Giữ nguyên app.get cho tác vụ mạng
         val document = app.get(url).document
         
         val home = document.select("div.video-item").mapNotNull {
@@ -36,7 +38,6 @@ class VlxProvider : MainAPI() {
     
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/search/$query/"
-        // Giữ nguyên app.get cho tác vụ mạng
         val document = app.get(searchUrl).document
 
         return document.select("div.video-item").mapNotNull {
@@ -45,14 +46,14 @@ class VlxProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        // Giữ nguyên app.get cho tác vụ mạng
         val document = app.get(url).document
 
         val title = document.selectFirst("h2#page-title")?.text()?.trim() ?: return null
         val posterUrl = document.selectFirst("meta[property=og:image]")?.attr("content")
         val plot = document.selectFirst("div.video-description")?.text()?.trim()
         
-        return newMovieLoadResponse(title, url, TvType.Movie, url) {
+        // THAY ĐỔI 3: Cập nhật TvType trong newmovieLoadResponse
+        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = posterUrl
             this.plot = plot
         }
@@ -66,7 +67,6 @@ class VlxProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Giữ nguyên app.get cho tác vụ mạng
         val document = app.get(data).document
         
         val videoId = document.selectFirst("div#video")?.attr("data-id") ?: return false
@@ -79,12 +79,10 @@ class VlxProvider : MainAPI() {
                 
                 if (serverNum != null) {
                     val playerPageUrl = "$mainUrl/ajax.php?&id=$videoId&sv=$serverNum"
-                    // Giữ nguyên app.get cho tác vụ mạng
                     val playerDoc = app.get(playerPageUrl).document
                     val script = playerDoc.select("script").find { it.data().contains("window.\$\$ops") }?.data() ?: ""
                     val sourcesJson = sourcesRegex.find(script)?.groupValues?.get(1)
 
-                    // SỬA LỖI: Gọi trực tiếp từ AppUtils theo đúng thông tin bạn cung cấp
                     val sources = AppUtils.tryParseJson<List<VideoSource>>(sourcesJson)
                     
                     sources?.forEach { source ->
@@ -123,7 +121,8 @@ class VlxProvider : MainAPI() {
         val title = linkTag.attr("title").trim()
         val posterUrl = this.selectFirst("img.video-image")?.attr("data-original")
 
-        return newMovieSearchResponse(title, href, TvType.Movie) {
+        // THAY ĐỔI 4: Cập nhật TvType trong newMovieSearchResponse
+        return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
         }
     }
