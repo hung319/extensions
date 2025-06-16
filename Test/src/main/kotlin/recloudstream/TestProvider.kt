@@ -69,7 +69,7 @@ class VlxProvider : MainAPI() {
         
         val videoId = document.selectFirst("div#video")?.attr("data-id") ?: return false
         
-        // THAY ĐỔI: Bỏ đếm server, mặc định lặp 2 lần cho Server 1 và Server 2
+        // Mặc định lặp 2 lần cho Server 1 và Server 2
         (1..2).forEach { serverNum ->
             try {
                 val postData = mapOf(
@@ -86,7 +86,13 @@ class VlxProvider : MainAPI() {
                 val iframeSrc = iframeDocument.selectFirst("iframe")?.attr("src")
 
                 if (iframeSrc != null) {
-                    val finalPlayerPage = app.get(iframeSrc, referer = data).document
+                    // SỬA ĐỔI: Thêm header vào request GET đến trang iframe
+                    val iframeHeaders = mapOf(
+                        "Referer" to data,
+                        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Mobile Safari/537.36"
+                    )
+                    val finalPlayerPage = app.get(iframeSrc, headers = iframeHeaders).document
+
                     val script = finalPlayerPage.select("script").find { it.data().contains("window.\$\$ops") }?.data() ?: ""
                     val sourcesJson = sourcesRegex.find(script)?.groupValues?.get(1)
                     val sources = AppUtils.tryParseJson<List<VideoSource>>(sourcesJson)
