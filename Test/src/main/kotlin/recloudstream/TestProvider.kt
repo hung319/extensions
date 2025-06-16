@@ -6,6 +6,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 
 // Đặt tên class theo tên provider, ví dụ: VlxProvider
 class VlxProvider : MainAPI() {
@@ -17,7 +18,6 @@ class VlxProvider : MainAPI() {
     )
     override var lang = "vi"
 
-    // Hàm này dùng để tải trang chủ
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
@@ -25,7 +25,6 @@ class VlxProvider : MainAPI() {
         val url = if (page == 1) mainUrl else "$mainUrl/new/$page/"
         val document = app.get(url).document
         
-        // Selector đúng cho các item trên trang chủ
         val home = document.select("div.video-item").mapNotNull {
             it.toSearchResult()
         }
@@ -33,18 +32,15 @@ class VlxProvider : MainAPI() {
         return newHomePageResponse(request.name, home)
     }
     
-    // Hàm này dùng để tìm kiếm
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/search/$query/"
         val document = app.get(searchUrl).document
 
-        // Selector đúng cho các item trên trang tìm kiếm
         return document.select("div.video-item").mapNotNull {
             it.toSearchResult()
         }
     }
 
-    // Hàm này dùng để lấy thông tin chi tiết của phim
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
@@ -58,12 +54,10 @@ class VlxProvider : MainAPI() {
         }
     }
 
-    // Regex để trích xuất json từ script
     private val sourcesRegex = Regex("""sources:\s*(\[.*?\])""")
 
-    // Hàm này dùng để lấy link stream cuối cùng
     override suspend fun loadLinks(
-        data: String, // Đây là URL của trang chi tiết phim
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
@@ -73,53 +67,50 @@ class VlxProvider : MainAPI() {
         val videoId = document.selectFirst("div#video")?.attr("data-id") ?: return false
         val servers = document.select("li.video-server")
         
+        // Dùng a-p-map để xử lý các server song song
         servers.apmap { serverElement ->
-            val onclickAttr = serverElement.attr("onclick")
-            val serverNum = Regex("""server\((\d+),""").find(onclickAttr)?.groupValues?.get(1)
-            
-            if (serverNum != null) {
-                val playerPageUrl = "$mainUrl/ajax.php?&id=$videoId&sv=$serverNum"
+            try {
+                val onclickAttr = serverElement.attr("onclick")
+                val serverNum = Regex("""server\((\d+),""").find(onclickAttr)?.groupValues?.get(1)
                 
-                try {
+                if (serverNum != null) {
+                    val playerPageUrl = "$mainUrl/ajax.php?&id=$videoId&sv=$serverNum"
                     val playerDoc = app.get(playerPageUrl).document
                     val script = playerDoc.select("script").find { it.data().contains("window.\$\$ops") }?.data() ?: ""
-                    val sourcesJson = sourcesRegex.find(script)?.groupValues?.get(1) ?: return@apmap
+                    val sourcesJson = sourcesRegex.find(script)?.groupValues?.get(1)
 
-                    val sources = parseJson<List<VideoSource>>(sourcesJson)
-                    sources.forEach { source ->
+                    // SỬA ĐỔI: Sử dụng tryParseJson để an toàn hơn
+                    val sources = app.tryParseJson<List<VideoSource>>(sourcesJson)
+                    
+                    // Nếu sources không phải là null (parse thành công)
+                    sources?.forEach { source ->
                         if (source.file.isNotBlank()) {
-                            // =================== PHẦN ĐƯỢC CẬP NHẬT =================== //
                             callback.invoke(
                                 ExtractorLink(
-                                    source = this.name, // Tên provider
-                                    name = "${this.name} Server $serverNum", // Tên nguồn, ví dụ "Vlx Server 1"
+                                    source = this.name,
+                                    name = "${this.name} Server $serverNum",
                                     url = source.file,
                                     referer = mainUrl,
                                     quality = Qualities.Unknown.value,
-                                    // Thay isM3u8 = true bằng type = ExtractorLinkType.M3U8
-                                    // Dựa vào HTML, trang trả về type là "hls"
                                     type = ExtractorLinkType.M3U8
                                 )
                             )
-                            // ========================================================== //
                         }
                     }
-                } catch (e: Exception) {
-                    // Bỏ qua nếu có lỗi
                 }
+            } catch (e: Exception) {
+                // Bỏ qua server nếu có lỗi mạng hoặc lỗi không mong muốn khác
             }
         }
         
         return true
     }
     
-    // Data class để parse JSON từ player
     data class VideoSource(
         val file: String,
         val type: String
     )
 
-    // Hàm tiện ích để chuyển đổi một element HTML thành SearchResponse
     private fun Element.toSearchResult(): SearchResponse? {
         val linkTag = this.selectFirst("a") ?: return null
         val href = linkTag.attr("href")
