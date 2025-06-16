@@ -127,8 +127,8 @@ class OphimProvider : MainAPI() {
         val imageBasePath = homepageData.pathImage
 
         val results = homepageData.items.mapNotNull { item ->
-            // SỬA: Ưu tiên poster_url, nếu không có thì dùng thumb_url
-            val imageUrl = if (item.posterUrl.isNullOrBlank()) item.thumbUrl else item.posterUrl
+            // SỬA: Luôn ưu tiên thumb_url vì nó đáng tin cậy hơn, nếu không có thì mới dùng poster_url
+            val imageUrl = if (item.thumbUrl.isNullOrBlank()) item.posterUrl else item.thumbUrl
 
             MovieSearchResponse(
                 name = item.name,
@@ -154,8 +154,8 @@ class OphimProvider : MainAPI() {
         val searchItems = searchJson.props.pageProps.data.items
 
         return searchItems.map { item ->
-            // SỬA: Ưu tiên poster_url, nếu không có thì dùng thumb_url
-            val imageUrl = if (item.posterUrl.isNullOrBlank()) item.thumbUrl else item.posterUrl
+            // SỬA: Luôn ưu tiên thumb_url vì nó đáng tin cậy hơn, nếu không có thì mới dùng poster_url
+            val imageUrl = if (item.thumbUrl.isNullOrBlank()) item.posterUrl else item.thumbUrl
             
             MovieSearchResponse(
                 name = item.name,
@@ -174,10 +174,9 @@ class OphimProvider : MainAPI() {
         val movieInfo = detailData.movie
 
         val title = movieInfo.name
-        // SỬA: Ưu tiên poster_url, nếu không có thì dùng thumb_url
-        val poster = if (movieInfo.posterUrl.isBlank()) movieInfo.thumbUrl else movieInfo.posterUrl
         
-        val posterUrl = getImageUrl(poster)
+        // Ở trang chi tiết, posterUrl và thumbUrl đều là link đầy đủ và thường chính xác
+        val posterUrl = getImageUrl(movieInfo.posterUrl)
         val backgroundPosterUrl = getImageUrl(movieInfo.thumbUrl)
         val year = movieInfo.year
         val plot = Jsoup.parse(movieInfo.content).text()
