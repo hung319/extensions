@@ -124,10 +124,11 @@ class OphimProvider : MainAPI() {
         val homepageData = parseJson<OphimHomepage>(response)
 
         val results = homepageData.items.mapNotNull { item ->
-            // SỬA: Dùng MovieSearchResponse trực tiếp thay vì hàm hỗ trợ
             MovieSearchResponse(
                 name = item.name,
                 url = getUrl("phim/${item.slug}"),
+                // SỬA: Thêm tham số apiName
+                apiName = this.name,
                 type = getTvType(item),
                 posterUrl = getImageUrl(item.posterUrl),
                 year = item.year
@@ -148,10 +149,11 @@ class OphimProvider : MainAPI() {
         val searchItems = searchJson.props.pageProps.data.items
 
         return searchItems.map { item ->
-            // SỬA: Dùng MovieSearchResponse trực tiếp thay vì hàm hỗ trợ
             MovieSearchResponse(
                 name = item.name,
                 url = getUrl("phim/${item.slug}"),
+                // SỬA: Thêm tham số apiName
+                apiName = this.name,
                 type = getTvType(item),
                 posterUrl = getImageUrl(item.posterUrl),
                 year = item.year
