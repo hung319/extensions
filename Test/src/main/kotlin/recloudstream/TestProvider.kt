@@ -9,7 +9,8 @@ import org.jsoup.nodes.Element
 import java.lang.Exception
 
 class TestProvider : MainAPI() {
-    override var mainUrl = "https://sextop1.la"
+    // THAY ĐỔI: Sử dụng Bitly để tự động cập nhật domain
+    override var mainUrl = "https://bit.ly/xemtop1"
     override var name = "SexTop1"
     override val hasMainPage = true
     override var lang = "vi"
@@ -23,7 +24,6 @@ class TestProvider : MainAPI() {
         if (mainItems.isNotEmpty()) {
             homePageList.add(HomePageList("Phim Mới", mainItems))
         }
-        // SỬA LỖI: Dùng hàm newHomePageResponse thay cho constructor cũ
         return newHomePageResponse(homePageList)
     }
 
@@ -63,8 +63,11 @@ class TestProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val apiUrl = "$mainUrl/wp-json/sextop1/player/?id=$data&server=1"
-        val responseText = app.get(apiUrl, referer = "$mainUrl/").text
+        // Lấy domain đã được redirect từ Bitly để xây dựng URL API
+        val redirectedUrl = app.get(mainUrl).url
+        val apiUrl = "$redirectedUrl/wp-json/sextop1/player/?id=$data&server=1"
+        
+        val responseText = app.get(apiUrl, referer = "$redirectedUrl/").text
         val apiResponse = tryParseJson<ApiResponse>(responseText)
         val jsData = apiResponse?.data ?: return false
 
