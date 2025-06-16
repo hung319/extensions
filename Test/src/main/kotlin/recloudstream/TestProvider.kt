@@ -8,18 +8,14 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import org.jsoup.Jsoup
 
 // Đặt tên class theo tên provider, ví dụ: VlxProvider
 class VlxProvider : MainAPI() {
     override var name = "Vlx"
     override var mainUrl = "https://vlxx.bz"
-
-    // THAY ĐỔI 1: Thêm hasMainPage
     override var hasMainPage = true
-    
-    // THAY ĐỔI 2: Đổi supportedTypes thành NSFW
     override var supportedTypes = setOf(TvType.NSFW)
-
     override var lang = "vi"
 
     override suspend fun getMainPage(
@@ -52,12 +48,14 @@ class VlxProvider : MainAPI() {
         val posterUrl = document.selectFirst("meta[property=og:image]")?.attr("content")
         val plot = document.selectFirst("div.video-description")?.text()?.trim()
         
-        // THAY ĐỔI 3: Cập nhật TvType trong newmovieLoadResponse
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = posterUrl
             this.plot = plot
         }
     }
+
+    data class PlayerResponse(val player: String)
+    data class VideoSource(val file: String, val type: String)
 
     private val sourcesRegex = Regex("""sources:\s*(\[.*?\])""")
 
@@ -74,15 +72,27 @@ class VlxProvider : MainAPI() {
         
         servers.apmap { serverElement ->
             try {
-                val onclickAttr = serverElement.attr("onclick")
-                val serverNum = Regex("""server\((\d+),""").find(onclickAttr)?.groupValues?.get(1)
+                val serverNum = Regex("""server\((\d+),""").find(serverElement.attr("onclick"))?.groupValues?.get(1) ?: return@apmap
                 
-                if (serverNum != null) {
-                    val playerPageUrl = "$mainUrl/ajax.php?&id=$videoId&sv=$serverNum"
-                    val playerDoc = app.get(playerPageUrl).document
-                    val script = playerDoc.select("script").find { it.data().contains("window.\$\$ops") }?.data() ?: ""
-                    val sourcesJson = sourcesRegex.find(script)?.groupValues?.get(1)
+                // Chuẩn bị dữ liệu cho POST request
+                val postData = mapOf(
+                    // SỬA LỖI: 'vlxx_server' luôn là "2" dựa trên curl bạn cung cấp
+                    "vlxx_server" to "2",
+                    "id" to videoId,
+                    "server" to serverNum
+                )
+                
+                val headers = mapOf("X-Requested-With" to "XMLHttpRequest", "Referer" to data)
+                val ajaxUrl = "$mainUrl/ajax.php"
+                val ajaxResponse = app.post(ajaxUrl, data = postData, headers = headers).parsed<PlayerResponse>()
+                
+                val iframeDocument = Jsoup.parse(ajaxResponse.player)
+                val iframeSrc = iframeDocument.selectFirst("iframe")?.attr("src")
 
+                if (iframeSrc != null) {
+                    val finalPlayerPage = app.get(iframeSrc, referer = data).document
+                    val script = finalPlayerPage.select("script").find { it.data().contains("window.\$\$ops") }?.data() ?: ""
+                    val sourcesJson = sourcesRegex.find(script)?.groupValues?.get(1)
                     val sources = AppUtils.tryParseJson<List<VideoSource>>(sourcesJson)
                     
                     sources?.forEach { source ->
@@ -92,7 +102,7 @@ class VlxProvider : MainAPI() {
                                     source = this.name,
                                     name = "${this.name} Server $serverNum",
                                     url = source.file,
-                                    referer = mainUrl,
+                                    referer = iframeSrc,
                                     quality = Qualities.Unknown.value,
                                     type = ExtractorLinkType.M3U8
                                 )
@@ -101,18 +111,13 @@ class VlxProvider : MainAPI() {
                     }
                 }
             } catch (e: Exception) {
-                // Bỏ qua server nếu có lỗi
+                // Bỏ qua nếu server bị lỗi
             }
         }
         
         return true
     }
     
-    data class VideoSource(
-        val file: String,
-        val type: String
-    )
-
     private fun Element.toSearchResult(): SearchResponse? {
         val linkTag = this.selectFirst("a") ?: return null
         val href = linkTag.attr("href")
@@ -121,7 +126,6 @@ class VlxProvider : MainAPI() {
         val title = linkTag.attr("title").trim()
         val posterUrl = this.selectFirst("img.video-image")?.attr("data-original")
 
-        // THAY ĐỔI 4: Cập nhật TvType trong newMovieSearchResponse
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
         }
