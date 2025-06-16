@@ -13,20 +13,16 @@ import org.jsoup.Jsoup
 // Đặt tên class theo tên provider, ví dụ: VlxProvider
 class VlxProvider : MainAPI() {
     override var name = "Vlx"
-    // THAY ĐỔI 1: Đặt mainUrl thành trang gốc
     override var mainUrl = "https://vlxx.com"
     override var hasMainPage = true
     override var supportedTypes = setOf(TvType.NSFW)
     override var lang = "vi"
 
-    // THAY ĐỔI 2: Thêm biến để lưu baseUrl động
     private var baseUrl: String? = null
 
-    // THAY ĐỔI 3: Hàm để lấy baseUrl động. Nó sẽ chỉ chạy một lần.
     private suspend fun getBaseUrl(): String {
         if (baseUrl == null) {
             val document = app.get(mainUrl).document
-            // Tìm thẻ <a> có class là "button" để lấy href
             val realUrl = document.selectFirst("a.button")?.attr("href")?.trimEnd('/') ?: mainUrl
             baseUrl = realUrl
         }
@@ -37,7 +33,6 @@ class VlxProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        // THAY ĐỔI 4: Sử dụng getBaseUrl() thay vì mainUrl
         val currentBaseUrl = getBaseUrl()
         val url = if (page == 1) currentBaseUrl else "$currentBaseUrl/new/$page/"
         val document = app.get(url).document
@@ -50,7 +45,6 @@ class VlxProvider : MainAPI() {
     }
     
     override suspend fun search(query: String): List<SearchResponse> {
-        // THAY ĐỔI 4: Sử dụng getBaseUrl() thay vì mainUrl
         val searchUrl = "${getBaseUrl()}/search/$query/"
         val document = app.get(searchUrl).document
 
@@ -59,17 +53,24 @@ class VlxProvider : MainAPI() {
         }
     }
 
+    // =================== HÀM load ĐÃ ĐƯỢC CẬP NHẬT ===================
     override suspend fun load(url: String): LoadResponse? {
-        // Hàm load nhận url tuyệt đối từ search/getMainPage nên không cần thay đổi
         val document = app.get(url).document
 
         val title = document.selectFirst("h2#page-title")?.text()?.trim() ?: return null
         val posterUrl = document.selectFirst("meta[property=og:image]")?.attr("content")
         val plot = document.selectFirst("div.video-description")?.text()?.trim()
         
+        // THÊM MỚI: Tìm và phân tích danh sách phim liên quan
+        val recommendations = document.select("div#video-list div.video-item").mapNotNull {
+            it.toSearchResult()
+        }
+        
+        // CẬP NHẬT: Thêm 'recommendations' vào LoadResponse
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = posterUrl
             this.plot = plot
+            this.recommendations = recommendations
         }
     }
 
@@ -97,7 +98,6 @@ class VlxProvider : MainAPI() {
                 )
                 
                 val headers = mapOf("X-Requested-With" to "XMLHttpRequest", "Referer" to data)
-                // THAY ĐỔI 4: Sử dụng getBaseUrl() thay vì mainUrl
                 val ajaxUrl = "${getBaseUrl()}/ajax.php"
                 val ajaxResponse = app.post(ajaxUrl, data = postData, headers = headers).parsed<PlayerResponse>()
                 
@@ -138,13 +138,11 @@ class VlxProvider : MainAPI() {
         return true
     }
     
-    // THAY ĐỔI 5: Cập nhật hàm toSearchResult để xử lý link tương đối
     private suspend fun Element.toSearchResult(): SearchResponse? {
         val linkTag = this.selectFirst("a") ?: return null
         var href = linkTag.attr("href")
         if (href.isBlank()) return null
         
-        // Nếu href không phải là link tuyệt đối, hãy thêm baseUrl vào
         if (!href.startsWith("http")) {
             href = "${getBaseUrl()}$href"
         }
