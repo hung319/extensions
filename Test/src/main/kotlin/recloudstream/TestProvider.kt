@@ -13,7 +13,7 @@ import com.lagradost.cloudstream3.newEpisode
 data class OphimItem(
     @JsonProperty("name") val name: String,
     @JsonProperty("slug") val slug: String,
-    @JsonProperty("poster_url") val posterUrl: String,
+    @JsonProperty("poster_url") val posterUrl: String?,
     @JsonProperty("thumb_url") val thumbUrl: String?,
     @JsonProperty("year") val year: Int?,
     @JsonProperty("type") val type: String?,
@@ -124,24 +124,21 @@ class OphimProvider : MainAPI() {
         val homepageData = parseJson<OphimHomepage>(response)
 
         val results = homepageData.items.mapNotNull { item ->
-            val tvType = getTvType(item)
-            val movieUrl = getUrl("phim/${item.slug}")
-            newMovieSearchResponse(
+            // SỬA: Dùng MovieSearchResponse trực tiếp thay vì hàm hỗ trợ
+            MovieSearchResponse(
                 name = item.name,
-                url = movieUrl,
-                type = tvType
-            ) {
-                this.posterUrl = getImageUrl(item.posterUrl)
-                this.year = item.year
-                // SỬA: Loại bỏ dòng code gây lỗi.
-                // Thuộc tính backgroundPosterUrl không tồn tại ở đây.
-            }
+                url = getUrl("phim/${item.slug}"),
+                type = getTvType(item),
+                posterUrl = getImageUrl(item.posterUrl),
+                year = item.year
+            )
         }
         return newHomePageResponse(request.name, results)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "https://ophim16.cc/tim-kiem?keyword=$query"
+        val searchDomain = "https://ophim16.cc"
+        val searchUrl = "$searchDomain/tim-kiem?keyword=$query"
         val doc = app.get(searchUrl).document
 
         val scriptData = doc.selectFirst("script#__NEXT_DATA__")?.data()
@@ -151,17 +148,14 @@ class OphimProvider : MainAPI() {
         val searchItems = searchJson.props.pageProps.data.items
 
         return searchItems.map { item ->
-            val tvType = getTvType(item)
-            newMovieSearchResponse(
+            // SỬA: Dùng MovieSearchResponse trực tiếp thay vì hàm hỗ trợ
+            MovieSearchResponse(
                 name = item.name,
                 url = getUrl("phim/${item.slug}"),
-                type = tvType
-            ) {
-                this.posterUrl = getImageUrl(item.posterUrl)
-                this.year = item.year
-                // SỬA: Loại bỏ dòng code gây lỗi.
-                // Thuộc tính backgroundPosterUrl không tồn tại ở đây.
-            }
+                type = getTvType(item),
+                posterUrl = getImageUrl(item.posterUrl),
+                year = item.year
+            )
         }
     }
 
