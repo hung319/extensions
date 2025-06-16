@@ -3,7 +3,6 @@ package com.lagradost.cloudstream3.plugins.local
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
-// Thêm import cụ thể cho ExtractorLinkType
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 
 import org.jsoup.nodes.Element
@@ -47,6 +46,7 @@ class TestProvider : MainAPI() {
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         val description = document.selectFirst("div.video-item.dp-entry-box > article > p")?.text()
         val tags = document.select("div.the_tag_list a[rel=tag]").map { it.text() }
+        // Chúng ta vẫn lấy ID từ trang phim như cũ
         val postId = document.selectFirst("div#video")?.attr("data-id") ?: return null
         val recommendations = document.select("section.related-movies article.dp-item").mapNotNull { it.toSearchResult() }
         return newMovieLoadResponse(title, url, TvType.Movie, postId) {
@@ -57,23 +57,36 @@ class TestProvider : MainAPI() {
         }
     }
 
+    // =================================================================================
+    // HÀM LOADLINKS ĐÃ ĐƯỢC VIẾT LẠI HOÀN TOÀN
+    // =================================================================================
     override suspend fun loadLinks(
-        data: String,
+        data: String, // data ở đây vẫn là postId
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
-        val postData = mapOf("action" to "top1tube_get_video", "post_id" to data)
+        // 1. Xây dựng URL API mới và chính xác
+        val apiUrl = "$mainUrl/wp-json/sextop1/player/?id=$data&server=1"
 
-        val responseText = app.post(ajaxUrl, data = postData).text
-        val ajaxResponse = tryParseJson<VideoResponse>(responseText)
+        // 2. Gửi yêu cầu GET đến API và lấy nội dung text
+        val responseText = app.get(apiUrl, referer = "$mainUrl/").text
 
-        ajaxResponse?.link?.let { videoUrl ->
+        // 3. Parse JSON ban đầu để lấy trường 'data'
+        val apiResponse = tryParseJson<ApiResponse>(responseText)
+        val jsData = apiResponse?.data ?: return false // Thoát nếu không có dữ liệu
+
+        // 4. Dùng Regex để tìm link .m3u8 bên trong chuỗi JavaScript
+        val regex = Regex("file: '(https?://[^']+\\.m3u8)'")
+        val matchResult = regex.find(jsData)
+        val videoUrl = matchResult?.groups?.get(1)?.value // Lấy kết quả từ group 1 của regex
+
+        // 5. Nếu tìm thấy link, tạo ExtractorLink và gửi đi
+        videoUrl?.let { url ->
             val link = newExtractorLink(
                 source = this.name,
                 name = "${this.name} Server",
-                url = videoUrl,
+                url = url,
                 type = ExtractorLinkType.M3U8
             ) {
                 this.referer = mainUrl
@@ -85,15 +98,9 @@ class TestProvider : MainAPI() {
         return true
     }
 
-    data class VideoResponse(
-        val status: Boolean?,
-        val link: String?,
-        val sources: List<VideoSource>?
-    )
-
-    data class VideoSource(
-        val file: String,
-        val label: String,
-        val type: String
+    // Data class mới để khớp với cấu trúc JSON của API
+    data class ApiResponse(
+        val success: Boolean?,
+        val data: String?
     )
 }
