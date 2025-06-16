@@ -68,17 +68,14 @@ class VlxProvider : MainAPI() {
         val document = app.get(data).document
         
         val videoId = document.selectFirst("div#video")?.attr("data-id") ?: return false
-        val servers = document.select("li.video-server")
         
-        servers.apmap { serverElement ->
-            var serverNum: String? = null
+        // THAY ĐỔI: Bỏ đếm server, mặc định lặp 2 lần cho Server 1 và Server 2
+        (1..2).forEach { serverNum ->
             try {
-                serverNum = Regex("""server\((\d+),""").find(serverElement.attr("onclick"))?.groupValues?.get(1) ?: return@apmap
-                
                 val postData = mapOf(
                     "vlxx_server" to "2",
                     "id" to videoId,
-                    "server" to serverNum
+                    "server" to serverNum.toString()
                 )
                 
                 val headers = mapOf("X-Requested-With" to "XMLHttpRequest", "Referer" to data)
@@ -110,19 +107,7 @@ class VlxProvider : MainAPI() {
                     }
                 }
             } catch (e: Exception) {
-                // SỬA ĐỔI: Nếu có lỗi, tạo ra một link giả để hiển thị thông báo lỗi
-                if (serverNum != null) {
-                    callback.invoke(
-                        ExtractorLink(
-                            source = this.name,
-                            name = "${this.name} Server $serverNum - LỖI: ${e.message?.take(50)}", // Lấy 50 ký tự đầu của lỗi
-                            url = "error", // Đây là link giả, không hoạt động
-                            referer = "",
-                            quality = Qualities.Unknown.value,
-                            type = ExtractorLinkType.VIDEO
-                        )
-                    )
-                }
+                // Bỏ qua nếu server bị lỗi và tiếp tục với server tiếp theo
             }
         }
         
