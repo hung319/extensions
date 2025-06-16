@@ -67,7 +67,6 @@ class VlxProvider : MainAPI() {
         val videoId = document.selectFirst("div#video")?.attr("data-id") ?: return false
         val servers = document.select("li.video-server")
         
-        // Dùng apmap để xử lý các server song song
         servers.apmap { serverElement ->
             try {
                 val onclickAttr = serverElement.attr("onclick")
