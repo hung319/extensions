@@ -3,6 +3,7 @@
 package com.lagradost.cloudstream3.movieprovider // Thay đổi package name nếu cần
 
 import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.utils.AppUtils // SỬA LỖI: Thêm import theo yêu cầu
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
@@ -23,6 +24,7 @@ class VlxProvider : MainAPI() {
         request: MainPageRequest
     ): HomePageResponse {
         val url = if (page == 1) mainUrl else "$mainUrl/new/$page/"
+        // Giữ nguyên app.get cho tác vụ mạng
         val document = app.get(url).document
         
         val home = document.select("div.video-item").mapNotNull {
@@ -34,6 +36,7 @@ class VlxProvider : MainAPI() {
     
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/search/$query/"
+        // Giữ nguyên app.get cho tác vụ mạng
         val document = app.get(searchUrl).document
 
         return document.select("div.video-item").mapNotNull {
@@ -42,6 +45,7 @@ class VlxProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        // Giữ nguyên app.get cho tác vụ mạng
         val document = app.get(url).document
 
         val title = document.selectFirst("h2#page-title")?.text()?.trim() ?: return null
@@ -62,6 +66,7 @@ class VlxProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // Giữ nguyên app.get cho tác vụ mạng
         val document = app.get(data).document
         
         val videoId = document.selectFirst("div#video")?.attr("data-id") ?: return false
@@ -74,12 +79,13 @@ class VlxProvider : MainAPI() {
                 
                 if (serverNum != null) {
                     val playerPageUrl = "$mainUrl/ajax.php?&id=$videoId&sv=$serverNum"
+                    // Giữ nguyên app.get cho tác vụ mạng
                     val playerDoc = app.get(playerPageUrl).document
                     val script = playerDoc.select("script").find { it.data().contains("window.\$\$ops") }?.data() ?: ""
                     val sourcesJson = sourcesRegex.find(script)?.groupValues?.get(1)
 
-                    // SỬA LỖI Ở ĐÂY: Phải gọi thông qua đối tượng 'app'
-                    val sources = app.tryParseJson<List<VideoSource>>(sourcesJson)
+                    // SỬA LỖI: Gọi trực tiếp từ AppUtils theo đúng thông tin bạn cung cấp
+                    val sources = AppUtils.tryParseJson<List<VideoSource>>(sourcesJson)
                     
                     sources?.forEach { source ->
                         if (source.file.isNotBlank()) {
