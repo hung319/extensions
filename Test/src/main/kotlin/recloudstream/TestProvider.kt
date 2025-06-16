@@ -67,7 +67,7 @@ class VlxProvider : MainAPI() {
         val videoId = document.selectFirst("div#video")?.attr("data-id") ?: return false
         val servers = document.select("li.video-server")
         
-        // Dùng a-p-map để xử lý các server song song
+        // Dùng apmap để xử lý các server song song
         servers.apmap { serverElement ->
             try {
                 val onclickAttr = serverElement.attr("onclick")
@@ -79,10 +79,9 @@ class VlxProvider : MainAPI() {
                     val script = playerDoc.select("script").find { it.data().contains("window.\$\$ops") }?.data() ?: ""
                     val sourcesJson = sourcesRegex.find(script)?.groupValues?.get(1)
 
-                    // SỬA ĐỔI: Sử dụng tryParseJson để an toàn hơn
+                    // SỬA LỖI Ở ĐÂY: Phải gọi thông qua đối tượng 'app'
                     val sources = app.tryParseJson<List<VideoSource>>(sourcesJson)
                     
-                    // Nếu sources không phải là null (parse thành công)
                     sources?.forEach { source ->
                         if (source.file.isNotBlank()) {
                             callback.invoke(
@@ -99,7 +98,7 @@ class VlxProvider : MainAPI() {
                     }
                 }
             } catch (e: Exception) {
-                // Bỏ qua server nếu có lỗi mạng hoặc lỗi không mong muốn khác
+                // Bỏ qua server nếu có lỗi
             }
         }
         
