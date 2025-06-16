@@ -9,7 +9,6 @@ import org.jsoup.nodes.Element
 import java.lang.Exception
 
 class TestProvider : MainAPI() {
-    // THAY ĐỔI: Sử dụng Bitly để tự động cập nhật domain
     override var mainUrl = "https://bit.ly/xemtop1"
     override var name = "SexTop1"
     override val hasMainPage = true
@@ -17,8 +16,21 @@ class TestProvider : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.NSFW)
 
+    // Biến để lưu trữ URL thật sau khi redirect
+    private var realUrl: String? = null
+
+    // Hàm helper để lấy URL thật, chỉ gọi request một lần duy nhất
+    private suspend fun getRealUrl(): String {
+        if (realUrl == null) {
+            // Nếu chưa có URL thật, gửi yêu cầu đến Bitly để lấy và lưu lại
+            realUrl = app.get(mainUrl).url
+        }
+        return realUrl!!
+    }
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get("$mainUrl/page/$page/").document
+        val currentUrl = getRealUrl() // Luôn lấy URL thật
+        val document = app.get("$currentUrl/page/$page/").document
         val homePageList = ArrayList<HomePageList>()
         val mainItems = document.select("article.dp-item").mapNotNull { it.toSearchResult() }
         if (mainItems.isNotEmpty()) {
@@ -29,22 +41,24 @@ class TestProvider : MainAPI() {
 
     private fun Element.toSearchResult(): MovieSearchResponse? {
         val title = this.selectFirst("h2.entry-title a")?.attr("title")?.trim() ?: return null
-        val href = this.selectFirst("a.dp-thumb")?.attr("href") ?: return null
-        val posterUrl = this.selectFirst("img.lazy")?.attr("src")
+        // Sửa href để đảm bảo nó là URL tuyệt đối
+        val href = fixUrl(this.selectFirst("a.dp-thumb")?.attr("href") ?: return null)
+        val posterUrl = fixUrlNull(this.selectFirst("img.lazy")?.attr("src"))
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
         }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val document = app.get("$mainUrl/?s=$query").document
+        val currentUrl = getRealUrl() // Luôn lấy URL thật
+        val document = app.get("$currentUrl/?s=$query").document
         return document.select("article.dp-item").mapNotNull { it.toSearchResult() }
     }
 
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
         val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: return null
-        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
+        val poster = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
         val description = document.selectFirst("div.video-item.dp-entry-box > article > p")?.text()
         val tags = document.select("div.the_tag_list a[rel=tag]").map { it.text() }
         val postId = document.selectFirst("div#video")?.attr("data-id") ?: return null
@@ -63,11 +77,10 @@ class TestProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Lấy domain đã được redirect từ Bitly để xây dựng URL API
-        val redirectedUrl = app.get(mainUrl).url
-        val apiUrl = "$redirectedUrl/wp-json/sextop1/player/?id=$data&server=1"
+        val currentUrl = getRealUrl() // Luôn lấy URL thật
+        val apiUrl = "$currentUrl/wp-json/sextop1/player/?id=$data&server=1"
         
-        val responseText = app.get(apiUrl, referer = "$redirectedUrl/").text
+        val responseText = app.get(apiUrl, referer = "$currentUrl/").text
         val apiResponse = tryParseJson<ApiResponse>(responseText)
         val jsData = apiResponse?.data ?: return false
 
@@ -82,7 +95,8 @@ class TestProvider : MainAPI() {
                 url = url,
                 type = ExtractorLinkType.M3U8
             ) {
-                this.referer = mainUrl
+                // Sửa referer để dùng URL thật, đảm bảo tính nhất quán
+                this.referer = currentUrl
                 this.quality = Qualities.Unknown.value
             }
             callback.invoke(link)
