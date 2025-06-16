@@ -1,9 +1,9 @@
 package com.lagradost.cloudstream3.plugins.local
 
-// THAY ĐỔI QUAN TRỌNG:
-// Import cả 2 package bằng wildcard (*) để đảm bảo mọi thứ được nạp đúng
+// Import các thư viện cần thiết.
+// Wildcard (*) sẽ bao gồm tất cả các lớp/hàm cần thiết từ các package này
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.* // Import này sẽ chứa ExtractorLink và Qualities
+import com.lagradost.cloudstream3.utils.*
 
 import org.jsoup.nodes.Element
 import java.lang.Exception
@@ -56,7 +56,6 @@ class TestProvider : MainAPI() {
         }
     }
 
-    // Hàm loadLinks giờ sẽ có chữ ký đúng vì ExtractorLink đã được import chính xác
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -68,26 +67,27 @@ class TestProvider : MainAPI() {
 
         try {
             val responseText = app.post(ajaxUrl, data = postData).text
-            val ajaxResponse = parseJson<VideoResponse>(responseText)
+            // Gọi parseJson như một hàm mở rộng của String
+            val ajaxResponse = responseText.parseJson<VideoResponse>()
 
             ajaxResponse.link?.let { videoUrl ->
+                // Dùng hàm newExtractorLink với cú pháp lambda chính xác
                 callback.invoke(
-                    ExtractorLink( // Lớp này giờ đã được nhận diện
-                        source = this.name,
-                        name = "${this.name} Server",
-                        url = videoUrl,
-                        referer = mainUrl,
-                        quality = Qualities.Unknown.value
-                    )
+                    newExtractorLink(this.name, "${this.name} Server", videoUrl) {
+                        this.referer = mainUrl
+                        this.quality = Qualities.Unknown.value
+                    }
                 )
             }
         } catch (e: Exception) {
+            // In ra lỗi nếu có vấn đề, giúp dễ dàng gỡ lỗi trong tương lai
             e.printStackTrace()
         }
 
         return true
     }
 
+    // Data class để hứng dữ liệu JSON từ AJAX
     data class VideoResponse(
         val status: Boolean?,
         val link: String?,
