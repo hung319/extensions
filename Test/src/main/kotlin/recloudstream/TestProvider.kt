@@ -1,16 +1,15 @@
 package com.example.vlxx
 
-import com.lagacy.Cloudstream.API.main.MainAPI
-import com.lagacy.Cloudstream.API.main.TvType
-import com.lagacy.Cloudstream.API.search.SearchResponse
-import com.lagacy.Cloudstream.API.HomePageList
-import com.lagacy.Cloudstream.API.MovieLoadResponse
-import com.lagacy.Cloudstream.API.ExtractorLink
-import com.lagacy.Cloudstream.Extractor.JsExtractor
-import com.lagacy.Cloudstream.network.CloudstreamHttp
-import com.lagacy.Cloudstream.network.CloudstreamHttp.get
-import com.lagacy.Cloudstream.network.CloudstreamHttp.post
-import com.lagacy.Cloudstream.utils.AppUtils.tryParseJson
+// Sửa các import từ 'com.lagacy.Cloudstream.API' sang 'com.lagradost.cloudstream3'
+import com.lagradost.cloudstream3.MainAPI
+import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream3.search.SearchResponse
+import com.lagradost.cloudstream3.HomePageList
+import com.lagradost.cloudstream3.MovieLoadResponse
+import com.lagradost.cloudstream3.network.CloudstreamHttp
+// import com.lagradost.cloudstream3.network.CloudstreamHttp.get // Không cần thiết vì đã có CloudstreamHttp.get
+// import com.lagradost.cloudstream3.network.CloudstreamHttp.post // Không cần thiết
+import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson // Có thể không cần dùng nếu chưa xử lý JSON
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 
@@ -21,7 +20,7 @@ class VlxxProvider : MainAPI() { // Kế thừa MainAPI
     override val supportedTypes = setOf(TvType.XXX) // Loại nội dung được hỗ trợ
 
     // Hàm này sẽ tải trang chủ hoặc các trang danh sách khác
-    override fun getMainPage(page: Int, type: TvType): HomePageList {
+    override fun getMainPage(page: Int, category: String?): HomePageList { // Đã sửa tham số thứ 2 thành 'category: String?'
         val url = if (page == 1) mainUrl else "$mainUrl/new/$page/"
         val doc = Jsoup.parse(CloudstreamHttp.get(url).text) // Tải và phân tích HTML
 
