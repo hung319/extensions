@@ -10,10 +10,12 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import org.jsoup.Jsoup
 import com.lagradost.cloudstream3.newEpisode
 
+// SỬA: Thêm thumbUrl vào OphimItem
 data class OphimItem(
     @JsonProperty("name") val name: String,
     @JsonProperty("slug") val slug: String,
     @JsonProperty("poster_url") val posterUrl: String,
+    @JsonProperty("thumb_url") val thumbUrl: String?,
     @JsonProperty("year") val year: Int?,
     @JsonProperty("type") val type: String?,
     @JsonProperty("tmdb") val tmdb: TmdbInfo?
@@ -132,6 +134,8 @@ class OphimProvider : MainAPI() {
             ) {
                 this.posterUrl = getImageUrl(item.posterUrl)
                 this.year = item.year
+                // SỬA: Thêm ảnh nền cho trang chủ
+                this.backgroundPosterUrl = getImageUrl(item.thumbUrl)
             }
         }
         return newHomePageResponse(request.name, results)
@@ -156,6 +160,8 @@ class OphimProvider : MainAPI() {
             ) {
                 this.posterUrl = getImageUrl(item.posterUrl)
                 this.year = item.year
+                // SỬA: Thêm ảnh nền cho trang tìm kiếm
+                this.backgroundPosterUrl = getImageUrl(item.thumbUrl)
             }
         }
     }
@@ -167,6 +173,7 @@ class OphimProvider : MainAPI() {
 
         val title = movieInfo.name
         val posterUrl = getImageUrl(movieInfo.posterUrl)
+        val backgroundPosterUrl = getImageUrl(movieInfo.thumbUrl)
         val year = movieInfo.year
         val plot = Jsoup.parse(movieInfo.content).text()
         val tags = movieInfo.category?.map { it.name }
@@ -184,6 +191,7 @@ class OphimProvider : MainAPI() {
                 val tvType = if (movieInfo.type == "hoathinh") TvType.Anime else TvType.TvSeries
                 newTvSeriesLoadResponse(title, url, tvType, episodes) {
                     this.posterUrl = posterUrl
+                    this.backgroundPosterUrl = backgroundPosterUrl
                     this.year = year
                     this.plot = plot
                     this.tags = tags
@@ -195,10 +203,10 @@ class OphimProvider : MainAPI() {
                     title,
                     url,
                     TvType.Movie,
-                    // SỬA: Dùng đúng tên biến linkM3u8 (camelCase)
                     detailData.episodes.firstOrNull()?.serverData?.firstOrNull()?.linkM3u8
                 ) {
                     this.posterUrl = posterUrl
+                    this.backgroundPosterUrl = backgroundPosterUrl
                     this.year = year
                     this.plot = plot
                     this.tags = tags
