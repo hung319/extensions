@@ -10,7 +10,6 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import org.jsoup.Jsoup
 import com.lagradost.cloudstream3.newEpisode
 
-// SỬA: Thêm thumbUrl vào OphimItem
 data class OphimItem(
     @JsonProperty("name") val name: String,
     @JsonProperty("slug") val slug: String,
@@ -134,8 +133,8 @@ class OphimProvider : MainAPI() {
             ) {
                 this.posterUrl = getImageUrl(item.posterUrl)
                 this.year = item.year
-                // SỬA: Thêm ảnh nền cho trang chủ
-                this.backgroundPosterUrl = getImageUrl(item.thumbUrl)
+                // SỬA: Loại bỏ dòng code gây lỗi.
+                // Thuộc tính backgroundPosterUrl không tồn tại ở đây.
             }
         }
         return newHomePageResponse(request.name, results)
@@ -160,8 +159,8 @@ class OphimProvider : MainAPI() {
             ) {
                 this.posterUrl = getImageUrl(item.posterUrl)
                 this.year = item.year
-                // SỬA: Thêm ảnh nền cho trang tìm kiếm
-                this.backgroundPosterUrl = getImageUrl(item.thumbUrl)
+                // SỬA: Loại bỏ dòng code gây lỗi.
+                // Thuộc tính backgroundPosterUrl không tồn tại ở đây.
             }
         }
     }
