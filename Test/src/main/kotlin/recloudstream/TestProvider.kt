@@ -1,9 +1,10 @@
 package com.lagradost.cloudstream3.plugins.local
 
-// Import các thư viện cần thiết.
-// Wildcard (*) sẽ bao gồm tất cả các lớp/hàm cần thiết từ các package này
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
+// Thêm import cụ thể cho ExtractorLinkType
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 
 import org.jsoup.nodes.Element
 import java.lang.Exception
@@ -65,29 +66,25 @@ class TestProvider : MainAPI() {
         val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
         val postData = mapOf("action" to "top1tube_get_video", "post_id" to data)
 
-        try {
-            val responseText = app.post(ajaxUrl, data = postData).text
-            // Gọi parseJson như một hàm mở rộng của String
-            val ajaxResponse = responseText.parseJson<VideoResponse>()
+        val responseText = app.post(ajaxUrl, data = postData).text
+        val ajaxResponse = tryParseJson<VideoResponse>(responseText)
 
-            ajaxResponse.link?.let { videoUrl ->
-                // Dùng hàm newExtractorLink với cú pháp lambda chính xác
-                callback.invoke(
-                    newExtractorLink(this.name, "${this.name} Server", videoUrl) {
-                        this.referer = mainUrl
-                        this.quality = Qualities.Unknown.value
-                    }
-                )
+        ajaxResponse?.link?.let { videoUrl ->
+            val link = newExtractorLink(
+                source = this.name,
+                name = "${this.name} Server",
+                url = videoUrl,
+                type = ExtractorLinkType.M3U8
+            ) {
+                this.referer = mainUrl
+                this.quality = Qualities.Unknown.value
             }
-        } catch (e: Exception) {
-            // In ra lỗi nếu có vấn đề, giúp dễ dàng gỡ lỗi trong tương lai
-            e.printStackTrace()
+            callback.invoke(link)
         }
 
         return true
     }
 
-    // Data class để hứng dữ liệu JSON từ AJAX
     data class VideoResponse(
         val status: Boolean?,
         val link: String?,
