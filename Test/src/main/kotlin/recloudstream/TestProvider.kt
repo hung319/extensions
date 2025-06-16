@@ -94,13 +94,14 @@ class OphimProvider : MainAPI() {
         return if (path.startsWith("http")) path else "$mainUrl/$path"
     }
     
-    private fun getImageUrl(path: String?): String? {
+    private fun getImageUrl(path: String?, basePath: String? = null): String? {
         if (path.isNullOrBlank()) return null
         val trimmedPath = path.trim()
         return if (trimmedPath.startsWith("http")) {
             trimmedPath
-        } else {
-            "https://img.ophim.live/uploads/movies/$trimmedPath"
+        } 
+        else {
+            (basePath ?: "https://img.ophim.live/uploads/movies/") + trimmedPath
         }
     }
 
@@ -123,14 +124,18 @@ class OphimProvider : MainAPI() {
         val response = app.get(url).text
         val homepageData = parseJson<OphimHomepage>(response)
 
+        val imageBasePath = homepageData.pathImage
+
         val results = homepageData.items.mapNotNull { item ->
+            // SỬA: Ưu tiên poster_url, nếu không có thì dùng thumb_url
+            val imageUrl = if (item.posterUrl.isNullOrBlank()) item.thumbUrl else item.posterUrl
+
             MovieSearchResponse(
                 name = item.name,
                 url = getUrl("phim/${item.slug}"),
-                // SỬA: Thêm tham số apiName
                 apiName = this.name,
                 type = getTvType(item),
-                posterUrl = getImageUrl(item.posterUrl),
+                posterUrl = getImageUrl(imageUrl, imageBasePath),
                 year = item.year
             )
         }
@@ -149,13 +154,15 @@ class OphimProvider : MainAPI() {
         val searchItems = searchJson.props.pageProps.data.items
 
         return searchItems.map { item ->
+            // SỬA: Ưu tiên poster_url, nếu không có thì dùng thumb_url
+            val imageUrl = if (item.posterUrl.isNullOrBlank()) item.thumbUrl else item.posterUrl
+            
             MovieSearchResponse(
                 name = item.name,
                 url = getUrl("phim/${item.slug}"),
-                // SỬA: Thêm tham số apiName
                 apiName = this.name,
                 type = getTvType(item),
-                posterUrl = getImageUrl(item.posterUrl),
+                posterUrl = getImageUrl(imageUrl),
                 year = item.year
             )
         }
@@ -167,7 +174,10 @@ class OphimProvider : MainAPI() {
         val movieInfo = detailData.movie
 
         val title = movieInfo.name
-        val posterUrl = getImageUrl(movieInfo.posterUrl)
+        // SỬA: Ưu tiên poster_url, nếu không có thì dùng thumb_url
+        val poster = if (movieInfo.posterUrl.isBlank()) movieInfo.thumbUrl else movieInfo.posterUrl
+        
+        val posterUrl = getImageUrl(poster)
         val backgroundPosterUrl = getImageUrl(movieInfo.thumbUrl)
         val year = movieInfo.year
         val plot = Jsoup.parse(movieInfo.content).text()
