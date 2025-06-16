@@ -1,14 +1,14 @@
-// Khai báo package cho plugin, bạn có thể đổi tên package nếu muốn
+// Khai báo package cho plugin
 package com.lagradost.cloudstream3.plugins.local
 
-// Import các thư viện cần thiết từ CloudStream
+// Import đầy đủ các thư viện cần thiết từ CloudStream
 import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson // THAY ĐỔI: Sửa 'parsedSafe' thành 'tryParseJson'
 import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.parsedSafe
 import org.jsoup.nodes.Element
 
-// Tên class chính của provider, CloudStream sẽ tự động tìm và tải class này
-class SexTop1 : MainAPI() {
+// Đổi tên class để khớp với tên file của bạn (TestProvider.kt)
+class TestProvider : MainAPI() {
     // Thông tin cơ bản của plugin
     override var mainUrl = "https://sextop1.la"
     override var name = "SexTop1"
@@ -64,8 +64,7 @@ class SexTop1 : MainAPI() {
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         val description = document.selectFirst("div.video-item.dp-entry-box > article > p")?.text()
         val tags = document.select("div.the_tag_list a[rel=tag]").map { it.text() }
-
-        // Phần quan trọng: Lấy ID của video từ HTML
+        
         val postId = document.selectFirst("div#video")?.attr("data-id") ?: return null
 
         val recommendations = document.select("section.related-movies article.dp-item").mapNotNull {
@@ -82,26 +81,21 @@ class SexTop1 : MainAPI() {
 
     // Hàm tải link video (M3U8/MP4)
     override suspend fun loadLinks(
-        data: String, // Đây là postId đã lấy ở hàm load
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Trang web dùng AJAX để lấy link, đây là nơi chúng ta giả lập lại yêu cầu đó
         val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
         
-        // Dữ liệu gửi đi trong yêu cầu POST.
-        // `action` là tham số quan trọng nhất. Tôi "đoán" tên của nó là 'top1tube_get_video'
-        // dựa trên tên theme của web. Nếu không chạy, chúng ta sẽ cần tìm tên chính xác.
         val postData = mapOf(
             "action" to "top1tube_get_video",
-            "post_id" to data // data ở đây chính là postId
+            "post_id" to data
         )
 
-        // Gửi yêu cầu POST và nhận về JSON
-        val ajaxResponse = app.post(ajaxUrl, data = postData).parsedSafe<VideoResponse>()
+        // THAY ĐỔI: Sử dụng tryParseJson theo tài liệu bạn cung cấp
+        val ajaxResponse = app.post(ajaxUrl, data = postData).tryParseJson<VideoResponse>()
 
-        // Nếu có link trong phản hồi, thêm nó vào trình phát
         ajaxResponse?.link?.let { videoUrl ->
             callback.invoke(
                 ExtractorLink(
