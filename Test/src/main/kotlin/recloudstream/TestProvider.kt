@@ -16,23 +16,63 @@ class TvHayProvider : MainAPI() {
         TvType.Anime
     )
 
+    // BƯỚC 1: Thêm "Phim Đề Cử" và "Đã Hoàn Thành" vào trang chủ
+    // Cả hai đều trỏ về trang chủ vì dữ liệu nằm ở đó
     override val mainPage = mainPageOf(
+        "$mainUrl/" to "Phim Đề Cử",
+        "$mainUrl/" to "Đã Hoàn Thành",
         "$mainUrl/phim-moi/" to "Phim Mới Cập Nhật",
         "$mainUrl/phim-le/" to "Phim Lẻ Mới",
         "$mainUrl/phim-bo/" to "Phim Bộ Mới",
         "$mainUrl/phim-hoat-hinh/" to "Phim Hoạt Hình",
     )
 
+    // BƯỚC 3: Nâng cấp getMainPage để xử lý các yêu cầu khác nhau
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        val url = if (page == 1) request.data else "${request.data}page/$page/"
-        val document = app.get(url).document
-        val home = document.select("div#page-list ul.list-film > li").mapNotNull {
-            it.toSearchResult()
+        val document = app.get(request.data).document
+
+        // Dùng when để chọn đúng selector cho từng mục
+        val home = when (request.name) {
+            "Phim Đề Cử" -> {
+                // Các mục này không có phân trang, chỉ tải ở trang 1
+                if (page > 1) return newHomePageResponse(request.name, emptyList())
+                document.select("div#movie-recommend ul.phim-bo-moi > li").mapNotNull {
+                    it.toSimpleSearchResult()
+                }
+            }
+            "Đã Hoàn Thành" -> {
+                if (page > 1) return newHomePageResponse(request.name, emptyList())
+                document.select("div#movie-recommend ul.phim-bo-full > li").mapNotNull {
+                    it.toSimpleSearchResult()
+                }
+            }
+            else -> {
+                // Logic cũ cho các trang có phân trang
+                val url = if (page == 1) request.data else "${request.data}page/$page/"
+                app.get(url).document.select("div#page-list ul.list-film > li").mapNotNull {
+                    it.toSearchResult()
+                }
+            }
         }
         return newHomePageResponse(request.name, home)
+    }
+
+    // BƯỚC 2: Hàm phân tích mới cho các mục đề cử (cấu trúc đơn giản)
+    private fun Element.toSimpleSearchResult(): SearchResponse? {
+        val aTag = this.selectFirst("a") ?: return null
+        val href = aTag.attr("href")
+        if (href.isBlank()) return null
+        val title = aTag.attr("title").removePrefix("Phim ").trim()
+        val extraInfo = this.selectFirst("span")?.text()
+
+        // Hầu hết trong danh sách này là phim bộ
+        return newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
+            this.posterUrl = null // Không có poster trong danh sách này
+            this.quality = getQualityFromString(extraInfo)
+        }
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
@@ -97,18 +137,21 @@ class TvHayProvider : MainAPI() {
             }
         }
 
-        // Nếu không có tập phim nào, vẫn hiển thị thông tin phim nhưng báo là comingSoon = true
         if (episodes.isEmpty()) {
             return newMovieLoadResponse(title, url, TvType.Movie, url) {
                 this.posterUrl = poster
                 this.plot = plot
                 this.year = year
                 this.tags = tags
-                this.comingSoon = true // Đánh dấu là phim sắp chiếu
+                this.comingSoon = true
             }
         }
 
-        val isMovie = episodes.size == 1
+        val isMovie = episodes.size == 1 && (
+                episodes.first().name?.contains("Full", true) == true ||
+                episodes.first().name?.contains("End", true) == true ||
+                episodes.first().name?.contains("Thuyết Minh", true) == true
+        )
 
         return when {
             isMovie -> {
