@@ -93,12 +93,13 @@ class TvHayProvider : MainAPI() {
                 }
             }
             tags.any { it.contains("Hoạt Hình", ignoreCase = true) } -> {
-                // SỬA LỖI TẠI ĐÂY
-                newAnimeLoadResponse(title, url, TvType.Anime, true, episodes) {
+                // SỬA LỖI TẠI ĐÂY - Áp dụng đúng định nghĩa hàm
+                newAnimeLoadResponse(title, url, TvType.Anime) {
                     this.posterUrl = poster
                     this.plot = plot
                     this.year = year
                     this.tags = tags
+                    this.episodes = episodes // Gán episodes bên trong khối lệnh
                 }
             }
             else -> {
