@@ -29,57 +29,28 @@ class KKPhimProvider : MainAPI() {
         TvType.Anime
     )
 
+    // CẬP NHẬT: Đã bỏ hasNext và logic phân trang phức tạp
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        // Khi tải trang 2 trở đi, request.data sẽ chứa tên của danh sách cần tải
-        if (page > 1) {
-            val listNameToLoad = request.data
-            val slug = categories[listNameToLoad] ?: return null
-
-            val url = if (slug == "phim-moi-cap-nhat") {
-                "$apiDomain/$slug?page=$page"
-            } else {
-                "$apiDomain/v1/api/$slug?page=$page"
-            }
-            
-            val responseItems: List<MovieItem>
-            val pagination: Pagination?
-
-            if (slug == "phim-moi-cap-nhat") {
-                val res = app.get(url).parsed<ApiResponse>()
-                responseItems = res.items ?: emptyList()
-                pagination = res.pagination
-            } else {
-                val res = app.get(url).parsed<SearchApiResponse>()
-                responseItems = res.data?.items ?: emptyList()
-                pagination = res.data?.params?.pagination
-            }
-            
-            val newItems = responseItems.mapNotNull { toSearchResponse(it) }
-            val hasNext = (pagination?.currentPage ?: 0) < (pagination?.totalPages ?: 0)
-            
-            return newHomePageResponse(listNameToLoad, newItems, hasNext)
-        }
-        
-        // Khi tải trang 1, tải tất cả các danh mục
         val homePageLists = categories.apmap { (title, slug) ->
-            val url = if (slug == "phim-moi-cap-nhat") "$apiDomain/$slug?page=1" else "$apiDomain/v1/api/$slug?page=1"
-            
+            val url = if (slug == "phim-moi-cap-nhat") {
+                "$apiDomain/$slug?page=1"
+            } else {
+                "$apiDomain/v1/api/$slug?page=1"
+            }
             try {
                 val items = if (slug == "phim-moi-cap-nhat") {
                     app.get(url).parsed<ApiResponse>().items
                 } else {
                     app.get(url).parsed<SearchApiResponse>().data?.items
                 } ?: emptyList()
-                
                 val searchResults = items.mapNotNull { toSearchResponse(it) }
-                // SỬA LỖI: Bỏ tham số `data` không hợp lệ. `title` sẽ tự động được dùng làm định danh.
                 HomePageList(title, searchResults)
             } catch (e: Exception) {
                 HomePageList(title, emptyList())
             }
         }
         
-        return newHomePageResponse(homePageLists.filter { it.list.isNotEmpty() }, hasNext = true)
+        return newHomePageResponse(homePageLists.filter { it.list.isNotEmpty() })
     }
     
     private fun toSearchResponse(item: MovieItem): SearchResponse? {
@@ -128,6 +99,7 @@ class KKPhimProvider : MainAPI() {
             actorList.map { ActorData(Actor(it)) }
         }
         
+        // CẬP NHẬT: Danh sách đề xuất đã được xử lý chính xác
         val recommendations = if (movie.recommendations is List<*>) {
             try {
                 val movieItems = mapper.convertValue(movie.recommendations, object : TypeReference<List<MovieItem>>() {})
@@ -135,7 +107,12 @@ class KKPhimProvider : MainAPI() {
             } catch (e: Exception) { null }
         } else { null }
 
-        val tvType = if (movie.type == "series") TvType.TvSeries else TvType.Movie
+        // CẬP NHẬT: Sửa lỗi nhận diện sai loại phim
+        val tvType = when (movie.type) {
+            "series" -> TvType.TvSeries
+            "hoathinh" -> TvType.Anime
+            else -> TvType.Movie
+        }
 
         val episodes = response.episodes?.flatMap { episodeGroup ->
             episodeGroup.serverData.map { episodeData ->
@@ -145,14 +122,15 @@ class KKPhimProvider : MainAPI() {
             }
         } ?: emptyList()
         
-        return if (tvType == TvType.TvSeries) {
-            newTvSeriesLoadResponse(title, url, tvType, episodes) {
+        // Dựa vào tvType đã được sửa để gọi đúng hàm tạo response
+        return when (tvType) {
+            TvType.TvSeries, TvType.Anime -> newTvSeriesLoadResponse(title, url, tvType, episodes) {
                 this.posterUrl = poster; this.year = year; this.plot = description; this.tags = tags; this.actors = actors; this.recommendations = recommendations
             }
-        } else {
-            newMovieLoadResponse(title, url, tvType, episodes.firstOrNull()?.data) {
+            TvType.Movie -> newMovieLoadResponse(title, url, tvType, episodes.firstOrNull()?.data) {
                 this.posterUrl = poster; this.year = year; this.plot = description; this.tags = tags; this.actors = actors; this.recommendations = recommendations
             }
+            else -> null
         }
     }
 
