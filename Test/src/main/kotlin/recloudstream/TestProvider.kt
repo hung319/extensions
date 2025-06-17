@@ -3,11 +3,10 @@ package recloudstream
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.core.type.TypeReference
 import com.lagradost.cloudstream3.*
+// SỬA IMPORT TẠI ĐÂY
 import com.lagradost.cloudstream3.utils.ExtractorLink
-// Bỏ import loadExtractor vì không dùng nữa
-// Thêm import cho ExtractorLinkType và Qualities
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.extractors.helper.ExtractorLinkType
 
 class KKPhimProvider : MainAPI() {
     override var name = "KKPhim"
@@ -23,7 +22,6 @@ class KKPhimProvider : MainAPI() {
         TvType.Anime
     )
 
-    // Tối giản lại trang chủ để tải nhanh hơn
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val url = "$apiDomain/danh-sach/phim-moi-cap-nhat?page=$page"
         val response = app.get(url).parsed<ApiResponse>()
@@ -114,7 +112,6 @@ class KKPhimProvider : MainAPI() {
         }
     }
 
-    // SỬA LỖI TẢI LINK: Dùng ExtractorLink trực tiếp với headers
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -123,22 +120,20 @@ class KKPhimProvider : MainAPI() {
     ): Boolean {
         val episodeData = mapper.readValue(data, EpisodeData::class.java)
         
-        // Tạo headers để giả lập một trình duyệt web
         val headers = mapOf(
             "Referer" to mainUrl,
             "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
         )
         
-        // Tạo ExtractorLink và gọi callback
         callback.invoke(
             ExtractorLink(
-                source = this.name, // Tên nguồn, ví dụ: "KKPhim"
-                name = this.name,   // Tên hiển thị cho link
-                url = episodeData.linkM3u8, // Link m3u8 trực tiếp
-                referer = mainUrl,  // Trang giới thiệu
-                quality = Qualities.Unknown.value, // Để trình phát tự nhận diện chất lượng
-                type = ExtractorLinkType.M3U8, // Đánh dấu đây là luồng HLS (m3u8)
-                headers = headers   // Gửi kèm headers đã tạo
+                source = this.name,
+                name = this.name,
+                url = episodeData.linkM3u8,
+                referer = mainUrl,
+                quality = Qualities.Unknown.value,
+                type = ExtractorLinkType.M3U8,
+                headers = headers
             )
         )
 
@@ -146,7 +141,6 @@ class KKPhimProvider : MainAPI() {
     }
 
     // --- DATA CLASSES ---
-
     data class ApiResponse(@JsonProperty("items") val items: List<MovieItem>? = null, @JsonProperty("pagination") val pagination: Pagination? = null)
     data class SearchApiResponse(@JsonProperty("data") val data: SearchData? = null)
     data class SearchData(@JsonProperty("items") val items: List<MovieItem>? = null, @JsonProperty("params") val params: SearchParams? = null)
@@ -156,7 +150,7 @@ class KKPhimProvider : MainAPI() {
     data class Pagination(@JsonProperty("currentPage") val currentPage: Int? = null, @JsonProperty("totalPages") val totalPages: Int? = null)
     data class DetailApiResponse(@JsonProperty("movie") val movie: DetailMovie? = null, @JsonProperty("episodes") val episodes: List<EpisodeGroup>? = null)
     data class DetailMovie(@JsonProperty("name") val name: String, @JsonProperty("content") val content: String? = null, @JsonProperty("poster_url") val posterUrl: String? = null, @JsonProperty("year") val year: Int? = null, @JsonProperty("type") val type: String? = null, @JsonProperty("category") val category: List<Category>? = null, @JsonProperty("actor") val actor: List<String>? = null, @JsonProperty("chieurap") val recommendations: Any? = null)
-    g    data class Category(@JsonProperty("name") val name: String)
+    data class Category(@JsonProperty("name") val name: String)
     data class EpisodeGroup(@JsonProperty("server_name") val serverName: String, @JsonProperty("server_data") val serverData: List<EpisodeData>)
     data class EpisodeData(@JsonProperty("name") val name: String, @JsonProperty("slug") val slug: String, @JsonProperty("link_m3u8") val linkM3u8: String, @JsonProperty("link_embed") val linkEmbed: String)
 }
