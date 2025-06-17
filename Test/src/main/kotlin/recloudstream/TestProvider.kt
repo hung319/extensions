@@ -63,7 +63,6 @@ class TvHayProvider : MainAPI() {
         }
     }
 
-    // Hàm tiện ích để thêm chữ "Tập"
     private fun formatEpisodeName(name: String): String {
         return if (name.toIntOrNull() != null) "Tập $name" else name
     }
@@ -77,7 +76,6 @@ class TvHayProvider : MainAPI() {
         val year = document.selectFirst("div.name2 .year")?.text()?.removeSurrounding("(", ")")?.toIntOrNull()
         val tags = document.select("dt:contains(Thể loại) + dd a").map { it.text() }
         
-        // SỬA LỖI 2: Kiểm tra link javascript trước khi truy cập
         val watchPageUrl = document.selectFirst("a.btn-watch")?.attr("href")
 
         val episodes = if (watchPageUrl != null && watchPageUrl.startsWith("http")) {
@@ -85,7 +83,6 @@ class TvHayProvider : MainAPI() {
             watchPageDocument.select("div#servers ul.episodelist li a").mapNotNull {
                 var epName = it.text()
                 if (epName.isNullOrBlank()) return@mapNotNull null
-                // SỬA LỖI 1: Thêm chữ "Tập"
                 epName = formatEpisodeName(epName)
                 val epHref = it.attr("href")
                 Episode(epHref, epName)
@@ -94,14 +91,22 @@ class TvHayProvider : MainAPI() {
             document.select("ul.episodelistinfo li a").mapNotNull {
                 var epName = it.text()
                 if (epName.isNullOrBlank()) return@mapNotNull null
-                // SỬA LỖI 1: Thêm chữ "Tập"
                 epName = formatEpisodeName(epName)
                 val epHref = it.attr("href")
                 Episode(epHref, epName)
             }
         }
 
-        if (episodes.isEmpty()) return null
+        // Nếu không có tập phim nào, vẫn hiển thị thông tin phim nhưng báo là comingSoon = true
+        if (episodes.isEmpty()) {
+            return newMovieLoadResponse(title, url, TvType.Movie, url) {
+                this.posterUrl = poster
+                this.plot = plot
+                this.year = year
+                this.tags = tags
+                this.comingSoon = true // Đánh dấu là phim sắp chiếu
+            }
+        }
 
         val isMovie = episodes.size == 1
 
