@@ -1,6 +1,7 @@
 package recloudstream
 
 import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.utils.ExtractorLink
 import org.jsoup.nodes.Element
 
 class TvHayProvider : MainAPI() {
@@ -77,8 +78,8 @@ class TvHayProvider : MainAPI() {
         }
 
         // Kiểm tra là phim lẻ hay phim bộ
-        return if (episodes.size == 1 && (episodes.first().name.contains("Full") || episodes.first().name.contains("End"))) {
-            newMovieLoadResponse(title, url, TvType.Movie, episodes.first().dataUrl) {
+        return if (episodes.size == 1 && (episodes.first().name?.contains("Full") == true || episodes.first().name?.contains("End") == true)) {
+            newMovieLoadResponse(title, url, TvType.Movie, episodes.first().data) {
                 this.posterUrl = poster
                 this.plot = plot
                 this.year = year
