@@ -1,6 +1,7 @@
 package recloudstream
 
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.fasterxml.jackson.core.type.TypeReference
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
@@ -35,7 +36,6 @@ class KKPhimProvider : MainAPI() {
                 "$apiDomain/v1/api/$slug?page=1"
             }
             
-            // SỬA LỖI TẠI ĐÂY: Xử lý an toàn khi API lỗi
             val items = try {
                 if (slug == "phim-moi-cap-nhat") {
                     app.get(url).parsed<ApiResponse>().items
@@ -43,7 +43,6 @@ class KKPhimProvider : MainAPI() {
                     app.get(url).parsed<SearchApiResponse>().data?.items
                 }
             } catch (e: Exception) {
-                // Nếu parse lỗi, trả về danh sách rỗng
                 null
             } ?: emptyList()
 
@@ -99,8 +98,19 @@ class KKPhimProvider : MainAPI() {
         val actors = movie.actor?.let { actorList ->
             actorList.map { ActorData(Actor(it)) }
         }
-        val recommendations = response.movie.recommendations?.mapNotNull {
-            toSearchResponse(it)
+        
+        // SỬA LỖI TẠI ĐÂY: Xử lý logic cho trường "recommendations"
+        val recommendations = if (movie.recommendations is List<*>) {
+            try {
+                // Chuyển đổi từ List<Object> thành List<MovieItem> một cách an toàn
+                val movieItems = mapper.convertValue(movie.recommendations, object : TypeReference<List<MovieItem>>() {})
+                movieItems.mapNotNull { toSearchResponse(it) }
+            } catch (e: Exception) {
+                null
+            }
+        } else {
+            // Nếu là boolean hoặc kiểu khác, coi như không có đề cử
+            null
         }
 
         val tvType = if (movie.type == "series") TvType.TvSeries else TvType.Movie
@@ -144,7 +154,7 @@ class KKPhimProvider : MainAPI() {
         return loadExtractor(episodeData.linkM3u8, mainUrl, subtitleCallback, callback)
     }
 
-    // --- DATA CLASSES (Đã cập nhật để an toàn với giá trị null) ---
+    // --- DATA CLASSES ---
 
     data class ApiResponse(
         @JsonProperty("items") val items: List<MovieItem>? = null,
@@ -194,7 +204,8 @@ class KKPhimProvider : MainAPI() {
         @JsonProperty("type") val type: String? = null,
         @JsonProperty("category") val category: List<Category>? = null,
         @JsonProperty("actor") val actor: List<String>? = null,
-        @JsonProperty("chieurap") val recommendations: List<MovieItem>? = null
+        // SỬA LỖI TẠI ĐÂY: Thay đổi kiểu dữ liệu để chấp nhận mọi loại
+        @JsonProperty("chieurap") val recommendations: Any? = null
     )
     
     data class Category(
