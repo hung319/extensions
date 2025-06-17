@@ -8,7 +8,6 @@ import com.lagradost.cloudstream3.utils.loadExtractor
 class KKPhimProvider : MainAPI() {
     override var name = "KKPhim"
     override var mainUrl = "https://kkphim.com"
-    // Thêm cờ hasMainPage để kích hoạt trang chủ
     override val hasMainPage = true
 
     private val apiDomain = "https://phimapi.com"
@@ -35,13 +34,19 @@ class KKPhimProvider : MainAPI() {
             } else {
                 "$apiDomain/v1/api/$slug?page=1"
             }
-
-            val items = if (slug == "phim-moi-cap-nhat") {
-                 app.get(url).parsed<ApiResponse>().items
-            } else {
-                 app.get(url).parsed<SearchApiResponse>().data?.items ?: emptyList()
-            }
             
+            // SỬA LỖI TẠI ĐÂY: Xử lý an toàn khi API lỗi
+            val items = try {
+                if (slug == "phim-moi-cap-nhat") {
+                    app.get(url).parsed<ApiResponse>().items
+                } else {
+                    app.get(url).parsed<SearchApiResponse>().data?.items
+                }
+            } catch (e: Exception) {
+                // Nếu parse lỗi, trả về danh sách rỗng
+                null
+            } ?: emptyList()
+
             val searchResponses = items.mapNotNull { toSearchResponse(it) }
             HomePageList(title, searchResponses)
         }
@@ -100,14 +105,13 @@ class KKPhimProvider : MainAPI() {
 
         val tvType = if (movie.type == "series") TvType.TvSeries else TvType.Movie
 
-        val episodes = response.episodes.flatMap { episodeGroup ->
+        val episodes = response.episodes?.flatMap { episodeGroup ->
             episodeGroup.serverData.map { episodeData ->
                 newEpisode(episodeData) {
-                    // SỬA LỖI TẠI ĐÂY: Thuộc tính đúng là `name`, không phải `displayName`.
                     this.name = "${episodeGroup.serverName}: ${episodeData.name}".replace("#", "").trim()
                 }
             }
-        }
+        } ?: emptyList()
         
         return if (tvType == TvType.TvSeries) {
             newTvSeriesLoadResponse(title, url, tvType, episodes) {
@@ -140,57 +144,57 @@ class KKPhimProvider : MainAPI() {
         return loadExtractor(episodeData.linkM3u8, mainUrl, subtitleCallback, callback)
     }
 
-    // --- DATA CLASSES ---
+    // --- DATA CLASSES (Đã cập nhật để an toàn với giá trị null) ---
 
     data class ApiResponse(
-        @JsonProperty("items") val items: List<MovieItem>,
-        @JsonProperty("pagination") val pagination: Pagination
+        @JsonProperty("items") val items: List<MovieItem>? = null,
+        @JsonProperty("pagination") val pagination: Pagination? = null
     )
 
     data class SearchApiResponse(
-        @JsonProperty("data") val data: SearchData?
+        @JsonProperty("data") val data: SearchData? = null
     )
     
     data class SearchData(
-        @JsonProperty("items") val items: List<MovieItem>?,
-        @JsonProperty("params") val params: SearchParams?
+        @JsonProperty("items") val items: List<MovieItem>? = null,
+        @JsonProperty("params") val params: SearchParams? = null
     )
 
     data class SearchParams(
-        @JsonProperty("pagination") val pagination: Pagination?
+        @JsonProperty("pagination") val pagination: Pagination? = null
     )
 
     data class MovieItem(
         @JsonProperty("name") val name: String,
         @JsonProperty("slug") val slug: String,
-        @JsonProperty("poster_url") val posterUrl: String?,
-        @JsonProperty("type") val type: String?,
-        @JsonProperty("tmdb") val tmdb: TmdbInfo?
+        @JsonProperty("poster_url") val posterUrl: String? = null,
+        @JsonProperty("type") val type: String? = null,
+        @JsonProperty("tmdb") val tmdb: TmdbInfo? = null
     )
 
     data class TmdbInfo(
-        @JsonProperty("type") val type: String?
+        @JsonProperty("type") val type: String? = null
     )
 
     data class Pagination(
-        @JsonProperty("currentPage") val currentPage: Int,
-        @JsonProperty("totalPages") val totalPages: Int
+        @JsonProperty("currentPage") val currentPage: Int? = null,
+        @JsonProperty("totalPages") val totalPages: Int? = null
     )
 
     data class DetailApiResponse(
-        @JsonProperty("movie") val movie: DetailMovie?,
-        @JsonProperty("episodes") val episodes: List<EpisodeGroup>
+        @JsonProperty("movie") val movie: DetailMovie? = null,
+        @JsonProperty("episodes") val episodes: List<EpisodeGroup>? = null
     )
 
     data class DetailMovie(
         @JsonProperty("name") val name: String,
-        @JsonProperty("content") val content: String?,
-        @JsonProperty("poster_url") val posterUrl: String?,
-        @JsonProperty("year") val year: Int?,
-        @JsonProperty("type") val type: String?,
-        @JsonProperty("category") val category: List<Category>?,
-        @JsonProperty("actor") val actor: List<String>?,
-        @JsonProperty("chieurap") val recommendations: List<MovieItem>?
+        @JsonProperty("content") val content: String? = null,
+        @JsonProperty("poster_url") val posterUrl: String? = null,
+        @JsonProperty("year") val year: Int? = null,
+        @JsonProperty("type") val type: String? = null,
+        @JsonProperty("category") val category: List<Category>? = null,
+        @JsonProperty("actor") val actor: List<String>? = null,
+        @JsonProperty("chieurap") val recommendations: List<MovieItem>? = null
     )
     
     data class Category(
