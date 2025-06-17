@@ -15,67 +15,72 @@ class KKPhimProvider : MainAPI() {
     private val apiDomain = "https://phimapi.com"
     private val imageCdnDomain = "https://phimimg.com"
 
+    // Định nghĩa các danh mục ở đây để có thể tái sử dụng
+    private val categories = mapOf(
+        "Phim Mới Cập Nhật" to "phim-moi-cap-nhat",
+        "Phim Bộ" to "danh-sach/phim-bo",
+        "Phim Lẻ" to "danh-sach/phim-le",
+        "Hoạt Hình" to "danh-sach/hoat-hinh",
+        "TV Shows" to "danh-sach/tv-shows"
+    )
+
     override var supportedTypes = setOf(
         TvType.Movie,
         TvType.TvSeries,
         TvType.Anime
     )
 
-    // CẬP NHẬT: Thêm lại các danh sách khác và hasNext cho mỗi danh sách
+    // CẬP NHẬT: Hỗ trợ tải thêm cho tất cả các mục
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        // Nếu page > 1, chỉ tải thêm cho danh sách đầu tiên (Phim Mới)
+        // request.data chứa tên của danh sách cần tải thêm
         if (page > 1) {
-            val url = "$apiDomain/danh-sach/phim-moi-cap-nhat?page=$page"
-            val response = app.get(url).parsed<ApiResponse>()
-            val newItems = response.items?.mapNotNull { item -> toSearchResponse(item) } ?: emptyList()
-            return newHomePageResponse(
-                list = HomePageList("Phim Mới Cập Nhật", newItems, hasNext = true),
-                hasNext = true
-            )
-        }
+            val listNameToLoad = request.data
+            val slug = categories[listNameToLoad] ?: return null // Không tìm thấy danh mục
 
-        // Tải trang đầu tiên cho tất cả các danh mục
-        val categories = mapOf(
-            "Phim Mới Cập Nhật" to "phim-moi-cap-nhat",
-            "Phim Bộ" to "danh-sach/phim-bo",
-            "Phim Lẻ" to "danh-sach/phim-le",
-            "Hoạt Hình" to "danh-sach/hoat-hinh",
-            "TV Shows" to "danh-sach/tv-shows"
-        )
-
-        val homePageLists = categories.apmap { (title, slug) ->
             val url = if (slug == "phim-moi-cap-nhat") {
-                "$apiDomain/$slug?page=1"
+                "$apiDomain/$slug?page=$page"
             } else {
-                "$apiDomain/v1/api/$slug?page=1"
+                "$apiDomain/v1/api/$slug?page=$page"
             }
+            
+            val responseItems: List<MovieItem>
+            val pagination: Pagination?
 
-            try {
-                val responseItems: List<MovieItem>
-                val pagination: Pagination?
-
-                if (slug == "phim-moi-cap-nhat") {
-                    val res = app.get(url).parsed<ApiResponse>()
-                    responseItems = res.items ?: emptyList()
-                    pagination = res.pagination
-                } else {
-                    val res = app.get(url).parsed<SearchApiResponse>()
-                    responseItems = res.data?.items ?: emptyList()
-                    pagination = res.data?.params?.pagination
-                }
-                
-                val searchResponses = responseItems.mapNotNull { toSearchResponse(it) }
-                val hasNext = (pagination?.currentPage ?: 0) < (pagination?.totalPages ?: 0)
-                HomePageList(title, searchResponses, hasNext = hasNext)
-            } catch (e: Exception) {
-                // Nếu có lỗi, trả về danh sách trống
-                HomePageList(title, emptyList(), hasNext = false)
+            if (slug == "phim-moi-cap-nhat") {
+                val res = app.get(url).parsed<ApiResponse>()
+                responseItems = res.items ?: emptyList()
+                pagination = res.pagination
+            } else {
+                val res = app.get(url).parsed<SearchApiResponse>()
+                responseItems = res.data?.items ?: emptyList()
+                pagination = res.data?.params?.pagination
             }
+            
+            val newItems = responseItems.mapNotNull { toSearchResponse(it) }
+            val hasNext = (pagination?.currentPage ?: 0) < (pagination?.totalPages ?: 0)
+            
+            return newHomePageResponse(listNameToLoad, newItems, hasNext)
         }
-
-        return HomePageResponse(homePageLists.filter { it.list.isNotEmpty() })
+        
+        // Khi tải trang 1, tải tất cả các danh mục
+        val homePageLists = categories.apmap { (title, slug) ->
+            // Luôn đặt request.data = title để khi tải thêm, ta biết cần tải danh mục nào
+            HomePageList(title, emptyList(), data = title)
+        }
+        
+        return newHomePageResponse(homePageLists, true)
     }
     
+    // Hàm quickSearch đã được tích hợp vào `search` nên có thể bỏ qua
+    override suspend fun search(query: String): List<SearchResponse> {
+        val url = "$apiDomain/v1/api/tim-kiem?keyword=$query"
+        val response = app.get(url).parsed<SearchApiResponse>()
+        
+        return response.data?.items?.mapNotNull { item ->
+            toSearchResponse(item)
+        } ?: listOf()
+    }
+
     private fun toSearchResponse(item: MovieItem): SearchResponse? {
         val movieUrl = "$mainUrl/phim/${item.slug}"
         val tvType = when (item.type) {
@@ -98,15 +103,6 @@ class KKPhimProvider : MainAPI() {
         }
     }
 
-    override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$apiDomain/v1/api/tim-kiem?keyword=$query"
-        val response = app.get(url).parsed<SearchApiResponse>()
-        
-        return response.data?.items?.mapNotNull { item ->
-            toSearchResponse(item)
-        } ?: listOf()
-    }
-
     override suspend fun load(url: String): LoadResponse? {
         val slug = url.substringAfter("/phim/")
         val apiUrl = "$apiDomain/phim/$slug"
@@ -122,7 +118,6 @@ class KKPhimProvider : MainAPI() {
             actorList.map { ActorData(Actor(it)) }
         }
         
-        // Danh sách đề xuất đã có sẵn
         val recommendations = if (movie.recommendations is List<*>) {
             try {
                 val movieItems = mapper.convertValue(movie.recommendations, object : TypeReference<List<MovieItem>>() {})
@@ -132,11 +127,10 @@ class KKPhimProvider : MainAPI() {
 
         val tvType = if (movie.type == "series") TvType.TvSeries else TvType.Movie
 
-        // CẬP NHẬT: Tối giản lại tên tập phim
         val episodes = response.episodes?.flatMap { episodeGroup ->
             episodeGroup.serverData.map { episodeData ->
                 newEpisode(episodeData) {
-                    this.name = episodeData.name // Chỉ giữ lại tên tập, ví dụ: "Tập 01"
+                    this.name = episodeData.name
                 }
             }
         } ?: emptyList()
@@ -190,7 +184,7 @@ class KKPhimProvider : MainAPI() {
     data class Pagination(@JsonProperty("currentPage") val currentPage: Int? = null, @JsonProperty("totalPages") val totalPages: Int? = null)
     data class DetailApiResponse(@JsonProperty("movie") val movie: DetailMovie? = null, @JsonProperty("episodes") val episodes: List<EpisodeGroup>? = null)
     data class DetailMovie(@JsonProperty("name") val name: String, @JsonProperty("content") val content: String? = null, @JsonProperty("poster_url") val posterUrl: String? = null, @JsonProperty("year") val year: Int? = null, @JsonProperty("type") val type: String? = null, @JsonProperty("category") val category: List<Category>? = null, @JsonProperty("actor") val actor: List<String>? = null, @JsonProperty("chieurap") val recommendations: Any? = null)
-    g    data class Category(@JsonProperty("name") val name: String)
+    data class Category(@JsonProperty("name") val name: String)
     data class EpisodeGroup(@JsonProperty("server_name") val serverName: String, @JsonProperty("server_data") val serverData: List<EpisodeData>)
     data class EpisodeData(@JsonProperty("name") val name: String, @JsonProperty("slug") val slug: String, @JsonProperty("link_m3u8") val linkM3u8: String, @JsonProperty("link_embed") val linkEmbed: String)
 }
