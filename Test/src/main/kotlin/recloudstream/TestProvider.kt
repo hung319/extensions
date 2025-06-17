@@ -29,7 +29,6 @@ class KKPhimProvider : MainAPI() {
         TvType.Anime
     )
 
-    // CẬP NHẬT: Đã bỏ hasNext và logic phân trang phức tạp
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val homePageLists = categories.apmap { (title, slug) ->
             val url = if (slug == "phim-moi-cap-nhat") {
@@ -99,7 +98,6 @@ class KKPhimProvider : MainAPI() {
             actorList.map { ActorData(Actor(it)) }
         }
         
-        // CẬP NHẬT: Danh sách đề xuất đã được xử lý chính xác
         val recommendations = if (movie.recommendations is List<*>) {
             try {
                 val movieItems = mapper.convertValue(movie.recommendations, object : TypeReference<List<MovieItem>>() {})
@@ -107,12 +105,10 @@ class KKPhimProvider : MainAPI() {
             } catch (e: Exception) { null }
         } else { null }
 
-        // CẬP NHẬT: Sửa lỗi nhận diện sai loại phim
-        val tvType = when (movie.type) {
-            "series" -> TvType.TvSeries
-            "hoathinh" -> TvType.Anime
-            else -> TvType.Movie
-        }
+        // CẬP NHẬT QUAN TRỌNG: Sửa lỗi nhận diện sai loại phim
+        // Coi "series" và "hoathinh" đều là phim có nhiều tập (TvType.TvSeries)
+        val isSeries = movie.type == "series" || movie.type == "hoathinh"
+        val tvType = if (isSeries) TvType.TvSeries else TvType.Movie
 
         val episodes = response.episodes?.flatMap { episodeGroup ->
             episodeGroup.serverData.map { episodeData ->
@@ -122,15 +118,15 @@ class KKPhimProvider : MainAPI() {
             }
         } ?: emptyList()
         
-        // Dựa vào tvType đã được sửa để gọi đúng hàm tạo response
-        return when (tvType) {
-            TvType.TvSeries, TvType.Anime -> newTvSeriesLoadResponse(title, url, tvType, episodes) {
+        // Dựa vào biến `isSeries` để gọi đúng hàm tạo response
+        return if (isSeries) {
+            newTvSeriesLoadResponse(title, url, tvType, episodes) {
                 this.posterUrl = poster; this.year = year; this.plot = description; this.tags = tags; this.actors = actors; this.recommendations = recommendations
             }
-            TvType.Movie -> newMovieLoadResponse(title, url, tvType, episodes.firstOrNull()?.data) {
+        } else { // Mặc định là phim lẻ
+            newMovieLoadResponse(title, url, tvType, episodes.firstOrNull()?.data) {
                 this.posterUrl = poster; this.year = year; this.plot = description; this.tags = tags; this.actors = actors; this.recommendations = recommendations
             }
-            else -> null
         }
     }
 
