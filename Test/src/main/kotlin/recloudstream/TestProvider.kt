@@ -11,6 +11,8 @@ class KKPhimProvider : MainAPI() {
     override var name = "KKPhim"
     override var mainUrl = "https://kkphim.com"
     override val hasMainPage = true
+    // THÊM: Khai báo ngôn ngữ
+    override var lang = "vi"
 
     private val apiDomain = "https://phimapi.com"
     private val imageCdnDomain = "https://phimimg.com"
@@ -105,10 +107,11 @@ class KKPhimProvider : MainAPI() {
             } catch (e: Exception) { null }
         } else { null }
 
-        // CẬP NHẬT QUAN TRỌNG: Sửa lỗi nhận diện sai loại phim
-        // Coi "series" và "hoathinh" đều là phim có nhiều tập (TvType.TvSeries)
-        val isSeries = movie.type == "series" || movie.type == "hoathinh"
-        val tvType = if (isSeries) TvType.TvSeries else TvType.Movie
+        val tvType = when (movie.type) {
+            "series" -> TvType.TvSeries
+            "hoathinh" -> TvType.Anime
+            else -> TvType.Movie
+        }
 
         val episodes = response.episodes?.flatMap { episodeGroup ->
             episodeGroup.serverData.map { episodeData ->
@@ -118,15 +121,14 @@ class KKPhimProvider : MainAPI() {
             }
         } ?: emptyList()
         
-        // Dựa vào biến `isSeries` để gọi đúng hàm tạo response
-        return if (isSeries) {
-            newTvSeriesLoadResponse(title, url, tvType, episodes) {
+        return when (tvType) {
+            TvType.TvSeries, TvType.Anime -> newTvSeriesLoadResponse(title, url, tvType, episodes) {
                 this.posterUrl = poster; this.year = year; this.plot = description; this.tags = tags; this.actors = actors; this.recommendations = recommendations
             }
-        } else { // Mặc định là phim lẻ
-            newMovieLoadResponse(title, url, tvType, episodes.firstOrNull()?.data) {
+            TvType.Movie -> newMovieLoadResponse(title, url, tvType, episodes.firstOrNull()?.data) {
                 this.posterUrl = poster; this.year = year; this.plot = description; this.tags = tags; this.actors = actors; this.recommendations = recommendations
             }
+            else -> null
         }
     }
 
