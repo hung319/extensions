@@ -13,14 +13,14 @@ class TvHayProvider : MainAPI() {
     override val supportedTypes = setOf(
         TvType.Movie,
         TvType.TvSeries,
-        TvType.Anime // Thêm hỗ trợ cho Anime
+        TvType.Anime
     )
 
     override val mainPage = mainPageOf(
         "$mainUrl/phim-moi/" to "Phim Mới Cập Nhật",
         "$mainUrl/phim-le/" to "Phim Lẻ Mới",
         "$mainUrl/phim-bo/" to "Phim Bộ Mới",
-        "$mainUrl/phim-hoat-hinh/" to "Phim Hoạt Hình", // Thêm mục Anime
+        "$mainUrl/phim-hoat-hinh/" to "Phim Hoạt Hình",
     )
 
     override suspend fun getMainPage(
@@ -94,7 +94,7 @@ class TvHayProvider : MainAPI() {
             }
             tags.any { it.contains("Hoạt Hình", ignoreCase = true) } -> {
                 // SỬA LỖI TẠI ĐÂY
-                newAnimeLoadResponse(title, url, TvType.Anime, episodes) {
+                newAnimeLoadResponse(title, url, TvType.Anime, true, episodes) {
                     this.posterUrl = poster
                     this.plot = plot
                     this.year = year
