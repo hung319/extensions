@@ -1,194 +1,216 @@
 package recloudstream
 
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import org.jsoup.nodes.Element
+import com.lagradost.cloudstream3.utils.loadExtractor
 
-class TvHayProvider : MainAPI() {
-    override var mainUrl = "https://tvhay.fm"
-    override var name = "TVHay"
-    override val hasMainPage = true
-    override var lang = "vi"
-    override val hasDownloadSupport = true
-    override val supportedTypes = setOf(
+class KKPhimProvider : MainAPI() {
+    override var name = "KKPhim"
+    override var mainUrl = "https://kkphim.com"
+    private val apiDomain = "https://phimapi.com"
+    private val imageCdnDomain = "https://phimimg.com"
+
+    override var supportedTypes = setOf(
         TvType.Movie,
         TvType.TvSeries,
         TvType.Anime
     )
 
-    // BƯỚC 1: Thêm "Phim Đề Cử" và "Đã Hoàn Thành" vào trang chủ
-    // Cả hai đều trỏ về trang chủ vì dữ liệu nằm ở đó
-    override val mainPage = mainPageOf(
-        "$mainUrl/" to "Phim Đề Cử",
-        "$mainUrl/" to "Đã Hoàn Thành",
-        "$mainUrl/phim-moi/" to "Phim Mới Cập Nhật",
-        "$mainUrl/phim-le/" to "Phim Lẻ Mới",
-        "$mainUrl/phim-bo/" to "Phim Bộ Mới",
-        "$mainUrl/phim-hoat-hinh/" to "Phim Hoạt Hình",
-    )
+    // NÂNG CẤP HÀM GETMAINPAGE
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+        // Định nghĩa các danh mục cho trang chủ
+        val categories = mapOf(
+            "Phim Mới Cập Nhật" to "phim-moi-cap-nhat",
+            "Phim Bộ" to "danh-sach/phim-bo",
+            "Phim Lẻ" to "danh-sach/phim-le",
+            "Hoạt Hình" to "danh-sach/hoat-hinh",
+            "TV Shows" to "danh-sach/tv-shows"
+        )
 
-    // BƯỚC 3: Nâng cấp getMainPage để xử lý các yêu cầu khác nhau
-    override suspend fun getMainPage(
-        page: Int,
-        request: MainPageRequest
-    ): HomePageResponse {
-        val document = app.get(request.data).document
+        // Tải dữ liệu cho mỗi danh mục một cách song song để tăng tốc độ
+        val homePageLists = categories.apmap { (title, slug) ->
+            // API "phim-moi-cap-nhat" có cấu trúc khác một chút
+            val url = if (slug == "phim-moi-cap-nhat") {
+                "$apiDomain/$slug?page=1"
+            } else {
+                "$apiDomain/v1/api/$slug?page=1"
+            }
 
-        // Dùng when để chọn đúng selector cho từng mục
-        val home = when (request.name) {
-            "Phim Đề Cử" -> {
-                // Các mục này không có phân trang, chỉ tải ở trang 1
-                if (page > 1) return newHomePageResponse(request.name, emptyList())
-                document.select("div#movie-recommend ul.phim-bo-moi > li").mapNotNull {
-                    it.toSimpleSearchResult()
-                }
+            // API "phim-moi-cap-nhat" có cấu trúc gốc, các API còn lại có cấu trúc trong "data"
+            val items = if (slug == "phim-moi-cap-nhat") {
+                 app.get(url).parsed<ApiResponse>().items
+            } else {
+                 app.get(url).parsed<SearchApiResponse>().data?.items ?: emptyList()
             }
-            "Đã Hoàn Thành" -> {
-                if (page > 1) return newHomePageResponse(request.name, emptyList())
-                document.select("div#movie-recommend ul.phim-bo-full > li").mapNotNull {
-                    it.toSimpleSearchResult()
-                }
-            }
-            else -> {
-                // Logic cũ cho các trang có phân trang
-                val url = if (page == 1) request.data else "${request.data}page/$page/"
-                app.get(url).document.select("div#page-list ul.list-film > li").mapNotNull {
-                    it.toSearchResult()
-                }
-            }
+            
+            val searchResponses = items.mapNotNull { toSearchResponse(it) }
+            HomePageList(title, searchResponses)
         }
-        return newHomePageResponse(request.name, home)
+
+        return HomePageResponse(homePageLists)
     }
+    
+    private fun toSearchResponse(item: MovieItem): SearchResponse? {
+        val movieUrl = "$mainUrl/phim/${item.slug}"
+        val tvType = when (item.type) {
+            "series" -> TvType.TvSeries
+            "single" -> TvType.Movie
+            "hoathinh" -> TvType.Anime
+            else -> when (item.tmdb?.type) {
+                "movie" -> TvType.Movie
+                "tv" -> TvType.TvSeries
+                else -> null
+            }
+        } ?: return null
 
-    // BƯỚC 2: Hàm phân tích mới cho các mục đề cử (cấu trúc đơn giản)
-    private fun Element.toSimpleSearchResult(): SearchResponse? {
-        val aTag = this.selectFirst("a") ?: return null
-        val href = aTag.attr("href")
-        if (href.isBlank()) return null
-        val title = aTag.attr("title").removePrefix("Phim ").trim()
-        val extraInfo = this.selectFirst("span")?.text()
-
-        // Hầu hết trong danh sách này là phim bộ
-        return newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
-            this.posterUrl = null // Không có poster trong danh sách này
-            this.quality = getQualityFromString(extraInfo)
+        val poster = item.posterUrl?.let {
+            if (it.startsWith("http")) it else "$imageCdnDomain/$it"
         }
-    }
 
-    private fun Element.toSearchResult(): SearchResponse? {
-        val href = this.selectFirst("a")?.attr("href") ?: return null
-        val title = this.selectFirst(".name a")?.text()?.removePrefix("Xem phim ")?.trim() ?: return null
-        val posterUrl = this.selectFirst("img")?.attr("data-original")
-        val status = this.selectFirst(".status")?.text()
-
-        return if (status?.contains("/") == true || status?.contains("Tập", true) == true) {
-            newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
-                this.posterUrl = posterUrl
-                this.quality = getQualityFromString(status)
-            }
-        } else {
-            newMovieSearchResponse(title, href, TvType.Movie) {
-                this.posterUrl = posterUrl
-                this.quality = getQualityFromString(status)
-            }
+        return newMovieSearchResponse(item.name, movieUrl, tvType) {
+            this.posterUrl = poster
         }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/search/$query/"
-        val document = app.get(searchUrl).document
-
-        return document.select("div#page-list ul.list-film > li").mapNotNull {
-            it.toSearchResult()
-        }
-    }
-
-    private fun formatEpisodeName(name: String): String {
-        return if (name.toIntOrNull() != null) "Tập $name" else name
+        val url = "$apiDomain/v1/api/tim-kiem?keyword=$query"
+        val response = app.get(url).parsed<SearchApiResponse>()
+        
+        return response.data?.items?.mapNotNull { item ->
+            toSearchResponse(item)
+        } ?: listOf()
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url).document
+        val slug = url.substringAfter("/phim/")
+        val apiUrl = "$apiDomain/phim/$slug"
+        val response = app.get(apiUrl).parsed<DetailApiResponse>()
+        val movie = response.movie ?: return null
 
-        val title = document.selectFirst("h1.title")?.text()?.trim() ?: return null
-        val poster = document.selectFirst("div.poster img")?.attr("src")
-        val plot = document.selectFirst("div.detail .content, div.tab.text p")?.text()?.trim()
-        val year = document.selectFirst("div.name2 .year")?.text()?.removeSurrounding("(", ")")?.toIntOrNull()
-        val tags = document.select("dt:contains(Thể loại) + dd a").map { it.text() }
+        val title = movie.name
+        val poster = movie.posterUrl
+        val year = movie.year
+        val description = movie.content
+        val tags = movie.category?.map { it.name }
+        val actors = movie.actor?.let { actorList ->
+            actorList.map { ActorData(Actor(it)) }
+        }
+        val recommendations = response.movie.recommendations?.mapNotNull {
+            toSearchResponse(it)
+        }
+
+        val tvType = if (movie.type == "series") TvType.TvSeries else TvType.Movie
+
+        val episodes = response.episodes.flatMap { episodeGroup ->
+            episodeGroup.serverData.map { episodeData ->
+                newEpisode(episodeData) {
+                    this.name = episodeData.name
+                    // Thêm tên server vào trước tên tập để phân biệt
+                    this.displayName = "${episodeGroup.serverName}: ${episodeData.name}".replace("#", "").trim()
+                }
+            }
+        }
         
-        val watchPageUrl = document.selectFirst("a.btn-watch")?.attr("href")
-
-        val episodes = if (watchPageUrl != null && watchPageUrl.startsWith("http")) {
-            val watchPageDocument = app.get(watchPageUrl).document
-            watchPageDocument.select("div#servers ul.episodelist li a").mapNotNull {
-                var epName = it.text()
-                if (epName.isNullOrBlank()) return@mapNotNull null
-                epName = formatEpisodeName(epName)
-                val epHref = it.attr("href")
-                Episode(epHref, epName)
+        return if (tvType == TvType.TvSeries) {
+            newTvSeriesLoadResponse(title, url, tvType, episodes) {
+                this.posterUrl = poster
+                this.year = year
+                this.plot = description
+                this.tags = tags
+                this.actors = actors
+                this.recommendations = recommendations
             }
         } else {
-            document.select("ul.episodelistinfo li a").mapNotNull {
-                var epName = it.text()
-                if (epName.isNullOrBlank()) return@mapNotNull null
-                epName = formatEpisodeName(epName)
-                val epHref = it.attr("href")
-                Episode(epHref, epName)
-            }
-        }
-
-        if (episodes.isEmpty()) {
-            return newMovieLoadResponse(title, url, TvType.Movie, url) {
+            newMovieLoadResponse(title, url, tvType, episodes.firstOrNull()?.data) {
                 this.posterUrl = poster
-                this.plot = plot
                 this.year = year
+                this.plot = description
                 this.tags = tags
-                this.comingSoon = true
-            }
-        }
-
-        val isMovie = episodes.size == 1 && (
-                episodes.first().name?.contains("Full", true) == true ||
-                episodes.first().name?.contains("End", true) == true ||
-                episodes.first().name?.contains("Thuyết Minh", true) == true
-        )
-
-        return when {
-            isMovie -> {
-                newMovieLoadResponse(title, url, TvType.Movie, episodes.first().data) {
-                    this.posterUrl = poster
-                    this.plot = plot
-                    this.year = year
-                    this.tags = tags
-                }
-            }
-            tags.any { it.contains("Hoạt Hình", ignoreCase = true) } -> {
-                newAnimeLoadResponse(title, url, TvType.Anime) {
-                    this.posterUrl = poster
-                    this.plot = plot
-                    this.year = year
-                    this.tags = tags
-                    this.episodes = mutableMapOf(DubStatus.Dubbed to episodes)
-                }
-            }
-            else -> {
-                newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
-                    this.posterUrl = poster
-                    this.plot = plot
-                    this.year = year
-                    this.tags = tags
-                }
+                this.actors = actors
+                this.recommendations = recommendations
             }
         }
     }
-    
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Tạm thời vô hiệu hóa, sẽ hoàn thiện sau.
-        return false
+        val episodeData = mapper.readValue(data, EpisodeData::class.java)
+        return loadExtractor(episodeData.linkM3u8, mainUrl, subtitleCallback, callback)
     }
+
+    // --- DATA CLASSES ---
+
+    // Dành cho API phim mới cập nhật
+    data class ApiResponse(
+        @JsonProperty("items") val items: List<MovieItem>,
+        @JsonProperty("pagination") val pagination: Pagination
+    )
+
+    // Dành cho API tìm kiếm & danh sách
+    data class SearchApiResponse(
+        @JsonProperty("data") val data: SearchData?
+    )
+    
+    data class SearchData(
+        @JsonProperty("items") val items: List<MovieItem>?,
+        @JsonProperty("params") val params: SearchParams?
+    )
+
+    data class SearchParams(
+        @JsonProperty("pagination") val pagination: Pagination?
+    )
+
+    data class MovieItem(
+        @JsonProperty("name") val name: String,
+        @JsonProperty("slug") val slug: String,
+        @JsonProperty("poster_url") val posterUrl: String?,
+        @JsonProperty("type") val type: String?,
+        @JsonProperty("tmdb") val tmdb: TmdbInfo?
+    )
+
+    data class TmdbInfo(
+        @JsonProperty("type") val type: String?
+    )
+
+    data class Pagination(
+        @JsonProperty("currentPage") val currentPage: Int,
+        @JsonProperty("totalPages") val totalPages: Int
+    )
+
+    data class DetailApiResponse(
+        @JsonProperty("movie") val movie: DetailMovie?,
+        @JsonProperty("episodes") val episodes: List<EpisodeGroup>
+    )
+
+    data class DetailMovie(
+        @JsonProperty("name") val name: String,
+        @JsonProperty("content") val content: String?,
+        @JsonProperty("poster_url") val posterUrl: String?,
+        @JsonProperty("year") val year: Int?,
+        @JsonProperty("type") val type: String?,
+        @JsonProperty("category") val category: List<Category>?,
+        @JsonProperty("actor") val actor: List<String>?,
+        // API dùng trường "chieurap" cho phim đề cử, ta tận dụng nó
+        @JsonProperty("chieurap") val recommendations: List<MovieItem>?
+    )
+    
+    data class Category(
+        @JsonProperty("name") val name: String
+    )
+
+    data class EpisodeGroup(
+        @JsonProperty("server_name") val serverName: String,
+        @JsonProperty("server_data") val serverData: List<EpisodeData>
+    )
+
+    data class EpisodeData(
+        @JsonProperty("name") val name: String,
+        @JsonProperty("slug") val slug: String,
+        @JsonProperty("link_m3u8") val linkM3u8: String
+    )
 }
