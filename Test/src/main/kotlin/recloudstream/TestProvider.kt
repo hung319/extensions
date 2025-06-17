@@ -8,6 +8,9 @@ import com.lagradost.cloudstream3.utils.loadExtractor
 class KKPhimProvider : MainAPI() {
     override var name = "KKPhim"
     override var mainUrl = "https://kkphim.com"
+    // Thêm cờ hasMainPage để kích hoạt trang chủ
+    override val hasMainPage = true
+
     private val apiDomain = "https://phimapi.com"
     private val imageCdnDomain = "https://phimimg.com"
 
@@ -17,9 +20,7 @@ class KKPhimProvider : MainAPI() {
         TvType.Anime
     )
 
-    // NÂNG CẤP HÀM GETMAINPAGE
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        // Định nghĩa các danh mục cho trang chủ
         val categories = mapOf(
             "Phim Mới Cập Nhật" to "phim-moi-cap-nhat",
             "Phim Bộ" to "danh-sach/phim-bo",
@@ -28,16 +29,13 @@ class KKPhimProvider : MainAPI() {
             "TV Shows" to "danh-sach/tv-shows"
         )
 
-        // Tải dữ liệu cho mỗi danh mục một cách song song để tăng tốc độ
         val homePageLists = categories.apmap { (title, slug) ->
-            // API "phim-moi-cap-nhat" có cấu trúc khác một chút
             val url = if (slug == "phim-moi-cap-nhat") {
                 "$apiDomain/$slug?page=1"
             } else {
                 "$apiDomain/v1/api/$slug?page=1"
             }
 
-            // API "phim-moi-cap-nhat" có cấu trúc gốc, các API còn lại có cấu trúc trong "data"
             val items = if (slug == "phim-moi-cap-nhat") {
                  app.get(url).parsed<ApiResponse>().items
             } else {
@@ -105,9 +103,8 @@ class KKPhimProvider : MainAPI() {
         val episodes = response.episodes.flatMap { episodeGroup ->
             episodeGroup.serverData.map { episodeData ->
                 newEpisode(episodeData) {
-                    this.name = episodeData.name
-                    // Thêm tên server vào trước tên tập để phân biệt
-                    this.displayName = "${episodeGroup.serverName}: ${episodeData.name}".replace("#", "").trim()
+                    // SỬA LỖI TẠI ĐÂY: Thuộc tính đúng là `name`, không phải `displayName`.
+                    this.name = "${episodeGroup.serverName}: ${episodeData.name}".replace("#", "").trim()
                 }
             }
         }
@@ -145,13 +142,11 @@ class KKPhimProvider : MainAPI() {
 
     // --- DATA CLASSES ---
 
-    // Dành cho API phim mới cập nhật
     data class ApiResponse(
         @JsonProperty("items") val items: List<MovieItem>,
         @JsonProperty("pagination") val pagination: Pagination
     )
 
-    // Dành cho API tìm kiếm & danh sách
     data class SearchApiResponse(
         @JsonProperty("data") val data: SearchData?
     )
@@ -195,7 +190,6 @@ class KKPhimProvider : MainAPI() {
         @JsonProperty("type") val type: String?,
         @JsonProperty("category") val category: List<Category>?,
         @JsonProperty("actor") val actor: List<String>?,
-        // API dùng trường "chieurap" cho phim đề cử, ta tận dụng nó
         @JsonProperty("chieurap") val recommendations: List<MovieItem>?
     )
     
