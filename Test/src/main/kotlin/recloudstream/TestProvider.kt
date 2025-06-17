@@ -93,13 +93,15 @@ class TvHayProvider : MainAPI() {
                 }
             }
             tags.any { it.contains("Hoạt Hình", ignoreCase = true) } -> {
-                // SỬA LỖI TẠI ĐÂY - Áp dụng đúng định nghĩa hàm
                 newAnimeLoadResponse(title, url, TvType.Anime) {
                     this.posterUrl = poster
                     this.plot = plot
                     this.year = year
                     this.tags = tags
-                    this.episodes = episodes // Gán episodes bên trong khối lệnh
+                    // SỬA LỖI TẠI ĐÂY: Gán episodes vào một Map với key là DubStatus.Dubbed
+                    this.episodes = mutableMapOf(
+                        DubStatus.Dubbed to episodes
+                    )
                 }
             }
             else -> {
