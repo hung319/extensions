@@ -1,111 +1,106 @@
-package com.lagradost.cloudstream3.plugins.local
+package recloudstream
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
-
 import org.jsoup.nodes.Element
-import java.lang.Exception
 
-class TestProvider : MainAPI() {
-    override var mainUrl = "https://bit.ly/xemtop1"
-    override var name = "SexTop1"
+class TvHayProvider : MainAPI() {
+    override var mainUrl = "https://tvhay.fm"
+    override var name = "TVHay"
     override val hasMainPage = true
     override var lang = "vi"
     override val hasDownloadSupport = true
-    override val supportedTypes = setOf(TvType.NSFW)
+    override val supportedTypes = setOf(
+        TvType.Movie,
+        TvType.TvSeries
+    )
 
-    // Biến để lưu trữ URL thật sau khi redirect
-    private var realUrl: String? = null
+    override val mainPage = mainPageOf(
+        "$mainUrl/phim-le/" to "Phim Lẻ Mới",
+        "$mainUrl/phim-bo/" to "Phim Bộ Mới",
+        "$mainUrl/phim-moi/" to "Phim Mới Cập Nhật",
+    )
 
-    // Hàm helper để lấy URL thật, chỉ gọi request một lần duy nhất
-    private suspend fun getRealUrl(): String {
-        if (realUrl == null) {
-            // Nếu chưa có URL thật, gửi yêu cầu đến Bitly để lấy và lưu lại
-            realUrl = app.get(mainUrl).url
+    override suspend fun getMainPage(
+        page: Int,
+        request: MainPageRequest
+    ): HomePageResponse {
+        val url = if (page == 1) request.data else "${request.data}page/$page/"
+        val document = app.get(url).document
+        val home = document.select("div#movie-update ul.list-film > li").mapNotNull {
+            it.toSearchResult()
         }
-        return realUrl!!
+        return newHomePageResponse(request.name, home)
     }
 
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val currentUrl = getRealUrl() // Luôn lấy URL thật
-        val document = app.get("$currentUrl/page/$page/").document
-        val homePageList = ArrayList<HomePageList>()
-        val mainItems = document.select("article.dp-item").mapNotNull { it.toSearchResult() }
-        if (mainItems.isNotEmpty()) {
-            homePageList.add(HomePageList("Phim Mới", mainItems))
-        }
-        return newHomePageResponse(homePageList)
-    }
+    private fun Element.toSearchResult(): SearchResponse? {
+        val href = this.selectFirst("a")?.attr("href") ?: return null
+        val title = this.selectFirst(".name a")?.text() ?: return null
+        val posterUrl = this.selectFirst("img")?.attr("data-original")
+        val status = this.selectFirst(".status")?.text()
 
-    private fun Element.toSearchResult(): MovieSearchResponse? {
-        val title = this.selectFirst("h2.entry-title a")?.attr("title")?.trim() ?: return null
-        // Sửa href để đảm bảo nó là URL tuyệt đối
-        val href = fixUrl(this.selectFirst("a.dp-thumb")?.attr("href") ?: return null)
-        val posterUrl = fixUrlNull(this.selectFirst("img.lazy")?.attr("src"))
-        return newMovieSearchResponse(title, href, TvType.NSFW) {
-            this.posterUrl = posterUrl
+        return if (status?.contains("/") == true) {
+            newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
+                this.posterUrl = posterUrl
+                this.quality = getQualityFromString(status)
+            }
+        } else {
+            newMovieSearchResponse(title, href, TvType.Movie) {
+                this.posterUrl = posterUrl
+                this.quality = getQualityFromString(status)
+            }
         }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val currentUrl = getRealUrl() // Luôn lấy URL thật
-        val document = app.get("$currentUrl/?s=$query").document
-        return document.select("article.dp-item").mapNotNull { it.toSearchResult() }
+        val searchUrl = "$mainUrl/search/$query/"
+        val document = app.get(searchUrl).document
+
+        return document.select("div#page-list ul.list-film > li").mapNotNull {
+            it.toSearchResult()
+        }
     }
 
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
-        val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: return null
-        val poster = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
-        val description = document.selectFirst("div.video-item.dp-entry-box > article > p")?.text()
-        val tags = document.select("div.the_tag_list a[rel=tag]").map { it.text() }
-        val postId = document.selectFirst("div#video")?.attr("data-id") ?: return null
-        val recommendations = document.select("section.related-movies article.dp-item").mapNotNull { it.toSearchResult() }
-        return newMovieLoadResponse(title, url, TvType.NSFW, postId) {
-            this.posterUrl = poster
-            this.plot = description
-            this.tags = tags
-            this.recommendations = recommendations
+
+        val title = document.selectFirst("h1.title")?.text()?.trim() ?: return null
+        val poster = document.selectFirst("div.poster img")?.attr("src")
+        val plot = document.selectFirst("div.tab.text p")?.text()?.trim()
+        val year = document.selectFirst("div.name2 .year")?.text()?.removeSurrounding("(", ")")?.toIntOrNull()
+        val tags = document.select("dl.col1 dd a[href*=phim-]").map { it.text() }
+
+        // Lấy danh sách tập phim
+        val episodes = document.select("ul.episodelistinfo li a").map {
+            val epName = it.text()
+            val epHref = it.attr("href")
+            Episode(epHref, epName)
+        }
+
+        // Kiểm tra là phim lẻ hay phim bộ
+        return if (episodes.size == 1 && (episodes.first().name.contains("Full") || episodes.first().name.contains("End"))) {
+            newMovieLoadResponse(title, url, TvType.Movie, episodes.first().dataUrl) {
+                this.posterUrl = poster
+                this.plot = plot
+                this.year = year
+                this.tags = tags
+            }
+        } else {
+            newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+                this.posterUrl = poster
+                this.plot = plot
+                this.year = year
+                this.tags = tags
+            }
         }
     }
-
+    
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val currentUrl = getRealUrl() // Luôn lấy URL thật
-        val apiUrl = "$currentUrl/wp-json/sextop1/player/?id=$data&server=1"
-        
-        val responseText = app.get(apiUrl, referer = "$currentUrl/").text
-        val apiResponse = tryParseJson<ApiResponse>(responseText)
-        val jsData = apiResponse?.data ?: return false
-
-        val regex = Regex("file: '(https?://[^']+\\.m3u8)'")
-        val matchResult = regex.find(jsData)
-        val videoUrl = matchResult?.groups?.get(1)?.value
-
-        videoUrl?.let { url ->
-            val link = newExtractorLink(
-                source = this.name,
-                name = "${this.name} Server",
-                url = url,
-                type = ExtractorLinkType.M3U8
-            ) {
-                // Sửa referer để dùng URL thật, đảm bảo tính nhất quán
-                this.referer = currentUrl
-                this.quality = Qualities.Unknown.value
-            }
-            callback.invoke(link)
-        }
-        return true
+        // Tạm thời vô hiệu hóa, sẽ hoàn thiện sau.
+        return false
     }
-
-    data class ApiResponse(
-        val success: Boolean?,
-        val data: String?
-    )
 }
