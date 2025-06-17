@@ -37,7 +37,6 @@ class TvHayProvider : MainAPI() {
 
     private fun Element.toSearchResult(): SearchResponse? {
         val href = this.selectFirst("a")?.attr("href") ?: return null
-        // SỬA LỖI 1: Loại bỏ tiền tố "Xem phim "
         val title = this.selectFirst(".name a")?.text()?.removePrefix("Xem phim ")?.trim() ?: return null
         val posterUrl = this.selectFirst("img")?.attr("data-original")
         val status = this.selectFirst(".status")?.text()
@@ -64,8 +63,12 @@ class TvHayProvider : MainAPI() {
         }
     }
 
+    // Hàm tiện ích để thêm chữ "Tập"
+    private fun formatEpisodeName(name: String): String {
+        return if (name.toIntOrNull() != null) "Tập $name" else name
+    }
+
     override suspend fun load(url: String): LoadResponse? {
-        // BƯỚC 1: Lấy thông tin từ trang chi tiết
         val document = app.get(url).document
 
         val title = document.selectFirst("h1.title")?.text()?.trim() ?: return null
@@ -73,25 +76,26 @@ class TvHayProvider : MainAPI() {
         val plot = document.selectFirst("div.detail .content, div.tab.text p")?.text()?.trim()
         val year = document.selectFirst("div.name2 .year")?.text()?.removeSurrounding("(", ")")?.toIntOrNull()
         val tags = document.select("dt:contains(Thể loại) + dd a").map { it.text() }
-
-        // SỬA LỖI 2: Lấy danh sách tập phim đầy đủ
-        // BƯỚC 2: Tìm link trang xem phim để lấy đủ tập
+        
+        // SỬA LỖI 2: Kiểm tra link javascript trước khi truy cập
         val watchPageUrl = document.selectFirst("a.btn-watch")?.attr("href")
 
-        val episodes = if (watchPageUrl != null) {
-            // Nếu có link trang xem phim, vào đó để lấy danh sách đầy đủ
+        val episodes = if (watchPageUrl != null && watchPageUrl.startsWith("http")) {
             val watchPageDocument = app.get(watchPageUrl).document
             watchPageDocument.select("div#servers ul.episodelist li a").mapNotNull {
-                val epName = it.text()
+                var epName = it.text()
                 if (epName.isNullOrBlank()) return@mapNotNull null
+                // SỬA LỖI 1: Thêm chữ "Tập"
+                epName = formatEpisodeName(epName)
                 val epHref = it.attr("href")
                 Episode(epHref, epName)
             }
         } else {
-            // Nếu không có, dùng tạm danh sách ở trang chi tiết (phương án dự phòng)
             document.select("ul.episodelistinfo li a").mapNotNull {
-                val epName = it.text()
+                var epName = it.text()
                 if (epName.isNullOrBlank()) return@mapNotNull null
+                // SỬA LỖI 1: Thêm chữ "Tập"
+                epName = formatEpisodeName(epName)
                 val epHref = it.attr("href")
                 Episode(epHref, epName)
             }
