@@ -83,9 +83,7 @@ class TvHayProvider : MainAPI() {
 
         val isMovie = episodes.size == 1
 
-        // Logic phân loại nội dung
         return when {
-            // Trường hợp 1: Phim lẻ
             isMovie -> {
                 newMovieLoadResponse(title, url, TvType.Movie, episodes.first().data) {
                     this.posterUrl = poster
@@ -94,16 +92,15 @@ class TvHayProvider : MainAPI() {
                     this.tags = tags
                 }
             }
-            // Trường hợp 2: Anime (Kiểm tra thẻ "Phim Hoạt Hình")
             tags.any { it.contains("Hoạt Hình", ignoreCase = true) } -> {
-                newAnimeLoadResponse(title, url, episodes) {
+                // SỬA LỖI TẠI ĐÂY
+                newAnimeLoadResponse(title, url, TvType.Anime, episodes) {
                     this.posterUrl = poster
                     this.plot = plot
                     this.year = year
                     this.tags = tags
                 }
             }
-            // Trường hợp 3: Mặc định là Phim bộ
             else -> {
                 newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                     this.posterUrl = poster
