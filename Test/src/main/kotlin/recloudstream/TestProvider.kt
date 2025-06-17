@@ -15,7 +15,6 @@ class KKPhimProvider : MainAPI() {
     private val apiDomain = "https://phimapi.com"
     private val imageCdnDomain = "https://phimimg.com"
 
-    // Định nghĩa các danh mục ở đây để có thể tái sử dụng
     private val categories = mapOf(
         "Phim Mới Cập Nhật" to "phim-moi-cap-nhat",
         "Phim Bộ" to "danh-sach/phim-bo",
@@ -30,12 +29,11 @@ class KKPhimProvider : MainAPI() {
         TvType.Anime
     )
 
-    // CẬP NHẬT: Hỗ trợ tải thêm cho tất cả các mục
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        // request.data chứa tên của danh sách cần tải thêm
+        // Khi tải trang 2 trở đi, request.data sẽ chứa tên của danh sách cần tải
         if (page > 1) {
             val listNameToLoad = request.data
-            val slug = categories[listNameToLoad] ?: return null // Không tìm thấy danh mục
+            val slug = categories[listNameToLoad] ?: return null
 
             val url = if (slug == "phim-moi-cap-nhat") {
                 "$apiDomain/$slug?page=$page"
@@ -64,23 +62,26 @@ class KKPhimProvider : MainAPI() {
         
         // Khi tải trang 1, tải tất cả các danh mục
         val homePageLists = categories.apmap { (title, slug) ->
-            // Luôn đặt request.data = title để khi tải thêm, ta biết cần tải danh mục nào
-            HomePageList(title, emptyList(), data = title)
+            val url = if (slug == "phim-moi-cap-nhat") "$apiDomain/$slug?page=1" else "$apiDomain/v1/api/$slug?page=1"
+            
+            try {
+                val items = if (slug == "phim-moi-cap-nhat") {
+                    app.get(url).parsed<ApiResponse>().items
+                } else {
+                    app.get(url).parsed<SearchApiResponse>().data?.items
+                } ?: emptyList()
+                
+                val searchResults = items.mapNotNull { toSearchResponse(it) }
+                // SỬA LỖI: Bỏ tham số `data` không hợp lệ. `title` sẽ tự động được dùng làm định danh.
+                HomePageList(title, searchResults)
+            } catch (e: Exception) {
+                HomePageList(title, emptyList())
+            }
         }
         
-        return newHomePageResponse(homePageLists, true)
+        return newHomePageResponse(homePageLists.filter { it.list.isNotEmpty() }, hasNext = true)
     }
     
-    // Hàm quickSearch đã được tích hợp vào `search` nên có thể bỏ qua
-    override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$apiDomain/v1/api/tim-kiem?keyword=$query"
-        val response = app.get(url).parsed<SearchApiResponse>()
-        
-        return response.data?.items?.mapNotNull { item ->
-            toSearchResponse(item)
-        } ?: listOf()
-    }
-
     private fun toSearchResponse(item: MovieItem): SearchResponse? {
         val movieUrl = "$mainUrl/phim/${item.slug}"
         val tvType = when (item.type) {
@@ -101,6 +102,15 @@ class KKPhimProvider : MainAPI() {
         return newMovieSearchResponse(item.name, movieUrl, tvType) {
             this.posterUrl = poster
         }
+    }
+
+    override suspend fun search(query: String): List<SearchResponse> {
+        val url = "$apiDomain/v1/api/tim-kiem?keyword=$query"
+        val response = app.get(url).parsed<SearchApiResponse>()
+        
+        return response.data?.items?.mapNotNull { item ->
+            toSearchResponse(item)
+        } ?: listOf()
     }
 
     override suspend fun load(url: String): LoadResponse? {
