@@ -6,12 +6,14 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
+// Thêm import cho coroutines
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 
 class KKPhimProvider : MainAPI() {
     override var name = "KKPhim"
     override var mainUrl = "https://kkphim.com"
     override val hasMainPage = true
-    // THÊM: Khai báo ngôn ngữ
     override var lang = "vi"
 
     private val apiDomain = "https://phimapi.com"
@@ -31,24 +33,31 @@ class KKPhimProvider : MainAPI() {
         TvType.Anime
     )
 
+    // CẬP NHẬT: Thay thế apmap bằng coroutineScope để sửa lỗi deprecated
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        val homePageLists = categories.apmap { (title, slug) ->
-            val url = if (slug == "phim-moi-cap-nhat") {
-                "$apiDomain/$slug?page=1"
-            } else {
-                "$apiDomain/v1/api/$slug?page=1"
-            }
-            try {
-                val items = if (slug == "phim-moi-cap-nhat") {
-                    app.get(url).parsed<ApiResponse>().items
-                } else {
-                    app.get(url).parsed<SearchApiResponse>().data?.items
-                } ?: emptyList()
-                val searchResults = items.mapNotNull { toSearchResponse(it) }
-                HomePageList(title, searchResults)
-            } catch (e: Exception) {
-                HomePageList(title, emptyList())
-            }
+        // Sử dụng coroutineScope để chạy các tác vụ song song
+        val homePageLists = coroutineScope {
+            categories.map { (title, slug) ->
+                // async để mỗi yêu cầu mạng chạy trên một luồng riêng
+                async {
+                    val url = if (slug == "phim-moi-cap-nhat") {
+                        "$apiDomain/$slug?page=1"
+                    } else {
+                        "$apiDomain/v1/api/$slug?page=1"
+                    }
+                    try {
+                        val items = if (slug == "phim-moi-cap-nhat") {
+                            app.get(url).parsed<ApiResponse>().items
+                        } else {
+                            app.get(url).parsed<SearchApiResponse>().data?.items
+                        } ?: emptyList()
+                        val searchResults = items.mapNotNull { toSearchResponse(it) }
+                        HomePageList(title, searchResults)
+                    } catch (e: Exception) {
+                        HomePageList(title, emptyList())
+                    }
+                }
+            }.map { it.await() } // Đợi tất cả hoàn thành và lấy kết quả
         }
         
         return newHomePageResponse(homePageLists.filter { it.list.isNotEmpty() })
@@ -100,12 +109,32 @@ class KKPhimProvider : MainAPI() {
             actorList.map { ActorData(Actor(it)) }
         }
         
-        val recommendations = if (movie.recommendations is List<*>) {
+        // CẬP NHẬT: Thêm logic tạo danh sách đề xuất thay thế
+        var recommendations: List<SearchResponse>? = null
+        // Ưu tiên lấy đề xuất từ API
+        if (movie.recommendations is List<*>) {
             try {
                 val movieItems = mapper.convertValue(movie.recommendations, object : TypeReference<List<MovieItem>>() {})
-                movieItems.mapNotNull { toSearchResponse(it) }
-            } catch (e: Exception) { null }
-        } else { null }
+                recommendations = movieItems.mapNotNull { toSearchResponse(it) }
+            } catch (e: Exception) { 
+                // Bỏ qua lỗi nếu không thể chuyển đổi
+            }
+        }
+        // Nếu không có đề xuất từ API, tạo đề xuất dựa trên thể loại
+        if (recommendations.isNullOrEmpty()) {
+            movie.category?.firstOrNull()?.slug?.let { categorySlug ->
+                try {
+                    val recUrl = "$apiDomain/v1/api/the-loai/$categorySlug"
+                    val recResponse = app.get(recUrl).parsed<SearchApiResponse>()
+                    recommendations = recResponse.data?.items
+                        ?.mapNotNull { toSearchResponse(it) }
+                        // Loại bỏ phim hiện tại khỏi danh sách đề xuất
+                        ?.filter { it.url != url }
+                } catch (e: Exception) {
+                    // Bỏ qua nếu không tải được
+                }
+            }
+        }
 
         val tvType = when (movie.type) {
             "series" -> TvType.TvSeries
@@ -170,7 +199,7 @@ class KKPhimProvider : MainAPI() {
     data class Pagination(@JsonProperty("currentPage") val currentPage: Int? = null, @JsonProperty("totalPages") val totalPages: Int? = null)
     data class DetailApiResponse(@JsonProperty("movie") val movie: DetailMovie? = null, @JsonProperty("episodes") val episodes: List<EpisodeGroup>? = null)
     data class DetailMovie(@JsonProperty("name") val name: String, @JsonProperty("content") val content: String? = null, @JsonProperty("poster_url") val posterUrl: String? = null, @JsonProperty("year") val year: Int? = null, @JsonProperty("type") val type: String? = null, @JsonProperty("category") val category: List<Category>? = null, @JsonProperty("actor") val actor: List<String>? = null, @JsonProperty("chieurap") val recommendations: Any? = null)
-    data class Category(@JsonProperty("name") val name: String)
+    data class Category(@JsonProperty("name") val name: String, @JsonProperty("slug") val slug: String)
     data class EpisodeGroup(@JsonProperty("server_name") val serverName: String, @JsonProperty("server_data") val serverData: List<EpisodeData>)
     data class EpisodeData(@JsonProperty("name") val name: String, @JsonProperty("slug") val slug: String, @JsonProperty("link_m3u8") val linkM3u8: String, @JsonProperty("link_embed") val linkEmbed: String)
 }
