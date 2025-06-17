@@ -27,7 +27,8 @@ class TvHayProvider : MainAPI() {
     ): HomePageResponse {
         val url = if (page == 1) request.data else "${request.data}page/$page/"
         val document = app.get(url).document
-        val home = document.select("div#movie-update ul.list-film > li").mapNotNull {
+        // Sửa selector tại đây để khớp với cấu trúc HTML mới
+        val home = document.select("div#page-list ul.list-film > li").mapNotNull {
             it.toSearchResult()
         }
         return newHomePageResponse(request.name, home)
@@ -39,7 +40,7 @@ class TvHayProvider : MainAPI() {
         val posterUrl = this.selectFirst("img")?.attr("data-original")
         val status = this.selectFirst(".status")?.text()
 
-        return if (status?.contains("/") == true) {
+        return if (status?.contains("/") == true || status?.contains("Tập") == true) {
             newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
                 this.posterUrl = posterUrl
                 this.quality = getQualityFromString(status)
@@ -71,21 +72,25 @@ class TvHayProvider : MainAPI() {
         val tags = document.select("dl.col1 dd a[href*=phim-]").map { it.text() }
 
         // Lấy danh sách tập phim
-        val episodes = document.select("ul.episodelistinfo li a").map {
+        val episodes = document.select("ul.episodelist li a").mapNotNull {
             val epName = it.text()
+            // Bỏ qua các thẻ không phải là tập phim thực sự (ví dụ: link trailer)
+            if (epName.isNullOrBlank()) return@mapNotNull null
             val epHref = it.attr("href")
             Episode(epHref, epName)
         }
 
         // Kiểm tra là phim lẻ hay phim bộ
-        return if (episodes.size == 1 && (episodes.first().name?.contains("Full") == true || episodes.first().name?.contains("End") == true)) {
-            newMovieLoadResponse(title, url, TvType.Movie, episodes.first().data) {
+        return if (document.selectFirst("ul.episodelistinfo") != null) {
+            // Đây là trang phim lẻ (chỉ có list server, không có list tập)
+            newMovieLoadResponse(title, url, TvType.Movie, url) {
                 this.posterUrl = poster
                 this.plot = plot
                 this.year = year
                 this.tags = tags
             }
         } else {
+             // Đây là trang phim bộ
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = poster
                 this.plot = plot
