@@ -1,20 +1,27 @@
 package recloudstream
 
-// Import các thư viện cần thiết cho CloudStream
+// Import các thư viện cần thiết
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import org.jsoup.nodes.Element
 
-/**
- * Lớp chính của Provider, kế thừa từ MainAPI
- */
 class HentaiHavenProvider : MainAPI() {
     override var name = "HentaiHaven"
     override var mainUrl = "https://hentaihaven.xxx"
     override var lang = "en"
     override var supportedTypes = setOf(TvType.NSFW)
     override val hasMainPage = true
+
+    // Dùng để định nghĩa cấu trúc JSON trả về từ API
+    private data class VideoSource(
+        val file: String?,
+        val label: String?
+    )
+    private data class ApiResponse(
+        val sources: List<VideoSource>?
+    )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page == 1) mainUrl else "$mainUrl/page/$page/"
@@ -111,31 +118,47 @@ class HentaiHavenProvider : MainAPI() {
         }
     }
 
+    /**
+     * Hàm lấy link video cuối cùng.
+     */
     override suspend fun loadLinks(
-        data: String,
+        data: String, // Đây là URL của trang tập phim
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // Tải trang tập phim để lấy các thông tin cần thiết cho API
         val episodePage = app.get(data).document
-        val iframeUrl = episodePage.selectFirst("div.player_logic_item iframe")?.attr("src")
-            ?: throw ErrorLoadingException("Không tìm thấy iframe của trình phát")
-            
-        val iframeContent = app.get(iframeUrl).text
 
-        val playlistRegex = Regex("""playlist: "([^"]+)"""")
-        val playlistUrl = playlistRegex.find(iframeContent)?.groupValues?.get(1)
-            ?: throw ErrorLoadingException("Không tìm thấy đường dẫn playlist")
-
-        val sourcesJson = app.get(playlistUrl).text
-
-        val sourceRegex = Regex(""""file":"([^"]+)","label":"([^"]+)"""")
+        // Trích xuất các ID và mã nonce từ script của trang
+        val scriptContent = episodePage.select("script#raven-js-extra").html()
         
-        sourceRegex.findAll(sourcesJson).forEach { match ->
-            val videoUrl = match.groupValues[1].replace("\\", "")
-            val quality = match.groupValues[2]
+        val chapterId = Regex(""""chapter_ID":"(\\d+)"""").find(scriptContent)?.groupValues?.get(1)
+            ?: throw ErrorLoadingException("Không tìm thấy Chapter ID")
+            
+        val nonceScriptContent = episodePage.select("script#player-logic-js-extra").html()
+        val nonce = Regex(""""nonce":"([^"]+)"""").find(nonceScriptContent)?.groupValues?.get(1)
+            ?: throw ErrorLoadingException("Không tìm thấy Nonce")
 
-            // SỬA ĐỔI: Sử dụng cấu trúc ExtractorLink mới
+        // Địa chỉ API của WordPress
+        val apiUrl = "$mainUrl/wp-admin/admin-ajax.php"
+
+        // Gửi yêu cầu POST với các tham số đã trích xuất
+        val response = app.post(
+            url = apiUrl,
+            data = mapOf(
+                "action" to "player_logic_ajax",
+                "nonce" to nonce,
+                "post_id" to chapterId
+            ),
+            referer = data // Quan trọng: Giả lập truy cập từ trang tập phim
+        ).text
+
+        // Phân tích JSON trả về để lấy danh sách các nguồn video
+        parseJson<ApiResponse>(response).sources?.forEach { source ->
+            val videoUrl = source.file ?: return@forEach
+            val quality = source.label ?: "Default"
+            
             callback(
                 ExtractorLink(
                     source = this.name,
@@ -143,12 +166,11 @@ class HentaiHavenProvider : MainAPI() {
                     url = videoUrl,
                     referer = mainUrl,
                     quality = quality.filter { it.isDigit() }.toIntOrNull() ?: 0,
-                    // Xác định loại link là M3U8 hay video thường
                     type = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                 )
             )
         }
-
+        
         return true
     }
 }
