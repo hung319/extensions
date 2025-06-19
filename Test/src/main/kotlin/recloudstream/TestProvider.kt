@@ -14,10 +14,15 @@ class HentaiHavenProvider : MainAPI() {
     override var supportedTypes = setOf(TvType.NSFW)
     override val hasMainPage = true
 
+    /**
+     * SỬA ĐỔI: Sử dụng newHomePageResponse để loại bỏ cảnh báo deprecated.
+     * Hàm này được gọi khi người dùng mở trang chính của plugin.
+     */
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page == 1) mainUrl else "$mainUrl/page/$page/"
         val document = app.get(url).document
         
+        // Tạo một danh sách (mutable) để chứa các HomePageList
         val homePageList = mutableListOf<HomePageList>()
 
         document.select("div.vraven_home_slider").forEach { slider ->
@@ -35,7 +40,6 @@ class HentaiHavenProvider : MainAPI() {
                     it.attr("data-src").ifBlank { it.attr("src") }
                 }
 
-                // SỬA ĐỔI: Dùng hàm helper newTvSeriesSearchResponse
                 newTvSeriesSearchResponse(title, href, TvType.NSFW) {
                     this.posterUrl = image
                 }
@@ -47,7 +51,9 @@ class HentaiHavenProvider : MainAPI() {
         }
         
         if (homePageList.isEmpty()) throw ErrorLoadingException("Không tải được trang chính hoặc không tìm thấy nội dung.")
-        return HomePageResponse(homePageList)
+        
+        // SỬA ĐỔI: Sử dụng hàm tạo mới theo đề xuất
+        return newHomePageResponse(homePageList)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -60,7 +66,6 @@ class HentaiHavenProvider : MainAPI() {
             val href = titleElement.attr("href")
             val image = it.selectFirst("div.tab-thumb img")?.attr("src")
 
-            // SỬA ĐỔI: Dùng hàm helper newTvSeriesSearchResponse
             newTvSeriesSearchResponse(title, href, TvType.NSFW) {
                 this.posterUrl = image
             }
@@ -81,7 +86,6 @@ class HentaiHavenProvider : MainAPI() {
             val link = it.selectFirst("a") ?: return@mapNotNull null
             val name = link.text().trim()
             val href = link.attr("href")
-            // SỬA ĐỔI: Dùng hàm helper newEpisode
             newEpisode(href) {
                 this.name = name
             }
@@ -93,7 +97,6 @@ class HentaiHavenProvider : MainAPI() {
             val recHref = recTitleEl.attr("href")
             val recPoster = it.selectFirst(".related-reading-img img")?.attr("src")
 
-            // SỬA ĐỔI: Dùng hàm helper newTvSeriesSearchResponse
             newTvSeriesSearchResponse(recTitle, recHref, TvType.NSFW) {
                 this.posterUrl = recPoster
             }
