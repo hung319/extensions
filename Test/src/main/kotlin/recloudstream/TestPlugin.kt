@@ -11,6 +11,6 @@ class TestPlugin: Plugin() { // Kế thừa Plugin
     override fun load(context: Context) {
         // Tất cả provider nên được thêm vào theo cách này.
         // Đăng ký AnimeHayProvider
-        registerMainAPI(KKPhimProvider()) // Gọi đăng ký provider ở đây
+        registerMainAPI(HentaiHavenProvider()) // Gọi đăng ký provider ở đây
     }
 }
