@@ -6,7 +6,11 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import org.jsoup.nodes.Element
+import java.net.URLEncoder
 
+/**
+ * Lớp chính của Provider, kế thừa từ MainAPI
+ */
 class HentaiHavenProvider : MainAPI() {
     override var name = "HentaiHaven"
     override var mainUrl = "https://hentaihaven.xxx"
@@ -14,7 +18,7 @@ class HentaiHavenProvider : MainAPI() {
     override var supportedTypes = setOf(TvType.NSFW)
     override val hasMainPage = true
 
-    // Dùng để định nghĩa cấu trúc JSON trả về từ API
+    // Cấu trúc JSON trả về từ API
     private data class Source(
         val src: String?,
         val label: String?
@@ -122,10 +126,10 @@ class HentaiHavenProvider : MainAPI() {
     }
 
     /**
-     * SỬA ĐỔI LỚN: Thay đổi hoàn toàn logic để gọi API thay vì phân tích iframe
+     * SỬA ĐỔI: Sử dụng Proxy để vượt qua Cloudflare và lấy link video
      */
     override suspend fun loadLinks(
-        data: String, // Đây là URL của trang tập phim
+        data: String, // URL của trang tập phim
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
@@ -139,27 +143,30 @@ class HentaiHavenProvider : MainAPI() {
         val encodedData = Regex("""data=([^&"]+)""").find(iframeUrl)?.groupValues?.get(1)
             ?: throw ErrorLoadingException("Không tìm thấy dữ liệu mã hóa trong URL iframe")
         
-        // Địa chỉ API
-        val apiUrl = "$mainUrl/wp-content/plugins/player-logic/api.php"
-
-        // Gửi yêu cầu POST với dữ liệu đã trích xuất
+        // Tạo URL API mục tiêu cần proxy
+        val targetApiUrl = "$mainUrl/wp-content/plugins/player-logic/api.php"
+        
+        // Tạo URL proxy cuối cùng
+        val proxyUrl = "https://cffi-prx.013666.xyz/api?key=11042006&url=${URLEncoder.encode(targetApiUrl, "UTF-8")}"
+        
+        // Gửi yêu cầu POST đến proxy với dữ liệu id
         val response = app.post(
-            url = apiUrl,
+            url = proxyUrl,
             data = mapOf("id" to encodedData),
             referer = iframeUrl // Quan trọng: Giả lập referer từ iframe
         ).text
-        
-        // Phân tích JSON trả về
+
+        // Phân tích JSON trả về để lấy link
         parseJson<ApiResponse>(response).data?.sources?.forEach { source ->
             val videoUrl = source.src ?: return@forEach
-            val quality = source.label ?: "Default"
+            val quality = source.label ?: "Auto"
             
             callback(
                 ExtractorLink(
                     source = this.name,
                     name = "${this.name} $quality",
                     url = videoUrl,
-                    referer = mainUrl, // Dùng mainUrl làm referer cho link video
+                    referer = mainUrl,
                     quality = quality.filter { it.isDigit() }.toIntOrNull() ?: 0,
                     type = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                 )
