@@ -15,12 +15,15 @@ class HentaiHavenProvider : MainAPI() {
     override val hasMainPage = true
 
     // Dùng để định nghĩa cấu trúc JSON trả về từ API
-    private data class VideoSource(
-        val file: String?,
+    private data class Source(
+        val src: String?,
         val label: String?
     )
+    private data class PlayerData(
+        val sources: List<Source>?
+    )
     private data class ApiResponse(
-        val sources: List<VideoSource>?
+        val data: PlayerData?
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -119,7 +122,7 @@ class HentaiHavenProvider : MainAPI() {
     }
 
     /**
-     * Hàm lấy link video cuối cùng.
+     * SỬA ĐỔI LỚN: Thay đổi hoàn toàn logic để gọi API thay vì phân tích iframe
      */
     override suspend fun loadLinks(
         data: String, // Đây là URL của trang tập phim
@@ -127,36 +130,28 @@ class HentaiHavenProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Tải trang tập phim để lấy các thông tin cần thiết cho API
+        // Tải trang tập phim để lấy iframe
         val episodePage = app.get(data).document
-
-        // Trích xuất các ID và mã nonce từ script của trang
-        val scriptContent = episodePage.select("script#raven-js-extra").html()
+        val iframeUrl = episodePage.selectFirst("div.player_logic_item iframe")?.attr("src")
+            ?: throw ErrorLoadingException("Không tìm thấy iframe của trình phát")
         
-        val chapterId = Regex(""""chapter_ID":"(\\d+)"""").find(scriptContent)?.groupValues?.get(1)
-            ?: throw ErrorLoadingException("Không tìm thấy Chapter ID")
-            
-        val nonceScriptContent = episodePage.select("script#player-logic-js-extra").html()
-        val nonce = Regex(""""nonce":"([^"]+)"""").find(nonceScriptContent)?.groupValues?.get(1)
-            ?: throw ErrorLoadingException("Không tìm thấy Nonce")
+        // Trích xuất chuỗi 'data' đã mã hóa từ URL của iframe
+        val encodedData = Regex("""data=([^&"]+)""").find(iframeUrl)?.groupValues?.get(1)
+            ?: throw ErrorLoadingException("Không tìm thấy dữ liệu mã hóa trong URL iframe")
+        
+        // Địa chỉ API
+        val apiUrl = "$mainUrl/wp-content/plugins/player-logic/api.php"
 
-        // Địa chỉ API của WordPress
-        val apiUrl = "$mainUrl/wp-admin/admin-ajax.php"
-
-        // Gửi yêu cầu POST với các tham số đã trích xuất
+        // Gửi yêu cầu POST với dữ liệu đã trích xuất
         val response = app.post(
             url = apiUrl,
-            data = mapOf(
-                "action" to "player_logic_ajax",
-                "nonce" to nonce,
-                "post_id" to chapterId
-            ),
-            referer = data // Quan trọng: Giả lập truy cập từ trang tập phim
+            data = mapOf("id" to encodedData),
+            referer = iframeUrl // Quan trọng: Giả lập referer từ iframe
         ).text
-
-        // Phân tích JSON trả về để lấy danh sách các nguồn video
-        parseJson<ApiResponse>(response).sources?.forEach { source ->
-            val videoUrl = source.file ?: return@forEach
+        
+        // Phân tích JSON trả về
+        parseJson<ApiResponse>(response).data?.sources?.forEach { source ->
+            val videoUrl = source.src ?: return@forEach
             val quality = source.label ?: "Default"
             
             callback(
@@ -164,7 +159,7 @@ class HentaiHavenProvider : MainAPI() {
                     source = this.name,
                     name = "${this.name} $quality",
                     url = videoUrl,
-                    referer = mainUrl,
+                    referer = mainUrl, // Dùng mainUrl làm referer cho link video
                     quality = quality.filter { it.isDigit() }.toIntOrNull() ?: 0,
                     type = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                 )
