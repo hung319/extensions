@@ -2,6 +2,8 @@ package recloudstream
 
 // Import các thư viện cần thiết cho CloudStream
 import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import org.jsoup.nodes.Element
 
 /**
@@ -14,15 +16,10 @@ class HentaiHavenProvider : MainAPI() {
     override var supportedTypes = setOf(TvType.NSFW)
     override val hasMainPage = true
 
-    /**
-     * SỬA ĐỔI: Sử dụng newHomePageResponse để loại bỏ cảnh báo deprecated.
-     * Hàm này được gọi khi người dùng mở trang chính của plugin.
-     */
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page == 1) mainUrl else "$mainUrl/page/$page/"
         val document = app.get(url).document
         
-        // Tạo một danh sách (mutable) để chứa các HomePageList
         val homePageList = mutableListOf<HomePageList>()
 
         document.select("div.vraven_home_slider").forEach { slider ->
@@ -52,7 +49,6 @@ class HentaiHavenProvider : MainAPI() {
         
         if (homePageList.isEmpty()) throw ErrorLoadingException("Không tải được trang chính hoặc không tìm thấy nội dung.")
         
-        // SỬA ĐỔI: Sử dụng hàm tạo mới theo đề xuất
         return newHomePageResponse(homePageList)
     }
 
@@ -113,6 +109,47 @@ class HentaiHavenProvider : MainAPI() {
             this.tags = tags
             this.recommendations = recommendations
         }
+    }
+
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val episodePage = app.get(data).document
+        val iframeUrl = episodePage.selectFirst("div.player_logic_item iframe")?.attr("src")
+            ?: throw ErrorLoadingException("Không tìm thấy iframe của trình phát")
+            
+        val iframeContent = app.get(iframeUrl).text
+
+        val playlistRegex = Regex("""playlist: "([^"]+)"""")
+        val playlistUrl = playlistRegex.find(iframeContent)?.groupValues?.get(1)
+            ?: throw ErrorLoadingException("Không tìm thấy đường dẫn playlist")
+
+        val sourcesJson = app.get(playlistUrl).text
+
+        val sourceRegex = Regex(""""file":"([^"]+)","label":"([^"]+)"""")
+        
+        sourceRegex.findAll(sourcesJson).forEach { match ->
+            val videoUrl = match.groupValues[1].replace("\\", "")
+            val quality = match.groupValues[2]
+
+            // SỬA ĐỔI: Sử dụng cấu trúc ExtractorLink mới
+            callback(
+                ExtractorLink(
+                    source = this.name,
+                    name = "${this.name} $quality",
+                    url = videoUrl,
+                    referer = mainUrl,
+                    quality = quality.filter { it.isDigit() }.toIntOrNull() ?: 0,
+                    // Xác định loại link là M3U8 hay video thường
+                    type = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                )
+            )
+        }
+
+        return true
     }
 }
 
