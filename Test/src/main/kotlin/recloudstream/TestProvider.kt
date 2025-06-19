@@ -2,8 +2,6 @@ package recloudstream
 
 // Import các thư viện cần thiết cho CloudStream
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import org.jsoup.nodes.Element
 
 /**
@@ -29,7 +27,7 @@ class HentaiHavenProvider : MainAPI() {
 
         document.select("div.vraven_home_slider")?.forEach { slider ->
             var header = slider.selectFirst("div.home_slider_header h4")?.text() ?: "Unknown"
-            
+
             if (header.contains("New Hentai")) {
                 header = "New Hentai"
             }
@@ -43,13 +41,11 @@ class HentaiHavenProvider : MainAPI() {
                 }
 
                 TvSeriesSearchResponse(
-                    title,
-                    href,
-                    this.name,
-                    TvType.NSFW,
-                    posterUrl = image,
-                    null,
-                    null
+                    name = title,
+                    url = href,
+                    apiName = this.name,
+                    type = TvType.NSFW,
+                    posterUrl = image
                 )
             }
             
@@ -73,20 +69,15 @@ class HentaiHavenProvider : MainAPI() {
             val image = it.selectFirst("div.tab-thumb img")?.attr("src")
 
             TvSeriesSearchResponse(
-                title,
-                href,
-                this.name,
-                TvType.NSFW,
-                posterUrl = image,
-                null,
-                null
+                name = title,
+                url = href,
+                apiName = this.name,
+                type = TvType.NSFW,
+                posterUrl = image
             )
         }
     }
     
-    /**
-     * Hàm này được gọi khi người dùng chọn một bộ phim để xem thông tin chi tiết.
-     */
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
@@ -123,22 +114,18 @@ class HentaiHavenProvider : MainAPI() {
             }
         }
 
-        // SỬA LỖI: Sắp xếp lại các tham số cho đúng thứ tự
-        return TvSeriesLoadResponse(
+        // SỬA LỖI: Sử dụng đúng tên tham số 'episodes' và bỏ 'showType'
+        return newTvSeriesLoadResponse(
             name = title,
             url = url,
-            apiName = this.name,
             type = TvType.NSFW,
-            data = episodes,
-            posterUrl = poster,
-            year = null,
-            plot = description,
-            tags = tags,
-            showType = null,
-            duration = null, // <-- Đặt là null
-            rating = null,
-            recommendations = recommendations
-        )
+            episodes = episodes, // <-- Sửa từ 'data' thành 'episodes'
+        ) {
+            this.posterUrl = poster
+            this.plot = description
+            this.tags = tags
+            this.recommendations = recommendations
+        }
     }
 }
 
