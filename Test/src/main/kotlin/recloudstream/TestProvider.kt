@@ -2,12 +2,12 @@ package recloudstream
 
 // Import các thư viện cần thiết
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import org.jsoup.nodes.Element
 import android.util.Base64
-import java.net.URLEncoder
+// SỬA LỖI: Thêm import chính xác cho newExtractorLink và ExtractorLinkType
+import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 
 class HentaiHavenProvider : MainAPI() {
     override var name = "HentaiHaven"
@@ -151,17 +151,15 @@ class HentaiHavenProvider : MainAPI() {
             val videoUrl = source.file ?: return@forEach
             val quality = source.label ?: "Default"
             
-            // SỬA LỖI: Sử dụng hàm helper newExtractorLink với đúng cấu trúc
+            // SỬA LỖI: Gọi hàm newExtractorLink với đúng cấu trúc bạn đã cung cấp
             callback(
                 newExtractorLink(
                     source = this.name,
                     name = "${this.name} $quality",
                     url = videoUrl,
                     type = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                ) {
-                    this.quality = quality.filter { it.isDigit() }.toIntOrNull() ?: 0
-                    this.referer = mainUrl
-                }
+                )
+                // Không cần khối initializer vì các thuộc tính khác không tồn tại
             )
         }
         
