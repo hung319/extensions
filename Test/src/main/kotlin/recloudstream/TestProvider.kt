@@ -1,12 +1,13 @@
 package recloudstream
 
+// Import các thư viện cần thiết
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import org.jsoup.nodes.Element
-import java.net.URLEncoder
 import android.util.Base64
+import java.net.URLEncoder
 
 class HentaiHavenProvider : MainAPI() {
     override var name = "HentaiHaven"
@@ -17,7 +18,7 @@ class HentaiHavenProvider : MainAPI() {
 
     // --- Data class cho JSON đã được giải mã ---
     private data class Source(
-        val file: String?, // Trang này dùng "file" thay vì "src"
+        val file: String?,
         val label: String?
     )
     private data class DecryptedResponse(
@@ -119,10 +120,6 @@ class HentaiHavenProvider : MainAPI() {
         }
     }
 
-    /**
-     * Hàm giải mã chuỗi dữ liệu từ trang web.
-     * Đây là phiên bản được dịch từ Javascript của trang.
-     */
     private fun decryptSource(encoded: String): String {
         val key = "93422192433952489752342908585764"
         val decoded = Base64.decode(encoded, Base64.DEFAULT)
@@ -132,9 +129,6 @@ class HentaiHavenProvider : MainAPI() {
         return String(result)
     }
 
-    /**
-     * Hàm lấy link video cuối cùng.
-     */
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -143,33 +137,31 @@ class HentaiHavenProvider : MainAPI() {
     ): Boolean {
         val episodePage = app.get(data).document
 
-        // Trích xuất chuỗi mã hóa từ biến `vraven.downloads`
         val scriptContent = episodePage.select("script#raven-js-extra").html()
         val encodedData = Regex("""(?:"downloads"|"fembed_down"|"mirror_down"): *"([^"]+)"""").find(scriptContent)?.groupValues?.get(1)
             ?: throw ErrorLoadingException("Không tìm thấy dữ liệu video mã hóa")
 
-        // Nếu chuỗi rỗng hoặc chỉ là số "2", báo lỗi
         if (encodedData.isBlank() || encodedData == "2") {
             throw ErrorLoadingException("Video không có sẵn hoặc đã bị xóa")
         }
 
-        // Giải mã dữ liệu
         val decryptedJson = decryptSource(encodedData)
         
-        // Phân tích JSON đã giải mã để lấy link video
         parseJson<DecryptedResponse>(decryptedJson).sources?.forEach { source ->
             val videoUrl = source.file ?: return@forEach
             val quality = source.label ?: "Default"
             
+            // SỬA LỖI: Sử dụng hàm helper newExtractorLink với đúng cấu trúc
             callback(
-                ExtractorLink(
+                newExtractorLink(
                     source = this.name,
                     name = "${this.name} $quality",
                     url = videoUrl,
-                    referer = mainUrl,
-                    quality = quality.filter { it.isDigit() }.toIntOrNull() ?: 0,
-                    isM3u8 = videoUrl.contains(".m3u8")
-                )
+                    type = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                ) {
+                    this.quality = quality.filter { it.isDigit() }.toIntOrNull() ?: 0
+                    this.referer = mainUrl
+                }
             )
         }
         
