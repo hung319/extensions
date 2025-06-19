@@ -8,24 +8,19 @@ import org.jsoup.nodes.Element
  * Lớp chính của Provider, kế thừa từ MainAPI
  */
 class HentaiHavenProvider : MainAPI() {
-    // Thông tin cơ bản của plugin
     override var name = "HentaiHaven"
     override var mainUrl = "https://hentaihaven.xxx"
     override var lang = "en"
-    
-    override var supportedTypes = setOf(
-        TvType.NSFW 
-    )
-
+    override var supportedTypes = setOf(TvType.NSFW)
     override val hasMainPage = true
 
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page == 1) mainUrl else "$mainUrl/page/$page/"
         val document = app.get(url).document
         
         val homePageList = mutableListOf<HomePageList>()
 
-        document.select("div.vraven_home_slider")?.forEach { slider ->
+        document.select("div.vraven_home_slider").forEach { slider ->
             var header = slider.selectFirst("div.home_slider_header h4")?.text() ?: "Unknown"
 
             if (header.contains("New Hentai")) {
@@ -40,13 +35,10 @@ class HentaiHavenProvider : MainAPI() {
                     it.attr("data-src").ifBlank { it.attr("src") }
                 }
 
-                TvSeriesSearchResponse(
-                    name = title,
-                    url = href,
-                    apiName = this.name,
-                    type = TvType.NSFW,
-                    posterUrl = image
-                )
+                // SỬA ĐỔI: Dùng hàm helper newTvSeriesSearchResponse
+                newTvSeriesSearchResponse(title, href, TvType.NSFW) {
+                    this.posterUrl = image
+                }
             }
             
             if (items.isNotEmpty()) {
@@ -54,7 +46,7 @@ class HentaiHavenProvider : MainAPI() {
             }
         }
         
-        if (homePageList.isEmpty()) return null
+        if (homePageList.isEmpty()) throw ErrorLoadingException("Không tải được trang chính hoặc không tìm thấy nội dung.")
         return HomePageResponse(homePageList)
     }
 
@@ -68,13 +60,10 @@ class HentaiHavenProvider : MainAPI() {
             val href = titleElement.attr("href")
             val image = it.selectFirst("div.tab-thumb img")?.attr("src")
 
-            TvSeriesSearchResponse(
-                name = title,
-                url = href,
-                apiName = this.name,
-                type = TvType.NSFW,
-                posterUrl = image
-            )
+            // SỬA ĐỔI: Dùng hàm helper newTvSeriesSearchResponse
+            newTvSeriesSearchResponse(title, href, TvType.NSFW) {
+                this.posterUrl = image
+            }
         }
     }
     
@@ -92,34 +81,29 @@ class HentaiHavenProvider : MainAPI() {
             val link = it.selectFirst("a") ?: return@mapNotNull null
             val name = link.text().trim()
             val href = link.attr("href")
-            Episode(href, name)
+            // SỬA ĐỔI: Dùng hàm helper newEpisode
+            newEpisode(href) {
+                this.name = name
+            }
         }.reversed()
 
         val recommendations = document.select("div.manga_related .related-reading-wrap").mapNotNull {
             val recTitleEl = it.selectFirst("h5.widget-title a")
-            val recTitle = recTitleEl?.text()
-            val recHref = recTitleEl?.attr("href")
+            val recTitle = recTitleEl?.text() ?: return@mapNotNull null
+            val recHref = recTitleEl.attr("href")
             val recPoster = it.selectFirst(".related-reading-img img")?.attr("src")
 
-            if (recTitle != null && recHref != null) {
-                TvSeriesSearchResponse(
-                    recTitle,
-                    recHref,
-                    this.name,
-                    TvType.NSFW,
-                    posterUrl = recPoster
-                )
-            } else {
-                null
+            // SỬA ĐỔI: Dùng hàm helper newTvSeriesSearchResponse
+            newTvSeriesSearchResponse(recTitle, recHref, TvType.NSFW) {
+                this.posterUrl = recPoster
             }
         }
 
-        // SỬA LỖI: Sử dụng đúng tên tham số 'episodes' và bỏ 'showType'
         return newTvSeriesLoadResponse(
             name = title,
             url = url,
             type = TvType.NSFW,
-            episodes = episodes, // <-- Sửa từ 'data' thành 'episodes'
+            episodes = episodes,
         ) {
             this.posterUrl = poster
             this.plot = description
@@ -129,5 +113,4 @@ class HentaiHavenProvider : MainAPI() {
     }
 }
 
-// Custom exception để báo lỗi rõ ràng hơn
 open class ErrorLoadingException(message: String) : Exception(message)
