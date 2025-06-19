@@ -24,8 +24,9 @@ class HentaiHavenProvider : MainAPI() {
     /**
      * Hàm này được gọi khi người dùng mở trang chính của plugin.
      * Nó tải dữ liệu từ trang chủ của HentaiHaven và phân loại thành các danh sách.
+     * Đã sửa lại chữ ký hàm để khớp với yêu cầu của API.
      */
-    override suspend fun getMainPage(page: Int): HomePageResponse {
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         // Tạo URL cho trang hiện tại. Trang 1 không cần /page/1
         val url = if (page == 1) mainUrl else "$mainUrl/page/$page/"
         val document = app.get(url).document
@@ -60,7 +61,7 @@ class HentaiHavenProvider : MainAPI() {
             }
         }
         
-        if (homePageList.isEmpty()) throw ErrorLoadingException("Không tải được trang chính hoặc không tìm thấy nội dung.")
+        if (homePageList.isEmpty()) return null // Trả về null nếu không có gì
         return HomePageResponse(homePageList)
     }
 
