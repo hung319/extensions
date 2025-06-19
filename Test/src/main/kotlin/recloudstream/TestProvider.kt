@@ -1,11 +1,12 @@
 package recloudstream
 
-// Import các thư viện cần thiết
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import org.jsoup.nodes.Element
+import java.net.URLEncoder
+import android.util.Base64
 
 class HentaiHavenProvider : MainAPI() {
     override var name = "HentaiHaven"
@@ -14,28 +15,15 @@ class HentaiHavenProvider : MainAPI() {
     override var supportedTypes = setOf(TvType.NSFW)
     override val hasMainPage = true
 
-    // --- Data class cho JSON trả về từ API gốc ---
+    // --- Data class cho JSON đã được giải mã ---
     private data class Source(
-        val src: String?,
+        val file: String?, // Trang này dùng "file" thay vì "src"
         val label: String?
     )
-    private data class PlayerData(
+    private data class DecryptedResponse(
         val sources: List<Source>?
     )
-    private data class ApiResponse(
-        val data: PlayerData?
-    )
 
-    // --- Data class cho JSON gửi đến proxy ---
-    private data class ProxyRequest(
-        val url: String,
-        val key: String = "11042006",
-        val data: String,
-        val custom_headers: Map<String, String>,
-        val referer: String
-    )
-
-    // ... (Các hàm getMainPage, search, load giữ nguyên như cũ) ...
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page == 1) mainUrl else "$mainUrl/page/$page/"
         val document = app.get(url).document
@@ -132,51 +120,45 @@ class HentaiHavenProvider : MainAPI() {
     }
 
     /**
-     * SỬA ĐỔI: Gửi yêu cầu qua proxy thay vì gọi trực tiếp
+     * Hàm giải mã chuỗi dữ liệu từ trang web.
+     * Đây là phiên bản được dịch từ Javascript của trang.
+     */
+    private fun decryptSource(encoded: String): String {
+        val key = "93422192433952489752342908585764"
+        val decoded = Base64.decode(encoded, Base64.DEFAULT)
+        val result = decoded.mapIndexed { index, byte ->
+            (byte.toInt() xor key[index % key.length].code).toByte()
+        }.toByteArray()
+        return String(result)
+    }
+
+    /**
+     * Hàm lấy link video cuối cùng.
      */
     override suspend fun loadLinks(
-        data: String, // URL của trang tập phim
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // 1. Lấy thông tin cần thiết từ trang tập phim
         val episodePage = app.get(data).document
-        val iframeUrl = episodePage.selectFirst("div.player_logic_item iframe")?.attr("src")
-            ?: throw ErrorLoadingException("Không tìm thấy iframe của trình phát")
-        
-        val encodedData = Regex("""data=([^&"]+)""").find(iframeUrl)?.groupValues?.get(1)
-            ?: throw ErrorLoadingException("Không tìm thấy dữ liệu mã hóa trong URL iframe")
-        
-        // 2. Chuẩn bị các thành phần cho yêu cầu proxy
-        val targetApiUrl = "$mainUrl/wp-content/plugins/player-logic/api.php"
-        val proxyUrl = "https://cffi-prx.013666.xyz/api"
 
-        // Tạo payload dưới dạng chuỗi "key=value" cho API gốc
-        val originalApiData = "id=$encodedData" 
+        // Trích xuất chuỗi mã hóa từ biến `vraven.downloads`
+        val scriptContent = episodePage.select("script#raven-js-extra").html()
+        val encodedData = Regex("""(?:"downloads"|"fembed_down"|"mirror_down"): *"([^"]+)"""").find(scriptContent)?.groupValues?.get(1)
+            ?: throw ErrorLoadingException("Không tìm thấy dữ liệu video mã hóa")
+
+        // Nếu chuỗi rỗng hoặc chỉ là số "2", báo lỗi
+        if (encodedData.isBlank() || encodedData == "2") {
+            throw ErrorLoadingException("Video không có sẵn hoặc đã bị xóa")
+        }
+
+        // Giải mã dữ liệu
+        val decryptedJson = decryptSource(encodedData)
         
-        // Tạo header cho API gốc
-        val originalApiHeaders = mapOf("X-Requested-With" to "XMLHttpRequest")
-
-        // 3. Tạo đối tượng JSON để gửi đến proxy
-        val proxyPayload = ProxyRequest(
-            url = targetApiUrl,
-            data = originalApiData,
-            custom_headers = originalApiHeaders,
-            referer = iframeUrl
-        )
-
-        // 4. Gửi yêu cầu đến proxy với payload là JSON
-        val response = app.post(
-            url = proxyUrl,
-            json = proxyPayload // Gửi đối tượng ProxyRequest dưới dạng JSON
-        ).text
-        
-        if (response.isBlank()) throw ErrorLoadingException("Proxy trả về nội dung rỗng.")
-
-        // 5. Xử lý phản hồi từ proxy (giống như trước)
-        parseJson<ApiResponse>(response).data?.sources?.forEach { source ->
-            val videoUrl = source.src ?: return@forEach
+        // Phân tích JSON đã giải mã để lấy link video
+        parseJson<DecryptedResponse>(decryptedJson).sources?.forEach { source ->
+            val videoUrl = source.file ?: return@forEach
             val quality = source.label ?: "Default"
             
             callback(
@@ -186,7 +168,7 @@ class HentaiHavenProvider : MainAPI() {
                     url = videoUrl,
                     referer = mainUrl,
                     quality = quality.filter { it.isDigit() }.toIntOrNull() ?: 0,
-                    type = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                    isM3u8 = videoUrl.contains(".m3u8")
                 )
             )
         }
