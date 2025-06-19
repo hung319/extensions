@@ -14,7 +14,7 @@ class HentaiHavenProvider : MainAPI() {
     override var supportedTypes = setOf(TvType.NSFW)
     override val hasMainPage = true
 
-    // Dùng để định nghĩa cấu trúc JSON trả về từ API
+    // --- Data class cho JSON trả về từ API gốc ---
     private data class Source(
         val src: String?,
         val label: String?
@@ -26,6 +26,16 @@ class HentaiHavenProvider : MainAPI() {
         val data: PlayerData?
     )
 
+    // --- Data class cho JSON gửi đến proxy ---
+    private data class ProxyRequest(
+        val url: String,
+        val key: String = "11042006",
+        val data: String,
+        val custom_headers: Map<String, String>,
+        val referer: String
+    )
+
+    // ... (Các hàm getMainPage, search, load giữ nguyên như cũ) ...
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page == 1) mainUrl else "$mainUrl/page/$page/"
         val document = app.get(url).document
@@ -121,12 +131,16 @@ class HentaiHavenProvider : MainAPI() {
         }
     }
 
+    /**
+     * SỬA ĐỔI: Gửi yêu cầu qua proxy thay vì gọi trực tiếp
+     */
     override suspend fun loadLinks(
-        data: String,
+        data: String, // URL của trang tập phim
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // 1. Lấy thông tin cần thiết từ trang tập phim
         val episodePage = app.get(data).document
         val iframeUrl = episodePage.selectFirst("div.player_logic_item iframe")?.attr("src")
             ?: throw ErrorLoadingException("Không tìm thấy iframe của trình phát")
@@ -134,18 +148,33 @@ class HentaiHavenProvider : MainAPI() {
         val encodedData = Regex("""data=([^&"]+)""").find(iframeUrl)?.groupValues?.get(1)
             ?: throw ErrorLoadingException("Không tìm thấy dữ liệu mã hóa trong URL iframe")
         
-        val apiUrl = "$mainUrl/wp-content/plugins/player-logic/api.php"
+        // 2. Chuẩn bị các thành phần cho yêu cầu proxy
+        val targetApiUrl = "$mainUrl/wp-content/plugins/player-logic/api.php"
+        val proxyUrl = "https://cffi-prx.013666.xyz/api"
 
-        // SỬA ĐỔI: Thêm header "X-Requested-With" vào yêu cầu POST
-        val response = app.post(
-            url = apiUrl,
-            headers = mapOf("X-Requested-With" to "XMLHttpRequest"), // <-- Header quan trọng
-            data = mapOf("id" to encodedData),
+        // Tạo payload dưới dạng chuỗi "key=value" cho API gốc
+        val originalApiData = "id=$encodedData" 
+        
+        // Tạo header cho API gốc
+        val originalApiHeaders = mapOf("X-Requested-With" to "XMLHttpRequest")
+
+        // 3. Tạo đối tượng JSON để gửi đến proxy
+        val proxyPayload = ProxyRequest(
+            url = targetApiUrl,
+            data = originalApiData,
+            custom_headers = originalApiHeaders,
             referer = iframeUrl
+        )
+
+        // 4. Gửi yêu cầu đến proxy với payload là JSON
+        val response = app.post(
+            url = proxyUrl,
+            json = proxyPayload // Gửi đối tượng ProxyRequest dưới dạng JSON
         ).text
         
-        if (response.isBlank()) throw ErrorLoadingException("API trả về nội dung rỗng, có thể do lớp bảo vệ.")
+        if (response.isBlank()) throw ErrorLoadingException("Proxy trả về nội dung rỗng.")
 
+        // 5. Xử lý phản hồi từ proxy (giống như trước)
         parseJson<ApiResponse>(response).data?.sources?.forEach { source ->
             val videoUrl = source.src ?: return@forEach
             val quality = source.label ?: "Default"
