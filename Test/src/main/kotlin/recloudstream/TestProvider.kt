@@ -15,17 +15,12 @@ class HentaiHavenProvider : MainAPI() {
     override var mainUrl = "https://hentaihaven.xxx"
     override var lang = "en"
     
-    // SỬA ĐỔI: Thay đổi loại nội dung được hỗ trợ thành NSFW
     override var supportedTypes = setOf(
-        TvType.NSFW
+        TvType.NSFW 
     )
 
-    // Cho ứng dụng biết rằng plugin này có trang chính
     override val hasMainPage = true
 
-    /**
-     * Hàm này được gọi khi người dùng mở trang chính của plugin.
-     */
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val url = if (page == 1) mainUrl else "$mainUrl/page/$page/"
         val document = app.get(url).document
@@ -34,8 +29,7 @@ class HentaiHavenProvider : MainAPI() {
 
         document.select("div.vraven_home_slider")?.forEach { slider ->
             var header = slider.selectFirst("div.home_slider_header h4")?.text() ?: "Unknown"
-
-            // Đổi tên "New Hentai 2025" thành "New Hentai"
+            
             if (header.contains("New Hentai")) {
                 header = "New Hentai"
             }
@@ -48,12 +42,11 @@ class HentaiHavenProvider : MainAPI() {
                     it.attr("data-src").ifBlank { it.attr("src") }
                 }
 
-                // SỬA ĐỔI: Trả về đúng loại NSFW
                 TvSeriesSearchResponse(
                     title,
                     href,
                     this.name,
-                    TvType.NSFW, // <--- Đặt loại là NSFW
+                    TvType.NSFW,
                     posterUrl = image,
                     null,
                     null
@@ -69,9 +62,6 @@ class HentaiHavenProvider : MainAPI() {
         return HomePageResponse(homePageList)
     }
 
-    /**
-     * Hàm này được gọi khi người dùng tìm kiếm.
-     */
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/?s=$query&post_type=wp-manga"
         val document = app.get(url).document
@@ -82,12 +72,11 @@ class HentaiHavenProvider : MainAPI() {
             val href = titleElement.attr("href")
             val image = it.selectFirst("div.tab-thumb img")?.attr("src")
 
-            // SỬA ĐỔI: Trả về đúng loại NSFW
             TvSeriesSearchResponse(
                 title,
                 href,
                 this.name,
-                TvType.NSFW, // <--- Đặt loại là NSFW
+                TvType.NSFW,
                 posterUrl = image,
                 null,
                 null
@@ -115,7 +104,6 @@ class HentaiHavenProvider : MainAPI() {
             Episode(href, name)
         }.reversed()
 
-        // SỬA ĐỔI: Thêm danh sách đề xuất
         val recommendations = document.select("div.manga_related .related-reading-wrap").mapNotNull {
             val recTitleEl = it.selectFirst("h5.widget-title a")
             val recTitle = recTitleEl?.text()
@@ -135,19 +123,21 @@ class HentaiHavenProvider : MainAPI() {
             }
         }
 
-        // SỬA ĐỔI: Trả về đúng loại NSFW và thêm recommendations
+        // SỬA LỖI: Sắp xếp lại các tham số cho đúng thứ tự
         return TvSeriesLoadResponse(
-            title,
-            url,
-            this.name,
-            TvType.NSFW, // <--- Đặt loại là NSFW
-            episodes,
-            poster,
-            null,
-            description,
-            null,
-            tags,
-            recommendations = recommendations // <-- Thêm danh sách đề xuất
+            name = title,
+            url = url,
+            apiName = this.name,
+            type = TvType.NSFW,
+            data = episodes,
+            posterUrl = poster,
+            year = null,
+            plot = description,
+            tags = tags,
+            showType = null,
+            duration = null, // <-- Đặt là null
+            rating = null,
+            recommendations = recommendations
         )
     }
 }
