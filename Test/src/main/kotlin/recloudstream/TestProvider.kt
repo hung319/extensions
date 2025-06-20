@@ -46,13 +46,12 @@ class Bluphim3Provider : MainAPI() {
         val href = this.selectFirst("a")?.attr("href")?.let { fixUrl(it) } ?: return null
         val posterUrl = this.selectFirst("img")?.attr("src")?.let { fixUrl(it) }
 
-        // SỬA LỖI: Đổi `title` thành `name` và thêm `apiName`
         return AnimeSearchResponse(
             name = title,
             url = href,
             type = TvType.Anime,
             posterUrl = posterUrl,
-            apiName = this@Bluphim3Provider.name // Thêm tên của API
+            apiName = this@Bluphim3Provider.name
         )
     }
 
@@ -75,21 +74,23 @@ class Bluphim3Provider : MainAPI() {
         val year = document.select("div.dinfo dl.col dd").getOrNull(3)?.text()?.trim()?.toIntOrNull()
         val description = document.selectFirst("div.detail div.tab")?.text()?.trim()
         val tags = document.select("dd.theloaidd a").map { it.text() }
-        val recommendations = document.select("ul#film_related li.item").mapNotNull { it.toSearchResult() }
+        
+        // Lấy danh sách phim đề cử từ trang chi tiết
+        val recommendations = document.select("ul#film_related li.item, .list-films.film-related li.item").mapNotNull { it.toSearchResult() }
 
         val watchUrl = document.selectFirst("a.btn-stream-link")?.attr("href")?.let { fixUrl(it) } ?: url
         val watchDocument = app.get(watchUrl).document
         
-        val episodes = watchDocument.select("div.episodes div.list-episode a").map {
+        // CẬP NHẬT: Dùng `:not(:contains(text))` để loại bỏ server không mong muốn
+        val episodes = watchDocument.select("div.episodes div.list-episode a:not(:contains(Server bên thứ 3))").map {
             val epName = it.attr("title")
             val epUrl = it.attr("href")?.let { u -> fixUrl(u) } ?: ""
             Episode(data = epUrl, name = epName)
-        }.reversed()
+        }.reversed() // Đảo ngược danh sách để có thứ tự đúng
 
         val isTvSeries = episodes.isNotEmpty()
 
         return if (isTvSeries) {
-            // SỬA LỖI: Thêm tham số `apiName` bắt buộc
             TvSeriesLoadResponse(
                 name = title,
                 url = url,
@@ -100,10 +101,9 @@ class Bluphim3Provider : MainAPI() {
                 year = year,
                 plot = description,
                 tags = tags,
-                recommendations = recommendations
+                recommendations = recommendations // Thêm danh sách đề cử
             )
         } else {
-            // SỬA LỖI: Thêm tham số `apiName` bắt buộc
             MovieLoadResponse(
                 name = title,
                 url = url,
@@ -114,7 +114,7 @@ class Bluphim3Provider : MainAPI() {
                 year = year,
                 plot = description,
                 tags = tags,
-                recommendations = recommendations
+                recommendations = recommendations // Thêm danh sách đề cử
             )
         }
     }
