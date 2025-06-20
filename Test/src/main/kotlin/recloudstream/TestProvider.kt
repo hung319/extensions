@@ -9,7 +9,9 @@ open class Rule34VideoProvider : MainAPI() {
     override var mainUrl = "https://rule34video.com"
     override var name = "Rule34Video"
     override val hasMainPage = true
-    override val supportedTypes = setOf(TvType.NSFW)
+    
+    // Khai báo provider hỗ trợ cả hai loại để tránh cảnh báo type
+    override val supportedTypes = setOf(TvType.NSFW, TvType.Movie)
 
     // Các mục trên trang chủ
     override val mainPage = mainPageOf(
@@ -45,14 +47,11 @@ open class Rule34VideoProvider : MainAPI() {
             if (it.startsWith("http")) it else "$mainUrl$it"
         }
 
-        // Sử dụng MovieSearchResponse cho video lẻ
-        return MovieSearchResponse(
-            title,
-            href,
-            this@Rule34VideoProvider.name,
-            posterUrl = posterUrl,
-            quality = SearchQuality.HD
-        )
+        // Sử dụng hàm builder `newMovieSearchResponse`
+        return newMovieSearchResponse(title, href) {
+            this.apiName = this@Rule34VideoProvider.name
+            this.posterUrl = posterUrl
+        }
     }
     
     // Hàm tìm kiếm
@@ -65,9 +64,7 @@ open class Rule34VideoProvider : MainAPI() {
         }
     }
 
-    // --- SỬA LỖI QUAN TRỌNG TẠI ĐÂY ---
-
-    // Hàm load() CHỈ lấy metadata (tên, poster, mô tả,...)
+    // Hàm load() lấy metadata VÀ danh sách đề xuất
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
         
@@ -78,23 +75,28 @@ open class Rule34VideoProvider : MainAPI() {
         val scriptContent = document.select("script").html()
         val posterUrl = Regex("""preview_url:\s*'(.*?)'""").find(scriptContent)?.groupValues?.get(1)
 
-        // Sử dụng builder của `newMovieLoadResponse` để trả về metadata.
-        // KHÔNG thêm link video ở đây. Framework sẽ tự gọi loadLinks() sau.
+        // === PHẦN MÃ MỚI ĐỂ LẤY VIDEO ĐỀ XUẤT ===
+        val recommendations = document.select("div#custom_list_videos_related_videos_items div.item.thumb").mapNotNull {
+            it.toSearchResult()
+        }
+        // ==========================================
+
         return newMovieLoadResponse(title, url, TvType.Movie, url) {
             this.posterUrl = posterUrl
             this.plot = description
             this.tags = tags
+            // Thêm danh sách đề xuất vào LoadResponse
+            this.recommendations = recommendations
         }
     }
 
-    // Hàm loadLinks() CHỈ lấy link video và callback
+    // Hàm loadLinks() lấy link video
     override suspend fun loadLinks(
-        data: String, // `data` ở đây chính là `url` được truyền từ `load()`
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Tải lại trang (hoặc lấy từ cache nếu có) để lấy link
         val document = app.get(data).document
         
         document.select("div.row_spacer a.tag_item[href*=/get_file/]").forEach { element ->
