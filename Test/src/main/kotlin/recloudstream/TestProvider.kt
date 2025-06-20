@@ -4,7 +4,7 @@ package com.lagradost.cloudstream3.plugins.vi
 // Thêm thư viện Jsoup để phân tích cú pháp HTML
 import org.jsoup.nodes.Element
 
-// SỬA LỖI: Import trực tiếp các lớp LoadResponse và SearchResponse cần thiết
+// Import các lớp cần thiết từ API CloudStream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 
@@ -27,7 +27,6 @@ class Bluphim3Provider : MainAPI() {
         val document = app.get(mainUrl).document
         val homePageList = mutableListOf<HomePageList>()
 
-        // Lấy danh sách phim từ các mục khác nhau trên trang chủ
         document.select("div.list-films").forEach { block ->
             val title = block.selectFirst("h2.title-box")?.text()?.trim() ?: return@forEach
             val movies = block.select("li.item, li.film-item-ver").mapNotNull {
@@ -47,12 +46,13 @@ class Bluphim3Provider : MainAPI() {
         val href = this.selectFirst("a")?.attr("href")?.let { fixUrl(it) } ?: return null
         val posterUrl = this.selectFirst("img")?.attr("src")?.let { fixUrl(it) }
 
-        // SỬA LỖI: Sử dụng constructor AnimeSearchResponse trực tiếp
+        // SỬA LỖI: Đổi `title` thành `name` và thêm `apiName`
         return AnimeSearchResponse(
-            title = title,
+            name = title,
             url = href,
             type = TvType.Anime,
-            posterUrl = posterUrl
+            posterUrl = posterUrl,
+            apiName = this@Bluphim3Provider.name // Thêm tên của API
         )
     }
 
@@ -77,8 +77,6 @@ class Bluphim3Provider : MainAPI() {
         val tags = document.select("dd.theloaidd a").map { it.text() }
         val recommendations = document.select("ul#film_related li.item").mapNotNull { it.toSearchResult() }
 
-        // Trang web không có danh sách tập phim ở trang chính của phim,
-        // chúng ta phải vào link "Xem phim" để lấy danh sách tập.
         val watchUrl = document.selectFirst("a.btn-stream-link")?.attr("href")?.let { fixUrl(it) } ?: url
         val watchDocument = app.get(watchUrl).document
         
@@ -86,16 +84,16 @@ class Bluphim3Provider : MainAPI() {
             val epName = it.attr("title")
             val epUrl = it.attr("href")?.let { u -> fixUrl(u) } ?: ""
             Episode(data = epUrl, name = epName)
-        }.reversed() // Đảo ngược để tập 1 ở đầu
+        }.reversed()
 
-        // Xác định loại TV (TvSeries hay Movie) dựa trên danh sách tập phim
         val isTvSeries = episodes.isNotEmpty()
 
         return if (isTvSeries) {
-            // SỬA LỖI: Sử dụng constructor TvSeriesLoadResponse trực tiếp
+            // SỬA LỖI: Thêm tham số `apiName` bắt buộc
             TvSeriesLoadResponse(
                 name = title,
                 url = url,
+                apiName = this.name,
                 type = TvType.TvSeries,
                 episodes = episodes,
                 posterUrl = poster,
@@ -105,12 +103,13 @@ class Bluphim3Provider : MainAPI() {
                 recommendations = recommendations
             )
         } else {
-            // SỬA LỖI: Sử dụng constructor MovieLoadResponse trực tiếp
+            // SỬA LỖI: Thêm tham số `apiName` bắt buộc
             MovieLoadResponse(
                 name = title,
                 url = url,
+                apiName = this.name,
                 type = TvType.Movie,
-                dataUrl = watchUrl, // Dùng watchUrl để loadLinks
+                dataUrl = watchUrl,
                 posterUrl = poster,
                 year = year,
                 plot = description,
@@ -122,13 +121,12 @@ class Bluphim3Provider : MainAPI() {
 
     // Placeholder cho hàm loadLinks
     override suspend fun loadLinks(
-        data: String, // Đây là URL của tập phim hoặc phim
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         // TODO: Implement this function
-        // Trả về false để báo hiệu rằng chưa có link nào được tải.
         return false
     }
 }
