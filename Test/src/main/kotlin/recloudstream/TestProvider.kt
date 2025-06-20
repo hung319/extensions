@@ -1,4 +1,4 @@
-package recloudstream 
+package recloudstream // *** SỬA LỖI: Đã thêm lại dòng package bị thiếu ***
 
 // Import các lớp cần thiết
 import com.lagradost.cloudstream3.*
@@ -21,7 +21,6 @@ import kotlinx.coroutines.async
 import android.util.Log
 
 // === DATA CLASSES CHO KITSU API ===
-// ... (giữ nguyên từ file gốc của bạn)
 data class KitsuMain(val data: List<KitsuData>?)
 data class KitsuData(val attributes: KitsuAttributes?)
 data class KitsuAttributes(
@@ -38,7 +37,6 @@ data class KitsuPoster(
 
 // --- Định nghĩa lớp Provider ---
 class AnimetProvider : MainAPI() {
-    // ... (Thông tin cơ bản giữ nguyên) ...
     override var mainUrl = "https://animet.org"
     override var name = "Animet"
     override val hasMainPage = true
@@ -52,7 +50,6 @@ class AnimetProvider : MainAPI() {
         TvType.TvSeries
     )
 
-    // *** THÊM MỚI: Danh sách các trang chính ***
     override val mainPageOf = listOf(
         "Phim Mới Cập Nhật" to "/danh-sach/phim-moi-cap-nhat.html",
         "CN Animation" to "/the-loai/cn-animation.html",
@@ -76,12 +73,10 @@ class AnimetProvider : MainAPI() {
                         Log.w(name, "Fetched BaseUrl: $baseUrl")
                     } else {
                         Log.e(name, "Could not fetch baseUrl from $mainUrl. Falling back to default.")
-                        // *** SỬA: Cập nhật URL dự phòng ***
                         baseUrl = "https://anime10.site"
                     }
                 } catch (e: Exception) {
                     Log.e(name, "Failed to fetch or parse baseUrl from $mainUrl: ${e.message}")
-                    // *** SỬA: Cập nhật URL dự phòng ***
                     baseUrl = "https://anime10.site"
                 }
             }
@@ -163,39 +158,28 @@ class AnimetProvider : MainAPI() {
         }
     }
 
-    // *** THAY THẾ HOÀN TOÀN HÀM getMainPage ***
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        // request.data chứa đường dẫn tương đối, ví dụ: "/danh-sach/phim-moi-cap-nhat.html"
-        // request.name chứa tên danh mục, ví dụ: "Phim Mới Cập Nhật"
         val currentBaseUrl = try { getBaseUrl() } catch (e: Exception) {
             Log.e(name, "getMainPage failed to get BaseUrl: ${e.message}")
             return null
         }
 
-        // Cấu trúc URL phân trang của web là /page/2/
         val url = if (page > 1) {
             "$currentBaseUrl${request.data}/page/$page/"
         } else {
             "$currentBaseUrl${request.data}"
         }
 
-        Log.d(name, "getMainPage loading URL: $url cho trang $page")
+        Log.d(name, "getMainPage loading URL: $url for page $page")
 
         return try {
             val document = app.get(url, referer = currentBaseUrl).document
-
-            // Sử dụng selector chung để lấy danh sách phim
             val results = document.select("ul.MovieList li.TPostMv")
             Log.d(name, "Found ${results.size} results for '${request.name}' on page $page")
 
-            // Nếu không có kết quả, ngừng phân trang bằng cách trả về null
             if (results.isEmpty()) return null
-
-            // Dùng hàm có sẵn để chuyển đổi element thành SearchResponse
             val items = results.mapNotNull { mapElementToSearchResponse(it, currentBaseUrl) }
 
-            // Trả về response để Cloudstream hiển thị
-            // Framework sẽ tự động xử lý việc thêm trang mới khi người dùng cuộn
             newHomePageResponse(HomePageList(request.name, items))
 
         } catch (e: Exception) {
@@ -203,7 +187,6 @@ class AnimetProvider : MainAPI() {
             return null
         }
     }
-
 
     override suspend fun search(query: String): List<SearchResponse>? {
        val currentBaseUrl = try { getBaseUrl() } catch (e: Exception) {
@@ -222,8 +205,6 @@ class AnimetProvider : MainAPI() {
            }
     }
 
-    // --- Giữ nguyên hàm load và loadLinks từ file gốc của bạn ---
-    // ... (sao chép và dán hàm load và loadLinks từ file cũ vào đây) ...
     override suspend fun load(url: String): LoadResponse? {
         Log.d(name, "Loading URL: $url")
         try {
@@ -309,7 +290,7 @@ class AnimetProvider : MainAPI() {
                 try {
                     Log.d(name, "Fetching episode list from: $watchPageUrl")
                     val episodeListPageDocument = app.get(watchPageUrl, referer = url).document
-                    episodes = episodeListPageDocument.select("ul.list-episode li.episode a.episode-link") // Selector đã sửa
+                    episodes = episodeListPageDocument.select("ul.list-episode li.episode a.episode-link")
                         .mapNotNull episodelist@{ epElement ->
                         val epHref = epElement.attr("href")?.let { fixUrlBased(it) }
                         if (epHref.isNullOrBlank()) {
@@ -351,7 +332,7 @@ class AnimetProvider : MainAPI() {
             val seasonRecommendations = coroutineScope {
                 Log.d(name, "Starting to fetch related seasons...")
                 mainDocument.select("div.season_item a:not(.active)").map { seasonElement ->
-                    async { // Chạy song song cho mỗi phần
+                    async {
                         val seasonHref = seasonElement.attr("href")?.let { fixUrlBased(it) }
                         val seasonTitle = seasonElement.text()?.trim()
                         var seasonPoster: String? = null
@@ -360,7 +341,7 @@ class AnimetProvider : MainAPI() {
                             Log.d(name, "Processing season: '$seasonTitle' - $seasonHref")
                             try {
                                 Log.d(name, "Fetching season page: $seasonHref")
-                                val seasonDoc = app.get(seasonHref, referer = url).document // Thêm referer
+                                val seasonDoc = app.get(seasonHref, referer = url).document
                                 seasonPoster = seasonDoc.selectFirst("img.wp-post-image")?.attr("src")?.let { fixUrlBased(it) }
                                 Log.d(name, "Found season poster: $seasonPoster for '$seasonTitle'")
 
@@ -532,5 +513,4 @@ class AnimetProvider : MainAPI() {
             return false
         }
     }
-
-} // <-- Dấu ngoặc đóng class AnimetProvider
+}
