@@ -341,14 +341,17 @@ class AnimetProvider : MainAPI() {
                 return false
             }
 
+            // *** SỬA LỖI: Di chuyển `referer` vào bên trong khối lệnh để tương thích ***
             callback.invoke(
                 newExtractorLink(
                     source = this.name,
                     name = "Animet",
                     url = m3u8Link,
-                    type = ExtractorLinkType.M3U8,
-                    referer = currentBaseUrl
+                    type = ExtractorLinkType.M3U8
+                    // Xóa `referer` khỏi đây
                 ) {
+                    // Thêm `referer` vào đây
+                    this.referer = currentBaseUrl
                     this.quality = Qualities.Unknown.value
                 }
             )
