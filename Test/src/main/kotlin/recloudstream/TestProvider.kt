@@ -1,173 +1,126 @@
-package recloudstream
+package recloudstream // Thêm package recloudstream ở đầu file
 
-// Import các thư viện cần thiết
+// Thêm các import cần thiết
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.newExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.LoadResponse.Companion.newAnimeLoadResponse
+import com.lagradost.cloudstream3.SearchResponse.Companion.newAnimeSearchResponse
 import org.jsoup.nodes.Element
-import android.util.Base64
-import java.net.URLEncoder
+import com.lagradost.cloudstream3.extractors.ExtractorLink // Đảm bảo import đúng
+import com.lagradost.cloudstream3.network.CloudflareKiller // Có thể cần nếu trang web dùng Cloudflare
 
-class HentaiHavenProvider : MainAPI() {
-    override var name = "HentaiHaven"
-    override var mainUrl = "https://hentaihaven.xxx"
-    override var lang = "en"
-    override var supportedTypes = setOf(TvType.NSFW)
+// Khai báo lớp Provider
+open class Rule34VideoProvider : MainAPI() {
+    override var mainUrl = "https://rule34video.com"
+    override var name = "Rule34Video"
     override val hasMainPage = true
+    override val hasChromecastSupport = true
+    override val supportedTypes = setOf(TvType.NSFW)
 
-    // --- Data class cho JSON đã được giải mã ---
-    private data class Source(
-        val file: String?,
-        val label: String?
-    )
-    private data class DecryptedResponse(
-        val sources: List<Source>?
+    // Dữ liệu trang chủ
+    override val mainPage = mainPageOf(
+        "/latest-updates/" to "Newest Videos",
+        "/most-popular/" to "Most Popular",
+        "/top-rated/" to "Top Rated"
     )
 
+    // Hàm lấy danh sách video từ trang chủ và tìm kiếm
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = if (page == 1) mainUrl else "$mainUrl/page/$page/"
+        val url = "$mainUrl${request.data}${page}/"
         val document = app.get(url).document
-        
-        val homePageList = mutableListOf<HomePageList>()
-
-        document.select("div.vraven_home_slider").forEach { slider ->
-            var header = slider.selectFirst("div.home_slider_header h4")?.text() ?: "Unknown"
-
-            if (header.contains("New Hentai")) {
-                header = "New Hentai"
-            }
-            
-            val items = slider.select("div.item.vraven_item").mapNotNull { el ->
-                val titleEl = el.selectFirst(".post-title a")
-                val title = titleEl?.text() ?: return@mapNotNull null
-                val href = titleEl.attr("href")
-                val image = el.selectFirst(".item-thumb img")?.let {
-                    it.attr("data-src").ifBlank { it.attr("src") }
-                }
-
-                newTvSeriesSearchResponse(title, href, TvType.NSFW) {
-                    this.posterUrl = image
-                }
-            }
-            
-            if (items.isNotEmpty()) {
-                homePageList.add(HomePageList(header, items))
-            }
-        }
-        
-        if (homePageList.isEmpty()) throw ErrorLoadingException("Không tải được trang chính hoặc không tìm thấy nội dung.")
-        
-        return newHomePageResponse(homePageList)
+        val home = document.select("div.thumbs div.item.thumb").mapNotNull { it.toSearchResult() }
+        return newHomePageResponse(request.name, home)
     }
 
+    // Hàm tìm kiếm
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$mainUrl/?s=$query&post_type=wp-manga"
+        val url = "$mainUrl/search/$query/"
         val document = app.get(url).document
-        
-        return document.select("div.c-tabs-item__content").mapNotNull {
-            val titleElement = it.selectFirst("div.post-title h3 a")
-            val title = titleElement?.text() ?: return@mapNotNull null
-            val href = titleElement.attr("href")
-            val image = it.selectFirst("div.tab-thumb img")?.attr("src")
-
-            newTvSeriesSearchResponse(title, href, TvType.NSFW) {
-                this.posterUrl = image
-            }
-        }
+        val results = document.select("div.thumbs div.item.thumb").mapNotNull { it.toSearchResult() }
+        return listOf(newAnimeSearchResponse(query, results.toMutableList(), TvType.Anime))
     }
     
-    override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url).document
-
-        val title = document.selectFirst("div.post-title h1")?.text()?.trim()
-            ?: throw ErrorLoadingException("Không thể tải được tiêu đề")
+    // Hàm chuyển đổi element HTML thành SearchResponse
+    private fun Element.toSearchResult(): SearchResponse? {
+        val title = this.selectFirst("div.thumb_title")?.text() ?: return null
+        val href = this.selectFirst("a.th")?.attr("href") ?: return null
+        // Loại bỏ các item quảng cáo
+        if (href.contains("eunow4u")) return null
+        val posterUrl = this.selectFirst("img.thumb")?.attr("data-original")
         
-        val poster = document.selectFirst("div.summary_image img")?.attr("src")
-        val description = document.selectFirst("div.description-summary div.summary__content")?.text()?.trim()
-        val tags = document.select("div.genres-content a").map { it.text() }
-
-        val episodes = document.select("ul.main.version-chap li.wp-manga-chapter").mapNotNull {
-            val link = it.selectFirst("a") ?: return@mapNotNull null
-            val name = link.text().trim()
-            val href = link.attr("href")
-            newEpisode(href) {
-                this.name = name
-            }
-        }.reversed()
-
-        val recommendations = document.select("div.manga_related .related-reading-wrap").mapNotNull {
-            val recTitleEl = it.selectFirst("h5.widget-title a")
-            val recTitle = recTitleEl?.text() ?: return@mapNotNull null
-            val recHref = recTitleEl.attr("href")
-            val recPoster = it.selectFirst(".related-reading-img img")?.attr("src")
-
-            newTvSeriesSearchResponse(recTitle, recHref, TvType.NSFW) {
-                this.posterUrl = recPoster
-            }
+        return newAnimeSearchResponse(title, href, TvType.NSFW) {
+            this.posterUrl = posterUrl
+            this.quality = SearchQuality.HD
         }
+    }
 
-        return newTvSeriesLoadResponse(
-            name = title,
-            url = url,
-            type = TvType.NSFW,
-            episodes = episodes,
-        ) {
+    // Hàm load thông tin chi tiết của video
+    override suspend fun load(url: String): LoadResponse? {
+        val document = app.get(url).document
+        
+        val title = document.selectFirst("h1.title_video")?.text()?.trim() ?: "No title"
+        val poster = document.selectFirst("div.player-wrap div")?.attr("data-preview_url")
+        val description = document.selectFirst("div.row > div.label > em")?.text()
+        
+        val tags = document.select("a.tag_item[href^=/tags/]").map { it.text() }
+
+        // Lấy link download để làm nguồn phát video
+        val sources = mutableListOf<ExtractorLink>()
+        document.select("div.row_spacer a.tag_item[href*=/get_file/]").forEach { element ->
+            val qualityStr = element.text()
+            val videoUrl = element.attr("href")
+            
+            // Lấy chất lượng từ text (ví dụ: "MP4 1080p")
+            val quality = qualityStr.substringAfter("MP4 ").trim().replace("p", "").toIntOrNull() ?: 0
+
+            // Sử dụng cấu trúc ExtractorLink mới
+            sources.add(
+                ExtractorLink(
+                    source = this.name,
+                    name = "$name - $qualityStr",
+                    url = videoUrl,
+                    referer = mainUrl,
+                    quality = quality,
+                    type = ExtractorLinkType.VIDEO // Thêm loại extractor
+                )
+            )
+        }
+        
+        return newAnimeLoadResponse(title, url, TvType.NSFW) {
             this.posterUrl = poster
             this.plot = description
             this.tags = tags
-            this.recommendations = recommendations
+            addLinks(sources)
         }
     }
-
-    private fun decryptSource(encoded: String): String {
-        val key = "93422192433952489752342908585764"
-        val decoded = Base64.decode(encoded, Base64.DEFAULT)
-        val result = decoded.mapIndexed { index, byte ->
-            (byte.toInt() xor key[index % key.length].code).toByte()
-        }.toByteArray()
-        return String(result)
-    }
-
+    
+    // Hàm load link video để phát
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val episodePage = app.get(data).document
+        // Tải lại trang để lấy link
+        val document = app.get(data).document
+        document.select("div.row_spacer a.tag_item[href*=/get_file/]").forEach { element ->
+            val qualityStr = element.text()
+            val videoUrl = element.attr("href")
+            val quality = qualityStr.substringAfter("MP4 ").trim().replace("p", "").toIntOrNull() ?: 0
 
-        val scriptContent = episodePage.select("script#raven-js-extra").html()
-        val encodedData = Regex("""(?:"downloads"|"fembed_down"|"mirror_down"): *"([^"]+)"""").find(scriptContent)?.groupValues?.get(1)
-            ?: throw ErrorLoadingException("Không tìm thấy dữ liệu video mã hóa")
-
-        if (encodedData.isBlank() || encodedData == "2") {
-            throw ErrorLoadingException("Video không có sẵn hoặc đã bị xóa")
-        }
-
-        val decryptedJson = decryptSource(encodedData)
-        
-        parseJson<DecryptedResponse>(decryptedJson).sources?.forEach { source ->
-            val videoUrl = source.file ?: return@forEach
-            val quality = source.label ?: "Default"
-            
-            // SỬA LỖI: Sử dụng hàm helper newExtractorLink với đúng cấu trúc
-            callback(
-                newExtractorLink(
+            // Sử dụng cấu trúc ExtractorLink mới
+            callback.invoke(
+                ExtractorLink(
                     source = this.name,
-                    name = "${this.name} $quality",
+                    name = "$name - $qualityStr",
                     url = videoUrl,
-                    type = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                ) {
-                    this.quality = quality.filter { it.isDigit() }.toIntOrNull() ?: 0
-                    this.referer = mainUrl
-                }
+                    referer = mainUrl,
+                    quality = quality,
+                    type = ExtractorLinkType.VIDEO // Thêm loại extractor
+                )
             )
         }
-        
         return true
     }
 }
-
-open class ErrorLoadingException(message: String) : Exception(message)
