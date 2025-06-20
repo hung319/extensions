@@ -4,9 +4,26 @@ package com.lagradost.cloudstream3.plugins.vi
 // Thêm thư viện Jsoup để phân tích cú pháp HTML
 import org.jsoup.nodes.Element
 
-// Import các lớp cần thiết từ API CloudStream
+// CẬP NHẬT: Import tường minh các hàm và lớp cần thiết từ API CloudStream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.MainAPI
+import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream3.HomePageResponse
+import com.lagradost.cloudstream3.HomePageList
+import com.lagradost.cloudstream3.SearchResponse
+import com.lagradost.cloudstream3.LoadResponse
+import com.lagradost.cloudstream3.MovieLoadResponse
+import com.lagradost.cloudstream3.TvSeriesLoadResponse
+import com.lagradost.cloudstream3.AnimeSearchResponse
+import com.lagradost.cloudstream3.Episode
+import com.lagradost.cloudstream3.ExtractorLink
+import com.lagradost.cloudstream3.SubtitleFile
+import com.lagradost.cloudstream3.newHomePageResponse
+import com.lagradost.cloudstream3.newAnimeSearchResponse
+import com.lagradost.cloudstream3.newMovieLoadResponse
+import com.lagradost.cloudstream3.newTvSeriesLoadResponse
+import com.lagradost.cloudstream3.newEpisode
 
 // Định nghĩa lớp chính cho plugin
 class Bluphim3Provider : MainAPI() {
@@ -36,37 +53,27 @@ class Bluphim3Provider : MainAPI() {
                 homePageList.add(HomePageList(title, movies))
             }
         }
-
-        return HomePageResponse(homePageList)
+        return newHomePageResponse(homePageList)
     }
 
-    // CẬP NHẬT 3: Sửa lại hàm toSearchResult để hoạt động chính xác ở mọi nơi
+    // Hàm chuyển đổi một phần tử HTML thành đối tượng SearchResponse
     private fun Element.toSearchResult(): SearchResponse? {
-        // Thử lấy title từ thuộc tính của thẻ <li> trước
         var title = this.attr("title").trim()
-
-        // Nếu không có, thử lấy từ thuộc tính title của thẻ <a> bên trong
         if (title.isBlank()) {
             title = this.selectFirst("a")?.attr("title")?.trim() ?: ""
         }
-        
-        // Dọn dẹp title
         title = title.replace("Xem phim ", "").replace(" online", "")
         if (title.isBlank()) return null
 
         val href = this.selectFirst("a")?.attr("href")?.let { fixUrl(it) } ?: return null
         val posterUrl = this.selectFirst("img")?.attr("src")?.let { fixUrl(it) }
 
-        return AnimeSearchResponse(
-            name = title,
-            url = href,
-            type = TvType.Anime, // Mặc định là Anime, sẽ được xác định lại trong hàm load
-            posterUrl = posterUrl,
-            apiName = this@Bluphim3Provider.name
-        )
+        return newAnimeSearchResponse(title, href) {
+            this.posterUrl = posterUrl
+        }
     }
 
-    // Hàm tìm kiếm phim - giờ sẽ hoạt động đúng nhờ `toSearchResult` đã được sửa
+    // Hàm tìm kiếm phim
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/search?k=$query"
         val document = app.get(searchUrl).document
@@ -99,57 +106,39 @@ class Bluphim3Provider : MainAPI() {
         
         if (isMovieByEpisodeRule) {
             val movieDataUrl = episodeElements.first()?.attr("href")?.let { fixUrl(it) } ?: watchUrl
-            return MovieLoadResponse(
-                name = title,
-                url = url,
-                apiName = this.name,
-                type = if (isAnime) TvType.Anime else TvType.Movie,
-                dataUrl = movieDataUrl,
-                posterUrl = poster,
-                year = year,
-                plot = description,
-                tags = tags,
-                recommendations = recommendations
-            )
+            return newMovieLoadResponse(title, url, if (isAnime) TvType.Anime else TvType.Movie, movieDataUrl) {
+                this.posterUrl = poster
+                this.year = year
+                this.plot = description
+                this.tags = tags
+                this.recommendations = recommendations
+            }
         } else {
-            // CẬP NHẬT 1: Bỏ .reversed() để danh sách tập theo thứ tự a-z
             val episodes = episodeElements.map {
-                // CẬP NHẬT 2: Rút gọn tên tập chỉ còn "Tập X"
                 val originalName = it.attr("title").ifBlank { it.text() }
                 val simplifiedName = "Tập \\d+".toRegex().find(originalName)?.value ?: originalName
-
-                Episode(
-                    data = fixUrl(it.attr("href")),
-                    name = simplifiedName
-                )
+                
+                newEpisode(fixUrl(it.attr("href"))) {
+                    this.name = simplifiedName
+                }
             }
 
             if (episodes.isNotEmpty()) {
-                return TvSeriesLoadResponse(
-                    name = title,
-                    url = url,
-                    apiName = this.name,
-                    type = if (isAnime) TvType.Anime else TvType.TvSeries,
-                    episodes = episodes,
-                    posterUrl = poster,
-                    year = year,
-                    plot = description,
-                    tags = tags,
-                    recommendations = recommendations
-                )
+                return newTvSeriesLoadResponse(title, url, if (isAnime) TvType.Anime else TvType.TvSeries, episodes) {
+                    this.posterUrl = poster
+                    this.year = year
+                    this.plot = description
+                    this.tags = tags
+                    this.recommendations = recommendations
+                }
             } else {
-                return MovieLoadResponse(
-                    name = title,
-                    url = url,
-                    apiName = this.name,
-                    type = if (isAnime) TvType.Anime else TvType.Movie,
-                    dataUrl = watchUrl,
-                    posterUrl = poster,
-                    year = year,
-                    plot = description,
-                    tags = tags,
-                    recommendations = recommendations
-                )
+                return newMovieLoadResponse(title, url, if (isAnime) TvType.Anime else TvType.Movie, watchUrl) {
+                    this.posterUrl = poster
+                    this.year = year
+                    this.plot = description
+                    this.tags = tags
+                    this.recommendations = recommendations
+                }
             }
         }
     }
