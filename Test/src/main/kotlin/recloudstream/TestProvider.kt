@@ -47,6 +47,78 @@ class AnimetProvider : MainAPI() {
     private var baseUrl: String? = null
     private val baseUrlMutex = Mutex()
 
+    // =================== PHẦN 1: KHAI BÁO CÁC MỤC TRANG CHỦ ===================
+    override val mainPage = mainPageOf(
+        "/danh-sach/phim-moi-cap-nhat/" to "Phim Mới Cập Nhật",
+        "/the-loai/cn-animation/" to "CN Animation",
+        "/danh-sach/phim-sieu-nhan/" to "Tokusatsu",
+        // *** THÊM MỚI: Thêm mục bảng xếp hạng ***
+        "/bang-xep-hang/day.html" to "Xem Nhiều Trong Ngày"
+    )
+
+    // =================== PHẦN 2: HÀM getMainPage ĐA NĂNG (ĐÃ NÂNG CẤP) ===================
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+        val currentBaseUrl = try { getBaseUrl() } catch (e: Exception) { return null }
+
+        val path = request.data
+        // Chỉ các trang danh sách mới có cấu trúc phân trang /trang-X.html
+        val url = if (page > 1 && !path.contains("bang-xep-hang")) {
+            // Đảm bảo đường dẫn có dấu / ở cuối để nối đúng
+            val slug = if (path.endsWith('/')) path else "$path/"
+            "$currentBaseUrl${slug}trang-$page.html"
+        } else {
+            "$currentBaseUrl$path"
+        }
+        
+        Log.d(name, "getMainPage loading URL: $url")
+
+        return try {
+            val document = app.get(url, referer = currentBaseUrl).document
+            
+            // *** NÂNG CẤP: Dùng `when` để chọn logic parse phù hợp ***
+            val home = when {
+                // Nếu là trang bảng xếp hạng, dùng logic parse riêng
+                path.contains("bang-xep-hang") -> {
+                    document.select("ul.bxh-movie-phimletv li.group").mapNotNull { element ->
+                        val titleElement = element.selectFirst("h3.title-item a") ?: return@mapNotNull null
+                        val href = fixUrlBased(titleElement.attr("href")) ?: return@mapNotNull null
+                        val title = titleElement.text()
+                        val posterUrl = fixUrlBased(element.selectFirst("a.thumb img")?.attr("src"))
+                        
+                        newAnimeSearchResponse(title, href, TvType.Anime) {
+                            this.posterUrl = posterUrl
+                        }
+                    }
+                }
+                // Nếu là các trang khác, dùng logic parse mặc định
+                else -> {
+                    document.select("ul.MovieList li.TPostMv").mapNotNull {
+                        mapElementToSearchResponse(it, currentBaseUrl)
+                    }
+                }
+            }
+
+            // Xử lý hasNext: Bảng xếp hạng không có trang tiếp theo
+            val hasNextPage = if (path.contains("bang-xep-hang")) {
+                false
+            } else {
+                document.selectFirst("div.wp-pagenavi > a.next, div.wp-pagenavi > span.current + a") != null
+            }
+
+            newHomePageResponse(
+                list = HomePageList(
+                    name = request.name,
+                    list = home
+                ),
+                hasNext = hasNextPage
+            )
+        } catch (e: Exception) {
+            Log.e(name, "getMainPage failed for url '$url'", e)
+            null
+        }
+    }
+
+
     // --- Các hàm helper ---
     private suspend fun getBaseUrl(): String {
         baseUrlMutex.withLock {
@@ -124,57 +196,7 @@ class AnimetProvider : MainAPI() {
         }
     }
 
-    // --- Hàm chính ---
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        val currentBaseUrl = try { getBaseUrl() } catch (e: Exception) { return null }
-
-        val homePageDefinitions = listOf(
-            "Phim Mới Cập Nhật" to "/danh-sach/phim-moi-cap-nhat/",
-            "CN Animation" to "/the-loai/cn-animation/",
-            "Tokusatsu" to "/danh-sach/phim-sieu-nhan/"
-        )
-
-        val pathForRequest = homePageDefinitions.find { it.first == request.name }?.second
-
-        if (pathForRequest == null) {
-            if (page > 1) return null
-
-            val allLists = coroutineScope {
-                homePageDefinitions.map { (listName, path) ->
-                    async {
-                        try {
-                            val url = "$currentBaseUrl${path}trang-1.html"
-                            val document = app.get(url, referer = currentBaseUrl).document
-                            val items = document.select("ul.MovieList li.TPostMv")
-                                .mapNotNull { mapElementToSearchResponse(it, currentBaseUrl) }
-                            HomePageList(listName, items)
-                        } catch (e: Exception) {
-                            Log.e(name, "Failed to load initial list '$listName'", e)
-                            null
-                        }
-                    }
-                }
-            }.mapNotNull { it.await() }
-
-            if (allLists.isEmpty()) return null
-            return newHomePageResponse(allLists)
-
-        } else {
-            val url = "$currentBaseUrl${pathForRequest}trang-$page.html"
-            Log.d(name, "Paginating list '${request.name}' page $page with URL: $url")
-
-            try {
-                val document = app.get(url, referer = currentBaseUrl).document
-                val items = document.select("ul.MovieList li.TPostMv")
-                    .mapNotNull { mapElementToSearchResponse(it, currentBaseUrl) }
-                return newHomePageResponse(HomePageList(request.name, items))
-            } catch (e: Exception) {
-                Log.e(name, "Pagination failed for $url", e)
-                return null
-            }
-        }
-    }
-
+    // --- Các hàm chức năng khác ---
     override suspend fun search(query: String): List<SearchResponse>? {
         val currentBaseUrl = try { getBaseUrl() } catch (e: Exception) { return null }
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
@@ -341,16 +363,13 @@ class AnimetProvider : MainAPI() {
                 return false
             }
 
-            // *** SỬA LỖI: Di chuyển `referer` vào bên trong khối lệnh để tương thích ***
             callback.invoke(
                 newExtractorLink(
                     source = this.name,
                     name = "Animet",
                     url = m3u8Link,
                     type = ExtractorLinkType.M3U8
-                    // Xóa `referer` khỏi đây
                 ) {
-                    // Thêm `referer` vào đây
                     this.referer = currentBaseUrl
                     this.quality = Qualities.Unknown.value
                 }
