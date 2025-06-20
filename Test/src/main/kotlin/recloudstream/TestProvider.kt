@@ -83,7 +83,8 @@ class Bluphim3Provider : MainAPI() {
         // Lấy danh sách tập
         var episodes = watchDocument.select("div.episodes div.list-episode a:not(:contains(Server bên thứ 3))").map {
             val epName = it.attr("title")
-            // SỬA LỖI: Bỏ `?.` vì `attr("href")` không bao giờ trả về null.
+            // SỬA LỖI QUAN TRỌNG: Dòng này đã được sửa để xử lý lỗi null-safety.
+            // `it.attr("href")` trả về String (không phải String?), nên không cần `?.`
             val epUrl = fixUrl(it.attr("href"))
             Episode(data = epUrl, name = epName)
         }
