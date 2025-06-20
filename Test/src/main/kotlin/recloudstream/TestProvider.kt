@@ -27,13 +27,12 @@ open class Rule34VideoProvider : MainAPI() {
             it.toSearchResult() 
         }
 
-        // newHomePageResponse yêu cầu một đối tượng HomePageList
         return newHomePageResponse(
             list = HomePageList(
                 name = request.name,
                 list = home
             ),
-            hasNext = true // Luôn có trang tiếp theo để cuộn
+            hasNext = true
         )
     }
 
@@ -41,13 +40,12 @@ open class Rule34VideoProvider : MainAPI() {
     private fun Element.toSearchResult(): SearchResponse? {
         val title = this.selectFirst("div.thumb_title")?.text() ?: return null
         val href = this.selectFirst("a.th")?.attr("href") ?: return null
-        // Bỏ qua các mục quảng cáo
-        if (href.contains("eunow4u")) return null
+        if (href.contains("eunow4u")) return null // Bỏ qua quảng cáo
         val posterUrl = this.selectFirst("img.thumb")?.attr("data-original")?.let {
             if (it.startsWith("http")) it else "$mainUrl$it"
         }
 
-        // Sử dụng constructor của MovieSearchResponse vì đây là video lẻ
+        // Sử dụng MovieSearchResponse cho video lẻ
         return MovieSearchResponse(
             title,
             href,
@@ -62,13 +60,14 @@ open class Rule34VideoProvider : MainAPI() {
         val url = "$mainUrl/search/$query/"
         val document = app.get(url).document
         
-        // Dùng mapNotNull để tự động lọc ra các kết quả null
         return document.select("div.thumbs div.item.thumb").mapNotNull {
             it.toSearchResult()
         }
     }
 
-    // Load thông tin chi tiết và link video
+    // --- SỬA LỖI QUAN TRỌNG TẠI ĐÂY ---
+
+    // Hàm load() CHỈ lấy metadata (tên, poster, mô tả,...)
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
         
@@ -76,36 +75,44 @@ open class Rule34VideoProvider : MainAPI() {
         val description = document.selectFirst("div.row > div.label > em")?.text()
         val tags = document.select("a.tag_item[href^=/tags/]").map { it.text() }
         
-        // Sửa lỗi lấy Poster: Dùng regex để trích xuất 'preview_url' từ script
         val scriptContent = document.select("script").html()
         val posterUrl = Regex("""preview_url:\s*'(.*?)'""").find(scriptContent)?.groupValues?.get(1)
 
-        // Lấy link từ các nút download và tạo danh sách ExtractorLink
-        val links = document.select("div.row_spacer a.tag_item[href*=/get_file/]").mapNotNull {
-            val videoUrl = it.attr("href")
-            val qualityStr = it.text()
+        // Sử dụng builder của `newMovieLoadResponse` để trả về metadata.
+        // KHÔNG thêm link video ở đây. Framework sẽ tự gọi loadLinks() sau.
+        return newMovieLoadResponse(title, url, TvType.Movie, url) {
+            this.posterUrl = posterUrl
+            this.plot = description
+            this.tags = tags
+        }
+    }
+
+    // Hàm loadLinks() CHỈ lấy link video và callback
+    override suspend fun loadLinks(
+        data: String, // `data` ở đây chính là `url` được truyền từ `load()`
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        // Tải lại trang (hoặc lấy từ cache nếu có) để lấy link
+        val document = app.get(data).document
+        
+        document.select("div.row_spacer a.tag_item[href*=/get_file/]").forEach { element ->
+            val videoUrl = element.attr("href")
+            val qualityStr = element.text()
             val quality = qualityStr.substringAfter("MP4 ").trim().replace("p", "").toIntOrNull()
 
-            ExtractorLink(
-                source = this.name,
-                name = qualityStr, // Đặt tên là chất lượng, ví dụ "MP4 1080p"
-                url = videoUrl,
-                referer = mainUrl,
-                quality = quality ?: Qualities.Unknown.value,
-                type = ExtractorLinkType.VIDEO // Loại là VIDEO
+            callback.invoke(
+                ExtractorLink(
+                    source = this.name,
+                    name = qualityStr,
+                    url = videoUrl,
+                    referer = mainUrl,
+                    quality = quality ?: Qualities.Unknown.value,
+                    type = ExtractorLinkType.VIDEO
+                )
             )
         }
-        
-        // Sử dụng MovieLoadResponse vì đây là video đơn lẻ
-        return MovieLoadResponse(
-            name = title,
-            url = url,
-            apiName = this.name,
-            dataUrl = url,
-            posterUrl = posterUrl,
-            plot = description,
-            tags = tags,
-            links = links // Truyền trực tiếp danh sách link vào đây
-        )
+        return true
     }
 }
