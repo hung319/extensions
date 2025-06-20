@@ -10,7 +10,6 @@ open class Rule34VideoProvider : MainAPI() {
     override var name = "Rule34Video"
     override val hasMainPage = true
     
-    // Khai báo provider hỗ trợ cả hai loại để tránh cảnh báo type
     override val supportedTypes = setOf(TvType.NSFW, TvType.Movie)
 
     // Các mục trên trang chủ
@@ -47,10 +46,14 @@ open class Rule34VideoProvider : MainAPI() {
             if (it.startsWith("http")) it else "$mainUrl$it"
         }
 
-        // Sử dụng hàm builder `newMovieSearchResponse`
-        return newMovieSearchResponse(title, href) {
-            this.apiName = this@Rule34VideoProvider.name
-            this.posterUrl = posterUrl
+        // SỬA LỖI: Truyền `apiName` và `posterUrl` trực tiếp dưới dạng tham số
+        // thay vì gán lại giá trị trong builder.
+        return newMovieSearchResponse(
+            name = title,
+            url = href,
+            apiName = this@Rule34VideoProvider.name, // Truyền trực tiếp
+        ) {
+            this.posterUrl = posterUrl // `posterUrl` ở đây là `var` nên có thể gán lại
         }
     }
     
@@ -75,17 +78,14 @@ open class Rule34VideoProvider : MainAPI() {
         val scriptContent = document.select("script").html()
         val posterUrl = Regex("""preview_url:\s*'(.*?)'""").find(scriptContent)?.groupValues?.get(1)
 
-        // === PHẦN MÃ MỚI ĐỂ LẤY VIDEO ĐỀ XUẤT ===
         val recommendations = document.select("div#custom_list_videos_related_videos_items div.item.thumb").mapNotNull {
             it.toSearchResult()
         }
-        // ==========================================
 
         return newMovieLoadResponse(title, url, TvType.Movie, url) {
             this.posterUrl = posterUrl
             this.plot = description
             this.tags = tags
-            // Thêm danh sách đề xuất vào LoadResponse
             this.recommendations = recommendations
         }
     }
