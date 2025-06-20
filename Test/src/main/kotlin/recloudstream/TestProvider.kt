@@ -3,8 +3,14 @@ package com.lagradost.cloudstream3.plugins.vi
 
 // Thêm thư viện Jsoup để phân tích cú pháp HTML
 import org.jsoup.nodes.Element
+import java.net.URI 
 
-// CẬP NHẬT: Sửa lại toàn bộ khối import cho chính xác với API mới
+// Import chính xác và đầy đủ các lớp và hàm cần thiết
+import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType // THÊM IMPORT MỚI
+import com.lagradost.cloudstream3.utils.loadExtractor
+import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.HomePageResponse
@@ -16,11 +22,9 @@ import com.lagradost.cloudstream3.TvSeriesLoadResponse
 import com.lagradost.cloudstream3.AnimeSearchResponse
 import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.MainPageRequest
-import com.lagradost.cloudstream3.SubtitleFile // Sửa ở đây, nằm ở package chính
+import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.fixUrl
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newAnimeSearchResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
@@ -41,7 +45,6 @@ class Bluphim3Provider : MainAPI() {
         TvType.Anime
     )
 
-    // Sửa lại kiểu trả về thành HomePageResponse? cho đúng với API
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val document = app.get(mainUrl).document
         val homePageList = mutableListOf<HomePageList>()
@@ -58,7 +61,6 @@ class Bluphim3Provider : MainAPI() {
         return newHomePageResponse(homePageList)
     }
 
-    // Hàm chuyển đổi một phần tử HTML thành đối tượng SearchResponse
     private fun Element.toSearchResult(): SearchResponse? {
         var title = this.attr("title").trim()
         if (title.isBlank()) {
@@ -75,7 +77,6 @@ class Bluphim3Provider : MainAPI() {
         }
     }
 
-    // Hàm tìm kiếm phim
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/search?k=$query"
         val document = app.get(searchUrl).document
@@ -85,7 +86,6 @@ class Bluphim3Provider : MainAPI() {
         }
     }
     
-    // Hàm tải thông tin chi tiết của phim/series
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
@@ -151,13 +151,49 @@ class Bluphim3Provider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data).document
-        val iframeSrc = document.selectFirst("iframe#iframeStream")?.attr("src")
+        val episodeDocument = app.get(data).document
+        val iframeSrc = episodeDocument.selectFirst("iframe#iframeStream")?.attr("src") ?: return false
+
+        var playerPageDoc = app.get(iframeSrc, referer = data).document
         
-        if (iframeSrc != null) {
-            return loadExtractor(iframeSrc, data, subtitleCallback, callback)
+        val nestedIframeSrc = playerPageDoc.selectFirst("iframe#embedIframe")?.attr("src")
+        if (nestedIframeSrc != null) {
+            playerPageDoc = app.get(nestedIframeSrc, referer = iframeSrc).document
+        }
+
+        val jwPlayerScript = playerPageDoc.select("script").firstOrNull { 
+            it.data().contains("jwplayer") && it.data().contains(".setup") 
+        }?.data() ?: return false
+
+        val m3u8Url = "\"file\"\\s*:\\s*\"(//[^\"]*?playlist.m3u8)\"".toRegex().find(jwPlayerScript)?.groupValues?.get(1)?.let { "https:$it" } ?: return false
+
+        // CẬP NHẬT: Sửa lại cách gọi ExtractorLink cho đúng cấu trúc mới
+        callback(
+            ExtractorLink(
+                source = this.name,
+                name = this.name,
+                url = m3u8Url,
+                referer = mainUrl,
+                quality = Qualities.Unknown.value,
+                type = ExtractorLinkType.M3U8 // Bỏ isM3u8, thay bằng type
+            )
+        )
+
+        val tracksBlock = "\"tracks\"\\s*:\\s*\\[([^\\]]*)\\]".toRegex().find(jwPlayerScript)?.groupValues?.get(1)
+        if (tracksBlock != null) {
+            val cdnDomain = "https://${URI(m3u8Url).host}"
+            "\"file\"\\s*:\\s*\"([^\"]*?)\",\\s*\"label\"\\s*:\\s*\"([^\"]*?)\"".toRegex().findAll(tracksBlock).forEach { match ->
+                val subPath = match.groupValues[1]
+                val subLang = match.groupValues[2]
+                subtitleCallback(
+                    SubtitleFile(
+                        lang = subLang,
+                        url = if (subPath.startsWith("http")) subPath else "$cdnDomain$subPath"
+                    )
+                )
+            }
         }
         
-        return false
+        return true
     }
 }
