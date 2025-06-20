@@ -40,14 +40,18 @@ class Bluphim3Provider : MainAPI() {
         return HomePageResponse(homePageList)
     }
 
-    // CẬP NHẬT 2: Sửa lại hàm toSearchResult để hoạt động chính xác ở mọi nơi
+    // CẬP NHẬT 3: Sửa lại hàm toSearchResult để hoạt động chính xác ở mọi nơi
     private fun Element.toSearchResult(): SearchResponse? {
-        // Lấy title từ thuộc tính `title` của thẻ `<li>`, đây là cách ổn định nhất
-        val title = this.attr("title")
-            .replace("Xem phim ", "")
-            .replace(" online", "")
-            .trim()
+        // Thử lấy title từ thuộc tính của thẻ <li> trước
+        var title = this.attr("title").trim()
+
+        // Nếu không có, thử lấy từ thuộc tính title của thẻ <a> bên trong
+        if (title.isBlank()) {
+            title = this.selectFirst("a")?.attr("title")?.trim() ?: ""
+        }
         
+        // Dọn dẹp title
+        title = title.replace("Xem phim ", "").replace(" online", "")
         if (title.isBlank()) return null
 
         val href = this.selectFirst("a")?.attr("href")?.let { fixUrl(it) } ?: return null
@@ -82,7 +86,6 @@ class Bluphim3Provider : MainAPI() {
         val description = document.selectFirst("div.detail div.tab")?.text()?.trim()
         val tags = document.select("dd.theloaidd a").map { it.text() }
 
-        // CẬP NHẬT 3: Logic xác định TvType dựa trên thể loại "Hoạt hình"
         val isAnime = tags.any { it.contains("Hoạt hình", ignoreCase = true) }
         
         val watchUrl = document.selectFirst("a.btn-stream-link")?.attr("href")?.let { fixUrl(it) } ?: url
@@ -94,14 +97,13 @@ class Bluphim3Provider : MainAPI() {
 
         val isMovieByEpisodeRule = episodeElements.size == 1 && episodeElements.first()?.text()?.contains("Tập Full", ignoreCase = true) == true
         
-        // CẬP NHẬT 1: Cấu trúc lại logic để xử lý phim lẻ (Movie) một cách triệt để
         if (isMovieByEpisodeRule) {
             val movieDataUrl = episodeElements.first()?.attr("href")?.let { fixUrl(it) } ?: watchUrl
             return MovieLoadResponse(
                 name = title,
                 url = url,
                 apiName = this.name,
-                type = if (isAnime) TvType.Anime else TvType.Movie, // Sử dụng TvType đã xác định
+                type = if (isAnime) TvType.Anime else TvType.Movie,
                 dataUrl = movieDataUrl,
                 posterUrl = poster,
                 year = year,
@@ -110,20 +112,24 @@ class Bluphim3Provider : MainAPI() {
                 recommendations = recommendations
             )
         } else {
+            // CẬP NHẬT 1: Bỏ .reversed() để danh sách tập theo thứ tự a-z
             val episodes = episodeElements.map {
+                // CẬP NHẬT 2: Rút gọn tên tập chỉ còn "Tập X"
+                val originalName = it.attr("title").ifBlank { it.text() }
+                val simplifiedName = "Tập \\d+".toRegex().find(originalName)?.value ?: originalName
+
                 Episode(
                     data = fixUrl(it.attr("href")),
-                    name = it.attr("title").ifBlank { it.text() }
+                    name = simplifiedName
                 )
-            }.reversed() // Đảo ngược lại danh sách để có thứ tự đúng
+            }
 
-            // Chỉ trả về TvSeriesLoadResponse nếu có danh sách tập
             if (episodes.isNotEmpty()) {
                 return TvSeriesLoadResponse(
                     name = title,
                     url = url,
                     apiName = this.name,
-                    type = if (isAnime) TvType.Anime else TvType.TvSeries, // Sử dụng TvType đã xác định
+                    type = if (isAnime) TvType.Anime else TvType.TvSeries,
                     episodes = episodes,
                     posterUrl = poster,
                     year = year,
@@ -132,8 +138,6 @@ class Bluphim3Provider : MainAPI() {
                     recommendations = recommendations
                 )
             } else {
-                // Trường hợp không có tập nào (ví dụ phim sắp chiếu)
-                // Trả về như một phim lẻ để không bị lỗi
                 return MovieLoadResponse(
                     name = title,
                     url = url,
@@ -150,14 +154,19 @@ class Bluphim3Provider : MainAPI() {
         }
     }
 
-    // Placeholder cho hàm loadLinks
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // TODO: Implement this function
+        val document = app.get(data).document
+        val iframeSrc = document.selectFirst("iframe#iframeStream")?.attr("src")
+        
+        if (iframeSrc != null) {
+            return loadExtractor(iframeSrc, data, subtitleCallback, callback)
+        }
+        
         return false
     }
 }
