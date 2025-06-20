@@ -23,11 +23,19 @@ open class Rule34VideoProvider : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = "$mainUrl${request.data}${page}/"
         val document = app.get(url).document
-        // Sử dụng coroutines để xử lý song song, tăng hiệu suất
-        val home = document.select("div.thumbs div.item.thumb").apmap {
-            it.toSearchResult()
+        
+        val home = document.select("div.thumbs div.item.thumb").mapNotNull {
+            it.toSearchResult() 
         }
-        return newHomePageResponse(request.name, home)
+
+        // Sửa lỗi: newHomePageResponse yêu cầu một đối tượng HomePageList
+        return newHomePageResponse(
+            list = HomePageList(
+                name = request.name,
+                list = home
+            ),
+            hasNext = true
+        )
     }
 
     // Hàm chuyển đổi một phần tử HTML thành đối tượng SearchResponse
@@ -40,7 +48,7 @@ open class Rule34VideoProvider : MainAPI() {
             if (it.startsWith("http")) it else "$mainUrl$it"
         }
 
-        // Sử dụng constructor của AnimeSearchResponse thay cho hàm cũ
+        // Sử dụng constructor của AnimeSearchResponse
         return AnimeSearchResponse(
             title,
             href,
@@ -57,8 +65,9 @@ open class Rule34VideoProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/search/$query/"
         val document = app.get(url).document
-        // Phân tích và trả về kết quả
-        return document.select("div.thumbs div.item.thumb").apmap {
+        
+        // Dùng mapNotNull để tự động lọc ra các kết quả null
+        return document.select("div.thumbs div.item.thumb").mapNotNull {
             it.toSearchResult()
         }
     }
@@ -71,63 +80,39 @@ open class Rule34VideoProvider : MainAPI() {
         val poster = document.selectFirst("div.player-wrap div")?.attr("data-preview_url")
         val description = document.selectFirst("div.row > div.label > em")?.text()
         val tags = document.select("a.tag_item[href^=/tags/]").map { it.text() }
-        val year = document.select("div.item_info span")
-            .find { it.text().contains("ago") }
-            ?.text()?.let { parseDate(it)?.year }
-
-        // Lấy link từ các nút download
-        val sources = document.select("div.row_spacer a.tag_item[href*=/get_file/]").mapNotNull {
-            val videoUrl = it.attr("href")
-            val qualityStr = it.text()
-            val quality = qualityStr.substringAfter("MP4 ").trim().replace("p", "").toIntOrNull()
-
-            // Sử dụng constructor của ExtractorLink
-            ExtractorLink(
-                source = this.name,
-                name = qualityStr,
-                url = videoUrl,
-                referer = mainUrl,
-                quality = quality ?: Qualities.Unknown.value,
-                type = ExtractorLinkType.VIDEO
-            )
-        }
         
-        // Sử dụng constructor của AnimeLoadResponse thay cho hàm cũ
-        return AnimeLoadResponse(
-            title,
-            url,
-            this.name,
-            TvType.Anime, // Hoặc TvType.NSFW tùy bạn
-            sources,
-            posterUrl = poster,
-            year = year,
-            plot = description,
-            tags = tags
-        )
+        // Sử dụng cấu trúc builder mới cho AnimeLoadResponse
+        return newAnimeLoadResponse(title, url, TvType.NSFW) {
+            this.posterUrl = poster
+            this.plot = description
+            this.tags = tags
+            // loadLinks sẽ được gọi tự động để thêm link
+        }
     }
 
-    // Hàm loadLinks không còn cần thiết nếu đã xử lý trong load()
-    // Tuy nhiên, để cho chắc chắn, ta vẫn có thể giữ nó.
+    // Hàm loadLinks giờ đây là nơi chính để lấy và cung cấp link video
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // Tải lại trang để lấy link
         val document = app.get(data).document
+        
         document.select("div.row_spacer a.tag_item[href*=/get_file/]").forEach { element ->
-            val qualityStr = element.text()
             val videoUrl = element.attr("href")
+            val qualityStr = element.text()
             val quality = qualityStr.substringAfter("MP4 ").trim().replace("p", "").toIntOrNull()
 
             callback.invoke(
                 ExtractorLink(
                     source = this.name,
-                    name = qualityStr,
+                    name = qualityStr, // Đặt tên là chất lượng, ví dụ "MP4 1080p"
                     url = videoUrl,
                     referer = mainUrl,
                     quality = quality ?: Qualities.Unknown.value,
-                    type = ExtractorLinkType.VIDEO
+                    type = ExtractorLinkType.VIDEO // Loại là VIDEO
                 )
             )
         }
