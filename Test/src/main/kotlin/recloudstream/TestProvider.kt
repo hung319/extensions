@@ -8,7 +8,7 @@ import java.net.URI
 // Import chính xác và đầy đủ các lớp và hàm cần thiết
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType // THÊM IMPORT MỚI
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.MainAPI
@@ -154,11 +154,13 @@ class Bluphim3Provider : MainAPI() {
         val episodeDocument = app.get(data).document
         val iframeSrc = episodeDocument.selectFirst("iframe#iframeStream")?.attr("src") ?: return false
 
-        var playerPageDoc = app.get(iframeSrc, referer = data).document
+        // SỬA LỖI: Dùng fixUrl() để đảm bảo iframeSrc là một URL đầy đủ, tuyệt đối
+        val iframeUrl = fixUrl(iframeSrc)
+        var playerPageDoc = app.get(iframeUrl, referer = data).document
         
         val nestedIframeSrc = playerPageDoc.selectFirst("iframe#embedIframe")?.attr("src")
-        if (nestedIframeSrc != null) {
-            playerPageDoc = app.get(nestedIframeSrc, referer = iframeSrc).document
+        if (nestedIframeSrc != null && nestedIframeSrc.isNotBlank()) {
+            playerPageDoc = app.get(nestedIframeSrc, referer = iframeUrl).document
         }
 
         val jwPlayerScript = playerPageDoc.select("script").firstOrNull { 
@@ -167,7 +169,6 @@ class Bluphim3Provider : MainAPI() {
 
         val m3u8Url = "\"file\"\\s*:\\s*\"(//[^\"]*?playlist.m3u8)\"".toRegex().find(jwPlayerScript)?.groupValues?.get(1)?.let { "https:$it" } ?: return false
 
-        // CẬP NHẬT: Sửa lại cách gọi ExtractorLink cho đúng cấu trúc mới
         callback(
             ExtractorLink(
                 source = this.name,
@@ -175,7 +176,7 @@ class Bluphim3Provider : MainAPI() {
                 url = m3u8Url,
                 referer = mainUrl,
                 quality = Qualities.Unknown.value,
-                type = ExtractorLinkType.M3U8 // Bỏ isM3u8, thay bằng type
+                type = ExtractorLinkType.M3U8
             )
         )
 
