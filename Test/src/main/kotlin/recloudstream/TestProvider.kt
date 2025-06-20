@@ -1,6 +1,5 @@
 package recloudstream
 
-// Import các lớp và hàm cần thiết từ CloudStream API
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
@@ -28,13 +27,13 @@ open class Rule34VideoProvider : MainAPI() {
             it.toSearchResult() 
         }
 
-        // Sửa lỗi: newHomePageResponse yêu cầu một đối tượng HomePageList
+        // newHomePageResponse yêu cầu một đối tượng HomePageList
         return newHomePageResponse(
             list = HomePageList(
                 name = request.name,
                 list = home
             ),
-            hasNext = true
+            hasNext = true // Luôn có trang tiếp theo để cuộn
         )
     }
 
@@ -48,15 +47,12 @@ open class Rule34VideoProvider : MainAPI() {
             if (it.startsWith("http")) it else "$mainUrl$it"
         }
 
-        // Sử dụng constructor của AnimeSearchResponse
-        return AnimeSearchResponse(
+        // Sử dụng constructor của MovieSearchResponse vì đây là video lẻ
+        return MovieSearchResponse(
             title,
             href,
             this@Rule34VideoProvider.name,
-            TvType.NSFW,
-            posterUrl,
-            null,
-            null,
+            posterUrl = posterUrl,
             quality = SearchQuality.HD
         )
     }
@@ -77,45 +73,39 @@ open class Rule34VideoProvider : MainAPI() {
         val document = app.get(url).document
         
         val title = document.selectFirst("h1.title_video")?.text()?.trim() ?: return null
-        val poster = document.selectFirst("div.player-wrap div")?.attr("data-preview_url")
         val description = document.selectFirst("div.row > div.label > em")?.text()
         val tags = document.select("a.tag_item[href^=/tags/]").map { it.text() }
         
-        // Sử dụng cấu trúc builder mới cho AnimeLoadResponse
-        return newAnimeLoadResponse(title, url, TvType.NSFW) {
-            this.posterUrl = poster
-            this.plot = description
-            this.tags = tags
-            // loadLinks sẽ được gọi tự động để thêm link
-        }
-    }
+        // Sửa lỗi lấy Poster: Dùng regex để trích xuất 'preview_url' từ script
+        val scriptContent = document.select("script").html()
+        val posterUrl = Regex("""preview_url:\s*'(.*?)'""").find(scriptContent)?.groupValues?.get(1)
 
-    // Hàm loadLinks giờ đây là nơi chính để lấy và cung cấp link video
-    override suspend fun loadLinks(
-        data: String,
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        // Tải lại trang để lấy link
-        val document = app.get(data).document
-        
-        document.select("div.row_spacer a.tag_item[href*=/get_file/]").forEach { element ->
-            val videoUrl = element.attr("href")
-            val qualityStr = element.text()
+        // Lấy link từ các nút download và tạo danh sách ExtractorLink
+        val links = document.select("div.row_spacer a.tag_item[href*=/get_file/]").mapNotNull {
+            val videoUrl = it.attr("href")
+            val qualityStr = it.text()
             val quality = qualityStr.substringAfter("MP4 ").trim().replace("p", "").toIntOrNull()
 
-            callback.invoke(
-                ExtractorLink(
-                    source = this.name,
-                    name = qualityStr, // Đặt tên là chất lượng, ví dụ "MP4 1080p"
-                    url = videoUrl,
-                    referer = mainUrl,
-                    quality = quality ?: Qualities.Unknown.value,
-                    type = ExtractorLinkType.VIDEO // Loại là VIDEO
-                )
+            ExtractorLink(
+                source = this.name,
+                name = qualityStr, // Đặt tên là chất lượng, ví dụ "MP4 1080p"
+                url = videoUrl,
+                referer = mainUrl,
+                quality = quality ?: Qualities.Unknown.value,
+                type = ExtractorLinkType.VIDEO // Loại là VIDEO
             )
         }
-        return true
+        
+        // Sử dụng MovieLoadResponse vì đây là video đơn lẻ
+        return MovieLoadResponse(
+            name = title,
+            url = url,
+            apiName = this.name,
+            dataUrl = url,
+            posterUrl = posterUrl,
+            plot = description,
+            tags = tags,
+            links = links // Truyền trực tiếp danh sách link vào đây
+        )
     }
 }
