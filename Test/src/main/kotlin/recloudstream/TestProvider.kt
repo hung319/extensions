@@ -4,7 +4,11 @@ package com.lagradost.cloudstream3.plugins.vi
 // Thêm thư viện Jsoup để phân tích cú pháp HTML
 import org.jsoup.nodes.Element
 
-// CẬP NHẬT: Import chính xác và đầy đủ các lớp và hàm cần thiết
+// CẬP NHẬT: Sửa lại toàn bộ khối import cho chính xác với API mới
+import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.loadExtractor
+import com.lagradost.cloudstream3.utils.SubtitleFile
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.HomePageResponse
@@ -15,16 +19,15 @@ import com.lagradost.cloudstream3.MovieLoadResponse
 import com.lagradost.cloudstream3.TvSeriesLoadResponse
 import com.lagradost.cloudstream3.AnimeSearchResponse
 import com.lagradost.cloudstream3.Episode
+import com.lagradost.cloudstream3.MainPageRequest
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.fixUrl
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.SubtitleFile
-import com.lagradost.cloudstream3.loadExtractor
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newAnimeSearchResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.newEpisode
+
 
 // Định nghĩa lớp chính cho plugin
 class Bluphim3Provider : MainAPI() {
@@ -40,8 +43,8 @@ class Bluphim3Provider : MainAPI() {
         TvType.Anime
     )
 
-    // Hàm lấy danh sách phim cho trang chính
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+    // CẬP NHẬT: Sửa lại kiểu trả về thành HomePageResponse? cho đúng với API
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val document = app.get(mainUrl).document
         val homePageList = mutableListOf<HomePageList>()
 
@@ -144,6 +147,7 @@ class Bluphim3Provider : MainAPI() {
         }
     }
 
+    // Chữ ký hàm loadLinks không thay đổi, nhưng việc sửa import ở trên sẽ giúp nó được nhận diện đúng
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
