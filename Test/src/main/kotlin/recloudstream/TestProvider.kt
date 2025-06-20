@@ -40,24 +40,23 @@ class Bluphim3Provider : MainAPI() {
         return HomePageResponse(homePageList)
     }
 
-    // CẬP NHẬT 4: Sửa lại hàm toSearchResult để hoạt động chính xác ở mọi nơi
+    // CẬP NHẬT 2: Sửa lại hàm toSearchResult để hoạt động chính xác ở mọi nơi
     private fun Element.toSearchResult(): SearchResponse? {
-        val linkElement = this.selectFirst("a") ?: return null
-        // Lấy title từ thuộc tính `title` của thẻ <a>, đây là cách ổn định nhất
-        val title = linkElement.attr("title")
+        // Lấy title từ thuộc tính `title` của thẻ `<li>`, đây là cách ổn định nhất
+        val title = this.attr("title")
             .replace("Xem phim ", "")
             .replace(" online", "")
             .trim()
         
         if (title.isBlank()) return null
 
-        val href = linkElement.attr("href")?.let { fixUrl(it) } ?: return null
+        val href = this.selectFirst("a")?.attr("href")?.let { fixUrl(it) } ?: return null
         val posterUrl = this.selectFirst("img")?.attr("src")?.let { fixUrl(it) }
 
         return AnimeSearchResponse(
             name = title,
             url = href,
-            type = TvType.Anime,
+            type = TvType.Anime, // Mặc định là Anime, sẽ được xác định lại trong hàm load
             posterUrl = posterUrl,
             apiName = this@Bluphim3Provider.name
         )
@@ -83,26 +82,26 @@ class Bluphim3Provider : MainAPI() {
         val description = document.selectFirst("div.detail div.tab")?.text()?.trim()
         val tags = document.select("dd.theloaidd a").map { it.text() }
 
+        // CẬP NHẬT 3: Logic xác định TvType dựa trên thể loại "Hoạt hình"
+        val isAnime = tags.any { it.contains("Hoạt hình", ignoreCase = true) }
+        
         val watchUrl = document.selectFirst("a.btn-stream-link")?.attr("href")?.let { fixUrl(it) } ?: url
         val watchDocument = app.get(watchUrl).document
         
-        // CẬP NHẬT 3: Dùng selector tốt hơn để lấy rcm list
-        val recommendations = watchDocument.select(".list-films.film-related li.item, .list-films.film-hot li.item").mapNotNull { it.toSearchResult() }
+        val recommendations = watchDocument.select(".list-films.film-related li.item").mapNotNull { it.toSearchResult() }
 
-        // Lấy tất cả các thẻ <a> trong danh sách tập
         val episodeElements = watchDocument.select("div.episodes div.list-episode a:not(:contains(Server bên thứ 3))")
 
-        // CẬP NHẬT 2: Kiểm tra văn bản hiển thị của tập đầu tiên
         val isMovieByEpisodeRule = episodeElements.size == 1 && episodeElements.first()?.text()?.contains("Tập Full", ignoreCase = true) == true
         
+        // CẬP NHẬT 1: Cấu trúc lại logic để xử lý phim lẻ (Movie) một cách triệt để
         if (isMovieByEpisodeRule) {
-            // Nếu đúng là phim lẻ, tạo MovieLoadResponse
             val movieDataUrl = episodeElements.first()?.attr("href")?.let { fixUrl(it) } ?: watchUrl
             return MovieLoadResponse(
                 name = title,
                 url = url,
                 apiName = this.name,
-                type = TvType.Movie,
+                type = if (isAnime) TvType.Anime else TvType.Movie, // Sử dụng TvType đã xác định
                 dataUrl = movieDataUrl,
                 posterUrl = poster,
                 year = year,
@@ -111,27 +110,43 @@ class Bluphim3Provider : MainAPI() {
                 recommendations = recommendations
             )
         } else {
-            // Nếu là series, tạo danh sách tập
-            // CẬP NHẬT 1: Thêm lại .reversed() để sắp xếp tập đúng thứ tự a-z
             val episodes = episodeElements.map {
                 Episode(
                     data = fixUrl(it.attr("href")),
                     name = it.attr("title").ifBlank { it.text() }
                 )
-            }.reversed()
+            }.reversed() // Đảo ngược lại danh sách để có thứ tự đúng
 
-            return TvSeriesLoadResponse(
-                name = title,
-                url = url,
-                apiName = this.name,
-                type = TvType.TvSeries,
-                episodes = episodes,
-                posterUrl = poster,
-                year = year,
-                plot = description,
-                tags = tags,
-                recommendations = recommendations
-            )
+            // Chỉ trả về TvSeriesLoadResponse nếu có danh sách tập
+            if (episodes.isNotEmpty()) {
+                return TvSeriesLoadResponse(
+                    name = title,
+                    url = url,
+                    apiName = this.name,
+                    type = if (isAnime) TvType.Anime else TvType.TvSeries, // Sử dụng TvType đã xác định
+                    episodes = episodes,
+                    posterUrl = poster,
+                    year = year,
+                    plot = description,
+                    tags = tags,
+                    recommendations = recommendations
+                )
+            } else {
+                // Trường hợp không có tập nào (ví dụ phim sắp chiếu)
+                // Trả về như một phim lẻ để không bị lỗi
+                return MovieLoadResponse(
+                    name = title,
+                    url = url,
+                    apiName = this.name,
+                    type = if (isAnime) TvType.Anime else TvType.Movie,
+                    dataUrl = watchUrl,
+                    posterUrl = poster,
+                    year = year,
+                    plot = description,
+                    tags = tags,
+                    recommendations = recommendations
+                )
+            }
         }
     }
 
