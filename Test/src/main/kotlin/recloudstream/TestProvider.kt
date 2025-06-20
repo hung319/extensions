@@ -10,7 +10,8 @@ open class Rule34VideoProvider : MainAPI() {
     override var name = "Rule34Video"
     override val hasMainPage = true
     
-    override val supportedTypes = setOf(TvType.NSFW, TvType.Movie)
+    // Giờ chúng ta có thể khai báo chính xác loại duy nhất được hỗ trợ
+    override val supportedTypes = setOf(TvType.NSFW)
 
     // Các mục trên trang chủ
     override val mainPage = mainPageOf(
@@ -46,14 +47,15 @@ open class Rule34VideoProvider : MainAPI() {
             if (it.startsWith("http")) it else "$mainUrl$it"
         }
 
-        // SỬA LỖI: Truyền `apiName` và `posterUrl` trực tiếp dưới dạng tham số
-        // thay vì gán lại giá trị trong builder.
+        // === SỬA LỖI THEO ĐÚNG HÀM BẠN CUNG CẤP ===
+        // Sử dụng hàm builder và các tham số chính xác
         return newMovieSearchResponse(
             name = title,
             url = href,
-            apiName = this@Rule34VideoProvider.name, // Truyền trực tiếp
+            // Đặt type là NSFW để khớp với provider, loại bỏ hoàn toàn cảnh báo
+            type = TvType.NSFW 
         ) {
-            this.posterUrl = posterUrl // `posterUrl` ở đây là `var` nên có thể gán lại
+            this.posterUrl = posterUrl
         }
     }
     
@@ -82,7 +84,8 @@ open class Rule34VideoProvider : MainAPI() {
             it.toSearchResult()
         }
 
-        return newMovieLoadResponse(title, url, TvType.Movie, url) {
+        // Trả về LoadResponse với đúng type là NSFW
+        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = posterUrl
             this.plot = description
             this.tags = tags
