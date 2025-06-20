@@ -74,20 +74,26 @@ class Bluphim3Provider : MainAPI() {
         val year = document.select("div.dinfo dl.col dd").getOrNull(3)?.text()?.trim()?.toIntOrNull()
         val description = document.selectFirst("div.detail div.tab")?.text()?.trim()
         val tags = document.select("dd.theloaidd a").map { it.text() }
-        
-        // Lấy danh sách phim đề cử từ trang chi tiết
-        val recommendations = document.select("ul#film_related li.item, .list-films.film-related li.item").mapNotNull { it.toSearchResult() }
 
         val watchUrl = document.selectFirst("a.btn-stream-link")?.attr("href")?.let { fixUrl(it) } ?: url
         val watchDocument = app.get(watchUrl).document
         
-        // CẬP NHẬT: Dùng `:not(:contains(text))` để loại bỏ server không mong muốn
-        val episodes = watchDocument.select("div.episodes div.list-episode a:not(:contains(Server bên thứ 3))").map {
+        // CẬP NHẬT 3: Lấy danh sách phim đề cử từ trang xem phim (watchDocument) để đảm bảo luôn có dữ liệu.
+        val recommendations = watchDocument.select("ul#film_related li.item, .list-films.film-related li.item").mapNotNull { it.toSearchResult() }
+
+        // Lấy danh sách tập
+        var episodes = watchDocument.select("div.episodes div.list-episode a:not(:contains(Server bên thứ 3))").map {
             val epName = it.attr("title")
             val epUrl = it.attr("href")?.let { u -> fixUrl(u) } ?: ""
             Episode(data = epUrl, name = epName)
-        }.reversed() // Đảo ngược danh sách để có thứ tự đúng
+        } // CẬP NHẬT 1: Đã bỏ .reversed()
 
+        // CẬP NHẬT 2: Xử lý trường hợp phim có "Tập Full" => coi là phim lẻ
+        val isMovieByEpisodeRule = episodes.size == 1 && episodes.first().name.contains("Tập Full", ignoreCase = true)
+        if (isMovieByEpisodeRule) {
+            episodes = emptyList() // Nếu là phim lẻ, xóa danh sách tập để nó được coi là Movie
+        }
+        
         val isTvSeries = episodes.isNotEmpty()
 
         return if (isTvSeries) {
@@ -101,7 +107,7 @@ class Bluphim3Provider : MainAPI() {
                 year = year,
                 plot = description,
                 tags = tags,
-                recommendations = recommendations // Thêm danh sách đề cử
+                recommendations = recommendations
             )
         } else {
             MovieLoadResponse(
@@ -114,7 +120,7 @@ class Bluphim3Provider : MainAPI() {
                 year = year,
                 plot = description,
                 tags = tags,
-                recommendations = recommendations // Thêm danh sách đề cử
+                recommendations = recommendations
             )
         }
     }
