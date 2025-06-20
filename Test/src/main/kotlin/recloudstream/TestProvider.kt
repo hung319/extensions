@@ -44,41 +44,48 @@ class AnimeVietsubProvider : MainAPI() {
         "/bang-xep-hang/day.html" to "Xem Nhiều Trong Ngày"
     )
 
-    // =================== PHẦN 2: HÀM getMainPage ĐA NĂNG ===================
+    // =================== PHẦN 2: HÀM getMainPage ĐA NĂNG (ĐÃ SỬA LỖI) ===================
     // Hàm này giờ đây xử lý tất cả các mục đã khai báo ở trên và cả phân trang.
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val baseUrl = getBaseUrl()
-        
+
         // Xây dựng URL dựa trên yêu cầu và số trang
-        // request.data sẽ là "/anime-moi/", "/anime-sap-chieu/", hoặc "/bang-xep-hang/day.html"
         val url = if (page == 1) {
             "$baseUrl${request.data}"
         } else {
-            // Xử lý đúng định dạng "/trang-X.html" cho các trang sau
-            val slug = request.data.removeSuffix(".html").removeSuffix("/")
-            "$baseUrl$slug/trang-$page.html"
+            // Trang xếp hạng không có phân trang theo kiểu /trang-X.html,
+            // nên ta chỉ xử lý phân trang cho các mục khác.
+            if (request.data.contains("bang-xep-hang")) {
+                 "$baseUrl${request.data}" // Luôn là trang 1
+            } else {
+                val slug = request.data.removeSuffix("/")
+                "$baseUrl$slug/trang-$page.html"
+            }
         }
 
         val document = app.get(url).document
 
         // Vì mỗi mục có thể có cấu trúc HTML khác nhau, ta cần kiểm tra để dùng đúng selector
         val home = when {
-            // Trường hợp của trang "Bảng xếp hạng"
+            // SỬA LỖI: Dùng selector và logic phân tích mới cho trang "Bảng xếp hạng"
             request.data.contains("bang-xep-hang") -> {
-                document.select("section.Wdgt#showTopPhim ul.MovieList li").mapNotNull {
-                    // Parser mini cho cấu trúc của trang Bảng xếp hạng
-                    val post = it.selectFirst("div.TPost.A") ?: return@mapNotNull null
-                    val linkElement = post.selectFirst("a") ?: return@mapNotNull null
-                    val href = fixUrl(linkElement.attr("href"), baseUrl) ?: return@mapNotNull null
-                    val title = post.selectFirst(".Title")?.text()?.trim() ?: return@mapNotNull null
-                    val posterUrl = fixUrl(post.selectFirst("img")?.attr("src"), baseUrl)
-                    
-                    newMovieSearchResponse(title, href, TvType.Anime) {
-                        this.posterUrl = posterUrl
+                document.select("ul.bxh-movie-phimletv li.group").mapNotNull { element ->
+                    try {
+                        val titleElement = element.selectFirst("h3.title-item a") ?: return@mapNotNull null
+                        val title = titleElement.text().trim()
+                        val href = fixUrl(titleElement.attr("href"), baseUrl) ?: return@mapNotNull null
+                        val posterUrl = fixUrl(element.selectFirst("a.thumb img")?.attr("src"), baseUrl)
+
+                        newMovieSearchResponse(title, href, TvType.Anime) {
+                            this.posterUrl = posterUrl
+                        }
+                    } catch (e: Exception) {
+                        Log.e(name, "Lỗi parse item của Bảng xếp hạng", e)
+                        null
                     }
                 }
             }
-            // Trường hợp mặc định cho các trang danh sách phim thông thường
+            // Giữ nguyên logic cho các trang danh sách phim thông thường
             else -> {
                 document.select("ul.MovieList.Rows li.TPostMv").mapNotNull {
                     it.toSearchResponse(this, baseUrl)
@@ -86,9 +93,13 @@ class AnimeVietsubProvider : MainAPI() {
             }
         }
 
-        // Kiểm tra xem có trang tiếp theo không
-        val hasNext = document.selectFirst("div.wp-pagenavi span.current + a.page, div.wp-pagenavi a.larger:contains(Trang Cuối)") != null
-
+        // Kiểm tra xem có trang tiếp theo không (không áp dụng cho bảng xếp hạng)
+        val hasNext = if (request.data.contains("bang-xep-hang")) {
+            false
+        } else {
+            document.selectFirst("div.wp-pagenavi span.current + a.page, div.wp-pagenavi a.larger:contains(Trang Cuối)") != null
+        }
+        
         return newHomePageResponse(
             list = HomePageList(
                 name = request.name,
