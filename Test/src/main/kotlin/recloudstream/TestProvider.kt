@@ -83,20 +83,19 @@ class Bluphim3Provider : MainAPI() {
         // Lấy danh sách tập
         var episodes = watchDocument.select("div.episodes div.list-episode a:not(:contains(Server bên thứ 3))").map {
             val epName = it.attr("title")
-            
-            // SỬA LỖI TRIỆT ĐỂ: Tách riêng và kiểm tra href một cách tường minh để tránh lỗi nullable.
             val href = it.attr("href")
             val epUrl = if (href.isNotBlank()) {
                 fixUrl(href)
             } else {
                 ""
             }
-            
             Episode(data = epUrl, name = epName)
         }
 
         // Xử lý trường hợp phim có "Tập Full" => coi là phim lẻ
-        val isMovieByEpisodeRule = episodes.size == 1 && episodes.first().name.contains("Tập Full", ignoreCase = true)
+        // SỬA LỖI QUAN TRỌNG: Vì `Episode.name` là `String?` (có thể null),
+        // chúng ta phải dùng ?. và so sánh với true để đảm bảo an toàn.
+        val isMovieByEpisodeRule = episodes.size == 1 && (episodes.first().name?.contains("Tập Full", ignoreCase = true) == true)
         if (isMovieByEpisodeRule) {
             episodes = emptyList() // Nếu là phim lẻ, xóa danh sách tập để nó được coi là Movie
         }
