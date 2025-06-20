@@ -78,17 +78,17 @@ class Bluphim3Provider : MainAPI() {
         val watchUrl = document.selectFirst("a.btn-stream-link")?.attr("href")?.let { fixUrl(it) } ?: url
         val watchDocument = app.get(watchUrl).document
         
-        // CẬP NHẬT 3: Lấy danh sách phim đề cử từ trang xem phim (watchDocument) để đảm bảo luôn có dữ liệu.
         val recommendations = watchDocument.select("ul#film_related li.item, .list-films.film-related li.item").mapNotNull { it.toSearchResult() }
 
         // Lấy danh sách tập
         var episodes = watchDocument.select("div.episodes div.list-episode a:not(:contains(Server bên thứ 3))").map {
             val epName = it.attr("title")
-            val epUrl = it.attr("href")?.let { u -> fixUrl(u) } ?: ""
+            // SỬA LỖI: Bỏ `?.` vì `attr("href")` không bao giờ trả về null.
+            val epUrl = fixUrl(it.attr("href"))
             Episode(data = epUrl, name = epName)
-        } // CẬP NHẬT 1: Đã bỏ .reversed()
+        }
 
-        // CẬP NHẬT 2: Xử lý trường hợp phim có "Tập Full" => coi là phim lẻ
+        // Xử lý trường hợp phim có "Tập Full" => coi là phim lẻ
         val isMovieByEpisodeRule = episodes.size == 1 && episodes.first().name.contains("Tập Full", ignoreCase = true)
         if (isMovieByEpisodeRule) {
             episodes = emptyList() // Nếu là phim lẻ, xóa danh sách tập để nó được coi là Movie
