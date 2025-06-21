@@ -3,12 +3,11 @@ package recloudstream
 import com.google.gson.annotations.SerializedName
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import android.util.Log
 
 // ================================================================
-// --- ĐỊNH NGHĨA CÁC DATA CLASS ĐỂ XỬ LÝ JSON TỪ API ---
+// --- DATA CLASSES (ĐÃ XÁC THỰC VỚI API THỰC TẾ) ---
 // ================================================================
-
-// --- Data Classes cho API Search ---
 data class SearchItem(
     @SerializedName("name") val name: String?,
     @SerializedName("slug") val slug: String?,
@@ -23,7 +22,6 @@ data class SearchApiResponse(
     @SerializedName("items") val items: List<SearchItem>?
 )
 
-// --- Data Classes cho API Load (Chi tiết phim) ---
 data class EpisodeItem(
     @SerializedName("name") val name: String?,
     @SerializedName("slug") val slug: String?,
@@ -51,17 +49,14 @@ data class FilmDetails(
     @SerializedName("movie") val movie: MovieDetails?
 )
 
-
 // ================================================================
-// --- CLASS PLUGIN CHÍNH ---
+// --- CLASS PLUGIN CHÍNH (LOGIC ĐÃ HOÀN THIỆN) ---
 // ================================================================
-
 class NguoncProvider : MainAPI() {
 
     override var name = "Phim Nguồn C"
     override var mainUrl = "https://phim.nguonc.com"
     override var lang = "vi"
-    // THÊM DÒNG NÀY ĐỂ BẬT TÍNH NĂNG TRANG CHỦ
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
@@ -114,59 +109,69 @@ class NguoncProvider : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         val apiUrl = "$mainUrl/api/film/$url"
-        val response = app.get(apiUrl).parsed<FilmDetails>()
-        val details = response.movie ?: return null
+        
+        try {
+            val response = app.get(apiUrl).parsed<FilmDetails>()
+            val details = response.movie ?: return null
 
-        val title = details.name ?: details.originName ?: "Unknown"
-        val poster = getAbsoluteUrl(details.posterUrl ?: details.thumbUrl)
-        val plot = details.plot
-        val year = details.year?.toIntOrNull()
+            val title = details.name ?: details.originName ?: "Unknown"
+            val poster = getAbsoluteUrl(details.posterUrl ?: details.thumbUrl)
+            val plot = details.plot
+            val year = details.year?.toIntOrNull()
 
-        // Trích xuất các tập phim từ các server
-        val episodes = details.episodes?.flatMap { server ->
-            server.items?.mapNotNull { ep ->
-                val episodeSlug = ep.slug ?: return@mapNotNull null
-                
-                newEpisode(episodeSlug) {
-                    this.name = "${ep.name} - ${server.serverName}"
-                }
+            val episodes = details.episodes?.flatMap { server ->
+                server.items?.mapNotNull { ep ->
+                    // Truyền slug và link embed vào data để `loadLinks` có thể sử dụng
+                    val episodeData = "${ep.slug}|${ep.embed}"
+                    newEpisode(episodeData) {
+                        this.name = "${ep.name} - ${server.serverName}"
+                    }
+                } ?: emptyList()
             } ?: emptyList()
-        } ?: emptyList()
 
-        val tvType = if(episodes.size > 1) TvType.TvSeries else TvType.Movie
+            val tvType = if(episodes.size > 1) TvType.TvSeries else TvType.Movie
 
-        return if (tvType == TvType.TvSeries) {
-            newTvSeriesLoadResponse(title, url, tvType, episodes) {
-                this.posterUrl = poster
-                this.plot = plot
-                this.year = year
+            return if (tvType == TvType.TvSeries) {
+                newTvSeriesLoadResponse(title, url, tvType, episodes) {
+                    this.posterUrl = poster
+                    this.plot = plot
+                    this.year = year
+                }
+            } else {
+                newMovieLoadResponse(title, url, tvType, episodes) {
+                    this.posterUrl = poster
+                    this.plot = plot
+                    this.year = year
+                }
             }
-        } else {
-            newMovieLoadResponse(title, url, tvType, episodes) {
-                this.posterUrl = poster
-                this.plot = plot
-                this.year = year
-            }
+        } catch (e: Exception) {
+            Log.e("NguoncProvider", "Lỗi khi tải chi tiết phim từ URL: $apiUrl", e)
+            return null
         }
     }
 
     /**
-     * HÀM LOADLINKS - PLACEHOLDER
-     * Do link m3u8 trực tiếp không hoạt động, hàm này cần được điều tra thêm.
+     * HÀM LOADLINKS - CÔNG VIỆC CUỐI CÙNG CỦA BẠN
      */
     override suspend fun loadLinks(
-        data: String, // `data` giờ là slug của tập phim (ví dụ: "tap-full")
+        data: String, // `data` giờ chứa "slug|link_embed"
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // Tách slug và link embed ra từ `data`
+        val (slug, embedUrl) = data.split("|")
+
         // TODO: VIỆC CẦN LÀM CỦA BẠN
-        // `data` đang chứa slug của tập phim. Bạn cần tìm ra cách lấy link video từ slug này.
+        // Nhiệm vụ của bạn là "giải mã" link `embedUrl` này.
         // GỢI Ý:
-        // 1. Link `embed` trong API (`https://embed14.streamc.xyz/embed.php?hash=...`) là một đầu mối quan trọng.
-        //    Hãy truy cập link embed này bằng trình duyệt (bật F12).
-        // 2. Quan sát tab "Network" xem trang embed đó gọi đến những file nào. Rất có thể nó sẽ gọi đến một link m3u8 hợp lệ.
-        // 3. Bạn cần viết code để "giải mã" link embed đó.
+        // 1. Dùng F12 trên trình duyệt, truy cập `embedUrl` (ví dụ: https://embed18.streamc.xyz/embed.php?hash=...).
+        // 2. Xem tab Network để tìm link `.m3u8` hoặc file video mà trang embed đó thực sự tải về.
+        // 3. Viết code để tự động hóa quá trình đó ở đây.
+        //    - Tải HTML của trang embed: `app.get(embedUrl).text`
+        //    - Dùng regex hoặc các hàm xử lý chuỗi để tìm link video bên trong.
+        
+        Log.d("NguoncProvider", "Đang cố gắng giải mã link embed: $embedUrl")
         
         return false // Trả về false vì chưa có logic hoàn chỉnh
     }
