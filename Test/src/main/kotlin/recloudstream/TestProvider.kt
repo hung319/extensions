@@ -60,7 +60,6 @@ class NguoncProvider : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
-    // Headers chuẩn với Referer là trang chủ, dùng cho mọi request
     private val browserHeaders = mapOf(
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
         "Referer" to "$mainUrl/"
@@ -76,8 +75,11 @@ class NguoncProvider : MainAPI() {
         val response = app.get(url, headers = browserHeaders).parsed<SearchApiResponse>()
         val homeList = response.items?.mapNotNull { item ->
             val slug = item.slug ?: return@mapNotNull null
+            // THAY ĐỔI THEO YÊU CẦU: Tạo link API đầy đủ ngay tại đây
+            val apiLink = "$mainUrl/api/film/$slug"
             val tvType = if ((item.totalEpisodes ?: 0) > 1 || item.currentEpisode?.contains("Tập") == true) TvType.TvSeries else TvType.Movie
-            newMovieSearchResponse(item.name ?: "Unknown", slug, tvType) {
+            // Truyền link API đầy đủ vào SearchResponse
+            newMovieSearchResponse(item.name ?: "Unknown", apiLink, tvType) {
                 this.posterUrl = getAbsoluteUrl(item.posterUrl ?: item.thumbUrl)
             }
         } ?: return null
@@ -90,19 +92,24 @@ class NguoncProvider : MainAPI() {
         if (response.status != "success" || response.items.isNullOrEmpty()) return emptyList()
         return response.items.mapNotNull { item ->
             val slug = item.slug ?: return@mapNotNull null
+            // THAY ĐỔI THEO YÊU CẦU: Tạo link API đầy đủ ngay tại đây
+            val apiLink = "$mainUrl/api/film/$slug"
             val tvType = if ((item.totalEpisodes ?: 0) > 1 || item.currentEpisode?.contains("Tập") == true) TvType.TvSeries else TvType.Movie
-            newMovieSearchResponse(item.name ?: "Unknown", slug, tvType) {
+            // Truyền link API đầy đủ vào SearchResponse
+            newMovieSearchResponse(item.name ?: "Unknown", apiLink, tvType) {
                 this.posterUrl = getAbsoluteUrl(item.posterUrl ?: item.thumbUrl)
             }
         }
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val apiUrl = "$mainUrl/api/film/$url"
+        // THAY ĐỔI THEO YÊU CẦU:
+        // `url` bây giờ đã là link API đầy đủ (ví dụ: https://.../api/film/slug),
+        // nên chúng ta sẽ dùng nó trực tiếp.
+        val apiUrl = url
         
         try {
-            // SỬA LỖI QUAN TRỌNG:
-            // Luôn sử dụng headers với Referer là trang chủ, vì trang phim cụ thể có thể không tồn tại (404).
+            // Dùng trực tiếp `apiUrl` (chính là `url` được truyền vào) để gọi API.
             val response = app.get(apiUrl, headers = browserHeaders).parsed<FilmDetails>()
             val details = response.movie ?: return null
             
