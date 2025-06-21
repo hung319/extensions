@@ -8,6 +8,9 @@ import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import java.net.URI
 
+// THÊM EXCEPTION TÙY CHỈNH ĐỂ GỠ LỖI
+open class ErrorLoadingException(message: String) : Exception(message)
+
 // ================================================================
 // --- DATA CLASSES ---
 // ================================================================
@@ -195,23 +198,29 @@ class NguoncProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         try {
-            val episodeVersions = tryParseJson<List<EpisodeItem>>(data) ?: return false
+            val episodeVersions = tryParseJson<List<EpisodeItem>>(data) 
+                ?: throw ErrorLoadingException("Lỗi: Không thể phân tích dữ liệu tập phim (JSON).")
 
             episodeVersions.apmap { episode ->
-                val embedUrl = episode.embed ?: return@apmap
+                val embedUrl = episode.embed 
+                    ?: throw ErrorLoadingException("Lỗi: Tập phim không có link embed.")
                 
+                // Bước 1: GET embedUrl để lấy payload
                 val initialPage = app.get(embedUrl, headers = browserHeaders).text
-                val payload = Regex("""name="payload" value="([^"]+)"""").find(initialPage)?.groupValues?.get(1) ?: return@apmap
+                val payload = Regex("""name="payload" value="([^"]+)"""").find(initialPage)?.groupValues?.get(1) 
+                    ?: throw ErrorLoadingException("Lỗi: Không tìm thấy 'payload' trong trang embed đầu tiên.")
 
+                // Bước 2: POST với payload để lấy trang player
                 val postData = mapOf("payload" to payload)
                 val playerPage = app.post(embedUrl, data = postData, headers = browserHeaders).text
                 
-                val relativeStreamUrl = Regex("""window\.streamURL = "([^"]+)"""").find(playerPage)?.groupValues?.get(1) ?: return@apmap
+                // Bước 3: Tìm link M3U8 trong trang player
+                val relativeStreamUrl = Regex("""window\.streamURL = "([^"]+)"""").find(playerPage)?.groupValues?.get(1) 
+                    ?: throw ErrorLoadingException("Lỗi: Không tìm thấy 'streamURL' trong trang player.")
                 
                 val finalM3u8Url = URI(embedUrl).resolve(relativeStreamUrl).toString()
 
-                // SỬA LỖI THEO CẤU TRÚC MỚI:
-                // Thay thế `isM3u8 = true` bằng `type = ExtractorLinkType.M3U8`
+                // Bước 4: Gửi link M3U8 cho trình phát
                 callback.invoke(
                     ExtractorLink(
                         source = this.name,
@@ -219,13 +228,14 @@ class NguoncProvider : MainAPI() {
                         url = finalM3u8Url,
                         referer = embedUrl,
                         quality = Qualities.Unknown.value,
-                        type = ExtractorLinkType.M3U8 // Sử dụng type thay cho isM3u8
+                        type = ExtractorLinkType.M3U8
                     )
                 )
             }
             return true
         } catch (e: Exception) {
-            Log.e("NguoncProvider", "Lỗi khi giải mã link embed: $data", e)
+            // Khối catch này sẽ bắt cả lỗi mạng và ErrorLoadingException của chúng ta
+            Log.e("NguoncProvider", "Lỗi trong quá trình loadLinks: ${e.message}", e)
             return false
         }
     }
