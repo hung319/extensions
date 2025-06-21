@@ -102,7 +102,7 @@ class Bluphim3Provider : MainAPI() {
         
         val recommendations = watchDocument.select(".list-films.film-related li.item").mapNotNull { it.toSearchResult() }
 
-        val episodeElements = watchDocument.select("div.episodes div.list-episode a:not(:contains(Server bên thứ 3))")
+        val episodeElements = watchDocument.select("div.episodes div.list-episode a:not(:contains(Server gốc))") // Bỏ qua server gốc
 
         val isMovieByEpisodeRule = episodeElements.size == 1 && episodeElements.first()?.text()?.contains("Tập Full", ignoreCase = true) == true
         
@@ -155,33 +155,35 @@ class Bluphim3Provider : MainAPI() {
         val iframeSrc = episodeDocument.selectFirst("iframe#iframeStream")?.attr("src") ?: return false
         val iframeUrl = fixUrl(iframeSrc)
 
-        // Ưu tiên dùng `loadExtractor` chung trước
+        if (iframeUrl.contains("embed?")) {
+            // Thông báo cho người dùng hoặc bỏ qua server gốc một cách im lặng
+            logd("Server gốc không được hỗ trợ do cơ chế token.")
+            return false
+        }
+
         if (loadExtractor(iframeUrl, data, subtitleCallback, callback)) {
             return true
         }
 
-        // Nếu `loadExtractor` thất bại, dùng logic phân tích riêng
-        var playerPageUrl = iframeUrl
-        var playerPageDoc = app.get(playerPageUrl, referer = data).document
+        var playerPageDoc = app.get(iframeUrl, referer = data).document
         
         val nestedIframeSrc = playerPageDoc.selectFirst("iframe#embedIframe")?.attr("src")
         if (nestedIframeSrc != null && nestedIframeSrc.isNotBlank()) {
-            playerPageUrl = nestedIframeSrc
-            playerPageDoc = app.get(playerPageUrl, referer = iframeUrl).document
+            playerPageDoc = app.get(nestedIframeSrc, referer = iframeUrl).document
         }
 
         val jwPlayerScript = playerPageDoc.select("script").firstOrNull { 
             it.data().contains("jwplayer") && it.data().contains(".setup") 
         }?.data() ?: return false
 
-        val m3u8Url = "\"file\"\\s*:\\s*\"(//[^\"]*?playlist.m3u8)\"".toRegex().find(jwPlayerScript)?.groupValues?.get(1)?.let { "https:$it" } ?: return false
+        // CẬP NHẬT: Dùng regex linh hoạt hơn để tìm cả "playlist.m3u8" và "index.m3u8"
+        val m3u8Url = "\"file\"\\s*:\\s*\"(//[^\"]*?(?:playlist|index)\\.m3u8)\"".toRegex().find(jwPlayerScript)?.groupValues?.get(1)?.let { "https:$it" } ?: return false
 
         callback(
             ExtractorLink(
                 source = this.name,
                 name = this.name,
                 url = m3u8Url,
-                // CẬP NHẬT: Dùng URL của trang chứa player làm referer
                 referer = playerPageUrl, 
                 quality = Qualities.Unknown.value,
                 type = ExtractorLinkType.M3U8
