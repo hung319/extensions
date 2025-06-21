@@ -9,7 +9,6 @@ import java.net.URI
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.TvType
@@ -102,7 +101,7 @@ class Bluphim3Provider : MainAPI() {
         
         val recommendations = watchDocument.select(".list-films.film-related li.item").mapNotNull { it.toSearchResult() }
 
-        val episodeElements = watchDocument.select("div.episodes div.list-episode a") // Lấy tất cả server
+        val episodeElements = watchDocument.select("div.episodes div.list-episode a")
 
         val isMovieByEpisodeRule = episodeElements.size == 1 && episodeElements.first()?.text()?.contains("Tập Full", ignoreCase = true) == true
         
@@ -118,11 +117,12 @@ class Bluphim3Provider : MainAPI() {
         } else {
             val episodes = episodeElements.map {
                 val originalName = it.attr("title").ifBlank { it.text() }
+                val serverName = it.text()
                 val simplifiedName = "Tập \\d+".toRegex().find(originalName)?.value ?: originalName
                 
                 newEpisode(fixUrl(it.attr("href"))) {
                     this.name = simplifiedName
-                    this.description = it.text() // Dùng description để lưu tên server
+                    this.description = serverName // Dùng description để phân biệt server
                 }
             }
 
@@ -155,77 +155,59 @@ class Bluphim3Provider : MainAPI() {
         val episodeDocument = app.get(data).document
         val iframeSrc = episodeDocument.selectFirst("iframe#iframeStream")?.attr("src") ?: return false
         val iframeUrl = fixUrl(iframeSrc)
-
-        // Logic mới: Xử lý riêng cho server gốc có token
-        if (iframeUrl.contains("/embed?")) {
-            try {
+        var finalM3u8Url = ""
+        
+        try {
+            // Logic cho Server Gốc (dựa trên phân tích của bạn)
+            if (iframeUrl.contains("/embed?")) {
                 val embedDoc = app.get(iframeUrl, referer = data).document
                 val scriptContent = embedDoc.select("script").firstOrNull { it.data().contains("var videoId") }?.data() ?: return false
                 val videoId = "var videoId = '(.*?)'".toRegex().find(scriptContent)?.groupValues?.get(1) ?: return false
                 val cdn = "var cdn = '(.*?)'".toRegex().find(scriptContent)?.groupValues?.get(1) ?: return false
 
-                // Gửi POST request để lấy token
                 val tokenData = app.post(
                     "https://moviking.childish2x2.fun/geturl",
                     headers = mapOf(
                         "X-Requested-With" to "XMLHttpRequest",
                         "Referer" to iframeUrl
                     ),
-                    // Trang này không cần gửi form data, chỉ cần header là đủ
                 ).text
 
-                // Tạo link streaming cuối cùng
                 val streamingUrl = "$cdn/streaming?id=$videoId&$tokenData"
                 val finalStreamPage = app.get(streamingUrl, referer = iframeUrl).document
                 
-                val jwPlayerScript = finalStreamPage.select("script").firstOrNull { it.data().contains("jwplayer") }?.data() ?: return false
-                val m3u8Url = "\"file\"\\s*:\\s*\"(//[^\"]*?playlist.m3u8)\"".toRegex().find(jwPlayerScript)?.groupValues?.get(1)?.let { "https:$it" } ?: return false
+                val playerScript = finalStreamPage.select("script").firstOrNull { it.data().contains("var url =") }?.data() ?: return false
+                finalM3u8Url = "var url = '(.*?)'".toRegex().find(playerScript)?.groupValues?.get(1) ?: return false
+
+            } 
+            // Logic cho Server bên thứ 3
+            else {
+                val iframe1Doc = app.get(iframeUrl, referer = data).document
+                val iframe2Url = iframe1Doc.selectFirst("iframe#embedIframe")?.attr("src") ?: return false
                 
-                callback(
+                val iframe2Doc = app.get(iframe2Url, referer = iframeUrl).document
+                val playerScript = iframe2Doc.select("script").firstOrNull { it.data().contains("var url =") }?.data() ?: return false
+                finalM3u8Url = "var url = '(.*?)'".toRegex().find(playerScript)?.groupValues?.get(1) ?: return false
+            }
+
+            if (finalM3u8Url.isNotBlank()) {
+                 callback(
                     ExtractorLink(
-                        source = "$name Server Gốc",
-                        name = "$name Server Gốc",
-                        url = m3u8Url,
-                        referer = streamingUrl,
+                        source = this.name,
+                        name = this.name,
+                        url = finalM3u8Url,
+                        referer = iframeUrl, 
                         quality = Qualities.Unknown.value,
-                        type = ExtractorLinkType.M3U8
+                        type = if (finalM3u8Url.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.Hls
                     )
                 )
-                // Phụ đề (nếu có)
-                // ... logic lấy phụ đề tương tự như trước ...
                 return true
-            } catch (e: Exception) {
-                return false
             }
+
+        } catch (e: Exception) {
+            // Ghi log lỗi nếu có
         }
 
-        // Logic cũ cho các server bên thứ 3
-        var playerPageUrl = iframeUrl
-        var playerPageDoc = app.get(playerPageUrl, referer = data).document
-        
-        val nestedIframeSrc = playerPageDoc.selectFirst("iframe#embedIframe")?.attr("src")
-        if (nestedIframeSrc != null && nestedIframeSrc.isNotBlank()) {
-            playerPageUrl = nestedIframeSrc
-            playerPageDoc = app.get(playerPageUrl, referer = iframeUrl).document
-        }
-
-        val jwPlayerScript = playerPageDoc.select("script").firstOrNull { 
-            it.data().contains("jwplayer") && it.data().contains(".setup") 
-        }?.data() ?: return false
-
-        val m3u8Url = "\"file\"\\s*:\\s*\"(//[^\"]*?(?:playlist|index)\\.m3u8)\"".toRegex().find(jwPlayerScript)?.groupValues?.get(1)?.let { "https:$it" } ?: return false
-
-        callback(
-            ExtractorLink(
-                source = "$name Server 3rd",
-                name = "$name Server 3rd",
-                url = m3u8Url,
-                referer = playerPageUrl, 
-                quality = Qualities.Unknown.value,
-                type = ExtractorLinkType.M3U8
-            )
-        )
-        // ... logic lấy phụ đề tương tự như trước ...
-        return true
+        return false
     }
 }
