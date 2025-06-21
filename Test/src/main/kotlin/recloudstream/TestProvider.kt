@@ -11,6 +11,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.Log // SỬA LỖI 1: Thêm import cho Log
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.HomePageResponse
@@ -25,7 +26,6 @@ import com.lagradost.cloudstream3.MainPageRequest
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.fixUrl
-import com.lagradost.cloudstream3.logd // SỬA LỖI 1: Thêm import cho logd
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newAnimeSearchResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
@@ -156,7 +156,8 @@ class Bluphim3Provider : MainAPI() {
         val iframeSrc = episodeDocument.selectFirst("iframe#iframeStream")?.attr("src") ?: return false
         
         if (iframeSrc.contains("embed?")) {
-            logd("Server gốc không được hỗ trợ do cơ chế token.")
+            // SỬA LỖI 2: Dùng Log.d thay cho logd
+            Log.d(name, "Server gốc không được hỗ trợ do cơ chế token.")
             return false
         }
         
@@ -166,7 +167,6 @@ class Bluphim3Provider : MainAPI() {
             return true
         }
 
-        // SỬA LỖI 2: Khai báo và cập nhật biến `playerPageUrl`
         var playerPageUrl = iframeUrl
         var playerPageDoc = app.get(playerPageUrl, referer = data).document
         
