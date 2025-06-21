@@ -61,6 +61,8 @@ class NguoncProvider : MainAPI() {
     override var name = "Phim Nguồn C"
     override var mainUrl = "https://phim.nguonc.com"
     override var lang = "vi"
+    // THÊM DÒNG NÀY ĐỂ BẬT TÍNH NĂNG TRANG CHỦ
+    override val hasMainPage = true
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
     private fun getAbsoluteUrl(url: String?): String {
@@ -123,11 +125,6 @@ class NguoncProvider : MainAPI() {
         // Trích xuất các tập phim từ các server
         val episodes = details.episodes?.flatMap { server ->
             server.items?.mapNotNull { ep ->
-                // THAY ĐỔI QUAN TRỌNG:
-                // Vì link m3u8 không hoạt động, chúng ta sẽ không truyền nó vào `newEpisode`.
-                // Thay vào đó, ta truyền một đối tượng chứa cả link embed và slug,
-                // để `loadLinks` có thể thử nhiều cách khác nhau.
-                // Ở đây, đơn giản nhất là truyền slug của tập phim.
                 val episodeSlug = ep.slug ?: return@mapNotNull null
                 
                 newEpisode(episodeSlug) {
@@ -169,26 +166,7 @@ class NguoncProvider : MainAPI() {
         // 1. Link `embed` trong API (`https://embed14.streamc.xyz/embed.php?hash=...`) là một đầu mối quan trọng.
         //    Hãy truy cập link embed này bằng trình duyệt (bật F12).
         // 2. Quan sát tab "Network" xem trang embed đó gọi đến những file nào. Rất có thể nó sẽ gọi đến một link m3u8 hợp lệ.
-        // 3. Bạn cần viết code để "giải mã" link embed đó. Có thể bạn sẽ cần:
-        //    - Tải nội dung HTML của trang embed: `app.get(embedUrl).text`
-        //    - Dùng regex hoặc các hàm chuỗi để tìm link m3u8 hoặc một link API khác bên trong.
-        //    - Một số trang embed sẽ dùng JavaScript để tạo link, trường hợp này sẽ phức tạp hơn.
-
-        // Ví dụ về luồng logic bạn có thể thử:
-        // val embedUrl = "..." // Bạn cần cách để lấy được link embed tương ứng với slug `data`
-        // val embedPageHtml = app.get(embedUrl).text
-        // val m3u8Link = // Dùng regex để tìm link .m3u8 trong `embedPageHtml`
-        
-        // callback.invoke(
-        //     ExtractorLink(
-        //         source = this.name,
-        //         name = "Server Embed",
-        //         url = m3u8Link,
-        //         referer = embedUrl, // Referer có thể là trang embed
-        //         quality = Qualities.Unknown.value,
-        //         isM3u8 = true
-        //     )
-        // )
+        // 3. Bạn cần viết code để "giải mã" link embed đó.
         
         return false // Trả về false vì chưa có logic hoàn chỉnh
     }
