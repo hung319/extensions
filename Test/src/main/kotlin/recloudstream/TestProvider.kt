@@ -16,7 +16,7 @@ data class SearchItem(
     @JsonProperty("thumb_url") val thumbUrl: String?,
     @JsonProperty("total_episodes") val totalEpisodes: Int?,
     @JsonProperty("current_episode") val currentEpisode: String?,
-    @JsonProperty("language") val language: String? 
+    @JsonProperty("language") val language: String?
 )
 
 data class SearchApiResponse(
@@ -37,7 +37,6 @@ data class ServerItem(
     @JsonProperty("items") val items: List<EpisodeItem>?
 )
 
-// Sửa đổi: Thêm 'id' để lấy slug của thể loại cho mục đề xuất
 data class CategoryItem(
     @JsonProperty("id") val id: String?,
     @JsonProperty("name") val name: String?
@@ -53,6 +52,7 @@ data class CategoryInfo(
 data class MovieDetails(
     @JsonProperty("name") val name: String?,
     @JsonProperty("original_name") val originName: String?,
+    @JsonProperty("slug") val slug: String?, // Thêm slug vào đây để tiện sử dụng
     @JsonProperty("thumb_url") val thumbUrl: String?,
     @JsonProperty("poster_url") val posterUrl: String?,
     @JsonProperty("content") val plot: String?,
@@ -132,18 +132,15 @@ class NguoncProvider : MainAPI() {
                 cat.group?.name == "Thể loại" && cat.list?.any { it.name == "Hoạt Hình" } == true
             } == true
             
-            // LOGIC MỚI: LẤY DANH SÁCH PHIM ĐỀ XUẤT
             val recommendations = mutableListOf<SearchResponse>()
             try {
-                // Tìm slug của thể loại đầu tiên
                 val genre = details.category?.values?.find { it.group?.name == "Thể loại" }?.list?.firstOrNull()
-                // API tìm theo thể loại không dùng slug của phim mà dùng slug của thể loại, có vẻ API này không dùng được ID hash.
-                // Giải pháp thay thế: Dùng tên thể loại để tìm kiếm.
                 if (genre?.name != null) {
                     val recommendationsUrl = "$mainUrl/api/films/search?keyword=${genre.name}"
                     val recsResponse = app.get(recommendationsUrl, headers = browserHeaders).parsed<SearchApiResponse>()
                     recsResponse.items?.mapNotNullTo(recommendations) {
-                        // Lọc ra phim đang xem để không tự đề xuất chính nó
+                        // SỬA LỖI BIÊN DỊCH:
+                        // So sánh với `details.slug` đã được thêm vào data class MovieDetails.
                         if (it.slug != details.slug) toSearchResponse(it) else null
                     }
                 }
@@ -180,7 +177,6 @@ class NguoncProvider : MainAPI() {
                 val representativeEpisode = episodeVersions.firstOrNull() ?: return@mapNotNull null
                 val allVersionsData = episodeVersions.toJson()
                 
-                // SỬA LỖI DEPRECATION: Quay lại dùng hàm newEpisode
                 newEpisode(allVersionsData) {
                     this.name = "Tập ${representativeEpisode.name}"
                     this.episode = representativeEpisode.name?.toIntOrNull()
@@ -193,7 +189,7 @@ class NguoncProvider : MainAPI() {
                 this.posterUrl = poster
                 this.plot = plot
                 this.year = year
-                this.recommendations = recommendations // Thêm recommendations vào response
+                this.recommendations = recommendations
             }
         } catch (e: Exception) {
             Log.e("NguoncProvider", "Lỗi khi tải chi tiết phim từ URL: $apiUrl. Lỗi: ${e.message}", e)
