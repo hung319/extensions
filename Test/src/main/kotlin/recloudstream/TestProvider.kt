@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import android.util.Log
+import java.util.EnumSet
 
 // ================================================================
 // --- DATA CLASSES ---
@@ -14,7 +15,9 @@ data class SearchItem(
     @JsonProperty("poster_url") val posterUrl: String?,
     @JsonProperty("thumb_url") val thumbUrl: String?,
     @JsonProperty("total_episodes") val totalEpisodes: Int?,
-    @JsonProperty("current_episode") val currentEpisode: String?
+    @JsonProperty("current_episode") val currentEpisode: String?,
+    // Thêm trường language để đọc thông tin thuyết minh
+    @JsonProperty("language") val language: String? 
 )
 
 data class SearchApiResponse(
@@ -26,12 +29,24 @@ data class EpisodeItem(
     @JsonProperty("name") val name: String?,
     @JsonProperty("slug") val slug: String?,
     @JsonProperty("embed") val embed: String?,
-    @JsonProperty("m3u8") val m3u8: String?
+    @JsonProperty("m3u8") val m3u8: String?,
+    var serverName: String? = null
 )
 
 data class ServerItem(
     @JsonProperty("server_name") val serverName: String?,
     @JsonProperty("items") val items: List<EpisodeItem>?
+)
+
+data class CategoryItem(
+    @JsonProperty("name") val name: String?
+)
+data class CategoryGroup(
+    @JsonProperty("name") val name: String?
+)
+data class CategoryInfo(
+    @JsonProperty("group") val group: CategoryGroup?,
+    @JsonProperty("list") val list: List<CategoryItem>?
 )
 
 data class MovieDetails(
@@ -41,7 +56,9 @@ data class MovieDetails(
     @JsonProperty("poster_url") val posterUrl: String?,
     @JsonProperty("content") val plot: String?,
     @JsonProperty("year") val year: String?,
-    @JsonProperty("episodes") val episodes: List<ServerItem>?
+    @JsonProperty("total_episodes") val total_episodes: Int?,
+    @JsonProperty("episodes") val episodes: List<ServerItem>?,
+    @JsonProperty("category") val category: Map<String, CategoryInfo>?
 )
 
 data class FilmDetails(
@@ -58,7 +75,7 @@ class NguoncProvider : MainAPI() {
     override var mainUrl = "https://phim.nguonc.com"
     override var lang = "vi"
     override val hasMainPage = true
-    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
+    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime)
 
     private val browserHeaders = mapOf(
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
@@ -70,19 +87,31 @@ class NguoncProvider : MainAPI() {
         return if (url.startsWith("http")) url else "$mainUrl/$url"
     }
 
+    // Hàm tiện ích để tạo SearchResponse, tránh lặp code
+    private fun toSearchResponse(item: SearchItem): SearchResponse? {
+        val slug = item.slug ?: return null
+        val apiLink = "$mainUrl/api/film/$slug"
+        
+        // LOGIC MỚI: Kiểm tra ngôn ngữ để thêm tag Dubbed
+        val isDubbed = item.language?.contains("thuyết minh", ignoreCase = true) == true ||
+                       item.language?.contains("lồng tiếng", ignoreCase = true) == true
+        
+        val tvType = if ((item.totalEpisodes ?: 0) > 1 || item.currentEpisode?.contains("Tập") == true) TvType.TvSeries else TvType.Movie
+        
+        return newMovieSearchResponse(item.name ?: "Unknown", apiLink, tvType) {
+            this.posterUrl = getAbsoluteUrl(item.posterUrl ?: item.thumbUrl)
+            // Thêm tag DUBBLED vào poster nếu có
+            if (isDubbed) {
+                this.dubStatus = EnumSet.of(DubStatus.Dubbed)
+            }
+        }
+    }
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val url = "$mainUrl/api/films/phim-moi-cap-nhat?page=$page"
         val response = app.get(url, headers = browserHeaders).parsed<SearchApiResponse>()
-        val homeList = response.items?.mapNotNull { item ->
-            val slug = item.slug ?: return@mapNotNull null
-            // THAY ĐỔI THEO YÊU CẦU: Tạo link API đầy đủ ngay tại đây
-            val apiLink = "$mainUrl/api/film/$slug"
-            val tvType = if ((item.totalEpisodes ?: 0) > 1 || item.currentEpisode?.contains("Tập") == true) TvType.TvSeries else TvType.Movie
-            // Truyền link API đầy đủ vào SearchResponse
-            newMovieSearchResponse(item.name ?: "Unknown", apiLink, tvType) {
-                this.posterUrl = getAbsoluteUrl(item.posterUrl ?: item.thumbUrl)
-            }
-        } ?: return null
+        // Sử dụng hàm tiện ích để tạo response
+        val homeList = response.items?.mapNotNull { toSearchResponse(it) } ?: return null
         return newHomePageResponse(list = HomePageList("Phim Mới Cập Nhật", homeList), hasNext = true)
     }
 
@@ -90,48 +119,58 @@ class NguoncProvider : MainAPI() {
         val url = "$mainUrl/api/films/search?keyword=$query"
         val response = app.get(url, headers = browserHeaders).parsed<SearchApiResponse>()
         if (response.status != "success" || response.items.isNullOrEmpty()) return emptyList()
-        return response.items.mapNotNull { item ->
-            val slug = item.slug ?: return@mapNotNull null
-            // THAY ĐỔI THEO YÊU CẦU: Tạo link API đầy đủ ngay tại đây
-            val apiLink = "$mainUrl/api/film/$slug"
-            val tvType = if ((item.totalEpisodes ?: 0) > 1 || item.currentEpisode?.contains("Tập") == true) TvType.TvSeries else TvType.Movie
-            // Truyền link API đầy đủ vào SearchResponse
-            newMovieSearchResponse(item.name ?: "Unknown", apiLink, tvType) {
-                this.posterUrl = getAbsoluteUrl(item.posterUrl ?: item.thumbUrl)
-            }
-        }
+        // Sử dụng hàm tiện ích để tạo response
+        return response.items.mapNotNull { toSearchResponse(it) }
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        // THAY ĐỔI THEO YÊU CẦU:
-        // `url` bây giờ đã là link API đầy đủ (ví dụ: https://.../api/film/slug),
-        // nên chúng ta sẽ dùng nó trực tiếp.
         val apiUrl = url
-        
         try {
-            // Dùng trực tiếp `apiUrl` (chính là `url` được truyền vào) để gọi API.
             val response = app.get(apiUrl, headers = browserHeaders).parsed<FilmDetails>()
             val details = response.movie ?: return null
-            
             val title = details.name ?: details.originName ?: "Unknown"
             val poster = getAbsoluteUrl(details.posterUrl ?: details.thumbUrl)
             val plot = details.plot
             val year = details.year?.toIntOrNull()
-            val episodes = details.episodes?.flatMap { server ->
-                server.items?.mapNotNull { ep ->
-                    val episodeData = "${ep.slug}|${ep.embed}"
-                    newEpisode(episodeData) {
-                        this.name = "${ep.name} - ${server.serverName}"
-                    }
-                } ?: emptyList()
-            } ?: emptyList()
-            val tvType = if (episodes.size > 1) TvType.TvSeries else TvType.Movie
-            return if (tvType == TvType.TvSeries) {
-                newTvSeriesLoadResponse(title, url, tvType, episodes) {
+
+            val isAnime = details.category?.values?.any { cat ->
+                cat.group?.name == "Thể loại" && cat.list?.any { it.name == "Hoạt Hình" } == true
+            } == true
+            
+            // LOGIC MỚI: Quay lại việc nhóm các tập phim theo slug để gộp lại
+            val episodesBySlug = mutableMapOf<String, MutableList<EpisodeItem>>()
+            details.episodes?.forEach { server ->
+                server.items?.forEach { episode ->
+                    episode.serverName = server.serverName
+                    val slug = episode.slug ?: return@forEach
+                    episodesBySlug.getOrPut(slug) { mutableListOf() }.add(episode)
+                }
+            }
+
+            // Tạo danh sách tập phim cuối cùng cho UI, đã được gộp và chuẩn hóa tên
+            val finalEpisodes = episodesBySlug.values.mapNotNull { episodeVersions ->
+                val representativeEpisode = episodeVersions.firstOrNull() ?: return@mapNotNull null
+                val allVersionsData = AppUtils.toJson(episodeVersions)
+                
+                newEpisode(allVersionsData) {
+                    // Chuẩn hóa tên thành "Tập X"
+                    this.name = "Tập ${representativeEpisode.name}"
+                    this.episode = representativeEpisode.name?.toIntOrNull()
+                }
+            }.sortedBy { it.episode }
+
+            val tvType = if (isAnime) {
+                TvType.Anime
+            } else {
+                if (details.total_episodes ?: 1 > 1) TvType.TvSeries else TvType.Movie
+            }
+
+            return if (tvType == TvType.TvSeries || tvType == TvType.Anime) {
+                newTvSeriesLoadResponse(title, url, tvType, finalEpisodes) {
                     this.posterUrl = poster; this.plot = plot; this.year = year
                 }
-            } else {
-                newMovieLoadResponse(title, url, tvType, episodes) {
+            } else { 
+                newMovieLoadResponse(title, url, tvType, finalEpisodes) {
                     this.posterUrl = poster; this.plot = plot; this.year = year
                 }
             }
@@ -147,7 +186,7 @@ class NguoncProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d("NguoncProvider", "Hàm loadLinks được gọi với data: $data. Cần logic để xử lý.")
+        Log.d("NguoncProvider", "Hàm loadLinks được gọi với data (JSON): $data. Cần logic để xử lý.")
         return false
     }
 }
