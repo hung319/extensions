@@ -25,6 +25,7 @@ import com.lagradost.cloudstream3.MainPageRequest
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.fixUrl
+import com.lagradost.cloudstream3.logd // SỬA LỖI 1: Thêm import cho logd
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newAnimeSearchResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
@@ -102,7 +103,7 @@ class Bluphim3Provider : MainAPI() {
         
         val recommendations = watchDocument.select(".list-films.film-related li.item").mapNotNull { it.toSearchResult() }
 
-        val episodeElements = watchDocument.select("div.episodes div.list-episode a:not(:contains(Server gốc))") // Bỏ qua server gốc
+        val episodeElements = watchDocument.select("div.episodes div.list-episode a:not(:contains(Server gốc))")
 
         val isMovieByEpisodeRule = episodeElements.size == 1 && episodeElements.first()?.text()?.contains("Tập Full", ignoreCase = true) == true
         
@@ -153,30 +154,32 @@ class Bluphim3Provider : MainAPI() {
     ): Boolean {
         val episodeDocument = app.get(data).document
         val iframeSrc = episodeDocument.selectFirst("iframe#iframeStream")?.attr("src") ?: return false
-        val iframeUrl = fixUrl(iframeSrc)
-
-        if (iframeUrl.contains("embed?")) {
-            // Thông báo cho người dùng hoặc bỏ qua server gốc một cách im lặng
+        
+        if (iframeSrc.contains("embed?")) {
             logd("Server gốc không được hỗ trợ do cơ chế token.")
             return false
         }
+        
+        val iframeUrl = fixUrl(iframeSrc)
 
         if (loadExtractor(iframeUrl, data, subtitleCallback, callback)) {
             return true
         }
 
-        var playerPageDoc = app.get(iframeUrl, referer = data).document
+        // SỬA LỖI 2: Khai báo và cập nhật biến `playerPageUrl`
+        var playerPageUrl = iframeUrl
+        var playerPageDoc = app.get(playerPageUrl, referer = data).document
         
         val nestedIframeSrc = playerPageDoc.selectFirst("iframe#embedIframe")?.attr("src")
         if (nestedIframeSrc != null && nestedIframeSrc.isNotBlank()) {
-            playerPageDoc = app.get(nestedIframeSrc, referer = iframeUrl).document
+            playerPageUrl = nestedIframeSrc
+            playerPageDoc = app.get(playerPageUrl, referer = iframeUrl).document
         }
 
         val jwPlayerScript = playerPageDoc.select("script").firstOrNull { 
             it.data().contains("jwplayer") && it.data().contains(".setup") 
         }?.data() ?: return false
 
-        // CẬP NHẬT: Dùng regex linh hoạt hơn để tìm cả "playlist.m3u8" và "index.m3u8"
         val m3u8Url = "\"file\"\\s*:\\s*\"(//[^\"]*?(?:playlist|index)\\.m3u8)\"".toRegex().find(jwPlayerScript)?.groupValues?.get(1)?.let { "https:$it" } ?: return false
 
         callback(
