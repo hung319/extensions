@@ -198,7 +198,7 @@ class Bluphim3Provider : MainAPI() {
                         url = finalM3u8Url,
                         referer = iframeUrl, 
                         quality = Qualities.Unknown.value,
-                        type = if (finalM3u8Url.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.Hls
+                        type = ExtractorLinkType.M3U8
                     )
                 )
                 return true
