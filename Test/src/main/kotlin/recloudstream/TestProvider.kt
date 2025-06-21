@@ -140,7 +140,8 @@ class NguoncProvider : MainAPI() {
             // LOGIC MỚI: KIỂM TRA PHIM LẺ (1 TẬP DUY NHẤT)
             if (allEpisodes.size == 1) {
                 val singleEpisode = allEpisodes.first()
-                val episodeData = AppUtils.toJson(listOf(singleEpisode)) // Vẫn mã hóa thành list để loadLinks xử lý chung
+                // SỬA LỖI BIÊN DỊCH: Gọi hàm toJson theo đúng cú pháp extension function.
+                val episodeData = listOf(singleEpisode).toJson()
 
                 return newMovieLoadResponse(title, url, if(isAnime) TvType.Anime else TvType.Movie, episodeData) {
                     this.posterUrl = poster
@@ -186,14 +187,6 @@ class NguoncProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // GHI CHÚ CHO TƯƠNG LAI:
-        // `data` bây giờ là một chuỗi JSON chứa danh sách các phiên bản của tập phim (dù phim lẻ hay phim bộ).
-        // Bước tiếp theo của bạn sẽ là:
-        // 1. Phân tích chuỗi JSON này thành một `List<EpisodeItem>`:
-        //    val episodeVersions = AppUtils.tryParseJson<List<EpisodeItem>>(data)
-        // 2. Lặp qua `episodeVersions`.
-        // 3. Với mỗi `version`, lấy `version.embedUrl` và dùng Jsoup/Extractor để giải mã nó.
-        // 4. Gọi `callback.invoke(...)` cho mỗi link video tìm được. Đặt tên cho link bằng `version.serverName` để phân biệt.
         Log.d("NguoncProvider", "Hàm loadLinks được gọi với data (JSON): $data. Cần logic để xử lý.")
         return false
     }
