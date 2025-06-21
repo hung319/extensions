@@ -5,6 +5,8 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import android.util.Log
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
+import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
+import java.net.URI
 
 // ================================================================
 // --- DATA CLASSES ---
@@ -16,7 +18,7 @@ data class SearchItem(
     @JsonProperty("thumb_url") val thumbUrl: String?,
     @JsonProperty("total_episodes") val totalEpisodes: Int?,
     @JsonProperty("current_episode") val currentEpisode: String?,
-    @JsonProperty("language") val language: String?
+    @JsonProperty("language") val language: String? 
 )
 
 data class SearchApiResponse(
@@ -52,7 +54,7 @@ data class CategoryInfo(
 data class MovieDetails(
     @JsonProperty("name") val name: String?,
     @JsonProperty("original_name") val originName: String?,
-    @JsonProperty("slug") val slug: String?, // Thêm slug vào đây để tiện sử dụng
+    @JsonProperty("slug") val slug: String?,
     @JsonProperty("thumb_url") val thumbUrl: String?,
     @JsonProperty("poster_url") val posterUrl: String?,
     @JsonProperty("content") val plot: String?,
@@ -139,8 +141,6 @@ class NguoncProvider : MainAPI() {
                     val recommendationsUrl = "$mainUrl/api/films/search?keyword=${genre.name}"
                     val recsResponse = app.get(recommendationsUrl, headers = browserHeaders).parsed<SearchApiResponse>()
                     recsResponse.items?.mapNotNullTo(recommendations) {
-                        // SỬA LỖI BIÊN DỊCH:
-                        // So sánh với `details.slug` đã được thêm vào data class MovieDetails.
                         if (it.slug != details.slug) toSearchResponse(it) else null
                     }
                 }
@@ -158,12 +158,8 @@ class NguoncProvider : MainAPI() {
             if (allEpisodes.size == 1) {
                 val singleEpisode = allEpisodes.first()
                 val episodeData = listOf(singleEpisode).toJson()
-
                 return newMovieLoadResponse(title, url, if(isAnime) TvType.Anime else TvType.Movie, episodeData) {
-                    this.posterUrl = poster
-                    this.plot = plot
-                    this.year = year
-                    this.recommendations = recommendations
+                    this.posterUrl = poster; this.plot = plot; this.year = year; this.recommendations = recommendations
                 }
             }
             
@@ -176,20 +172,15 @@ class NguoncProvider : MainAPI() {
             val finalEpisodes = episodesBySlug.values.mapNotNull { episodeVersions ->
                 val representativeEpisode = episodeVersions.firstOrNull() ?: return@mapNotNull null
                 val allVersionsData = episodeVersions.toJson()
-                
                 newEpisode(allVersionsData) {
-                    this.name = "Tập ${representativeEpisode.name}"
-                    this.episode = representativeEpisode.name?.toIntOrNull()
+                    this.name = "Tập ${representativeEpisode.name}"; this.episode = representativeEpisode.name?.toIntOrNull()
                 }
             }.sortedBy { it.episode }
 
             val tvType = if (isAnime) TvType.Anime else TvType.TvSeries
 
             return newTvSeriesLoadResponse(title, url, tvType, finalEpisodes) {
-                this.posterUrl = poster
-                this.plot = plot
-                this.year = year
-                this.recommendations = recommendations
+                this.posterUrl = poster; this.plot = plot; this.year = year; this.recommendations = recommendations
             }
         } catch (e: Exception) {
             Log.e("NguoncProvider", "Lỗi khi tải chi tiết phim từ URL: $apiUrl. Lỗi: ${e.message}", e)
@@ -203,7 +194,39 @@ class NguoncProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d("NguoncProvider", "Hàm loadLinks được gọi với data (JSON): $data. Cần logic để xử lý.")
-        return false
+        try {
+            val episodeVersions = tryParseJson<List<EpisodeItem>>(data) ?: return false
+
+            episodeVersions.apmap { episode ->
+                val embedUrl = episode.embed ?: return@apmap
+                
+                val initialPage = app.get(embedUrl, headers = browserHeaders).text
+                val payload = Regex("""name="payload" value="([^"]+)"""").find(initialPage)?.groupValues?.get(1) ?: return@apmap
+
+                val postData = mapOf("payload" to payload)
+                val playerPage = app.post(embedUrl, data = postData, headers = browserHeaders).text
+                
+                val relativeStreamUrl = Regex("""window\.streamURL = "([^"]+)"""").find(playerPage)?.groupValues?.get(1) ?: return@apmap
+                
+                val finalM3u8Url = URI(embedUrl).resolve(relativeStreamUrl).toString()
+
+                // SỬA LỖI THEO CẤU TRÚC MỚI:
+                // Thay thế `isM3u8 = true` bằng `type = ExtractorLinkType.M3U8`
+                callback.invoke(
+                    ExtractorLink(
+                        source = this.name,
+                        name = episode.serverName ?: "Server",
+                        url = finalM3u8Url,
+                        referer = embedUrl,
+                        quality = Qualities.Unknown.value,
+                        type = ExtractorLinkType.M3U8 // Sử dụng type thay cho isM3u8
+                    )
+                )
+            }
+            return true
+        } catch (e: Exception) {
+            Log.e("NguoncProvider", "Lỗi khi giải mã link embed: $data", e)
+            return false
+        }
     }
 }
