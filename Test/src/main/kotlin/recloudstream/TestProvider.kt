@@ -153,9 +153,14 @@ class Bluphim3Provider : MainAPI() {
     ): Boolean {
         val episodeDocument = app.get(data).document
         val iframeSrc = episodeDocument.selectFirst("iframe#iframeStream")?.attr("src") ?: return false
-
-        // SỬA LỖI: Dùng fixUrl() để đảm bảo iframeSrc là một URL đầy đủ, tuyệt đối
         val iframeUrl = fixUrl(iframeSrc)
+
+        // CẬP NHẬT: Ưu tiên dùng `loadExtractor` chung trước để xử lý các host phổ biến
+        if (loadExtractor(iframeUrl, data, subtitleCallback, callback)) {
+            return true
+        }
+
+        // Nếu `loadExtractor` thất bại, dùng logic phân tích riêng cho server của Bluphim3
         var playerPageDoc = app.get(iframeUrl, referer = data).document
         
         val nestedIframeSrc = playerPageDoc.selectFirst("iframe#embedIframe")?.attr("src")
