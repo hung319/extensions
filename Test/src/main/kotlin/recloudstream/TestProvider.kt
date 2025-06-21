@@ -103,11 +103,20 @@ class Bluphim3Provider : MainAPI() {
 
         val episodeElements = watchDocument.select("div.episodes div.list-episode a")
 
-        val isMovieByEpisodeRule = episodeElements.size == 1 && episodeElements.first()?.text()?.contains("Tập Full", ignoreCase = true) == true
-        
-        if (isMovieByEpisodeRule) {
-            val movieDataUrl = episodeElements.first()?.attr("href")?.let { fixUrl(it) } ?: watchUrl
-            return newMovieLoadResponse(title, url, if (isAnime) TvType.Anime else TvType.Movie, movieDataUrl) {
+        val isSeries = episodeElements.any { "Tập \\d+".toRegex().find(it.attr("title")) != null }
+
+        return if (isSeries) {
+            val episodes = episodeElements.map { element ->
+                val originalName = element.attr("title").ifBlank { element.text() }
+                val simplifiedName = "Tập \\d+".toRegex().find(originalName)?.value ?: originalName
+
+                newEpisode(fixUrl(element.attr("href"))) {
+                    this.name = simplifiedName
+                    this.description = element.text()
+                }
+            }.reversed()
+            
+            newTvSeriesLoadResponse(title, url, if (isAnime) TvType.Anime else TvType.TvSeries, episodes) {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = description
@@ -115,99 +124,80 @@ class Bluphim3Provider : MainAPI() {
                 this.recommendations = recommendations
             }
         } else {
-            val episodes = episodeElements.map {
-                val originalName = it.attr("title").ifBlank { it.text() }
-                val serverName = it.text()
-                val simplifiedName = "Tập \\d+".toRegex().find(originalName)?.value ?: originalName
-                
-                newEpisode(fixUrl(it.attr("href"))) {
-                    this.name = simplifiedName
-                    this.description = serverName // Dùng description để phân biệt server
-                }
-            }
-
-            if (episodes.isNotEmpty()) {
-                return newTvSeriesLoadResponse(title, url, if (isAnime) TvType.Anime else TvType.TvSeries, episodes) {
-                    this.posterUrl = poster
-                    this.year = year
-                    this.plot = description
-                    this.tags = tags
-                    this.recommendations = recommendations
-                }
-            } else {
-                return newMovieLoadResponse(title, url, if (isAnime) TvType.Anime else TvType.Movie, watchUrl) {
-                    this.posterUrl = poster
-                    this.year = year
-                    this.plot = description
-                    this.tags = tags
-                    this.recommendations = recommendations
-                }
+            // Với phim lẻ, chỉ hiển thị nút play, không hiển thị danh sách server
+            // dataUrl sẽ được xử lý trong loadLinks để chọn server phù hợp
+            newMovieLoadResponse(title, url, if (isAnime) TvType.Anime else TvType.Movie, url) {
+                this.posterUrl = poster
+                this.year = year
+                this.plot = description
+                this.tags = tags
+                this.recommendations = recommendations
             }
         }
     }
 
+    // CẬP NHẬT LỚN: Viết lại loadLinks để thử nghiệm logic lấy token
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val episodeDocument = app.get(data).document
-        val iframeSrc = episodeDocument.selectFirst("iframe#iframeStream")?.attr("src") ?: return false
-        val iframeUrl = fixUrl(iframeSrc)
-        var finalM3u8Url = ""
-        
-        try {
-            // Logic cho Server Gốc (dựa trên phân tích của bạn)
-            if (iframeUrl.contains("/embed?")) {
-                val embedDoc = app.get(iframeUrl, referer = data).document
-                val scriptContent = embedDoc.select("script").firstOrNull { it.data().contains("var videoId") }?.data() ?: return false
-                val videoId = "var videoId = '(.*?)'".toRegex().find(scriptContent)?.groupValues?.get(1) ?: return false
-                val cdn = "var cdn = '(.*?)'".toRegex().find(scriptContent)?.groupValues?.get(1) ?: return false
+        // `data` là URL gốc của phim (vd: /phim/abc-123)
+        // Cần vào trang xem phim để lấy danh sách server
+        val document = app.get(data).document
+        val watchUrl = document.selectFirst("a.btn-stream-link")?.attr("href")?.let { fixUrl(it) } ?: data
+        val watchDocument = app.get(watchUrl).document
+        val serverElements = watchDocument.select("div.episodes div.list-episode a")
 
-                val tokenData = app.post(
-                    "https://moviking.childish2x2.fun/geturl",
-                    headers = mapOf(
-                        "X-Requested-With" to "XMLHttpRequest",
-                        "Referer" to iframeUrl
-                    ),
-                ).text
-
-                val streamingUrl = "$cdn/streaming?id=$videoId&$tokenData"
-                val finalStreamPage = app.get(streamingUrl, referer = iframeUrl).document
+        // Duyệt qua từng server và thử lấy link
+        var success = false
+        serverElements.apmap { server ->
+            try {
+                val serverUrl = fixUrl(server.attr("href"))
+                val serverName = server.text()
                 
-                val playerScript = finalStreamPage.select("script").firstOrNull { it.data().contains("var url =") }?.data() ?: return false
-                finalM3u8Url = "var url = '(.*?)'".toRegex().find(playerScript)?.groupValues?.get(1) ?: return false
+                // Logic cho Server Gốc
+                if (serverName.contains("Gốc")) {
+                    val embedDoc = app.get(serverUrl, referer = watchUrl).document
+                    val scriptContent = embedDoc.select("script").firstOrNull { it.data().contains("var videoId") }?.data() ?: return@apmap
+                    val videoId = "var videoId = '(.*?)'".toRegex().find(scriptContent)?.groupValues?.get(1) ?: return@apmap
+                    val cdn = "var cdn = '(.*?)'".toRegex().find(scriptContent)?.groupValues?.get(1) ?: return@apmap
 
-            } 
-            // Logic cho Server bên thứ 3
-            else {
-                val iframe1Doc = app.get(iframeUrl, referer = data).document
-                val iframe2Url = iframe1Doc.selectFirst("iframe#embedIframe")?.attr("src") ?: return false
-                
-                val iframe2Doc = app.get(iframe2Url, referer = iframeUrl).document
-                val playerScript = iframe2Doc.select("script").firstOrNull { it.data().contains("var url =") }?.data() ?: return false
-                finalM3u8Url = "var url = '(.*?)'".toRegex().find(playerScript)?.groupValues?.get(1) ?: return false
+                    val tokenData = app.post(
+                        "https://moviking.childish2x2.fun/geturl",
+                        headers = mapOf(
+                            "X-Requested-With" to "XMLHttpRequest",
+                            "Referer" to serverUrl
+                        ),
+                        // Thử gửi request mà không cần body phức tạp
+                    ).text
+
+                    val streamingUrl = "$cdn/streaming?id=$videoId&$tokenData"
+                    val finalStreamPage = app.get(streamingUrl, referer = serverUrl).document
+                    val playerScript = finalStreamPage.select("script").firstOrNull { it.data().contains("var url =") }?.data() ?: return@apmap
+                    val finalM3u8Url = "var url = '(.*?)'".toRegex().find(playerScript)?.groupValues?.get(1) ?: return@apmap
+                    
+                    callback(ExtractorLink(source = serverName, name = name, url = finalM3u8Url, referer = streamingUrl, quality = Qualities.P1080.value, type = ExtractorLinkType.M3U8))
+                    success = true
+                } 
+                // Logic cho Server thứ 3
+                else {
+                    val iframe1Doc = app.get(serverUrl, referer = watchUrl).document
+                    val iframe2Url = iframe1Doc.selectFirst("iframe#embedIframe")?.attr("src") ?: return@apmap
+                    if (iframe2Url.isBlank()) return@apmap
+                    
+                    val iframe2Doc = app.get(iframe2Url, referer = serverUrl).document
+                    val playerScript = iframe2Doc.select("script").firstOrNull { it.data().contains("var url =") }?.data() ?: return@apmap
+                    val finalM3u8Url = "var url = '(.*?)'".toRegex().find(playerScript)?.groupValues?.get(1) ?: return@apmap
+                    
+                    callback(ExtractorLink(source = serverName, name = name, url = finalM3u8Url, referer = iframe2Url, quality = Qualities.Unknown.value, type = ExtractorLinkType.M3U8))
+                    success = true
+                }
+            } catch (e: Exception) {
+                // Bỏ qua lỗi và thử server tiếp theo
             }
-
-            if (finalM3u8Url.isNotBlank()) {
-                 callback(
-                    ExtractorLink(
-                        source = this.name,
-                        name = this.name,
-                        url = finalM3u8Url,
-                        referer = iframeUrl, 
-                        quality = Qualities.Unknown.value,
-                        type = ExtractorLinkType.M3U8
-                    )
-                )
-                return true
-            }
-
-        } catch (e: Exception) {
-            // Ghi log lỗi nếu có
         }
-
-        return false
+        return success
     }
 }
