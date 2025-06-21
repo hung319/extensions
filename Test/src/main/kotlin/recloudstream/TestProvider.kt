@@ -1,16 +1,12 @@
 package recloudstream
 
-// Sử dụng annotation của Jackson
 import com.fasterxml.jackson.annotation.JsonProperty
-// Import Jsoup đã được comment lại, sẵn sàng để dùng sau
-// import org.jsoup.Jsoup
-
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import android.util.Log
 
 // ================================================================
-// --- DATA CLASSES (SỬ DỤNG ANNOTATION @JsonProperty) ---
+// --- DATA CLASSES ---
 // ================================================================
 data class SearchItem(
     @JsonProperty("name") val name: String?,
@@ -54,7 +50,7 @@ data class FilmDetails(
 )
 
 // ================================================================
-// --- CLASS PLUGIN CHÍNH (LOGIC ĐÃ HOÀN THIỆN) ---
+// --- CLASS PLUGIN CHÍNH ---
 // ================================================================
 class NguoncProvider : MainAPI() {
 
@@ -103,16 +99,19 @@ class NguoncProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val apiUrl = "$mainUrl/api/film/$url"
         val dynamicHeaders = browserHeaders + ("Referer" to "$mainUrl/$url")
+        
         try {
             val response = app.get(apiUrl, headers = dynamicHeaders).parsed<FilmDetails>()
-            val details = response.movie ?: return null
+            val details = response.movie ?: run {
+                Log.e("NguoncProvider", "API trả về JSON hợp lệ nhưng thiếu object 'movie' tại URL: $apiUrl")
+                return null
+            }
             val title = details.name ?: details.originName ?: "Unknown"
             val poster = getAbsoluteUrl(details.posterUrl ?: details.thumbUrl)
             val plot = details.plot
             val year = details.year?.toIntOrNull()
             val episodes = details.episodes?.flatMap { server ->
                 server.items?.mapNotNull { ep ->
-                    // Truyền slug và link embed vào data để `loadLinks` có thể sử dụng sau
                     val episodeData = "${ep.slug}|${ep.embed}"
                     newEpisode(episodeData) {
                         this.name = "${ep.name} - ${server.serverName}"
@@ -130,28 +129,20 @@ class NguoncProvider : MainAPI() {
                 }
             }
         } catch (e: Exception) {
-            Log.e("NguoncProvider", "Lỗi khi tải chi tiết phim từ URL: $apiUrl", e)
+            // CẢI TIẾN LOG LỖI: Ghi lại nội dung thực tế nhận được nếu có lỗi parse
+            val errorResponseText = if (e is com.lagradost.cloudstream3.movieproviders.ParseError) e.response else e.message
+            Log.e("NguoncProvider", "Lỗi nghiêm trọng khi tải chi tiết phim từ URL: $apiUrl. Phản hồi nhận được (có thể là HTML): ${errorResponseText?.take(500)}", e)
             return null
         }
     }
 
-    /**
-     * HÀM LOADLINKS - TẠM THỜI ĐỂ TRỐNG (PLACEHOLDER)
-     * Đây là phần phức tạp nhất cần được phân tích kỹ lưỡng sau.
-     */
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // `data` hiện đang chứa chuỗi "slug|embedUrl"
-        // Khi bạn sẵn sàng, hãy tách chuỗi này ra và dùng Jsoup để phân tích embedUrl.
-        // val (_, embedUrl) = data.split("|")
-        
         Log.d("NguoncProvider", "Hàm loadLinks được gọi với data: $data. Cần logic để xử lý.")
-
-        // Trả về false để báo hiệu rằng chưa tìm được link.
         return false
     }
 }
