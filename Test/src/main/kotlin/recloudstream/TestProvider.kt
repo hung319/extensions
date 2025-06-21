@@ -9,7 +9,6 @@ import java.net.URI
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.TvType
@@ -151,33 +150,29 @@ class Bluphim3Provider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // CẬP NHẬT: Viết lại toàn bộ hàm theo logic do người dùng chỉ định
         val episodeDocument = app.get(data).document
-        val iframeSrc = episodeDocument.selectFirst("iframe#iframeStream")?.attr("src") ?: return false
         
-        // SỬA LỖI: Loại bỏ đoạn code chặn `embed?` vì nó chặn sai server
-        // if (iframeSrc.contains("embed?")) {
-        //     return false
-        // }
+        // Bước 1: Lấy link iframe đầu tiên (iframe1) từ trang tập phim
+        val iframe1Src = episodeDocument.selectFirst("iframe#iframeStream")?.attr("src") ?: return false
+        val iframe1Url = fixUrl(iframe1Src)
+
+        // Bước 2: Truy cập iframe1 để lấy nội dung
+        val iframe1Doc = app.get(iframe1Url, referer = data).document
         
-        val iframeUrl = fixUrl(iframeSrc)
-
-        if (loadExtractor(iframeUrl, data, subtitleCallback, callback)) {
-            return true
-        }
-
-        var playerPageUrl = iframeUrl
-        var playerPageDoc = app.get(playerPageUrl, referer = data).document
+        // Bước 3: Từ nội dung của iframe1, tìm link iframe thứ hai (iframe2)
+        val iframe2Url = iframe1Doc.selectFirst("iframe#embedIframe")?.attr("src") ?: return false
+        if (iframe2Url.isBlank()) return false
         
-        val nestedIframeSrc = playerPageDoc.selectFirst("iframe#embedIframe")?.attr("src")
-        if (nestedIframeSrc != null && nestedIframeSrc.isNotBlank()) {
-            playerPageUrl = nestedIframeSrc
-            playerPageDoc = app.get(playerPageUrl, referer = iframeUrl).document
-        }
-
-        val jwPlayerScript = playerPageDoc.select("script").firstOrNull { 
+        // Bước 4: Truy cập iframe2, dùng link của iframe1 làm referer
+        val iframe2Doc = app.get(iframe2Url, referer = iframe1Url).document
+        
+        // Bước 5: Tìm script JW Player trong nội dung của iframe2
+        val jwPlayerScript = iframe2Doc.select("script").firstOrNull { 
             it.data().contains("jwplayer") && it.data().contains(".setup") 
         }?.data() ?: return false
-
+        
+        // Bước 6: Trích xuất link m3u8 từ script
         val m3u8Url = "\"file\"\\s*:\\s*\"(//[^\"]*?(?:playlist|index)\\.m3u8)\"".toRegex().find(jwPlayerScript)?.groupValues?.get(1)?.let { "https:$it" } ?: return false
 
         callback(
@@ -185,12 +180,13 @@ class Bluphim3Provider : MainAPI() {
                 source = this.name,
                 name = this.name,
                 url = m3u8Url,
-                referer = playerPageUrl, 
+                referer = iframe2Url, // Referer là trang chứa trình phát
                 quality = Qualities.Unknown.value,
                 type = ExtractorLinkType.M3U8
             )
         )
 
+        // Trích xuất phụ đề (nếu có)
         val tracksBlock = "\"tracks\"\\s*:\\s*\\[([^\\]]*)\\]".toRegex().find(jwPlayerScript)?.groupValues?.get(1)
         if (tracksBlock != null) {
             val cdnDomain = "https://${URI(m3u8Url).host}"
