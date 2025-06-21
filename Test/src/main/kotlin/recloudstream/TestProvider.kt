@@ -37,7 +37,9 @@ data class ServerItem(
     @JsonProperty("items") val items: List<EpisodeItem>?
 )
 
+// Sửa đổi: Thêm 'id' để lấy slug của thể loại cho mục đề xuất
 data class CategoryItem(
+    @JsonProperty("id") val id: String?,
     @JsonProperty("name") val name: String?
 )
 data class CategoryGroup(
@@ -130,6 +132,25 @@ class NguoncProvider : MainAPI() {
                 cat.group?.name == "Thể loại" && cat.list?.any { it.name == "Hoạt Hình" } == true
             } == true
             
+            // LOGIC MỚI: LẤY DANH SÁCH PHIM ĐỀ XUẤT
+            val recommendations = mutableListOf<SearchResponse>()
+            try {
+                // Tìm slug của thể loại đầu tiên
+                val genre = details.category?.values?.find { it.group?.name == "Thể loại" }?.list?.firstOrNull()
+                // API tìm theo thể loại không dùng slug của phim mà dùng slug của thể loại, có vẻ API này không dùng được ID hash.
+                // Giải pháp thay thế: Dùng tên thể loại để tìm kiếm.
+                if (genre?.name != null) {
+                    val recommendationsUrl = "$mainUrl/api/films/search?keyword=${genre.name}"
+                    val recsResponse = app.get(recommendationsUrl, headers = browserHeaders).parsed<SearchApiResponse>()
+                    recsResponse.items?.mapNotNullTo(recommendations) {
+                        // Lọc ra phim đang xem để không tự đề xuất chính nó
+                        if (it.slug != details.slug) toSearchResponse(it) else null
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("NguoncProvider", "Không tải được danh sách đề xuất", e)
+            }
+            
             val allEpisodes = details.episodes?.flatMap { server ->
                 server.items?.map { episode ->
                     episode.serverName = server.serverName
@@ -137,20 +158,18 @@ class NguoncProvider : MainAPI() {
                 } ?: emptyList()
             } ?: emptyList()
 
-            // LOGIC MỚI: KIỂM TRA PHIM LẺ (1 TẬP DUY NHẤT)
             if (allEpisodes.size == 1) {
                 val singleEpisode = allEpisodes.first()
-                // SỬA LỖI BIÊN DỊCH: Gọi hàm toJson theo đúng cú pháp extension function.
                 val episodeData = listOf(singleEpisode).toJson()
 
                 return newMovieLoadResponse(title, url, if(isAnime) TvType.Anime else TvType.Movie, episodeData) {
                     this.posterUrl = poster
                     this.plot = plot
                     this.year = year
+                    this.recommendations = recommendations
                 }
             }
             
-            // LOGIC GỘP TẬP CHO PHIM BỘ
             val episodesBySlug = mutableMapOf<String, MutableList<EpisodeItem>>()
             allEpisodes.forEach { episode ->
                 val slug = episode.slug ?: return@forEach
@@ -161,11 +180,11 @@ class NguoncProvider : MainAPI() {
                 val representativeEpisode = episodeVersions.firstOrNull() ?: return@mapNotNull null
                 val allVersionsData = episodeVersions.toJson()
                 
-                Episode(
-                    data = allVersionsData,
-                    name = "Tập ${representativeEpisode.name}",
-                    episode = representativeEpisode.name?.toIntOrNull()
-                )
+                // SỬA LỖI DEPRECATION: Quay lại dùng hàm newEpisode
+                newEpisode(allVersionsData) {
+                    this.name = "Tập ${representativeEpisode.name}"
+                    this.episode = representativeEpisode.name?.toIntOrNull()
+                }
             }.sortedBy { it.episode }
 
             val tvType = if (isAnime) TvType.Anime else TvType.TvSeries
@@ -174,6 +193,7 @@ class NguoncProvider : MainAPI() {
                 this.posterUrl = poster
                 this.plot = plot
                 this.year = year
+                this.recommendations = recommendations // Thêm recommendations vào response
             }
         } catch (e: Exception) {
             Log.e("NguoncProvider", "Lỗi khi tải chi tiết phim từ URL: $apiUrl. Lỗi: ${e.message}", e)
