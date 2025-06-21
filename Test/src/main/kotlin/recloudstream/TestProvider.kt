@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import android.util.Log
+import com.lagradost.cloudstream3.utils.AppUtils.toJson // Import hàm toJson
 import java.util.EnumSet
 
 // ================================================================
@@ -16,7 +17,6 @@ data class SearchItem(
     @JsonProperty("thumb_url") val thumbUrl: String?,
     @JsonProperty("total_episodes") val totalEpisodes: Int?,
     @JsonProperty("current_episode") val currentEpisode: String?,
-    // Thêm trường language để đọc thông tin thuyết minh
     @JsonProperty("language") val language: String? 
 )
 
@@ -87,30 +87,25 @@ class NguoncProvider : MainAPI() {
         return if (url.startsWith("http")) url else "$mainUrl/$url"
     }
 
-    // Hàm tiện ích để tạo SearchResponse, tránh lặp code
     private fun toSearchResponse(item: SearchItem): SearchResponse? {
         val slug = item.slug ?: return null
         val apiLink = "$mainUrl/api/film/$slug"
         
-        // LOGIC MỚI: Kiểm tra ngôn ngữ để thêm tag Dubbed
         val isDubbed = item.language?.contains("thuyết minh", ignoreCase = true) == true ||
                        item.language?.contains("lồng tiếng", ignoreCase = true) == true
         
+        val displayName = if (isDubbed) "${item.name} [Dub]" else item.name ?: "Unknown"
+
         val tvType = if ((item.totalEpisodes ?: 0) > 1 || item.currentEpisode?.contains("Tập") == true) TvType.TvSeries else TvType.Movie
         
-        return newMovieSearchResponse(item.name ?: "Unknown", apiLink, tvType) {
+        return newMovieSearchResponse(displayName, apiLink, tvType) {
             this.posterUrl = getAbsoluteUrl(item.posterUrl ?: item.thumbUrl)
-            // Thêm tag DUBBLED vào poster nếu có
-            if (isDubbed) {
-                this.dubStatus = EnumSet.of(DubStatus.Dubbed)
-            }
         }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val url = "$mainUrl/api/films/phim-moi-cap-nhat?page=$page"
         val response = app.get(url, headers = browserHeaders).parsed<SearchApiResponse>()
-        // Sử dụng hàm tiện ích để tạo response
         val homeList = response.items?.mapNotNull { toSearchResponse(it) } ?: return null
         return newHomePageResponse(list = HomePageList("Phim Mới Cập Nhật", homeList), hasNext = true)
     }
@@ -119,7 +114,6 @@ class NguoncProvider : MainAPI() {
         val url = "$mainUrl/api/films/search?keyword=$query"
         val response = app.get(url, headers = browserHeaders).parsed<SearchApiResponse>()
         if (response.status != "success" || response.items.isNullOrEmpty()) return emptyList()
-        // Sử dụng hàm tiện ích để tạo response
         return response.items.mapNotNull { toSearchResponse(it) }
     }
 
@@ -137,7 +131,6 @@ class NguoncProvider : MainAPI() {
                 cat.group?.name == "Thể loại" && cat.list?.any { it.name == "Hoạt Hình" } == true
             } == true
             
-            // LOGIC MỚI: Quay lại việc nhóm các tập phim theo slug để gộp lại
             val episodesBySlug = mutableMapOf<String, MutableList<EpisodeItem>>()
             details.episodes?.forEach { server ->
                 server.items?.forEach { episode ->
@@ -147,16 +140,18 @@ class NguoncProvider : MainAPI() {
                 }
             }
 
-            // Tạo danh sách tập phim cuối cùng cho UI, đã được gộp và chuẩn hóa tên
             val finalEpisodes = episodesBySlug.values.mapNotNull { episodeVersions ->
                 val representativeEpisode = episodeVersions.firstOrNull() ?: return@mapNotNull null
-                val allVersionsData = AppUtils.toJson(episodeVersions)
                 
-                newEpisode(allVersionsData) {
-                    // Chuẩn hóa tên thành "Tập X"
-                    this.name = "Tập ${representativeEpisode.name}"
-                    this.episode = representativeEpisode.name?.toIntOrNull()
-                }
+                // SỬA LỖI `toJson`: Gọi theo đúng cú pháp của extension function.
+                val allVersionsData = episodeVersions.toJson() //
+                
+                // SỬA LỖI `newEpisode` & `episode`: Dùng trực tiếp hàm dựng `Episode`.
+                Episode(
+                    data = allVersionsData,
+                    name = "Tập ${representativeEpisode.name}",
+                    episode = representativeEpisode.name?.toIntOrNull()
+                )
             }.sortedBy { it.episode }
 
             val tvType = if (isAnime) {
