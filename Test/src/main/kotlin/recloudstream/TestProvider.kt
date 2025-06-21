@@ -11,7 +11,6 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.Qualities
-// import com.lagradost.cloudstream3.Log // SỬA LỖI: Tạm thời vô hiệu hóa import này
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.HomePageResponse
@@ -155,11 +154,10 @@ class Bluphim3Provider : MainAPI() {
         val episodeDocument = app.get(data).document
         val iframeSrc = episodeDocument.selectFirst("iframe#iframeStream")?.attr("src") ?: return false
         
-        if (iframeSrc.contains("embed?")) {
-            // SỬA LỖI: Tạm thời vô hiệu hóa dòng log để tránh lỗi biên dịch
-            // Log.d(name, "Server gốc không được hỗ trợ do cơ chế token.")
-            return false
-        }
+        // SỬA LỖI: Loại bỏ đoạn code chặn `embed?` vì nó chặn sai server
+        // if (iframeSrc.contains("embed?")) {
+        //     return false
+        // }
         
         val iframeUrl = fixUrl(iframeSrc)
 
