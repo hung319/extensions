@@ -1,182 +1,195 @@
-// Bạn có thể cần thay đổi package này cho phù hợp với cấu trúc dự án của mình
-package com.lagradost.cloudstream3.plugins.vi
+package recloudstream
 
-// Thêm thư viện Jsoup để phân tích cú pháp HTML
-import org.jsoup.nodes.Element
-import java.net.URI 
-
-// Import chính xác và đầy đủ các lớp và hàm cần thiết
+import com.google.gson.annotations.SerializedName
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.MainAPI
-import com.lagradost.cloudstream3.TvType
-import com.lagradost.cloudstream3.HomePageResponse
-import com.lagradost.cloudstream3.HomePageList
-import com.lagradost.cloudstream3.SearchResponse
-import com.lagradost.cloudstream3.LoadResponse
-import com.lagradost.cloudstream3.MovieLoadResponse
-import com.lagradost.cloudstream3.TvSeriesLoadResponse
-import com.lagradost.cloudstream3.AnimeSearchResponse
-import com.lagradost.cloudstream3.Episode
-import com.lagradost.cloudstream3.MainPageRequest
-import com.lagradost.cloudstream3.SubtitleFile
-import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.fixUrl
-import com.lagradost.cloudstream3.newHomePageResponse
-import com.lagradost.cloudstream3.newAnimeSearchResponse
-import com.lagradost.cloudstream3.newMovieLoadResponse
-import com.lagradost.cloudstream3.newTvSeriesLoadResponse
-import com.lagradost.cloudstream3.newEpisode
+import com.lagradost.cloudstream3.utils.*
 
-// Định nghĩa lớp chính cho plugin
-class Bluphim3Provider : MainAPI() {
-    override var mainUrl = "https://bluphim3.com"
-    override var name = "Bluphim3"
-    override val hasMainPage = true
+// ================================================================
+// --- ĐỊNH NGHĨA CÁC DATA CLASS ĐỂ XỬ LÝ JSON TỪ API ---
+// ================================================================
+
+// --- Data Classes cho API Search ---
+data class SearchItem(
+    @SerializedName("name") val name: String?,
+    @SerializedName("slug") val slug: String?,
+    @SerializedName("poster_url") val posterUrl: String?,
+    @SerializedName("thumb_url") val thumbUrl: String?,
+    @SerializedName("total_episodes") val totalEpisodes: Int?,
+    @SerializedName("current_episode") val currentEpisode: String?
+)
+
+data class SearchApiResponse(
+    @SerializedName("status") val status: String?,
+    @SerializedName("items") val items: List<SearchItem>?
+)
+
+// --- Data Classes cho API Load (Chi tiết phim) ---
+data class EpisodeItem(
+    @SerializedName("name") val name: String?,
+    @SerializedName("slug") val slug: String?,
+    @SerializedName("embed") val embed: String?,
+    @SerializedName("m3u8") val m3u8: String?
+)
+
+data class ServerItem(
+    @SerializedName("server_name") val serverName: String?,
+    @SerializedName("items") val items: List<EpisodeItem>?
+)
+
+data class MovieDetails(
+    @SerializedName("name") val name: String?,
+    @SerializedName("original_name") val originName: String?,
+    @SerializedName("thumb_url") val thumbUrl: String?,
+    @SerializedName("poster_url") val posterUrl: String?,
+    @SerializedName("content") val plot: String?,
+    @SerializedName("year") val year: String?,
+    @SerializedName("episodes") val episodes: List<ServerItem>?
+)
+
+data class FilmDetails(
+    @SerializedName("status") val status: String?,
+    @SerializedName("movie") val movie: MovieDetails?
+)
+
+
+// ================================================================
+// --- CLASS PLUGIN CHÍNH ---
+// ================================================================
+
+class NguoncProvider : MainAPI() {
+
+    override var name = "Phim Nguồn C"
+    override var mainUrl = "https://phim.nguonc.com"
     override var lang = "vi"
-    override val hasDownloadSupport = true
-    override val supportedTypes = setOf(
-        TvType.Movie,
-        TvType.TvSeries,
-        TvType.Anime
-    )
+    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        val document = app.get(mainUrl).document
-        val homePageList = mutableListOf<HomePageList>()
-
-        document.select("div.list-films").forEach { block ->
-            val title = block.selectFirst("h2.title-box")?.text()?.trim() ?: return@forEach
-            val movies = block.select("li.item, li.film-item-ver").mapNotNull {
-                it.toSearchResult()
-            }
-            if (movies.isNotEmpty()) {
-                homePageList.add(HomePageList(title, movies))
-            }
-        }
-        return newHomePageResponse(homePageList)
+    private fun getAbsoluteUrl(url: String?): String {
+        if (url.isNullOrEmpty()) return ""
+        return if (url.startsWith("http")) url else "$mainUrl/$url"
     }
 
-    private fun Element.toSearchResult(): SearchResponse? {
-        var title = this.attr("title").trim()
-        if (title.isBlank()) {
-            title = this.selectFirst("a")?.attr("title")?.trim() ?: ""
-        }
-        title = title.replace("Xem phim ", "").replace(" online", "")
-        if (title.isBlank()) return null
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+        val url = "$mainUrl/api/films/phim-moi-cap-nhat?page=$page"
+        val response = app.get(url).parsed<SearchApiResponse>()
 
-        val href = this.selectFirst("a")?.attr("href")?.let { fixUrl(it) } ?: return null
-        val posterUrl = this.selectFirst("img")?.attr("src")?.let { fixUrl(it) }
+        val homeList = response.items?.mapNotNull { item ->
+            val slug = item.slug ?: return@mapNotNull null
+            val tvType = if ((item.totalEpisodes ?: 0) > 1 || item.currentEpisode?.contains("Tập") == true) {
+                TvType.TvSeries
+            } else {
+                TvType.Movie
+            }
+            newMovieSearchResponse(item.name ?: "Unknown", slug, tvType) {
+                this.posterUrl = getAbsoluteUrl(item.posterUrl ?: item.thumbUrl)
+            }
+        } ?: return null
 
-        return newAnimeSearchResponse(title, href) {
-            this.posterUrl = posterUrl
-        }
+        return newHomePageResponse(
+            list = HomePageList("Phim Mới Cập Nhật", homeList),
+            hasNext = true
+        )
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/search?k=$query"
-        val document = app.get(searchUrl).document
+        val url = "$mainUrl/api/films/search?keyword=$query"
+        val response = app.get(url).parsed<SearchApiResponse>()
+        if (response.status != "success" || response.items.isNullOrEmpty()) {
+            return emptyList()
+        }
 
-        return document.select("div.list-films ul li.item").mapNotNull {
-            it.toSearchResult()
+        return response.items.mapNotNull { item ->
+            val slug = item.slug ?: return@mapNotNull null
+            val tvType = if ((item.totalEpisodes ?: 0) > 1 || item.currentEpisode?.contains("Tập") == true) {
+                TvType.TvSeries
+            } else {
+                TvType.Movie
+            }
+            newMovieSearchResponse(item.name ?: "Unknown", slug, tvType) {
+                this.posterUrl = getAbsoluteUrl(item.posterUrl ?: item.thumbUrl)
+            }
         }
     }
-    
-    // CẬP NHẬT: Logic mới để phân biệt phim lẻ và phim bộ
+
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url).document
+        val apiUrl = "$mainUrl/api/film/$url"
+        val response = app.get(apiUrl).parsed<FilmDetails>()
+        val details = response.movie ?: return null
 
-        val title = document.selectFirst("span.title")?.text()?.trim() ?: return null
-        val poster = document.selectFirst("div.poster img")?.attr("src")?.let { fixUrl(it) }
-        val year = document.select("div.dinfo dl.col dd").getOrNull(3)?.text()?.trim()?.toIntOrNull()
-        val description = document.selectFirst("div.detail div.tab")?.text()?.trim()
-        val tags = document.select("dd.theloaidd a").map { it.text() }
+        val title = details.name ?: details.originName ?: "Unknown"
+        val poster = getAbsoluteUrl(details.posterUrl ?: details.thumbUrl)
+        val plot = details.plot
+        val year = details.year?.toIntOrNull()
 
-        val isAnime = tags.any { it.contains("Hoạt hình", ignoreCase = true) }
-        
-        val watchUrl = document.selectFirst("a.btn-stream-link")?.attr("href")?.let { fixUrl(it) } ?: url
-        val watchDocument = app.get(watchUrl).document
-        
-        val recommendations = watchDocument.select(".list-films.film-related li.item").mapNotNull { it.toSearchResult() }
-
-        val linkElements = watchDocument.select("div.episodes div.list-episode a")
-
-        val isSeries = linkElements.any { "Tập \\d+".toRegex().find(it.attr("title")) != null }
-
-        return if (isSeries) {
-            // Xử lý phim bộ
-            val episodes = linkElements.map { element ->
-                val originalName = element.attr("title").ifBlank { element.text() }
-                val simplifiedName = "Tập \\d+".toRegex().find(originalName)?.value ?: originalName
-                newEpisode(fixUrl(element.attr("href"))) {
-                    this.name = simplifiedName
+        // Trích xuất các tập phim từ các server
+        val episodes = details.episodes?.flatMap { server ->
+            server.items?.mapNotNull { ep ->
+                // THAY ĐỔI QUAN TRỌNG:
+                // Vì link m3u8 không hoạt động, chúng ta sẽ không truyền nó vào `newEpisode`.
+                // Thay vào đó, ta truyền một đối tượng chứa cả link embed và slug,
+                // để `loadLinks` có thể thử nhiều cách khác nhau.
+                // Ở đây, đơn giản nhất là truyền slug của tập phim.
+                val episodeSlug = ep.slug ?: return@mapNotNull null
+                
+                newEpisode(episodeSlug) {
+                    this.name = "${ep.name} - ${server.serverName}"
                 }
-            }.reversed()
-            
-            newTvSeriesLoadResponse(title, url, if (isAnime) TvType.Anime else TvType.TvSeries, episodes) {
+            } ?: emptyList()
+        } ?: emptyList()
+
+        val tvType = if(episodes.size > 1) TvType.TvSeries else TvType.Movie
+
+        return if (tvType == TvType.TvSeries) {
+            newTvSeriesLoadResponse(title, url, tvType, episodes) {
                 this.posterUrl = poster
+                this.plot = plot
                 this.year = year
-                this.plot = description
-                this.tags = tags
-                this.recommendations = recommendations
             }
         } else {
-            // Xử lý phim lẻ: Tìm server bên thứ 3 (đã hoạt động) và trả về như một phim lẻ
-            val movieDataUrl = linkElements.firstOrNull { it.attr("href").contains("sv2=true") }?.attr("href")
-                ?: linkElements.firstOrNull { !it.text().contains("Gốc") }?.attr("href")
-                ?: watchUrl
-
-            newMovieLoadResponse(title, url, if (isAnime) TvType.Anime else TvType.Movie, fixUrl(movieDataUrl)) {
+            newMovieLoadResponse(title, url, tvType, episodes) {
                 this.posterUrl = poster
+                this.plot = plot
                 this.year = year
-                this.plot = description
-                this.tags = tags
-                this.recommendations = recommendations
             }
         }
     }
 
-    // CẬP NHẬT: Quay lại logic ổn định chỉ hỗ trợ server bên thứ 3
+    /**
+     * HÀM LOADLINKS - PLACEHOLDER
+     * Do link m3u8 trực tiếp không hoạt động, hàm này cần được điều tra thêm.
+     */
     override suspend fun loadLinks(
-        data: String,
+        data: String, // `data` giờ là slug của tập phim (ví dụ: "tap-full")
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val episodeDocument = app.get(data).document
-        val iframeSrc = episodeDocument.selectFirst("iframe#iframeStream")?.attr("src") ?: return false
-        val iframeUrl = fixUrl(iframeSrc)
+        // TODO: VIỆC CẦN LÀM CỦA BẠN
+        // `data` đang chứa slug của tập phim. Bạn cần tìm ra cách lấy link video từ slug này.
+        // GỢI Ý:
+        // 1. Link `embed` trong API (`https://embed14.streamc.xyz/embed.php?hash=...`) là một đầu mối quan trọng.
+        //    Hãy truy cập link embed này bằng trình duyệt (bật F12).
+        // 2. Quan sát tab "Network" xem trang embed đó gọi đến những file nào. Rất có thể nó sẽ gọi đến một link m3u8 hợp lệ.
+        // 3. Bạn cần viết code để "giải mã" link embed đó. Có thể bạn sẽ cần:
+        //    - Tải nội dung HTML của trang embed: `app.get(embedUrl).text`
+        //    - Dùng regex hoặc các hàm chuỗi để tìm link m3u8 hoặc một link API khác bên trong.
+        //    - Một số trang embed sẽ dùng JavaScript để tạo link, trường hợp này sẽ phức tạp hơn.
 
-        // Chặn server gốc vì không ổn định
-        if (!iframeUrl.contains("embed3rd")) {
-            return false
-        }
+        // Ví dụ về luồng logic bạn có thể thử:
+        // val embedUrl = "..." // Bạn cần cách để lấy được link embed tương ứng với slug `data`
+        // val embedPageHtml = app.get(embedUrl).text
+        // val m3u8Link = // Dùng regex để tìm link .m3u8 trong `embedPageHtml`
         
-        // Logic cho server bên thứ 3
-        val iframe1Doc = app.get(iframeUrl, referer = data).document
-        val iframe2Url = iframe1Doc.selectFirst("iframe#embedIframe")?.attr("src") ?: return false
-        if (iframe2Url.isBlank()) return false
+        // callback.invoke(
+        //     ExtractorLink(
+        //         source = this.name,
+        //         name = "Server Embed",
+        //         url = m3u8Link,
+        //         referer = embedUrl, // Referer có thể là trang embed
+        //         quality = Qualities.Unknown.value,
+        //         isM3u8 = true
+        //     )
+        // )
         
-        val iframe2Doc = app.get(iframe2Url, referer = iframeUrl).document
-        val playerScript = iframe2Doc.select("script").firstOrNull { 
-            it.data().contains("jwplayer") && it.data().contains(".setup") 
-        }?.data() ?: return false
-        
-        val m3u8Url = "\"file\"\\s*:\\s*\"(//[^\"]*?(?:playlist|index)\\.m3u8)\"".toRegex().find(jwPlayerScript)?.groupValues?.get(1)?.let { "https:$it" } ?: return false
-
-        callback(
-            ExtractorLink(
-                source = this.name,
-                name = this.name,
-                url = m3u8Url,
-                referer = iframe2Url,
-                quality = Qualities.Unknown.value,
-                type = ExtractorLinkType.M3U8
-            )
-        )
-        
-        return true
+        return false // Trả về false vì chưa có logic hoàn chỉnh
     }
 }
