@@ -6,7 +6,7 @@ import com.lagradost.cloudstream3.utils.*
 import android.util.Log
 
 // ================================================================
-// --- DATA CLASSES ---
+// --- DATA CLASSES (Giữ nguyên) ---
 // ================================================================
 data class SearchItem(
     @JsonProperty("name") val name: String?,
@@ -65,6 +65,7 @@ class NguoncProvider : MainAPI() {
         "Referer" to "$mainUrl/"
     )
 
+    // Các hàm khác giữ nguyên, không cần thay đổi
     private fun getAbsoluteUrl(url: String?): String {
         if (url.isNullOrEmpty()) return ""
         return if (url.startsWith("http")) url else "$mainUrl/$url"
@@ -96,42 +97,38 @@ class NguoncProvider : MainAPI() {
         }
     }
 
+
+    // ================================================================
+    // --- PHIÊN BẢN HÀM LOAD ĐẶC BIỆT ĐỂ GỠ LỖI ---
+    // ================================================================
     override suspend fun load(url: String): LoadResponse? {
         val apiUrl = "$mainUrl/api/film/$url"
         val dynamicHeaders = browserHeaders + ("Referer" to "$mainUrl/$url")
         
+        // Biến để lưu trữ thông tin gỡ lỗi
+        var debugInfo: String
+
         try {
-            val response = app.get(apiUrl, headers = dynamicHeaders).parsed<FilmDetails>()
-            val details = response.movie ?: run {
-                Log.e("NguoncProvider", "API trả về JSON hợp lệ nhưng thiếu object 'movie' tại URL: $apiUrl")
-                return null
-            }
-            val title = details.name ?: details.originName ?: "Unknown"
-            val poster = getAbsoluteUrl(details.posterUrl ?: details.thumbUrl)
-            val plot = details.plot
-            val year = details.year?.toIntOrNull()
-            val episodes = details.episodes?.flatMap { server ->
-                server.items?.mapNotNull { ep ->
-                    val episodeData = "${ep.slug}|${ep.embed}"
-                    newEpisode(episodeData) {
-                        this.name = "${ep.name} - ${server.serverName}"
-                    }
-                } ?: emptyList()
-            } ?: emptyList()
-            val tvType = if (episodes.size > 1) TvType.TvSeries else TvType.Movie
-            return if (tvType == TvType.TvSeries) {
-                newTvSeriesLoadResponse(title, url, tvType, episodes) {
-                    this.posterUrl = poster; this.plot = plot; this.year = year
-                }
-            } else {
-                newMovieLoadResponse(title, url, tvType, episodes) {
-                    this.posterUrl = poster; this.plot = plot; this.year = year
-                }
-            }
+            // Thực hiện gọi API và lấy nội dung text thô
+            val responseText = app.get(apiUrl, headers = dynamicHeaders).text
+            debugInfo = "ĐÃ NHẬN PHẢN HỒI TỪ API. Nội dung (1000 ký tự đầu):\n\n${responseText.take(1000)}"
+
         } catch (e: Exception) {
-            // SỬA LỖI BIÊN DỊCH: Quay lại với khối catch đơn giản, chắc chắn biên dịch thành công.
-            Log.e("NguoncProvider", "Lỗi khi tải chi tiết phim từ URL: $apiUrl. Lỗi: ${e.message}", e)
-            return null
+            // Nếu có lỗi, ghi lại thông tin lỗi
+            debugInfo = "LỖI KHI GỌI API. Chi tiết lỗi:\n\n${e.toString().take(1000)}"
+        }
+
+        // Tạo một trang phim giả để hiển thị thông tin gỡ lỗi
+        // Tên phim sẽ là "KẾT QUẢ DEBUG"
+        // Phần mô tả phim (plot) sẽ chính là thông tin gỡ lỗi của chúng ta
+        return newMovieLoadResponse(
+            name = "--- KẾT QUẢ DEBUG ---", 
+            url = url, 
+            type = TvType.Movie,
+            dataUrl = url 
+        ) {
+            this.plot = debugInfo // Hiển thị thông tin debug ở đây
+            this.posterUrl = "" // Bỏ trống ảnh
         }
     }
 
@@ -141,7 +138,7 @@ class NguoncProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d("NguoncProvider", "Hàm loadLinks được gọi với data: $data. Cần logic để xử lý.")
+        // Tạm thời không làm gì
         return false
     }
 }
