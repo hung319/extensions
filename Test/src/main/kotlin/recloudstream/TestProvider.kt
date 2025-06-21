@@ -1,52 +1,56 @@
 package recloudstream
 
-import com.google.gson.annotations.SerializedName
+// Sử dụng annotation của Jackson
+import com.fasterxml.jackson.annotation.JsonProperty
+// Import Jsoup đã được comment lại, sẵn sàng để dùng sau
+// import org.jsoup.Jsoup
+
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import android.util.Log
 
 // ================================================================
-// --- DATA CLASSES (ĐÃ XÁC THỰC VỚI API THỰC TẾ) ---
+// --- DATA CLASSES (SỬ DỤNG ANNOTATION @JsonProperty) ---
 // ================================================================
 data class SearchItem(
-    @SerializedName("name") val name: String?,
-    @SerializedName("slug") val slug: String?,
-    @SerializedName("poster_url") val posterUrl: String?,
-    @SerializedName("thumb_url") val thumbUrl: String?,
-    @SerializedName("total_episodes") val totalEpisodes: Int?,
-    @SerializedName("current_episode") val currentEpisode: String?
+    @JsonProperty("name") val name: String?,
+    @JsonProperty("slug") val slug: String?,
+    @JsonProperty("poster_url") val posterUrl: String?,
+    @JsonProperty("thumb_url") val thumbUrl: String?,
+    @JsonProperty("total_episodes") val totalEpisodes: Int?,
+    @JsonProperty("current_episode") val currentEpisode: String?
 )
 
 data class SearchApiResponse(
-    @SerializedName("status") val status: String?,
-    @SerializedName("items") val items: List<SearchItem>?
+    @JsonProperty("status") val status: String?,
+    @JsonProperty("items") val items: List<SearchItem>?
 )
 
 data class EpisodeItem(
-    @SerializedName("name") val name: String?,
-    @SerializedName("slug") val slug: String?,
-    @SerializedName("embed") val embed: String?,
-    @SerializedName("m3u8") val m3u8: String?
+    @JsonProperty("name") val name: String?,
+    @JsonProperty("slug") val slug: String?,
+    @JsonProperty("embed") val embed: String?,
+    @JsonProperty("m3u8") val m3u8: String?
 )
 
 data class ServerItem(
-    @SerializedName("server_name") val serverName: String?,
-    @SerializedName("items") val items: List<EpisodeItem>?
+    @JsonProperty("server_name") val serverName: String?,
+    @JsonProperty("items") val items: List<EpisodeItem>?
 )
 
 data class MovieDetails(
-    @SerializedName("name") val name: String?,
-    @SerializedName("original_name") val originName: String?,
-    @SerializedName("thumb_url") val thumbUrl: String?,
-    @SerializedName("poster_url") val posterUrl: String?,
-    @SerializedName("content") val plot: String?,
-    @SerializedName("year") val year: String?,
-    @SerializedName("episodes") val episodes: List<ServerItem>?
+    @JsonProperty("name") val name: String?,
+    @JsonProperty("original_name") val originName: String?,
+    @JsonProperty("thumb_url") val thumbUrl: String?,
+    @JsonProperty("poster_url") val posterUrl: String?,
+    @JsonProperty("content") val plot: String?,
+    @JsonProperty("year") val year: String?,
+    @JsonProperty("episodes") val episodes: List<ServerItem>?
 )
 
 data class FilmDetails(
-    @SerializedName("status") val status: String?,
-    @SerializedName("movie") val movie: MovieDetails?
+    @JsonProperty("status") val status: String?,
+    @JsonProperty("movie") val movie: MovieDetails?
 )
 
 // ================================================================
@@ -60,6 +64,11 @@ class NguoncProvider : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
+    private val browserHeaders = mapOf(
+        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Referer" to "$mainUrl/"
+    )
+
     private fun getAbsoluteUrl(url: String?): String {
         if (url.isNullOrEmpty()) return ""
         return if (url.startsWith("http")) url else "$mainUrl/$url"
@@ -67,40 +76,24 @@ class NguoncProvider : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val url = "$mainUrl/api/films/phim-moi-cap-nhat?page=$page"
-        val response = app.get(url).parsed<SearchApiResponse>()
-
+        val response = app.get(url, headers = browserHeaders).parsed<SearchApiResponse>()
         val homeList = response.items?.mapNotNull { item ->
             val slug = item.slug ?: return@mapNotNull null
-            val tvType = if ((item.totalEpisodes ?: 0) > 1 || item.currentEpisode?.contains("Tập") == true) {
-                TvType.TvSeries
-            } else {
-                TvType.Movie
-            }
+            val tvType = if ((item.totalEpisodes ?: 0) > 1 || item.currentEpisode?.contains("Tập") == true) TvType.TvSeries else TvType.Movie
             newMovieSearchResponse(item.name ?: "Unknown", slug, tvType) {
                 this.posterUrl = getAbsoluteUrl(item.posterUrl ?: item.thumbUrl)
             }
         } ?: return null
-
-        return newHomePageResponse(
-            list = HomePageList("Phim Mới Cập Nhật", homeList),
-            hasNext = true
-        )
+        return newHomePageResponse(list = HomePageList("Phim Mới Cập Nhật", homeList), hasNext = true)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/api/films/search?keyword=$query"
-        val response = app.get(url).parsed<SearchApiResponse>()
-        if (response.status != "success" || response.items.isNullOrEmpty()) {
-            return emptyList()
-        }
-
+        val response = app.get(url, headers = browserHeaders).parsed<SearchApiResponse>()
+        if (response.status != "success" || response.items.isNullOrEmpty()) return emptyList()
         return response.items.mapNotNull { item ->
             val slug = item.slug ?: return@mapNotNull null
-            val tvType = if ((item.totalEpisodes ?: 0) > 1 || item.currentEpisode?.contains("Tập") == true) {
-                TvType.TvSeries
-            } else {
-                TvType.Movie
-            }
+            val tvType = if ((item.totalEpisodes ?: 0) > 1 || item.currentEpisode?.contains("Tập") == true) TvType.TvSeries else TvType.Movie
             newMovieSearchResponse(item.name ?: "Unknown", slug, tvType) {
                 this.posterUrl = getAbsoluteUrl(item.posterUrl ?: item.thumbUrl)
             }
@@ -109,39 +102,31 @@ class NguoncProvider : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         val apiUrl = "$mainUrl/api/film/$url"
-        
+        val dynamicHeaders = browserHeaders + ("Referer" to "$mainUrl/$url")
         try {
-            val response = app.get(apiUrl).parsed<FilmDetails>()
+            val response = app.get(apiUrl, headers = dynamicHeaders).parsed<FilmDetails>()
             val details = response.movie ?: return null
-
             val title = details.name ?: details.originName ?: "Unknown"
             val poster = getAbsoluteUrl(details.posterUrl ?: details.thumbUrl)
             val plot = details.plot
             val year = details.year?.toIntOrNull()
-
             val episodes = details.episodes?.flatMap { server ->
                 server.items?.mapNotNull { ep ->
-                    // Truyền slug và link embed vào data để `loadLinks` có thể sử dụng
+                    // Truyền slug và link embed vào data để `loadLinks` có thể sử dụng sau
                     val episodeData = "${ep.slug}|${ep.embed}"
                     newEpisode(episodeData) {
                         this.name = "${ep.name} - ${server.serverName}"
                     }
                 } ?: emptyList()
             } ?: emptyList()
-
-            val tvType = if(episodes.size > 1) TvType.TvSeries else TvType.Movie
-
+            val tvType = if (episodes.size > 1) TvType.TvSeries else TvType.Movie
             return if (tvType == TvType.TvSeries) {
                 newTvSeriesLoadResponse(title, url, tvType, episodes) {
-                    this.posterUrl = poster
-                    this.plot = plot
-                    this.year = year
+                    this.posterUrl = poster; this.plot = plot; this.year = year
                 }
             } else {
                 newMovieLoadResponse(title, url, tvType, episodes) {
-                    this.posterUrl = poster
-                    this.plot = plot
-                    this.year = year
+                    this.posterUrl = poster; this.plot = plot; this.year = year
                 }
             }
         } catch (e: Exception) {
@@ -151,28 +136,22 @@ class NguoncProvider : MainAPI() {
     }
 
     /**
-     * HÀM LOADLINKS - CÔNG VIỆC CUỐI CÙNG CỦA BẠN
+     * HÀM LOADLINKS - TẠM THỜI ĐỂ TRỐNG (PLACEHOLDER)
+     * Đây là phần phức tạp nhất cần được phân tích kỹ lưỡng sau.
      */
     override suspend fun loadLinks(
-        data: String, // `data` giờ chứa "slug|link_embed"
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Tách slug và link embed ra từ `data`
-        val (slug, embedUrl) = data.split("|")
+        // `data` hiện đang chứa chuỗi "slug|embedUrl"
+        // Khi bạn sẵn sàng, hãy tách chuỗi này ra và dùng Jsoup để phân tích embedUrl.
+        // val (_, embedUrl) = data.split("|")
+        
+        Log.d("NguoncProvider", "Hàm loadLinks được gọi với data: $data. Cần logic để xử lý.")
 
-        // TODO: VIỆC CẦN LÀM CỦA BẠN
-        // Nhiệm vụ của bạn là "giải mã" link `embedUrl` này.
-        // GỢI Ý:
-        // 1. Dùng F12 trên trình duyệt, truy cập `embedUrl` (ví dụ: https://embed18.streamc.xyz/embed.php?hash=...).
-        // 2. Xem tab Network để tìm link `.m3u8` hoặc file video mà trang embed đó thực sự tải về.
-        // 3. Viết code để tự động hóa quá trình đó ở đây.
-        //    - Tải HTML của trang embed: `app.get(embedUrl).text`
-        //    - Dùng regex hoặc các hàm xử lý chuỗi để tìm link video bên trong.
-        
-        Log.d("NguoncProvider", "Đang cố gắng giải mã link embed: $embedUrl")
-        
-        return false // Trả về false vì chưa có logic hoàn chỉnh
+        // Trả về false để báo hiệu rằng chưa tìm được link.
+        return false
     }
 }
