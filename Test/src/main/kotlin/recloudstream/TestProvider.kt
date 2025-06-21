@@ -129,9 +129,8 @@ class NguoncProvider : MainAPI() {
                 }
             }
         } catch (e: Exception) {
-            // CẢI TIẾN LOG LỖI: Ghi lại nội dung thực tế nhận được nếu có lỗi parse
-            val errorResponseText = if (e is com.lagradost.cloudstream3.movieproviders.ParseError) e.response else e.message
-            Log.e("NguoncProvider", "Lỗi nghiêm trọng khi tải chi tiết phim từ URL: $apiUrl. Phản hồi nhận được (có thể là HTML): ${errorResponseText?.take(500)}", e)
+            // SỬA LỖI BIÊN DỊCH: Quay lại với khối catch đơn giản, chắc chắn biên dịch thành công.
+            Log.e("NguoncProvider", "Lỗi khi tải chi tiết phim từ URL: $apiUrl. Lỗi: ${e.message}", e)
             return null
         }
     }
