@@ -8,7 +8,7 @@ import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import java.net.URI
 
-// THÊM EXCEPTION TÙY CHỈNH ĐỂ GỠ LỖI
+// Lớp exception tùy chỉnh (giữ lại để có thể dùng sau nếu cần)
 open class ErrorLoadingException(message: String) : Exception(message)
 
 // ================================================================
@@ -191,6 +191,10 @@ class NguoncProvider : MainAPI() {
         }
     }
 
+    /**
+     * HÀM LOADLINKS - CẬP NHẬT LOGIC
+     * Thử sử dụng link M3U8 trực tiếp từ API trước tiên.
+     */
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -198,43 +202,31 @@ class NguoncProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         try {
-            val episodeVersions = tryParseJson<List<EpisodeItem>>(data) 
-                ?: throw ErrorLoadingException("Lỗi: Không thể phân tích dữ liệu tập phim (JSON).")
+            val episodeVersions = tryParseJson<List<EpisodeItem>>(data) ?: return false
 
-            episodeVersions.apmap { episode ->
-                val embedUrl = episode.embed 
-                    ?: throw ErrorLoadingException("Lỗi: Tập phim không có link embed.")
-                
-                // Bước 1: GET embedUrl để lấy payload
-                val initialPage = app.get(embedUrl, headers = browserHeaders).text
-                val payload = Regex("""name="payload" value="([^"]+)"""").find(initialPage)?.groupValues?.get(1) 
-                    ?: throw ErrorLoadingException("Lỗi: Không tìm thấy 'payload' trong trang embed đầu tiên.")
-
-                // Bước 2: POST với payload để lấy trang player
-                val postData = mapOf("payload" to payload)
-                val playerPage = app.post(embedUrl, data = postData, headers = browserHeaders).text
-                
-                // Bước 3: Tìm link M3U8 trong trang player
-                val relativeStreamUrl = Regex("""window\.streamURL = "([^"]+)"""").find(playerPage)?.groupValues?.get(1) 
-                    ?: throw ErrorLoadingException("Lỗi: Không tìm thấy 'streamURL' trong trang player.")
-                
-                val finalM3u8Url = URI(embedUrl).resolve(relativeStreamUrl).toString()
-
-                // Bước 4: Gửi link M3U8 cho trình phát
-                callback.invoke(
-                    ExtractorLink(
-                        source = this.name,
-                        name = episode.serverName ?: "Server",
-                        url = finalM3u8Url,
-                        referer = embedUrl,
-                        quality = Qualities.Unknown.value,
-                        type = ExtractorLinkType.M3U8
+            episodeVersions.forEach { episode ->
+                // Lấy link m3u8 trực tiếp
+                val m3u8Url = episode.m3u8
+                // Nếu link tồn tại, hãy thử dùng nó
+                if (!m3u8Url.isNullOrBlank()) {
+                    Log.d("NguoncProvider", "Đang thử link M3U8 trực tiếp: $m3u8Url")
+                    callback.invoke(
+                        ExtractorLink(
+                            source = this.name,
+                            name = episode.serverName ?: "Server M3U8",
+                            url = m3u8Url,
+                            // Referer là trang chủ để tăng độ ổn định
+                            referer = "$mainUrl/",
+                            quality = Qualities.Unknown.value,
+                            type = ExtractorLinkType.M3U8
+                        )
                     )
-                )
+                }
             }
-            return true
+            
+            // Trả về true nếu chúng ta đã tìm thấy và thử ít nhất một link m3u8
+            return episodeVersions.any { !it.m3u8.isNullOrBlank() }
         } catch (e: Exception) {
-            // Khối catch này sẽ bắt cả lỗi mạng và ErrorLoadingException của chúng ta
             Log.e("NguoncProvider", "Lỗi trong quá trình loadLinks: ${e.message}", e)
             return false
         }
