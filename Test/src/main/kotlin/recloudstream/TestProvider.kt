@@ -18,7 +18,7 @@ data class SearchItem(
     @JsonProperty("thumb_url") val thumbUrl: String?,
     @JsonProperty("total_episodes") val totalEpisodes: Int?,
     @JsonProperty("current_episode") val currentEpisode: String?,
-    @JsonProperty("language") val language: String?
+    @JsonProperty("language") val language: String? 
 )
 
 data class SearchApiResponse(
@@ -187,9 +187,9 @@ class NguoncProvider : MainAPI() {
             return null
         }
     }
-    
+
     /**
-     * HÀM LOADLINKS - PHIÊN BẢN GỠ LỖI BẰNG GIAO DIỆN
+     * HÀM LOADLINKS - PHIÊN BẢN HOÀN CHỈNH
      */
     override suspend fun loadLinks(
         data: String,
@@ -197,62 +197,49 @@ class NguoncProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Hàm này sẽ tạo ra các link giả, tên của link là thông báo gỡ lỗi
-        fun debugCallback(message: String) {
-            callback.invoke(
-                ExtractorLink(this.name, "DEBUG: $message", "https://example.com", "", Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
-            )
-        }
-
         try {
-            debugCallback("Bắt đầu loadLinks...")
-            val episodeVersions = tryParseJson<List<EpisodeItem>>(data)
-            if (episodeVersions == null) {
-                debugCallback("LỖI: Không thể phân tích dữ liệu JSON.")
-                return false
-            }
-            debugCallback("Phân tích JSON thành công. Có ${episodeVersions.size} server.")
+            val episodeVersions = tryParseJson<List<EpisodeItem>>(data) ?: return false
 
-            episodeVersions.forEach { episode ->
-                val embedUrl = episode.embed
-                if (embedUrl.isNullOrBlank()) {
-                    debugCallback("LỖI: Server ${episode.serverName} không có link embed.")
-                    return@forEach
-                }
-                debugCallback("Đang xử lý server: ${episode.serverName}")
-
-                // Bước 1
-                val initialPage = app.get(embedUrl, headers = browserHeaders).text
-                debugCallback("Bước 1: GET ${embedUrl.take(30)}... thành công.")
-
-                // Bước 2
-                val payload = Regex("""name="payload" value="([^"]+)"""").find(initialPage)?.groupValues?.get(1)
-                if (payload == null) {
-                    debugCallback("LỖI: Không tìm thấy 'payload' trong trang embed.")
-                    return@forEach
-                }
-                debugCallback("Bước 2: Tìm thấy payload: ${payload.take(30)}...")
+            episodeVersions.apmap { episode ->
+                val embedUrl = episode.embed ?: return@apmap
                 
-                // Bước 3
-                val postData = mapOf("payload" to payload)
-                val playerPage = app.post(embedUrl, data = postData, headers = browserHeaders).text
-                debugCallback("Bước 3: POST payload thành công.")
+                // Lấy mã HTML của trang embed
+                val embedPageHtml = app.get(embedUrl, headers = browserHeaders).text
 
-                // Bước 4
-                val relativeStreamUrl = Regex("""window\.streamURL = "([^"]+)"""").find(playerPage)?.groupValues?.get(1)
+                // LOGIC THÍCH ỨNG:
+                // Thử tìm link trực tiếp trước (trường hợp dễ)
+                val streamUrlRegex = Regex("""window\.streamURL = "([^"]+)"""")
+                var relativeStreamUrl = streamUrlRegex.find(embedPageHtml)?.groupValues?.get(1)
+
+                // Nếu không có, thử tìm payload (trường hợp phức tạp)
                 if (relativeStreamUrl == null) {
-                    debugCallback("LỖI: Không tìm thấy 'streamURL' trong trang player.")
-                    return@forEach
+                    val payload = Regex("""name="payload" value="([^"]+)"""").find(embedPageHtml)?.groupValues?.get(1)
+                    if (payload != null) {
+                        val postData = mapOf("payload" to payload)
+                        val playerPage = app.post(embedUrl, data = postData, headers = browserHeaders).text
+                        relativeStreamUrl = streamUrlRegex.find(playerPage)?.groupValues?.get(1)
+                    }
                 }
-                debugCallback("Bước 4: Tìm thấy streamURL: ${relativeStreamUrl.take(30)}...")
                 
-                // Nếu đến được đây là thành công
-                debugCallback("THÀNH CÔNG! Đã tìm được link cho server ${episode.serverName}.")
+                // Nếu sau cả hai bước vẫn có link, thì xử lý nó
+                if(relativeStreamUrl != null) {
+                    val finalM3u8Url = URI(embedUrl).resolve(relativeStreamUrl).toString()
+                    callback.invoke(
+                        ExtractorLink(
+                            source = this.name,
+                            name = episode.serverName ?: "Server",
+                            url = finalM3u8Url,
+                            referer = embedUrl,
+                            quality = Qualities.Unknown.value,
+                            type = ExtractorLinkType.M3U8
+                        )
+                    )
+                }
             }
-
+            return true
         } catch (e: Exception) {
-            debugCallback("LỖI NGHIÊM TRỌNG: ${e.toString().take(100)}")
+            Log.e("NguoncProvider", "Lỗi trong quá trình loadLinks: ${e.message}", e)
+            return false
         }
-        return true // Luôn trả về true để danh sách debug được hiển thị
     }
 }
