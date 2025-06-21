@@ -155,17 +155,19 @@ class Bluphim3Provider : MainAPI() {
         val iframeSrc = episodeDocument.selectFirst("iframe#iframeStream")?.attr("src") ?: return false
         val iframeUrl = fixUrl(iframeSrc)
 
-        // CẬP NHẬT: Ưu tiên dùng `loadExtractor` chung trước để xử lý các host phổ biến
+        // Ưu tiên dùng `loadExtractor` chung trước
         if (loadExtractor(iframeUrl, data, subtitleCallback, callback)) {
             return true
         }
 
-        // Nếu `loadExtractor` thất bại, dùng logic phân tích riêng cho server của Bluphim3
-        var playerPageDoc = app.get(iframeUrl, referer = data).document
+        // Nếu `loadExtractor` thất bại, dùng logic phân tích riêng
+        var playerPageUrl = iframeUrl
+        var playerPageDoc = app.get(playerPageUrl, referer = data).document
         
         val nestedIframeSrc = playerPageDoc.selectFirst("iframe#embedIframe")?.attr("src")
         if (nestedIframeSrc != null && nestedIframeSrc.isNotBlank()) {
-            playerPageDoc = app.get(nestedIframeSrc, referer = iframeUrl).document
+            playerPageUrl = nestedIframeSrc
+            playerPageDoc = app.get(playerPageUrl, referer = iframeUrl).document
         }
 
         val jwPlayerScript = playerPageDoc.select("script").firstOrNull { 
@@ -179,7 +181,8 @@ class Bluphim3Provider : MainAPI() {
                 source = this.name,
                 name = this.name,
                 url = m3u8Url,
-                referer = mainUrl,
+                // CẬP NHẬT: Dùng URL của trang chứa player làm referer
+                referer = playerPageUrl, 
                 quality = Qualities.Unknown.value,
                 type = ExtractorLinkType.M3U8
             )
