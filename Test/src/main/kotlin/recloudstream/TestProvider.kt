@@ -6,7 +6,7 @@ import com.lagradost.cloudstream3.utils.*
 import android.util.Log
 
 // ================================================================
-// --- DATA CLASSES (Giữ nguyên) ---
+// --- DATA CLASSES ---
 // ================================================================
 data class SearchItem(
     @JsonProperty("name") val name: String?,
@@ -60,12 +60,12 @@ class NguoncProvider : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
+    // Headers chuẩn với Referer là trang chủ, dùng cho mọi request
     private val browserHeaders = mapOf(
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
         "Referer" to "$mainUrl/"
     )
 
-    // Các hàm khác giữ nguyên, không cần thay đổi
     private fun getAbsoluteUrl(url: String?): String {
         if (url.isNullOrEmpty()) return ""
         return if (url.startsWith("http")) url else "$mainUrl/$url"
@@ -97,38 +97,40 @@ class NguoncProvider : MainAPI() {
         }
     }
 
-
-    // ================================================================
-    // --- PHIÊN BẢN HÀM LOAD ĐẶC BIỆT ĐỂ GỠ LỖI ---
-    // ================================================================
     override suspend fun load(url: String): LoadResponse? {
         val apiUrl = "$mainUrl/api/film/$url"
-        val dynamicHeaders = browserHeaders + ("Referer" to "$mainUrl/$url")
         
-        // Biến để lưu trữ thông tin gỡ lỗi
-        var debugInfo: String
-
         try {
-            // Thực hiện gọi API và lấy nội dung text thô
-            val responseText = app.get(apiUrl, headers = dynamicHeaders).text
-            debugInfo = "ĐÃ NHẬN PHẢN HỒI TỪ API. Nội dung (1000 ký tự đầu):\n\n${responseText.take(1000)}"
-
+            // SỬA LỖI QUAN TRỌNG:
+            // Luôn sử dụng headers với Referer là trang chủ, vì trang phim cụ thể có thể không tồn tại (404).
+            val response = app.get(apiUrl, headers = browserHeaders).parsed<FilmDetails>()
+            val details = response.movie ?: return null
+            
+            val title = details.name ?: details.originName ?: "Unknown"
+            val poster = getAbsoluteUrl(details.posterUrl ?: details.thumbUrl)
+            val plot = details.plot
+            val year = details.year?.toIntOrNull()
+            val episodes = details.episodes?.flatMap { server ->
+                server.items?.mapNotNull { ep ->
+                    val episodeData = "${ep.slug}|${ep.embed}"
+                    newEpisode(episodeData) {
+                        this.name = "${ep.name} - ${server.serverName}"
+                    }
+                } ?: emptyList()
+            } ?: emptyList()
+            val tvType = if (episodes.size > 1) TvType.TvSeries else TvType.Movie
+            return if (tvType == TvType.TvSeries) {
+                newTvSeriesLoadResponse(title, url, tvType, episodes) {
+                    this.posterUrl = poster; this.plot = plot; this.year = year
+                }
+            } else {
+                newMovieLoadResponse(title, url, tvType, episodes) {
+                    this.posterUrl = poster; this.plot = plot; this.year = year
+                }
+            }
         } catch (e: Exception) {
-            // Nếu có lỗi, ghi lại thông tin lỗi
-            debugInfo = "LỖI KHI GỌI API. Chi tiết lỗi:\n\n${e.toString().take(1000)}"
-        }
-
-        // Tạo một trang phim giả để hiển thị thông tin gỡ lỗi
-        // Tên phim sẽ là "KẾT QUẢ DEBUG"
-        // Phần mô tả phim (plot) sẽ chính là thông tin gỡ lỗi của chúng ta
-        return newMovieLoadResponse(
-            name = "--- KẾT QUẢ DEBUG ---", 
-            url = url, 
-            type = TvType.Movie,
-            dataUrl = url 
-        ) {
-            this.plot = debugInfo // Hiển thị thông tin debug ở đây
-            this.posterUrl = "" // Bỏ trống ảnh
+            Log.e("NguoncProvider", "Lỗi khi tải chi tiết phim từ URL: $apiUrl. Lỗi: ${e.message}", e)
+            return null
         }
     }
 
@@ -138,7 +140,7 @@ class NguoncProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Tạm thời không làm gì
+        Log.d("NguoncProvider", "Hàm loadLinks được gọi với data: $data. Cần logic để xử lý.")
         return false
     }
 }
