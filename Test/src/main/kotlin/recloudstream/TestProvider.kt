@@ -4,8 +4,7 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import android.util.Log
-import com.lagradost.cloudstream3.utils.AppUtils.toJson // Import hàm toJson
-import java.util.EnumSet
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
 
 // ================================================================
 // --- DATA CLASSES ---
@@ -131,22 +130,36 @@ class NguoncProvider : MainAPI() {
                 cat.group?.name == "Thể loại" && cat.list?.any { it.name == "Hoạt Hình" } == true
             } == true
             
-            val episodesBySlug = mutableMapOf<String, MutableList<EpisodeItem>>()
-            details.episodes?.forEach { server ->
-                server.items?.forEach { episode ->
+            val allEpisodes = details.episodes?.flatMap { server ->
+                server.items?.map { episode ->
                     episode.serverName = server.serverName
-                    val slug = episode.slug ?: return@forEach
-                    episodesBySlug.getOrPut(slug) { mutableListOf() }.add(episode)
+                    episode
+                } ?: emptyList()
+            } ?: emptyList()
+
+            // LOGIC MỚI: KIỂM TRA PHIM LẺ (1 TẬP DUY NHẤT)
+            if (allEpisodes.size == 1) {
+                val singleEpisode = allEpisodes.first()
+                val episodeData = AppUtils.toJson(listOf(singleEpisode)) // Vẫn mã hóa thành list để loadLinks xử lý chung
+
+                return newMovieLoadResponse(title, url, if(isAnime) TvType.Anime else TvType.Movie, episodeData) {
+                    this.posterUrl = poster
+                    this.plot = plot
+                    this.year = year
                 }
+            }
+            
+            // LOGIC GỘP TẬP CHO PHIM BỘ
+            val episodesBySlug = mutableMapOf<String, MutableList<EpisodeItem>>()
+            allEpisodes.forEach { episode ->
+                val slug = episode.slug ?: return@forEach
+                episodesBySlug.getOrPut(slug) { mutableListOf() }.add(episode)
             }
 
             val finalEpisodes = episodesBySlug.values.mapNotNull { episodeVersions ->
                 val representativeEpisode = episodeVersions.firstOrNull() ?: return@mapNotNull null
+                val allVersionsData = episodeVersions.toJson()
                 
-                // SỬA LỖI `toJson`: Gọi theo đúng cú pháp của extension function.
-                val allVersionsData = episodeVersions.toJson() //
-                
-                // SỬA LỖI `newEpisode` & `episode`: Dùng trực tiếp hàm dựng `Episode`.
                 Episode(
                     data = allVersionsData,
                     name = "Tập ${representativeEpisode.name}",
@@ -154,20 +167,12 @@ class NguoncProvider : MainAPI() {
                 )
             }.sortedBy { it.episode }
 
-            val tvType = if (isAnime) {
-                TvType.Anime
-            } else {
-                if (details.total_episodes ?: 1 > 1) TvType.TvSeries else TvType.Movie
-            }
+            val tvType = if (isAnime) TvType.Anime else TvType.TvSeries
 
-            return if (tvType == TvType.TvSeries || tvType == TvType.Anime) {
-                newTvSeriesLoadResponse(title, url, tvType, finalEpisodes) {
-                    this.posterUrl = poster; this.plot = plot; this.year = year
-                }
-            } else { 
-                newMovieLoadResponse(title, url, tvType, finalEpisodes) {
-                    this.posterUrl = poster; this.plot = plot; this.year = year
-                }
+            return newTvSeriesLoadResponse(title, url, tvType, finalEpisodes) {
+                this.posterUrl = poster
+                this.plot = plot
+                this.year = year
             }
         } catch (e: Exception) {
             Log.e("NguoncProvider", "Lỗi khi tải chi tiết phim từ URL: $apiUrl. Lỗi: ${e.message}", e)
@@ -181,6 +186,14 @@ class NguoncProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // GHI CHÚ CHO TƯƠNG LAI:
+        // `data` bây giờ là một chuỗi JSON chứa danh sách các phiên bản của tập phim (dù phim lẻ hay phim bộ).
+        // Bước tiếp theo của bạn sẽ là:
+        // 1. Phân tích chuỗi JSON này thành một `List<EpisodeItem>`:
+        //    val episodeVersions = AppUtils.tryParseJson<List<EpisodeItem>>(data)
+        // 2. Lặp qua `episodeVersions`.
+        // 3. Với mỗi `version`, lấy `version.embedUrl` và dùng Jsoup/Extractor để giải mã nó.
+        // 4. Gọi `callback.invoke(...)` cho mỗi link video tìm được. Đặt tên cho link bằng `version.serverName` để phân biệt.
         Log.d("NguoncProvider", "Hàm loadLinks được gọi với data (JSON): $data. Cần logic để xử lý.")
         return false
     }
