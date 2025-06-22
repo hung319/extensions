@@ -1,12 +1,13 @@
 /**
  * Tệp Provider cho AnimeTVN
- * Phiên bản được cải tiến và tích hợp logic giải mã phức tạp.
+ * Phiên bản được cải tiến và sửa lỗi biên dịch theo API mới.
  */
 package recloudstream
 
 // ===== CÁC THƯ VIỆN CẦN THIẾT =====
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import org.jsoup.nodes.Element
@@ -22,7 +23,6 @@ import java.util.Base64
  */
 class AnimeTVNProvider : MainAPI() {
     companion object {
-        // Sử dụng `const val` cho các hằng số để tối ưu hóa hiệu suất
         private const val MAIN_URL = "https://animetvn4.com"
     }
 
@@ -76,7 +76,8 @@ class AnimeTVNProvider : MainAPI() {
             }.mapNotNull { it.await() }
         }
         
-        return HomePageResponse(all, all.any { it.items.size >= 20 })
+        // SỬA LỖI 1: `it.items` được đổi thành `it.list`
+        return HomePageResponse(all, all.any { it.list.size >= 20 })
     }
 
     private fun Element.toSearchResult(type: TvType): SearchResponse? {
@@ -123,7 +124,6 @@ class AnimeTVNProvider : MainAPI() {
                 val epNum = "[0-9]+(\\.[0-9]+)?".toRegex().find(epText)?.value?.toFloatOrNull()
                 
                 epNum?.let { num ->
-                    // Quan trọng: Truyền `epUrl` vào `newEpisode` để `loadLinks` có thể nhận được.
                     Pair(num, newEpisode(epUrl) {
                         this.name = "Tập $epText"
                     })
@@ -136,30 +136,34 @@ class AnimeTVNProvider : MainAPI() {
             emptyList()
         }
 
+        val isMovie = episodes.isEmpty()
         val tvType = when {
             genres.any { it.equals("Live Action", true) || it.equals("Japanese Drama", true) } -> 
-                if (episodes.size > 1) TvType.TvSeries else TvType.Movie
+                if (isMovie) TvType.Movie else TvType.TvSeries
             genres.any { it.equals("Siêu Nhân", true) || it.equals("Tokusatsu", true) || it.equals("Cartoon", true) } -> 
                 TvType.Cartoon
             else -> 
-                if (episodes.isNotEmpty()) TvType.Anime else TvType.AnimeMovie
+                if (isMovie) TvType.AnimeMovie else TvType.Anime
         }
 
-        // Dùng newTvSeriesLoadResponse cho cả phim bộ và phim lẻ để xử lý linh hoạt
-        return newTvSeriesLoadResponse(title, url, tvType, episodes) {
-            this.posterUrl = poster
-            this.plot = description
-            this.tags = genres
-            if (episodes.isEmpty()) {
-                // Nếu là phim lẻ, dataUrl chính là trang xem phim để loadLinks có thể dùng
-                this.dataUrl = watchPageUrl ?: url
+        // SỬA LỖI 2: Xử lý phim lẻ và phim bộ riêng biệt
+        return if (isMovie) {
+            newMovieLoadResponse(title, url, tvType, watchPageUrl ?: url) {
+                this.posterUrl = poster
+                this.plot = description
+                this.tags = genres
+            }
+        } else {
+            newTvSeriesLoadResponse(title, url, tvType, episodes) {
+                this.posterUrl = poster
+                this.plot = description
+                this.tags = genres
             }
         }
     }
 
     // =========================================================================================
     // BẮT ĐẦU: TRIỂN KHAI LOGIC LOADLINKS PHỨC TẠP
-    // Tái tạo lại quy trình mã hóa và gọi API của AnimeTVN
     // =========================================================================================
 
     private data class ServerLink(val id: String, val name: String, val link: String)
@@ -168,17 +172,15 @@ class AnimeTVNProvider : MainAPI() {
     private data class FinalApiResponse(val status: Int, val type: String?, val data: String?)
 
     override suspend fun loadLinks(
-        data: String, // URL của tập phim được truyền từ hàm `load`
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         try {
-            // ----- BƯỚC 1: Lấy `epid` từ URL -----
             val epid = "f(\\d+)".toRegex().find(data)?.groupValues?.get(1) 
                 ?: throw Exception("Không thể tìm thấy epid trong URL: $data")
             
-            // ----- BƯỚC 2: Lấy danh sách Server -----
             val serverListUrl = "$mainUrl/ajax/getExtraLinks"
             val serverListResponse = app.post(
                 serverListUrl,
@@ -190,7 +192,6 @@ class AnimeTVNProvider : MainAPI() {
                 ?: serverListResponse.links.firstOrNull() 
                 ?: throw Exception("Không tìm thấy server nào khả dụng")
 
-            // ----- BƯỚC 3: Lấy URL của Iframe -----
             val iframeApiResponse = app.post(
                 "$mainUrl/ajax/getExtraLink",
                 data = mapOf("id" to server.id, "link" to server.link),
@@ -200,7 +201,6 @@ class AnimeTVNProvider : MainAPI() {
             val iframeUrl = iframeApiResponse.link 
                 ?: throw Exception("Không thể lấy được link iframe")
 
-            // ----- BƯỚC 4: Tải Iframe và trích xuất dữ liệu -----
             val iframeDoc = app.get(iframeUrl).document.html()
             
             val idfileEnc = "idfile_enc\\s*:\\s*'([^']*)'".toRegex().find(iframeDoc)?.groupValues?.get(1)
@@ -216,7 +216,6 @@ class AnimeTVNProvider : MainAPI() {
             
             if (idfile == null || idUser == null) throw Exception("Giải mã idfile/idUser thất bại")
 
-            // ----- BƯỚC 5: Tạo Payload và gọi API cuối cùng -----
             val timestamp = System.currentTimeMillis()
             val payloadToEncrypt = "$idfile|$idUser|$timestamp"
             val key2 = "playhq@2023@"
@@ -224,7 +223,6 @@ class AnimeTVNProvider : MainAPI() {
             val encryptedPayload = CryptoAES.encrypt(payloadToEncrypt, key2)
                 ?: throw Exception("Mã hóa payload thất bại")
 
-            // Logic tạo chữ ký - cần xác minh từ JS nếu có lỗi
             val signatureKey = "x@2023@$key2&y@2024@$idfile"
             val signature = CryptoAES.md5(encryptedPayload + signatureKey)
             
@@ -241,21 +239,20 @@ class AnimeTVNProvider : MainAPI() {
                 throw Exception("API cuối cùng trả về lỗi hoặc không có dữ liệu")
             }
             
-            // ----- BƯỚC 6: Giải mã Link M3U8 cuối cùng -----
-            val key3 = "playhq@2023@" // Giả định key cuối cùng giống key2
+            val key3 = "playhq@2023@"
             
             val m3u8Url = CryptoAES.decrypt(finalApiResponse.data, key3)
                 ?: throw Exception("Giải mã link M3U8 cuối cùng thất bại")
 
-            // ----- HOÀN TẤT: Gửi link đã giải mã về cho trình phát -----
+            // SỬA LỖI 3: Sử dụng `newExtractorLink` và cấu trúc mới
             callback(
-                ExtractorLink(
+                newExtractorLink(
                     source = this.name,
                     name = "${this.name} - ${server.name}",
                     url = m3u8Url,
                     referer = iframeUrl,
-                    quality = Qualities.Unknown.value,
-                    isM3u8 = true
+                    quality = 0, // 0 for Unknown quality
+                    type = ExtractorLinkType.M3U8
                 )
             )
             return true
@@ -269,7 +266,6 @@ class AnimeTVNProvider : MainAPI() {
     /**
      * ===================================================================
      * HELPER OBJECT: CRYPTO AES
-     * Xử lý mã hóa/giải mã tương thích với CryptoJS (AES, CBC, PKCS5Padding)
      * ===================================================================
      */
     private object CryptoAES {
@@ -280,8 +276,8 @@ class AnimeTVNProvider : MainAPI() {
         }
 
         private fun getDerivedKey(password: ByteArray, salt: ByteArray): Pair<SecretKeySpec, IvParameterSpec> {
-            val keySize = 32 // 256 bits
-            val ivSize = 16  // 128 bits
+            val keySize = 32
+            val ivSize = 16
             val derivedKey = ByteArray(keySize + ivSize)
             var lastDigest: ByteArray? = null
             var currentDigest = ByteArray(0)
@@ -304,7 +300,6 @@ class AnimeTVNProvider : MainAPI() {
         fun decrypt(encryptedBase64: String, key: String): String? {
             return try {
                 val encryptedBytes = Base64.getDecoder().decode(encryptedBase64)
-                // "Salted__" (8 bytes) + salt (8 bytes)
                 val salt = encryptedBytes.copyOfRange(8, 16)
                 val cipherText = encryptedBytes.copyOfRange(16, encryptedBytes.size)
                 
@@ -314,14 +309,12 @@ class AnimeTVNProvider : MainAPI() {
                 cipher.init(Cipher.DECRYPT_MODE, secretKey, iv)
                 String(cipher.doFinal(cipherText))
             } catch (e: Exception) {
-                //e.printStackTrace()
                 null
             }
         }
 
         fun encrypt(plainText: String, key: String): String? {
             return try {
-                // Tạo salt ngẫu nhiên 8-byte
                 val salt = ByteArray(8).apply { java.security.SecureRandom().nextBytes(this) }
                 val (secretKey, iv) = getDerivedKey(key.toByteArray(), salt)
 
@@ -334,7 +327,6 @@ class AnimeTVNProvider : MainAPI() {
                 
                 Base64.getEncoder().encodeToString(finalEncrypted)
             } catch (e: Exception) {
-                //e.printStackTrace()
                 null
             }
         }
