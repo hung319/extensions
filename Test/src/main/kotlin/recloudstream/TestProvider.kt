@@ -7,6 +7,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import org.jsoup.nodes.Element
+import java.text.DecimalFormat
 
 /**
  * Đây là lớp chính của plugin.
@@ -19,7 +20,6 @@ class AnimeTVNProvider : MainAPI() {
     override var lang = "vi"
     override val hasDownloadSupport = true
 
-    // CẬP NHẬT: Thêm các loại được hỗ trợ
     override val supportedTypes = setOf(
         TvType.Anime,
         TvType.AnimeMovie,
@@ -30,7 +30,6 @@ class AnimeTVNProvider : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // CẬP NHẬT: Thêm TvType vào từng danh mục
         val pages = listOf(
             Triple("$mainUrl/nhom/anime.html", "Anime Mới", TvType.Anime),
             Triple("$mainUrl/bang-xep-hang.html", "Bảng Xếp Hạng", TvType.Anime),
@@ -40,7 +39,7 @@ class AnimeTVNProvider : MainAPI() {
         )
 
         val all = coroutineScope {
-            pages.map { (url, name, type) -> // Lấy thêm 'type'
+            pages.map { (url, name, type) ->
                 async {
                     try {
                         val pageUrl = "$url?page=$page"
@@ -48,11 +47,11 @@ class AnimeTVNProvider : MainAPI() {
 
                         val home = if (name == "Bảng Xếp Hạng") {
                             document.select("ul.rank-film-list > li.item").mapNotNull {
-                                it.toRankingSearchResult(type) // Truyền 'type' vào
+                                it.toRankingSearchResult(type)
                             }
                         } else {
                             document.select("div.film_item").mapNotNull {
-                                it.toSearchResult(type) // Truyền 'type' vào
+                                it.toSearchResult(type)
                             }
                         }
                         
@@ -71,27 +70,23 @@ class AnimeTVNProvider : MainAPI() {
         return HomePageResponse(all, true)
     }
 
-    // CẬP NHẬT: Hàm nhận thêm tham số 'type'
     private fun Element.toSearchResult(type: TvType): SearchResponse? {
         val titleElement = this.selectFirst("h3.title a") ?: return null
         val title = titleElement.text()
         val href = titleElement.attr("href")
         val posterUrl = this.selectFirst("img.thumb")?.attr("src")
 
-        // Sử dụng 'type' được truyền vào
         return newAnimeSearchResponse(title, href, type) {
             this.posterUrl = posterUrl
         }
     }
-
-    // CẬP NHẬT: Hàm nhận thêm tham số 'type'
+    
     private fun Element.toRankingSearchResult(type: TvType): SearchResponse? {
         val linkElement = this.selectFirst("a.image") ?: return null
         val href = linkElement.attr("href")
         val title = linkElement.selectFirst("h3.title")?.text() ?: return null
         val posterUrl = linkElement.selectFirst("img.thumb")?.attr("src")
 
-        // Sử dụng 'type' được truyền vào
         return newAnimeSearchResponse(title, href, type) {
             this.posterUrl = posterUrl
         }
@@ -100,14 +95,15 @@ class AnimeTVNProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/tim-kiem/${query}.html?page=1"
         val document = app.get(searchUrl).document
-        // Mặc định kết quả tìm kiếm là Anime, vì không có cách phân biệt rõ ràng ở trang tìm kiếm
         return document.select("div.film_item").mapNotNull {
             it.toSearchResult(TvType.Anime)
         }
     }
 
     /**
-     * CẬP NHẬT: Phân loại TvType dựa trên thể loại (genre) của phim.
+     * CẬP NHẬT: 
+     * 1. Đảo ngược thứ tự danh sách tập (bỏ .reversed()).
+     * 2. Định dạng lại tên tập để loại bỏ số 0 ở đầu (09.5 -> 9.5).
      */
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
@@ -121,67 +117,66 @@ class AnimeTVNProvider : MainAPI() {
             val watchPageDocument = app.get(watchPageUrl).document
             watchPageDocument.select("div.eplist a.tapphim").mapNotNull { ep ->
                 val epUrl = ep.attr("href")
-                val epText = ep.text()
+                val epText = ep.text().replace("_",".") // "09.5", "26_End" -> "26.End"
+
+                // Cố gắng chuyển đổi text thành số để định dạng lại
+                val formattedEpNumber = try {
+                    // Định dạng để loại bỏ ".0" cho số nguyên nhưng giữ lại cho số thập phân
+                    val number = epText.toFloat()
+                    if (number == number.toInt().toFloat()) {
+                        number.toInt().toString()
+                    } else {
+                        number.toString()
+                    }
+                } catch (e: NumberFormatException) {
+                    // Nếu không phải là số (ví dụ: "26.End"), giữ nguyên text gốc
+                    epText
+                }
+                
                 newEpisode(epUrl) {
-                    this.name = "Tập $epText"
+                    this.name = "Tập $formattedEpNumber"
                     this.episode = null
                 }
-            }.reversed()
+            } // ĐÃ BỎ `.reversed()` ĐỂ CÁC TẬP MỚI NHẤT HIỂN THỊ TRƯỚC
         } else {
             listOf()
         }
 
-        // Kiểm tra thể loại để quyết định TvType
         val isLiveAction = genres.any { it.equals("Live Action", ignoreCase = true) || it.equals("Japanese Drama", ignoreCase = true) }
         val isTokusatsuOrCartoon = genres.any { it.equals("Siêu Nhân", ignoreCase = true) || it.equals("Tokusatsu", ignoreCase = true) || it.equals("Cartoon", ignoreCase = true) }
 
-        // Logic cho Live Action
         if (isLiveAction) {
-            return if (episodes.size > 1) {
-                newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
-                    this.posterUrl = poster
-                    this.plot = description
-                    this.tags = genres
-                }
-            } else {
-                newMovieLoadResponse(title, url, TvType.Movie, url) {
-                    this.posterUrl = poster
-                    this.plot = description
-                    this.tags = genres
-                }
+            return if (episodes.size > 1) newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+                this.posterUrl = poster
+                this.plot = description
+                this.tags = genres
+            } else newMovieLoadResponse(title, url, TvType.Movie, url) {
+                this.posterUrl = poster
+                this.plot = description
+                this.tags = genres
             }
         }
 
-        // Logic cho Siêu Nhân và Cartoon
         if (isTokusatsuOrCartoon) {
-            return if (episodes.size > 1) {
-                newTvSeriesLoadResponse(title, url, TvType.Cartoon, episodes) {
-                    this.posterUrl = poster
-                    this.plot = description
-                    this.tags = genres
-                }
-            } else {
-                 newMovieLoadResponse(title, url, TvType.Cartoon, url) {
-                    this.posterUrl = poster
-                    this.plot = description
-                    this.tags = genres
-                }
+            return if (episodes.size > 1) newTvSeriesLoadResponse(title, url, TvType.Cartoon, episodes) {
+                this.posterUrl = poster
+                this.plot = description
+                this.tags = genres
+            } else newMovieLoadResponse(title, url, TvType.Cartoon, url) {
+                this.posterUrl = poster
+                this.plot = description
+                this.tags = genres
             }
         }
 
-        // Mặc định là Anime
-        return if (episodes.isNotEmpty()) {
-            newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
-                this.posterUrl = poster
-                this.plot = description
-                this.tags = genres
-            }
-        } else {
-            newMovieLoadResponse(title, url, TvType.AnimeMovie, url) {
-                this.posterUrl = poster
-                this.plot = description
-                this.tags = genres
-            }
+        return if (episodes.isNotEmpty()) newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
+            this.posterUrl = poster
+            this.plot = description
+            this.tags = genres
+        } else newMovieLoadResponse(title, url, TvType.AnimeMovie, url) {
+            this.posterUrl = poster
+            this.plot = description
+            this.tags = genres
         }
     }
 
@@ -191,17 +186,9 @@ class AnimeTVNProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Hiện tại hàm này không làm gì cả (placeholder).
         return true
     }
 
-    data class VideoResponse(
-        val link: List<VideoLink>
-    )
-
-    data class VideoLink(
-        val file: String,
-        val label: String,
-        val type: String
-    )
+    data class VideoResponse(val link: List<VideoLink>)
+    data class VideoLink(val file: String, val label: String, val type: String)
 }
