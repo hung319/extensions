@@ -1,4 +1,4 @@
-// Đặt package của tệp là "recloudstream" theo yêu cầu
+// Đặt package của tệp là "recloudstream"
 package recloudstream
 
 // Import các thư viện từ package gốc "com.lagradost.cloudstream3"
@@ -50,21 +50,24 @@ class AnimeTVNProvider : MainAPI() {
 
     /**
      * Hàm này được dùng để chuyển đổi một phần tử HTML (Element) thành một kết quả tìm kiếm (SearchResult).
+     * SỬA LỖI: Đã xóa thuộc tính 'nbSeasons' không hợp lệ.
      */
     private fun Element.toSearchResult(): SearchResponse? {
         val titleElement = this.selectFirst("h3.title a") ?: return null
         val title = titleElement.text()
         val href = titleElement.attr("href")
         val posterUrl = this.selectFirst("img.thumb")?.attr("src")
-        val episodes = this.selectFirst("span.time")?.text()?.let { epsString ->
-            Regex("(\\d+)").find(epsString)?.groupValues?.get(1)?.toIntOrNull()
-        }
+        // Vẫn lấy số tập nhưng không gán vào đâu cả vì SearchResponse không hỗ trợ
+        // val episodes = this.selectFirst("span.time")?.text()?.let { epsString ->
+        //     Regex("(\\d+)").find(epsString)?.groupValues?.get(1)?.toIntOrNull()
+        // }
 
         return newAnimeSearchResponse(title, href, TvType.Anime) {
             this.posterUrl = posterUrl
-            if (episodes != null) {
-                this.nbSeasons = episodes
-            }
+            // DÒNG BỊ LỖI ĐÃ ĐƯỢC XÓA
+            // if (episodes != null) {
+            //     this.nbSeasons = episodes
+            // }
         }
     }
 
@@ -116,9 +119,6 @@ class AnimeTVNProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Hiện tại hàm này không làm gì cả.
-        // Nó chỉ trả về 'true' để báo cho ứng dụng biết rằng hàm đã chạy xong
-        // mà không gặp lỗi nghiêm trọng.
         return true
     }
 
