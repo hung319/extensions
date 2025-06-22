@@ -4,10 +4,7 @@ package recloudstream
 // Import các thư viện từ package gốc "com.lagradost.cloudstream3"
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.getQualityFromName
 import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import org.jsoup.nodes.Element
 
@@ -22,70 +19,96 @@ class AnimeTVNProvider : MainAPI() {
     override var lang = "vi"
     override val hasDownloadSupport = true
 
+    // CẬP NHẬT: Thêm các loại được hỗ trợ
     override val supportedTypes = setOf(
         TvType.Anime,
         TvType.AnimeMovie,
         TvType.OVA,
         TvType.Movie,
-        TvType.TvSeries
+        TvType.TvSeries,
+        TvType.Cartoon
     )
 
-    /**
-     * CẬP NHẬT: Sửa lỗi biên dịch bằng cách dùng coroutine async/await
-     * để tải các danh mục song song.
-     */
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse = coroutineScope {
-        // Danh sách các danh mục và URL tương ứng
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        // CẬP NHẬT: Thêm TvType vào từng danh mục
         val pages = listOf(
-            Pair("$mainUrl/nhom/anime.html", "Anime Mới"),
-            Pair("$mainUrl/nhom/phim-sap-chieu.html", "Phim Sắp Chiếu"),
-            Pair("$mainUrl/nhom/japanese-drama.html", "Live Action"),
-            Pair("$mainUrl/nhom/sieu-nhan.html", "Siêu Nhân"),
-            Pair("$mainUrl/nhom/cartoon.html", "Cartoon")
+            Triple("$mainUrl/nhom/anime.html", "Anime Mới", TvType.Anime),
+            Triple("$mainUrl/bang-xep-hang.html", "Bảng Xếp Hạng", TvType.Anime),
+            Triple("$mainUrl/nhom/japanese-drama.html", "Live Action", TvType.TvSeries),
+            Triple("$mainUrl/nhom/sieu-nhan.html", "Siêu Nhân", TvType.Cartoon),
+            Triple("$mainUrl/nhom/cartoon.html", "Cartoon", TvType.Cartoon)
         )
 
-        // Dùng async để chạy các tác vụ tải trang một cách đồng thời
-        val deferred = pages.map { (url, name) ->
-            async {
-                try {
-                    val document = app.get(url).document
-                    val home = document.select("div.film_item").mapNotNull {
-                        it.toSearchResult()
+        val all = coroutineScope {
+            pages.map { (url, name, type) -> // Lấy thêm 'type'
+                async {
+                    try {
+                        val pageUrl = "$url?page=$page"
+                        val document = app.get(pageUrl).document
+
+                        val home = if (name == "Bảng Xếp Hạng") {
+                            document.select("ul.rank-film-list > li.item").mapNotNull {
+                                it.toRankingSearchResult(type) // Truyền 'type' vào
+                            }
+                        } else {
+                            document.select("div.film_item").mapNotNull {
+                                it.toSearchResult(type) // Truyền 'type' vào
+                            }
+                        }
+                        
+                        if (home.isNotEmpty()) HomePageList(name, home) else null
+                    } catch (e: Exception) {
+                        null
                     }
-                    HomePageList(name, home)
-                } catch (e: Exception) {
-                    // Nếu có lỗi khi tải một danh mục, trả về null
-                    null
                 }
-            }
+            }.mapNotNull { it.await() }
         }
-
-        // Đợi tất cả các tác vụ hoàn thành và lọc bỏ những tác vụ bị lỗi (null)
-        val all = deferred.awaitAll().filterNotNull()
-
-        HomePageResponse(all)
+        
+        if (all.isEmpty() && page > 1) {
+            return HomePageResponse(emptyList(), false)
+        }
+        
+        return HomePageResponse(all, true)
     }
 
-    private fun Element.toSearchResult(): SearchResponse? {
+    // CẬP NHẬT: Hàm nhận thêm tham số 'type'
+    private fun Element.toSearchResult(type: TvType): SearchResponse? {
         val titleElement = this.selectFirst("h3.title a") ?: return null
         val title = titleElement.text()
         val href = titleElement.attr("href")
         val posterUrl = this.selectFirst("img.thumb")?.attr("src")
 
-        return newAnimeSearchResponse(title, href, TvType.Anime) {
+        // Sử dụng 'type' được truyền vào
+        return newAnimeSearchResponse(title, href, type) {
+            this.posterUrl = posterUrl
+        }
+    }
+
+    // CẬP NHẬT: Hàm nhận thêm tham số 'type'
+    private fun Element.toRankingSearchResult(type: TvType): SearchResponse? {
+        val linkElement = this.selectFirst("a.image") ?: return null
+        val href = linkElement.attr("href")
+        val title = linkElement.selectFirst("h3.title")?.text() ?: return null
+        val posterUrl = linkElement.selectFirst("img.thumb")?.attr("src")
+
+        // Sử dụng 'type' được truyền vào
+        return newAnimeSearchResponse(title, href, type) {
             this.posterUrl = posterUrl
         }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/tim-kiem/${query}.html"
+        val searchUrl = "$mainUrl/tim-kiem/${query}.html?page=1"
         val document = app.get(searchUrl).document
-
+        // Mặc định kết quả tìm kiếm là Anime, vì không có cách phân biệt rõ ràng ở trang tìm kiếm
         return document.select("div.film_item").mapNotNull {
-            it.toSearchResult()
+            it.toSearchResult(TvType.Anime)
         }
     }
 
+    /**
+     * CẬP NHẬT: Phân loại TvType dựa trên thể loại (genre) của phim.
+     */
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
         val title = document.selectFirst("h2.name-vi")?.text() ?: return null
@@ -99,16 +122,54 @@ class AnimeTVNProvider : MainAPI() {
             watchPageDocument.select("div.eplist a.tapphim").mapNotNull { ep ->
                 val epUrl = ep.attr("href")
                 val epText = ep.text()
-                val episodeNumber = epText.replace(Regex("[^0-9]"), "").toIntOrNull()
                 newEpisode(epUrl) {
                     this.name = "Tập $epText"
-                    this.episode = episodeNumber
+                    this.episode = null
                 }
             }.reversed()
         } else {
             listOf()
         }
 
+        // Kiểm tra thể loại để quyết định TvType
+        val isLiveAction = genres.any { it.equals("Live Action", ignoreCase = true) || it.equals("Japanese Drama", ignoreCase = true) }
+        val isTokusatsuOrCartoon = genres.any { it.equals("Siêu Nhân", ignoreCase = true) || it.equals("Tokusatsu", ignoreCase = true) || it.equals("Cartoon", ignoreCase = true) }
+
+        // Logic cho Live Action
+        if (isLiveAction) {
+            return if (episodes.size > 1) {
+                newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+                    this.posterUrl = poster
+                    this.plot = description
+                    this.tags = genres
+                }
+            } else {
+                newMovieLoadResponse(title, url, TvType.Movie, url) {
+                    this.posterUrl = poster
+                    this.plot = description
+                    this.tags = genres
+                }
+            }
+        }
+
+        // Logic cho Siêu Nhân và Cartoon
+        if (isTokusatsuOrCartoon) {
+            return if (episodes.size > 1) {
+                newTvSeriesLoadResponse(title, url, TvType.Cartoon, episodes) {
+                    this.posterUrl = poster
+                    this.plot = description
+                    this.tags = genres
+                }
+            } else {
+                 newMovieLoadResponse(title, url, TvType.Cartoon, url) {
+                    this.posterUrl = poster
+                    this.plot = description
+                    this.tags = genres
+                }
+            }
+        }
+
+        // Mặc định là Anime
         return if (episodes.isNotEmpty()) {
             newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
                 this.posterUrl = poster
@@ -135,8 +196,7 @@ class AnimeTVNProvider : MainAPI() {
     }
 
     data class VideoResponse(
-        val link: List<VideoLink>,
-        val type: String
+        val link: List<VideoLink>
     )
 
     data class VideoLink(
