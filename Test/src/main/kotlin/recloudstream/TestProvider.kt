@@ -2,22 +2,11 @@
 package recloudstream
 
 // Import các thư viện từ package gốc "com.lagradost.cloudstream3"
-import com.lagradost.cloudstream3.MainAPI
-import com.lagradost.cloudstream3.MainPageRequest
-import com.lagradost.cloudstream3.HomePageResponse
-import com.lagradost.cloudstream3.SearchResponse
-import com.lagradost.cloudstream3.LoadResponse
-import com.lagradost.cloudstream3.SubtitleFile
-import com.lagradost.cloudstream3.TvType
-import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.newAnimeSearchResponse
-import com.lagradost.cloudstream3.newEpisode
-import com.lagradost.cloudstream3.newHomePageResponse
-import com.lagradost.cloudstream3.newMovieLoadResponse
-import com.lagradost.cloudstream3.newTvSeriesLoadResponse
+import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.getQualityFromName
+import com.lagradost.cloudstream3.utils.parallelMap
 import org.jsoup.nodes.Element
 
 /**
@@ -35,15 +24,39 @@ class AnimeTVNProvider : MainAPI() {
     override val supportedTypes = setOf(
         TvType.Anime,
         TvType.AnimeMovie,
-        TvType.OVA
+        TvType.OVA,
+        TvType.Movie,
+        TvType.TvSeries
     )
 
+    /**
+     * CẬP NHẬT: Thêm nhiều danh mục cho trang chính.
+     */
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get(mainUrl).document
-        val home = document.select("div.film_item").mapNotNull {
-            it.toSearchResult()
-        }
-        return newHomePageResponse("Anime mới cập nhật", home)
+        // Danh sách các danh mục và URL tương ứng
+        val pages = listOf(
+            Pair("$mainUrl/nhom/anime.html", "Anime Mới"),
+            Pair("$mainUrl/nhom/phim-sap-chieu.html", "Phim Sắp Chiếu"),
+            Pair("$mainUrl/nhom/japanese-drama.html", "Live Action"),
+            Pair("$mainUrl/nhom/sieu-nhan.html", "Siêu Nhân"),
+            Pair("$mainUrl/nhom/cartoon.html", "Cartoon")
+        )
+
+        // Sử dụng parallelMap để tải các danh mục song song, tăng tốc độ tải
+        val all = pages.parallelMap { (url, name) ->
+            try {
+                val document = app.get(url).document
+                val home = document.select("div.film_item").mapNotNull {
+                    it.toSearchResult()
+                }
+                HomePageList(name, home)
+            } catch (e: Exception) {
+                // Bỏ qua nếu có lỗi tải một danh mục
+                null
+            }
+        }.filterNotNull()
+
+        return HomePageResponse(all)
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
@@ -67,10 +80,9 @@ class AnimeTVNProvider : MainAPI() {
     }
 
     /**
-     * SỬA LỖI: Hàm `load` đã được cập nhật để lấy danh sách tập từ trang xem phim.
+     * CẬP NHẬT: Sửa lại cách đặt tên tập phim.
      */
     override suspend fun load(url: String): LoadResponse? {
-        // 1. Tải trang thông tin phim để lấy chi tiết cơ bản
         val document = app.get(url).document
 
         val title = document.selectFirst("h2.name-vi")?.text() ?: return null
@@ -78,28 +90,26 @@ class AnimeTVNProvider : MainAPI() {
         val description = document.selectFirst("div#tab-film-content div.content")?.text()
         val genres = document.select("li.has-color:contains(Thể loại) a").map { it.text() }
 
-        // 2. Tìm nút "Xem phim" để lấy link đến trang chứa danh sách tập
         val watchPageUrl = document.selectFirst("a.btn.play-now")?.attr("href")
 
-        // 3. Nếu tìm thấy link trang xem phim, tải trang đó để lấy danh sách tập
         val episodes = if (watchPageUrl != null) {
             val watchPageDocument = app.get(watchPageUrl).document
             watchPageDocument.select("div.eplist a.tapphim").mapNotNull { ep ->
                 val epUrl = ep.attr("href")
-                val epName = ep.attr("title")
-                // Trích xuất số tập từ tiêu đề hoặc URL để sắp xếp
-                val episodeNumber = ep.text().replace(Regex("[^0-9]"), "").toIntOrNull()
+                // Lấy tên tập từ text của thẻ <a>, ví dụ: "01", "26_End"
+                val epText = ep.text()
+                // Trích xuất số từ text để sắp xếp
+                val episodeNumber = epText.replace(Regex("[^0-9]"), "").toIntOrNull()
                 newEpisode(epUrl) {
-                    this.name = epName.removePrefix("Xem phim ") // Làm sạch tên tập
+                    // Đặt tên theo định dạng "Tập X"
+                    this.name = "Tập $epText"
                     this.episode = episodeNumber
                 }
-            }.reversed() // Đảo ngược để tập 1 lên đầu
+            }.reversed()
         } else {
-            // Nếu không có link xem phim, đây có thể là phim lẻ, trả về danh sách rỗng
             listOf()
         }
 
-        // 4. Kiểm tra xem có tập phim nào không để quyết định là phim bộ hay phim lẻ
         return if (episodes.isNotEmpty()) {
             newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
                 this.posterUrl = poster
@@ -107,7 +117,6 @@ class AnimeTVNProvider : MainAPI() {
                 this.tags = genres
             }
         } else {
-            // Nếu không có tập nào, coi nó là phim lẻ
             newMovieLoadResponse(title, url, TvType.AnimeMovie, url) {
                 this.posterUrl = poster
                 this.plot = description
@@ -115,7 +124,6 @@ class AnimeTVNProvider : MainAPI() {
             }
         }
     }
-
 
     override suspend fun loadLinks(
         data: String,
