@@ -6,7 +6,9 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.getQualityFromName
-import com.lagradost.cloudstream3.utils.parallelMap
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import org.jsoup.nodes.Element
 
 /**
@@ -20,7 +22,6 @@ class AnimeTVNProvider : MainAPI() {
     override var lang = "vi"
     override val hasDownloadSupport = true
 
-    // Xác định các loại nội dung mà plugin hỗ trợ
     override val supportedTypes = setOf(
         TvType.Anime,
         TvType.AnimeMovie,
@@ -30,9 +31,10 @@ class AnimeTVNProvider : MainAPI() {
     )
 
     /**
-     * CẬP NHẬT: Thêm nhiều danh mục cho trang chính.
+     * CẬP NHẬT: Sửa lỗi biên dịch bằng cách dùng coroutine async/await
+     * để tải các danh mục song song.
      */
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse = coroutineScope {
         // Danh sách các danh mục và URL tương ứng
         val pages = listOf(
             Pair("$mainUrl/nhom/anime.html", "Anime Mới"),
@@ -42,21 +44,26 @@ class AnimeTVNProvider : MainAPI() {
             Pair("$mainUrl/nhom/cartoon.html", "Cartoon")
         )
 
-        // Sử dụng parallelMap để tải các danh mục song song, tăng tốc độ tải
-        val all = pages.parallelMap { (url, name) ->
-            try {
-                val document = app.get(url).document
-                val home = document.select("div.film_item").mapNotNull {
-                    it.toSearchResult()
+        // Dùng async để chạy các tác vụ tải trang một cách đồng thời
+        val deferred = pages.map { (url, name) ->
+            async {
+                try {
+                    val document = app.get(url).document
+                    val home = document.select("div.film_item").mapNotNull {
+                        it.toSearchResult()
+                    }
+                    HomePageList(name, home)
+                } catch (e: Exception) {
+                    // Nếu có lỗi khi tải một danh mục, trả về null
+                    null
                 }
-                HomePageList(name, home)
-            } catch (e: Exception) {
-                // Bỏ qua nếu có lỗi tải một danh mục
-                null
             }
-        }.filterNotNull()
+        }
 
-        return HomePageResponse(all)
+        // Đợi tất cả các tác vụ hoàn thành và lọc bỏ những tác vụ bị lỗi (null)
+        val all = deferred.awaitAll().filterNotNull()
+
+        HomePageResponse(all)
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
@@ -79,29 +86,21 @@ class AnimeTVNProvider : MainAPI() {
         }
     }
 
-    /**
-     * CẬP NHẬT: Sửa lại cách đặt tên tập phim.
-     */
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
-
         val title = document.selectFirst("h2.name-vi")?.text() ?: return null
         val poster = document.selectFirst("div.small_img img")?.attr("src")
         val description = document.selectFirst("div#tab-film-content div.content")?.text()
         val genres = document.select("li.has-color:contains(Thể loại) a").map { it.text() }
-
         val watchPageUrl = document.selectFirst("a.btn.play-now")?.attr("href")
 
         val episodes = if (watchPageUrl != null) {
             val watchPageDocument = app.get(watchPageUrl).document
             watchPageDocument.select("div.eplist a.tapphim").mapNotNull { ep ->
                 val epUrl = ep.attr("href")
-                // Lấy tên tập từ text của thẻ <a>, ví dụ: "01", "26_End"
                 val epText = ep.text()
-                // Trích xuất số từ text để sắp xếp
                 val episodeNumber = epText.replace(Regex("[^0-9]"), "").toIntOrNull()
                 newEpisode(epUrl) {
-                    // Đặt tên theo định dạng "Tập X"
                     this.name = "Tập $epText"
                     this.episode = episodeNumber
                 }
