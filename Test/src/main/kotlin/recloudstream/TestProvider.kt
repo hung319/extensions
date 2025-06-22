@@ -7,13 +7,11 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import org.jsoup.nodes.Element
-import java.text.DecimalFormat
 
 /**
  * Đây là lớp chính của plugin.
  */
 class AnimeTVNProvider : MainAPI() {
-    // Thông tin cơ bản của nhà cung cấp
     override var mainUrl = "https://animetvn4.com"
     override var name = "AnimeTVN"
     override val hasMainPage = true
@@ -101,9 +99,8 @@ class AnimeTVNProvider : MainAPI() {
     }
 
     /**
-     * CẬP NHẬT: 
-     * 1. Đảo ngược thứ tự danh sách tập (bỏ .reversed()).
-     * 2. Định dạng lại tên tập để loại bỏ số 0 ở đầu (09.5 -> 9.5).
+     * CẬP NHẬT: Logic lấy và sắp xếp tập phim đã được làm lại hoàn toàn
+     * để xử lý các phim có nhiều danh sách tập như One Piece.
      */
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
@@ -115,29 +112,40 @@ class AnimeTVNProvider : MainAPI() {
 
         val episodes = if (watchPageUrl != null) {
             val watchPageDocument = app.get(watchPageUrl).document
-            watchPageDocument.select("div.eplist a.tapphim").mapNotNull { ep ->
-                val epUrl = ep.attr("href")
-                val epText = ep.text().replace("_",".") // "09.5", "26_End" -> "26.End"
 
-                // Cố gắng chuyển đổi text thành số để định dạng lại
-                val formattedEpNumber = try {
-                    // Định dạng để loại bỏ ".0" cho số nguyên nhưng giữ lại cho số thập phân
-                    val number = epText.toFloat()
-                    if (number == number.toInt().toFloat()) {
-                        number.toInt().toString()
-                    } else {
-                        number.toString()
-                    }
-                } catch (e: NumberFormatException) {
-                    // Nếu không phải là số (ví dụ: "26.End"), giữ nguyên text gốc
-                    epText
-                }
+            // 1. Lấy tất cả các thẻ <a> chứa tập phim
+            val episodeElements = watchPageDocument.select("div.eplist a.tapphim")
+
+            // 2. Chuyển đổi chúng thành một danh sách tạm thời có chứa số tập để sắp xếp
+            data class TempEpisode(val url: String, val epText: String, val epNum: Float)
+            
+            val tempEpisodes = episodeElements.mapNotNull { ep ->
+                val epUrl = ep.attr("href")
+                val epText = ep.text().replace("_", ".")
+                val epNum = epText.toFloatOrNull()
                 
-                newEpisode(epUrl) {
-                    this.name = "Tập $formattedEpNumber"
-                    this.episode = null
+                if (epNum != null) {
+                    TempEpisode(epUrl, epText, epNum)
+                } else {
+                    null // Bỏ qua nếu không phải là số (vd: "Movie")
                 }
-            } // ĐÃ BỎ `.reversed()` ĐỂ CÁC TẬP MỚI NHẤT HIỂN THỊ TRƯỚC
+            }
+
+            // 3. Sắp xếp danh sách tạm thời theo số tập giảm dần và loại bỏ tập trùng lặp
+            tempEpisodes.distinctBy { it.epNum }
+                .sortedByDescending { it.epNum }
+                .map { tempEp ->
+                    // 4. Tạo đối tượng Episode cuối cùng với định dạng tên chính xác
+                    val formattedEpNumber = if (tempEp.epNum == tempEp.epNum.toInt().toFloat()) {
+                        tempEp.epNum.toInt().toString() // "10.0" -> "10"
+                    } else {
+                        tempEp.epNum.toString() // "9.5" -> "9.5"
+                    }
+                    newEpisode(tempEp.url) {
+                        this.name = "Tập $formattedEpNumber"
+                        this.episode = null
+                    }
+                }
         } else {
             listOf()
         }
@@ -180,12 +188,14 @@ class AnimeTVNProvider : MainAPI() {
         }
     }
 
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // Hiện tại hàm này không làm gì cả (placeholder).
         return true
     }
 
