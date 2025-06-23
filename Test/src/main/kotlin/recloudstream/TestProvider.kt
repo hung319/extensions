@@ -1,6 +1,7 @@
 /**
  * Tệp Provider cho AnimeTVN
  * Phiên bản được cải tiến và sửa lỗi biên dịch theo API mới nhất.
+ * Tích hợp logic chọn key giải mã động.
  */
 package recloudstream
 
@@ -25,6 +26,17 @@ import javax.crypto.spec.SecretKeySpec
 class AnimeTVNProvider : MainAPI() {
     companion object {
         private const val MAIN_URL = "https://animetvn4.com"
+
+        // TẠO MỘT MAP ĐỂ LƯU TRỮ TẤT CẢ CÁC KEY GIẢI MÃ CUỐI CÙNG
+        private val FINAL_DECRYPTION_KEYS = mapOf(
+            "LcoYl" to "jcLycoRJT6OWjoWspgLMOZwS3aSS0lEn",
+            "eEHdi" to "aK7ZWN71if8mN60SMl99RBvIwcEUNEaS",
+            "bfRwK" to "oJwmvmVBajMaRCTklxbfjavpQO7SZpsL",
+            "CFRKk" to "PZZ3J3LDbLT0GY7qSA5wW5vchqgpO36O",
+            "GMAPZ" to "vlVbUQhkOhoSfyteyzGeeDzU0BHoeTyZ",
+            "UmuCb" to "KRWN3AdgmxEMcd2vLN1ju9qKe8Feco5h"
+            // Thêm các key khác vào đây nếu có trong tương lai
+        )
     }
 
     override var mainUrl = MAIN_URL
@@ -42,6 +54,7 @@ class AnimeTVNProvider : MainAPI() {
         TvType.Cartoon
     )
 
+    // ... (Các hàm getMainPage, search, load giữ nguyên như phiên bản trước) ...
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val pages = listOf(
             Triple("/nhom/anime.html", "Anime Mới", TvType.Anime),
@@ -165,52 +178,47 @@ class AnimeTVNProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         try {
+            // ... (Bước 1, 2, 3, 4 giữ nguyên) ...
             val epid = "f(\\d+)".toRegex().find(data)?.groupValues?.get(1)
                 ?: throw Exception("Không thể tìm thấy epid trong URL: $data")
-
             val serverListUrl = "$mainUrl/ajax/getExtraLinks"
             val serverListResponse = app.post(
                 serverListUrl, data = mapOf("epid" to epid), referer = data
             ).parsed<ServerListResponse>()
-
             val server = serverListResponse.links.firstOrNull { it.name.contains("TVN") }
                 ?: serverListResponse.links.firstOrNull() ?: throw Exception("Không tìm thấy server nào khả dụng")
-
             val iframeApiResponse = app.post(
                 "$mainUrl/ajax/getExtraLink",
                 data = mapOf("id" to server.id, "link" to server.link),
                 referer = data
             ).parsed<IframeResponse>()
-
             val iframeUrl = iframeApiResponse.link ?: throw Exception("Không thể lấy được link iframe")
-
             val iframeDoc = app.get(iframeUrl).document.html()
-
             val idfileEnc = "idfile_enc\\s*:\\s*'([^']*)'".toRegex().find(iframeDoc)?.groupValues?.get(1)
                 ?: throw Exception("Không tìm thấy idfile_enc")
             val idUserEnc = "idUser_enc\\s*:\\s*'([^']*)'".toRegex().find(iframeDoc)?.groupValues?.get(1)
                 ?: throw Exception("Không tìm thấy idUser_enc")
-
             val key1 = "var\\s+ten_file\\s*=\\s*'([^']*)'".toRegex().find(iframeDoc)?.groupValues?.get(1)
                 ?: throw Exception("Không tìm thấy key giải mã (ten_file)")
-
             val idfile = CryptoAES.decrypt(idfileEnc, key1)
             val idUser = CryptoAES.decrypt(idUserEnc, key1)
-
             if (idfile == null || idUser == null) throw Exception("Giải mã idfile/idUser thất bại")
 
+            // ===== BƯỚC 4.5: TRÍCH XUẤT KEY IDENTIFIER TỪ IFRAME =====
+            // Tạo một Regex để tìm bất kỳ key nào trong danh sách key của chúng ta
+            val keyIdentifiersRegex = FINAL_DECRYPTION_KEYS.keys.joinToString("|")
+            val keyIdentifier = "'($keyIdentifiersRegex)'".toRegex().find(iframeDoc)?.groupValues?.get(1)
+                ?: throw Exception("Không tìm thấy key identifier trong iframe")
+
+            // ===== BƯỚC 5: Tạo Payload và gọi API cuối cùng =====
             val timestamp = System.currentTimeMillis()
             val payloadToEncrypt = "$idfile|$idUser|$timestamp"
             val key2 = "playhq@2023@"
-
             val encryptedPayload =
                 CryptoAES.encrypt(payloadToEncrypt, key2) ?: throw Exception("Mã hóa payload thất bại")
-
             val signatureKey = "x@2023@$key2&y@2024@$idfile"
             val signature = CryptoAES.md5(encryptedPayload + signatureKey)
-
             val finalPayload = "$encryptedPayload|$signature"
-
             val finalApiUrl = "https://api-play-151024.playhbq.xyz/api/tp1ts/playiframe"
             val finalApiResponse = app.post(
                 finalApiUrl,
@@ -222,21 +230,21 @@ class AnimeTVNProvider : MainAPI() {
                 throw Exception("API cuối cùng trả về lỗi hoặc không có dữ liệu")
             }
 
-            val key3 = "playhq@2023@"
+            // ===== BƯỚC 6: CHỌN KEY ĐỘNG VÀ GIẢI MÃ LINK M3U8 =====
+            val key3 = FINAL_DECRYPTION_KEYS[keyIdentifier]
+                ?: throw Exception("Key identifier '$keyIdentifier' không hợp lệ")
 
             val m3u8Url =
-                CryptoAES.decrypt(finalApiResponse.data, key3) ?: throw Exception("Giải mã link M3U8 cuối cùng thất bại")
+                CryptoAES.decrypt(finalApiResponse.data, key3) ?: throw Exception("Giải mã link M3U8 cuối cùng thất bại với key: $key3")
 
-            // SỬA LỖI: Di chuyển `type` ra làm tham số, giữ `referer` và `quality` trong .apply
             callback(newExtractorLink(
                 source = this.name,
                 name = "${this.name} - ${server.name}",
                 url = m3u8Url,
-                type = ExtractorLinkType.M3U8 // `type` là tham số bắt buộc
+                type = ExtractorLinkType.M3U8
             ).apply {
-                // `referer` và `quality` là thuộc tính được gán sau
                 this.referer = iframeUrl
-                this.quality = 0 // 0 for Unknown quality
+                this.quality = 0
             })
             return true
 
