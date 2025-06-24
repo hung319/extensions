@@ -1,7 +1,7 @@
 // Đặt package của tệp là "recloudstream"
 package recloudstream
 
-// Import các thư viện từ package gốc "com.lagradost.cloudstream3"
+// Import các thư viện cần thiết
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
@@ -29,14 +29,12 @@ class AnimeTVNProvider : MainAPI() {
         TvType.Cartoon
     )
 
-    private val scraperApiUrl = "https://m3u8.h4rs.pp.ua/api/scrape?key=11042006"
-
+    // Các lớp data class để parse JSON
     private data class Server(val id: String?, val name: String?, val link: String?)
     private data class ServerListResponse(val success: Boolean?, val links: List<Server>?)
     private data class IframeResponse(val success: Boolean?, val link: String?)
-    private data class ScraperResponse(val success: Boolean?, val links: List<String>?)
 
-    // region Main-Page and Search
+    // region Main-Page and Search (Không thay đổi)
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val pages = listOf(
             Triple("$mainUrl/nhom/anime.html", "Anime Mới", TvType.Anime),
@@ -141,7 +139,7 @@ class AnimeTVNProvider : MainAPI() {
     }
 
     /**
-     * CẬP NHẬT: Thêm User-Agent và bỏ log debug.
+     * CẬP NHẬT: Dùng link iframe làm link stream để debug.
      */
     override suspend fun loadLinks(
         data: String,
@@ -149,16 +147,14 @@ class AnimeTVNProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Bước 1: Tải trang xem phim để lấy token, thêm User-Agent
+        // Bước 1: Tải trang xem phim để lấy token và epid
         val episodePage = app.get(data, headers = mapOf(
-            "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Mobile Safari/537.36"
+            "User-Agent" to "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Mobile Safari/537.36"
         )).document
         val csrfToken = episodePage.selectFirst("meta[name=csrf-token]")?.attr("content") ?: return false
-
-        // Bước 2: Lấy epid
         val epid = Regex("-f(\\d+)").find(data)?.groupValues?.get(1) ?: return false
 
-        // Bước 3: Lấy danh sách server với token
+        // Bước 2: Lấy danh sách server
         val headers = mapOf(
             "X-Requested-With" to "XMLHttpRequest",
             "X-CSRF-TOKEN" to csrfToken,
@@ -170,7 +166,7 @@ class AnimeTVNProvider : MainAPI() {
             headers = headers
         ).parsedSafe<ServerListResponse>()?.links
 
-        // Lặp qua các server để lấy link cuối cùng
+        // Bước 3: Lặp qua từng server để lấy link iframe và gửi cho callback
         serverList?.forEach { server ->
             try {
                 val iframeUrl = app.post(
@@ -179,32 +175,19 @@ class AnimeTVNProvider : MainAPI() {
                     headers = headers
                 ).parsedSafe<IframeResponse>()?.link ?: return@forEach
 
-                val scraperPayload = mapOf(
-                    "url" to iframeUrl,
-                    "hasJs" to true,
-                    "headers" to mapOf("Referer" to data)
-                )
-
-                val scraperResponse = app.post(
-                    scraperApiUrl,
-                    json = scraperPayload,
-                    headers = mapOf("Content-Type" to "application/json")
-                ).parsedSafe<ScraperResponse>()
-
-                scraperResponse?.links?.firstOrNull()?.let { m3u8Url ->
-                    callback.invoke(
-                        ExtractorLink(
-                            source = this.name,
-                            name = server.name ?: this.name,
-                            url = m3u8Url,
-                            referer = mainUrl,
-                            quality = Qualities.Unknown.value,
-                            type = ExtractorLinkType.M3U8
-                        )
+                // Gửi trực tiếp link iframe cho callback
+                callback.invoke(
+                    ExtractorLink(
+                        source = this.name,
+                        name = server.name ?: this.name,
+                        url = iframeUrl,
+                        referer = mainUrl, // Referer là trang chứa iframe
+                        quality = Qualities.Unknown.value,
+                        type = ExtractorLinkType.M3U8 // Đặt type là Iframe
                     )
-                }
+                )
             } catch (e: Exception) {
-                // Bỏ qua nếu có lỗi ở server này
+                // Bỏ qua nếu có lỗi
             }
         }
         return true
