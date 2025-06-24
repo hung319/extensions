@@ -1,7 +1,7 @@
 // Đặt package của tệp là "recloudstream"
 package recloudstream
 
-// Import các thư viện cần thiết
+// Import các thư viện từ package gốc "com.lagradost.cloudstream3"
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
@@ -36,7 +36,7 @@ class AnimeTVNProvider : MainAPI() {
     private data class IframeResponse(val success: Boolean?, val link: String?)
     private data class ScraperResponse(val success: Boolean?, val links: List<String>?)
 
-    // region Main-Page and Search
+    // region Main-Page and Search (Không thay đổi)
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val pages = listOf(
             Triple("$mainUrl/nhom/anime.html", "Anime Mới", TvType.Anime),
@@ -141,7 +141,7 @@ class AnimeTVNProvider : MainAPI() {
     }
 
     /**
-     * CẬP NHẬT: Thêm các dòng log hiển thị trên UI để debug.
+     * CẬP NHẬT: Thêm log chi tiết hơn để gỡ lỗi.
      */
     override suspend fun loadLinks(
         data: String,
@@ -149,7 +149,7 @@ class AnimeTVNProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Log helper
+        // Hàm helper để hiển thị log trên UI
         fun log(message: String) {
             callback.invoke(
                 ExtractorLink(this.name, message, "#", "", Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
@@ -157,24 +157,27 @@ class AnimeTVNProvider : MainAPI() {
         }
 
         try {
-            log("1. Bắt đầu loadLinks")
+            log("1. Bắt đầu `loadLinks`")
+            log("URL đầu vào: $data")
 
             // Bước 1: Tải trang xem phim để lấy token
+            log("1.1. Chuẩn bị tải trang tập phim...")
             val episodePage = app.get(data).document
+            log("1.2. Đã tải trang. Đang tìm CSRF token...")
             val csrfToken = episodePage.selectFirst("meta[name=csrf-token]")?.attr("content")
             if (csrfToken == null) {
-                log("LỖI: Không tìm thấy CSRF Token.")
+                log("1.3. LỖI: Không tìm thấy CSRF Token.")
                 return false
             }
-            log("2. CSRF Token: $csrfToken")
+            log("1.3. Tìm thấy Token: OK")
 
             // Bước 2: Lấy epid
             val epid = Regex("-f(\\d+)").find(data)?.groupValues?.get(1)
-            if (epid == null) {
-                log("LỖI: Không tìm thấy EPID trong URL.")
+             if (epid == null) {
+                log("2. LỖI: Không tìm thấy EPID.")
                 return false
             }
-            log("3. EPID: $epid")
+            log("2. EPID: $epid")
 
             // Bước 3: Lấy danh sách server
             val headers = mapOf(
@@ -182,39 +185,37 @@ class AnimeTVNProvider : MainAPI() {
                 "X-CSRF-TOKEN" to csrfToken,
                 "Referer" to data
             )
-
+            log("3.1. Chuẩn bị gọi API lấy server...")
             val serverListResponse = app.post(
                 "$mainUrl/ajax/getExtraLinks",
                 data = mapOf("epid" to epid),
                 headers = headers
-            ).parsed<ServerListResponse>()
+            ).parsedSafe<ServerListResponse>()
             
-            val serverList = serverListResponse.links
+            val serverList = serverListResponse?.links
             if (serverList.isNullOrEmpty()) {
-                 log("LỖI: Không tìm thấy server nào. Phản hồi: ${app.post(
-                    "$mainUrl/ajax/getExtraLinks",
-                    data = mapOf("epid" to epid),
-                    headers = headers
-                ).text}")
+                log("3.2. LỖI: Không có server nào được trả về.")
                 return false
             }
-            log("4. Tìm thấy ${serverList.size} server.")
+            log("3.2. Tìm thấy ${serverList.size} server.")
 
             // Lặp qua từng server
             serverList.forEach { server ->
-                log("5. Đang xử lý server: ${server.name}")
+                val serverName = server.name ?: "Unknown Server"
+                log("4. Đang xử lý server: $serverName")
                 try {
-                    val iframeUrl = app.post(
+                    val iframeResponse = app.post(
                         "$mainUrl/ajax/getExtraLink",
                         data = mapOf("id" to server.id!!, "link" to server.link!!),
                         headers = headers
-                    ).parsed<IframeResponse>().link
+                    ).parsedSafe<IframeResponse>()
+                    val iframeUrl = iframeResponse?.link
                     
                     if (iframeUrl == null) {
-                        log("LỖI: Không lấy được iframe URL cho server ${server.name}")
-                        return@forEach // Bỏ qua server này
+                        log("4.1. LỖI: Không lấy được iframe URL cho $serverName")
+                        return@forEach // Thử server tiếp theo
                     }
-                    log("6. Iframe URL: $iframeUrl")
+                    log("4.2. Iframe URL: $iframeUrl")
                     
                     val scraperPayload = mapOf(
                         "url" to iframeUrl,
@@ -222,20 +223,22 @@ class AnimeTVNProvider : MainAPI() {
                         "headers" to mapOf("Referer" to data)
                     )
 
+                    log("4.3. Đang gọi API Scraper...")
                     val scraperResponse = app.post(
                         scraperApiUrl,
                         json = scraperPayload,
                         headers = mapOf("Content-Type" to "application/json")
-                    ).parsed<ScraperResponse>()
+                    ).parsedSafe<ScraperResponse>()
 
-                    log("7. Scraper Response: ${scraperResponse.links}")
-
-                    scraperResponse.links?.firstOrNull()?.let { m3u8Url ->
-                        log("8. THÀNH CÔNG: $m3u8Url")
+                    val m3u8Url = scraperResponse?.links?.firstOrNull()
+                    if (m3u8Url == null) {
+                         log("4.4. LỖI: API Scraper không trả về link m3u8.")
+                    } else {
+                        log("5. THÀNH CÔNG! Đang gọi callback...")
                         callback.invoke(
                             ExtractorLink(
                                 source = this.name,
-                                name = "✅ ${server.name}", // Thêm icon ✅ để biết server này hoạt động
+                                name = "✅ ${server.name}",
                                 url = m3u8Url,
                                 referer = mainUrl,
                                 quality = Qualities.Unknown.value,
@@ -244,11 +247,11 @@ class AnimeTVNProvider : MainAPI() {
                         )
                     }
                 } catch (e: Exception) {
-                    log("LỖI Server ${server.name}: ${e.message}")
+                    log("LỖI Server $serverName: ${e.message?.take(100)}") // Giới hạn độ dài thông báo lỗi
                 }
             }
         } catch (e: Exception) {
-            log("LỖI Tổng Thể: ${e.message}")
+            log("LỖI TỔNG THỂ: ${e.message?.take(100)}")
         }
         
         return true
