@@ -143,7 +143,7 @@ class AnimeTVNProvider : MainAPI() {
     }
 
     /**
-     * CẬP NHẬT: Sửa lỗi dùng sai hàm POST và lỗi xử lý giá trị null.
+     * CẬP NHẬT: Sửa lỗi lấy link iframe bằng cách thêm CSRF Token vào header.
      */
     override suspend fun loadLinks(
         data: String,
@@ -151,23 +151,33 @@ class AnimeTVNProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // Bước 1: Tải trang xem phim để lấy token
+        val episodePage = app.get(data).document
+        val csrfToken = episodePage.selectFirst("meta[name=csrf-token]")?.attr("content") ?: return false
+
+        // Bước 2: Lấy epid từ URL
         val epid = Regex("-f(\\d+)").find(data)?.groupValues?.get(1) ?: return false
+
+        // Bước 3: Lấy danh sách server với token đã lấy được
+        val headers = mapOf(
+            "X-Requested-With" to "XMLHttpRequest",
+            "X-CSRF-TOKEN" to csrfToken,
+            "Referer" to data
+        )
 
         val serverList = app.post(
             "$mainUrl/ajax/getExtraLinks",
             data = mapOf("epid" to epid),
-            referer = data,
-            headers = mapOf("X-Requested-With" to "XMLHttpRequest")
+            headers = headers
         ).parsed<ServerListResponse>().links
 
-        // Xử lý an toàn nếu serverList là null
+        // Lặp qua các server để lấy link cuối cùng
         serverList?.forEach { server ->
             try {
                 val iframeUrl = app.post(
                     "$mainUrl/ajax/getExtraLink",
                     data = mapOf("id" to server.id!!, "link" to server.link!!),
-                    referer = data,
-                    headers = mapOf("X-Requested-With" to "XMLHttpRequest")
+                    headers = headers
                 ).parsed<IframeResponse>().link ?: return@forEach
 
                 val scraperPayload = mapOf(
@@ -176,7 +186,6 @@ class AnimeTVNProvider : MainAPI() {
                     "headers" to mapOf("Referer" to data)
                 )
 
-                // Sửa lại: Dùng app.post thay vì POST
                 val scraperResponse = app.post(
                     scraperApiUrl,
                     json = scraperPayload,
@@ -196,7 +205,7 @@ class AnimeTVNProvider : MainAPI() {
                     )
                 }
             } catch (e: Exception) {
-                // Bỏ qua nếu server bị lỗi
+                // Bỏ qua nếu có lỗi ở server này
             }
         }
         return true
