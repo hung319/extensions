@@ -3,9 +3,8 @@ package recloudstream
 
 // Import các thư viện từ package gốc "com.lagradost.cloudstream3"
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.network.POST
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType // Thêm import cho ExtractorLinkType
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -144,7 +143,7 @@ class AnimeTVNProvider : MainAPI() {
     }
 
     /**
-     * CẬP NHẬT: Sử dụng cấu trúc ExtractorLink mới.
+     * CẬP NHẬT: Sửa lỗi dùng sai hàm POST và lỗi xử lý giá trị null.
      */
     override suspend fun loadLinks(
         data: String,
@@ -161,7 +160,8 @@ class AnimeTVNProvider : MainAPI() {
             headers = mapOf("X-Requested-With" to "XMLHttpRequest")
         ).parsed<ServerListResponse>().links
 
-        serverList.forEach { server ->
+        // Xử lý an toàn nếu serverList là null
+        serverList?.forEach { server ->
             try {
                 val iframeUrl = app.post(
                     "$mainUrl/ajax/getExtraLink",
@@ -176,9 +176,11 @@ class AnimeTVNProvider : MainAPI() {
                     "headers" to mapOf("Referer" to data)
                 )
 
-                val scraperResponse = POST(
+                // Sửa lại: Dùng app.post thay vì POST
+                val scraperResponse = app.post(
                     scraperApiUrl,
-                    json = scraperPayload
+                    json = scraperPayload,
+                    headers = mapOf("Content-Type" to "application/json")
                 ).parsed<ScraperResponse>()
 
                 scraperResponse.links?.firstOrNull()?.let { m3u8Url ->
@@ -189,7 +191,6 @@ class AnimeTVNProvider : MainAPI() {
                             url = m3u8Url,
                             referer = "$mainUrl/",
                             quality = Qualities.Unknown.value,
-                            // Sử dụng type thay vì isM3u8
                             type = ExtractorLinkType.M3U8
                         )
                     )
