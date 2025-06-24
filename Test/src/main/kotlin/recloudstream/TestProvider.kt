@@ -36,7 +36,7 @@ class AnimeTVNProvider : MainAPI() {
     private data class IframeResponse(val success: Boolean?, val link: String?)
     private data class ScraperResponse(val success: Boolean?, val links: List<String>?)
 
-    // region Main-Page and Search (Không thay đổi)
+    // region Main-Page and Search
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val pages = listOf(
             Triple("$mainUrl/nhom/anime.html", "Anime Mới", TvType.Anime),
@@ -141,7 +141,7 @@ class AnimeTVNProvider : MainAPI() {
     }
 
     /**
-     * CẬP NHẬT: Thêm log chi tiết hơn để gỡ lỗi.
+     * CẬP NHẬT: Thêm User-Agent và bỏ log debug.
      */
     override suspend fun loadLinks(
         data: String,
@@ -149,111 +149,64 @@ class AnimeTVNProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Hàm helper để hiển thị log trên UI
-        fun log(message: String) {
-            callback.invoke(
-                ExtractorLink(this.name, message, "#", "", Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
-            )
-        }
+        // Bước 1: Tải trang xem phim để lấy token, thêm User-Agent
+        val episodePage = app.get(data, headers = mapOf(
+            "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Mobile Safari/537.36"
+        )).document
+        val csrfToken = episodePage.selectFirst("meta[name=csrf-token]")?.attr("content") ?: return false
 
-        try {
-            log("1. Bắt đầu `loadLinks`")
-            log("URL đầu vào: $data")
+        // Bước 2: Lấy epid
+        val epid = Regex("-f(\\d+)").find(data)?.groupValues?.get(1) ?: return false
 
-            // Bước 1: Tải trang xem phim để lấy token
-            log("1.1. Chuẩn bị tải trang tập phim...")
-            val episodePage = app.get(data).document
-            log("1.2. Đã tải trang. Đang tìm CSRF token...")
-            val csrfToken = episodePage.selectFirst("meta[name=csrf-token]")?.attr("content")
-            if (csrfToken == null) {
-                log("1.3. LỖI: Không tìm thấy CSRF Token.")
-                return false
-            }
-            log("1.3. Tìm thấy Token: OK")
+        // Bước 3: Lấy danh sách server với token
+        val headers = mapOf(
+            "X-Requested-With" to "XMLHttpRequest",
+            "X-CSRF-TOKEN" to csrfToken,
+            "Referer" to data
+        )
+        val serverList = app.post(
+            "$mainUrl/ajax/getExtraLinks",
+            data = mapOf("epid" to epid),
+            headers = headers
+        ).parsedSafe<ServerListResponse>()?.links
 
-            // Bước 2: Lấy epid
-            val epid = Regex("-f(\\d+)").find(data)?.groupValues?.get(1)
-             if (epid == null) {
-                log("2. LỖI: Không tìm thấy EPID.")
-                return false
-            }
-            log("2. EPID: $epid")
+        // Lặp qua các server để lấy link cuối cùng
+        serverList?.forEach { server ->
+            try {
+                val iframeUrl = app.post(
+                    "$mainUrl/ajax/getExtraLink",
+                    data = mapOf("id" to server.id!!, "link" to server.link!!),
+                    headers = headers
+                ).parsedSafe<IframeResponse>()?.link ?: return@forEach
 
-            // Bước 3: Lấy danh sách server
-            val headers = mapOf(
-                "X-Requested-With" to "XMLHttpRequest",
-                "X-CSRF-TOKEN" to csrfToken,
-                "Referer" to data
-            )
-            log("3.1. Chuẩn bị gọi API lấy server...")
-            val serverListResponse = app.post(
-                "$mainUrl/ajax/getExtraLinks",
-                data = mapOf("epid" to epid),
-                headers = headers
-            ).parsedSafe<ServerListResponse>()
-            
-            val serverList = serverListResponse?.links
-            if (serverList.isNullOrEmpty()) {
-                log("3.2. LỖI: Không có server nào được trả về.")
-                return false
-            }
-            log("3.2. Tìm thấy ${serverList.size} server.")
+                val scraperPayload = mapOf(
+                    "url" to iframeUrl,
+                    "hasJs" to true,
+                    "headers" to mapOf("Referer" to data)
+                )
 
-            // Lặp qua từng server
-            serverList.forEach { server ->
-                val serverName = server.name ?: "Unknown Server"
-                log("4. Đang xử lý server: $serverName")
-                try {
-                    val iframeResponse = app.post(
-                        "$mainUrl/ajax/getExtraLink",
-                        data = mapOf("id" to server.id!!, "link" to server.link!!),
-                        headers = headers
-                    ).parsedSafe<IframeResponse>()
-                    val iframeUrl = iframeResponse?.link
-                    
-                    if (iframeUrl == null) {
-                        log("4.1. LỖI: Không lấy được iframe URL cho $serverName")
-                        return@forEach // Thử server tiếp theo
-                    }
-                    log("4.2. Iframe URL: $iframeUrl")
-                    
-                    val scraperPayload = mapOf(
-                        "url" to iframeUrl,
-                        "hasJs" to true,
-                        "headers" to mapOf("Referer" to data)
-                    )
+                val scraperResponse = app.post(
+                    scraperApiUrl,
+                    json = scraperPayload,
+                    headers = mapOf("Content-Type" to "application/json")
+                ).parsedSafe<ScraperResponse>()
 
-                    log("4.3. Đang gọi API Scraper...")
-                    val scraperResponse = app.post(
-                        scraperApiUrl,
-                        json = scraperPayload,
-                        headers = mapOf("Content-Type" to "application/json")
-                    ).parsedSafe<ScraperResponse>()
-
-                    val m3u8Url = scraperResponse?.links?.firstOrNull()
-                    if (m3u8Url == null) {
-                         log("4.4. LỖI: API Scraper không trả về link m3u8.")
-                    } else {
-                        log("5. THÀNH CÔNG! Đang gọi callback...")
-                        callback.invoke(
-                            ExtractorLink(
-                                source = this.name,
-                                name = "✅ ${server.name}",
-                                url = m3u8Url,
-                                referer = mainUrl,
-                                quality = Qualities.Unknown.value,
-                                type = ExtractorLinkType.M3U8
-                            )
+                scraperResponse?.links?.firstOrNull()?.let { m3u8Url ->
+                    callback.invoke(
+                        ExtractorLink(
+                            source = this.name,
+                            name = server.name ?: this.name,
+                            url = m3u8Url,
+                            referer = mainUrl,
+                            quality = Qualities.Unknown.value,
+                            type = ExtractorLinkType.M3U8
                         )
-                    }
-                } catch (e: Exception) {
-                    log("LỖI Server $serverName: ${e.message?.take(100)}") // Giới hạn độ dài thông báo lỗi
+                    )
                 }
+            } catch (e: Exception) {
+                // Bỏ qua nếu có lỗi ở server này
             }
-        } catch (e: Exception) {
-            log("LỖI TỔNG THỂ: ${e.message?.take(100)}")
         }
-        
         return true
     }
 }
