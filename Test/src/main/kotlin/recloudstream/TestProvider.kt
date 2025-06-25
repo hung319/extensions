@@ -45,7 +45,7 @@ class Anime47Provider : MainAPI() {
             Regex("""background-image:\s*url\(['"]?(.*?)['"]?\)""").find(it)?.groupValues?.getOrNull(1)
         }
     }
-    
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         if (page > 1) return null
 
@@ -65,7 +65,7 @@ class Anime47Provider : MainAPI() {
         if (updatedMovies.isNotEmpty()) {
             lists.add(HomePageList("Mới Cập Nhật", updatedMovies))
         }
-        
+
         return if(lists.isEmpty()) null else HomePageResponse(lists)
     }
 
@@ -90,10 +90,9 @@ class Anime47Provider : MainAPI() {
         val description = document.selectFirst("div.news-article")?.text()?.trim()
         val year = document.selectFirst("h1.movie-title span.title-year")?.text()
             ?.replace(Regex("[()]"), "")?.trim()?.toIntOrNull()
-        
+
         val statusText = document.selectFirst("dl.movie-dl dt:contains(Trạng thái:) + dd")?.text()?.trim()
-        
-        // *** KHỐI CODE ĐƯỢC SỬA LỖI NULL SAFETY SỐ 1 ***
+
         val status = when {
             statusText?.contains("Hoàn thành", true) == true -> ShowStatus.Completed
             statusText?.contains("/") == true -> {
@@ -114,10 +113,7 @@ class Anime47Provider : MainAPI() {
             episodes = Jsoup.parse(anyEpisodesHtml).select("div.episodes ul li a").mapNotNull {
                 val epHref = it.attr("href")?.let { eUrl -> fixUrl(eUrl) }
                 val epName = it.attr("title")?.trim() ?: it.text()?.trim()
-                
-                // *** DÒNG CODE ĐƯỢC SỬA LỖI NULL SAFETY SỐ 2 ***
-                val epNum = epName?.toIntOrNull()
-                
+                val epNum = epName.toIntOrNull()
                 if (epHref != null) {
                     Episode(data = epHref, name = "Tập $epName", episode = epNum)
                 } else null
@@ -133,7 +129,6 @@ class Anime47Provider : MainAPI() {
         }
     }
 
-    // --- Các hàm giải mã giữ nguyên ---
     private fun evpBytesToKey(password: ByteArray, salt: ByteArray, keySize: Int, ivSize: Int): Pair<ByteArray, ByteArray> {
         var derivedBytes = ByteArray(0)
         var result: ByteArray
@@ -145,7 +140,7 @@ class Anime47Provider : MainAPI() {
             hasher.update(salt)
             result = hasher.digest()
             derivedBytes += result
-            data = result 
+            data = result
             hasher.reset()
         }
         return Pair(derivedBytes.copyOfRange(0, keySize), derivedBytes.copyOfRange(keySize, keySize + ivSize))
@@ -180,36 +175,52 @@ class Anime47Provider : MainAPI() {
     }
     
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
-        val episodeId = data.substringAfterLast('/').substringBefore('.').trim()
-        val playerResponse = app.post("$mainUrl/player/player.php", data = mapOf("ID" to episodeId, "SV" to "4"), referer = data, headers = mapOf("X-Requested-With" to "XMLHttpRequest")).document
-        val scriptContent = playerResponse.select("script:containsData(var thanhhoa)").html()
-        val thanhhoaB64 = Regex("""var\s+thanhhoa\s*=\s*atob\(['"]([^'"]+)['"]\)""").find(scriptContent)?.groupValues?.getOrNull(1)
+        var sourceLoaded = false
 
-        if (thanhhoaB64 != null) {
-            val videoUrl = decryptSource(thanhhoaB64, "caphedaklak")
-            if (!videoUrl.isNullOrBlank()) {
-                callback(newExtractorLink(
-                    source = this.name,
-                    name = "${this.name} HLS",
-                    url = videoUrl,
-                    type = ExtractorLinkType.M3U8
-                ) {
-                    this.referer = "$mainUrl/"
-                    this.quality = Qualities.Unknown.value
-                })
-                
-                Regex("""tracks:\s*(\[.*?\])""", RegexOption.DOT_MATCHES_ALL).find(scriptContent)?.groupValues?.getOrNull(1)?.let { tracksJson ->
-                    Regex("""file:\s*["'](.*?)["'].*?label:\s*["'](.*?)["']""").findAll(tracksJson).forEach { match ->
-                        subtitleCallback(SubtitleFile(match.groupValues[2], fixUrl(match.groupValues[1])))
+        // *** CƠ CHẾ 1: Thử giải mã 'thanhhoa' từ player.php (phổ biến nhất) ***
+        runCatching {
+            val episodeId = data.substringAfterLast('/').substringBefore('.').trim()
+            val playerResponse = app.post("$mainUrl/player/player.php", data = mapOf("ID" to episodeId, "SV" to "4"), referer = data, headers = mapOf("X-Requested-With" to "XMLHttpRequest")).document
+            val scriptContent = playerResponse.select("script:containsData(var thanhhoa)").html()
+            val thanhhoaB64 = Regex("""var\s+thanhhoa\s*=\s*atob\(['"]([^'"]+)['"]\)""").find(scriptContent)?.groupValues?.getOrNull(1)
+
+            if (thanhhoaB64 != null) {
+                val videoUrl = decryptSource(thanhhoaB64, "caphedaklak")
+                if (!videoUrl.isNullOrBlank()) {
+                    callback(newExtractorLink(
+                        source = this.name,
+                        name = "${this.name} HLS",
+                        url = videoUrl,
+                        type = ExtractorLinkType.M3U8
+                    ) {
+                        this.referer = "$mainUrl/"
+                        this.quality = Qualities.Unknown.value
+                    })
+                    sourceLoaded = true
+                    
+                    Regex("""tracks:\s*(\[.*?\])""", RegexOption.DOT_MATCHES_ALL).find(scriptContent)?.groupValues?.getOrNull(1)?.let { tracksJson ->
+                        Regex("""file:\s*["'](.*?)["'].*?label:\s*["'](.*?)["']""").findAll(tracksJson).forEach { match ->
+                            subtitleCallback(SubtitleFile(match.groupValues[2], fixUrl(match.groupValues[1])))
+                        }
                     }
                 }
-                return true
             }
         }
-        playerResponse.select("iframe[src]").forEach { iframe ->
-            val iframeSrc = iframe.attr("src").let { if (it.startsWith("//")) "https:$it" else it }
-            if (loadExtractor(iframeSrc, data, subtitleCallback, callback)) return true
+
+        if (sourceLoaded) return true
+
+        // *** CƠ CHẾ 2 (FALLBACK): Nếu cách 1 thất bại, thử tìm iframe trên trang gốc ***
+        // Đây là bước quan trọng đối với các tập đặc biệt hoặc phim lẻ
+        runCatching {
+            val document = app.get(data).document
+            document.select("iframe[src]").forEach { iframe ->
+                val iframeSrc = iframe.attr("src").let { if (it.startsWith("//")) "https:$it" else it }
+                if (loadExtractor(iframeSrc, data, subtitleCallback, callback)) {
+                    sourceLoaded = true
+                }
+            }
         }
-        return false
+
+        return sourceLoaded
     }
 }
