@@ -188,9 +188,6 @@ class NguoncProvider : MainAPI() {
         }
     }
 
-    /**
-     * HÀM LOADLINKS - PHIÊN BẢN HOÀN CHỈNH
-     */
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -205,23 +202,39 @@ class NguoncProvider : MainAPI() {
                     val embedUrl = episode.embed ?: return@apmap
                     val embedPageHtml = app.get(embedUrl, headers = browserHeaders).text
 
-                    // Regex tìm `streamURL` có trong dấu ngoặc kép "..."
-                    val streamUrlRegex = Regex("""const streamURL = "([^"]+)"""")
+                    val streamUrlRegex = Regex("""const streamURL\s*=\s*"\\?([^"]+)"""")
                     var relativeStreamUrl = streamUrlRegex.find(embedPageHtml)?.groupValues?.get(1)
 
-                    if (relativeStreamUrl != null) {
-                        // SỬA LỖI CUỐI CÙNG: Làm sạch chuỗi, thay thế `\/` bằng `/`
-                        val cleanedUrl = relativeStreamUrl.replace("\\/", "/")
+                    if (relativeStreamUrl == null) {
+                        val payloadRegex = Regex("""name="payload" value="([^"]+)"""")
+                        val payload = payloadRegex.find(embedPageHtml)?.groupValues?.get(1)
+                        if (payload != null) {
+                            val postData = mapOf("payload" to payload)
+                            val playerPage = app.post(embedUrl, data = postData, headers = browserHeaders).text
+                            relativeStreamUrl = streamUrlRegex.find(playerPage)?.groupValues?.get(1)
+                        }
+                    }
+                    
+                    if(relativeStreamUrl != null) {
+                        val cleanedUrl = if (relativeStreamUrl.startsWith("/")) relativeStreamUrl else "/$relativeStreamUrl"
                         val finalM3u8Url = URI(embedUrl).resolve(cleanedUrl).toString()
                         
+                        // SỬA LỖI CUỐI CÙNG: Thêm headers vào ExtractorLink
+                        // để trình phát sử dụng khi tải các đoạn video.
+                        val streamHeaders = mapOf(
+                            "Referer" to embedUrl,
+                            "User-Agent" to (browserHeaders["User-Agent"] ?: "")
+                        )
+
                         callback.invoke(
                             ExtractorLink(
                                 source = this.name,
                                 name = episode.serverName ?: "Server",
                                 url = finalM3u8Url,
-                                referer = embedUrl,
+                                referer = embedUrl, // Referer cho file m3u8
                                 quality = Qualities.Unknown.value,
-                                type = ExtractorLinkType.M3U8
+                                type = ExtractorLinkType.M3U8,
+                                headers = streamHeaders // Headers cho các đoạn video .ts/.png
                             )
                         )
                     }
