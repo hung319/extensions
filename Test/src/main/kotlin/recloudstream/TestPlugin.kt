@@ -1,4 +1,4 @@
-package recloudstream 
+package com.lagradost.recloudstream 
 
 import android.content.Context
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
