@@ -187,54 +187,67 @@ class NguoncProvider : MainAPI() {
             return null
         }
     }
-
+    
+    /**
+     * HÀM LOADLINKS - PHIÊN BẢN GỠ LỖI BẰNG GIAO DIỆN
+     */
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // Hàm này sẽ tạo ra các link giả, tên của link là thông báo gỡ lỗi
+        fun debugCallback(message: String) {
+            callback.invoke(
+                ExtractorLink(this.name, "DEBUG: $message", "https://example.com/debug", "", Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
+            )
+        }
+
         try {
-            val episodeVersions = tryParseJson<List<EpisodeItem>>(data) ?: return false
+            debugCallback("Bắt đầu...")
+            val episodeVersions = tryParseJson<List<EpisodeItem>>(data)
+            if (episodeVersions == null) {
+                debugCallback("LỖI: Không phân tích được JSON.")
+                return true
+            }
+            debugCallback("Phân tích JSON OK. Server: ${episodeVersions.firstOrNull()?.serverName}")
 
-            episodeVersions.apmap { episode ->
-                val embedUrl = episode.embed ?: return@apmap
+            val embedUrl = episodeVersions.firstOrNull()?.embed
+            if (embedUrl.isNullOrBlank()) {
+                debugCallback("LỖI: Không có link embed.")
+                return true
+            }
+            debugCallback("Đang GET link: ${embedUrl.take(30)}...")
+
+            val embedPageHtml = app.get(embedUrl, headers = browserHeaders).text
+            debugCallback("GET thành công. Bắt đầu tìm link.")
+
+            // Sử dụng Regex linh hoạt đã cập nhật
+            val streamUrlRegex = Regex("""const streamURL\s*=\s*"\\?([^"]+)"""")
+            val streamMatch = streamUrlRegex.find(embedPageHtml)
+
+            if (streamMatch != null) {
+                val foundUrl = streamMatch.groupValues[1]
+                debugCallback("THÀNH CÔNG (trực tiếp): Tìm thấy streamURL.")
+                debugCallback("Giá trị: ${foundUrl.take(50)}")
+            } else {
+                debugCallback("INFO: Không thấy streamURL, đang thử tìm payload...")
                 
-                val embedPageHtml = app.get(embedUrl, headers = browserHeaders).text
-
-                val streamUrlRegex = Regex("""const streamURL = "\\/([^"]+)"""")
-                var relativeStreamUrl = streamUrlRegex.find(embedPageHtml)?.groupValues?.get(1)
-
-                if (relativeStreamUrl == null) {
-                    val payloadRegex = Regex("""name="payload" value="([^"]+)"""")
-                    val payload = payloadRegex.find(embedPageHtml)?.groupValues?.get(1)
-                    if (payload != null) {
-                        val postData = mapOf("payload" to payload)
-                        val playerPage = app.post(embedUrl, data = postData, headers = browserHeaders).text
-                        relativeStreamUrl = streamUrlRegex.find(playerPage)?.groupValues?.get(1)
-                    }
-                }
-                
-                if(relativeStreamUrl != null) {
-                    // SỬA LỖI QUAN TRỌNG: Thêm dấu "/" vào đầu link tương đối để resolve cho đúng
-                    val finalM3u8Url = URI(embedUrl).resolve("/$relativeStreamUrl").toString()
-                    
-                    callback.invoke(
-                        ExtractorLink(
-                            source = this.name,
-                            name = episode.serverName ?: "Server",
-                            url = finalM3u8Url,
-                            referer = embedUrl,
-                            quality = Qualities.Unknown.value,
-                            type = ExtractorLinkType.M3U8
-                        )
-                    )
+                val payloadRegex = Regex("""name="payload" value="([^"]+)"""")
+                val payloadMatch = payloadRegex.find(embedPageHtml)
+                if (payloadMatch == null) {
+                    debugCallback("LỖI: Không tìm thấy cả streamURL và payload.")
+                } else {
+                    debugCallback("INFO: Tìm thấy payload, đang POST...")
+                    // Chỉ để gỡ lỗi, không thực hiện POST vội
+                    debugCallback("Giá trị payload: ${payloadMatch.groupValues[1].take(50)}...")
                 }
             }
-            return true
+
         } catch (e: Exception) {
-            Log.e("NguoncProvider", "Lỗi trong quá trình loadLinks: ${e.message}", e)
-            return false
+            debugCallback("LỖI NGOẠI LỆ: ${e.message}")
         }
+        return true // Luôn trả về true để danh sách debug được hiển thị
     }
 }
