@@ -218,31 +218,18 @@ class NguoncProvider : MainAPI() {
                         val rootReferer = "${embedUri.scheme}://${embedUri.host}/"
                         
                         val streamHeaders = mapOf(
-                            "authority" to embedUri.host,
-                            "accept" to "*/*",
-                            "accept-language" to "vi",
-                            "sec-ch-ua" to "\"Chromium\";v=\"137\", \"Not/A)Brand\";v=\"24\"",
-                            "sec-ch-ua-mobile" to "?1",
-                            "sec-ch-ua-platform" to "\"Android\"",
-                            "sec-fetch-dest" to "empty",
-                            "sec-fetch-mode" to "cors",
-                            "sec-fetch-site" to "same-origin",
                             "Referer" to rootReferer,
                             "User-Agent" to browserHeaders["User-Agent"]!!
                         )
                         
-                        callback.invoke(
-                            ExtractorLink(
-                                source = this.name,
-                                name = episode.serverName ?: "Server",
-                                url = finalM3u8Url,
-                                referer = rootReferer,
-                                quality = Qualities.Unknown.value,
-                                type = ExtractorLinkType.M3U8,
-                                headers = streamHeaders
-                            )
-                        )
-                    }
+                        M3u8Helper.generateM3u8(
+                            this.name,
+                            finalM3u8Url,
+                            rootReferer,
+                            headers = streamHeaders
+                        ).forEach { link ->
+                            callback.invoke(link)
+                        }
                 } catch (e: Exception) {
                      Log.e("NguoncProvider", "Lỗi khi xử lý server ${episode.serverName}: ${e.message}")
                 }
