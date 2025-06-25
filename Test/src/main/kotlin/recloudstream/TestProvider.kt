@@ -8,6 +8,9 @@ import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import java.net.URI
 
+// Lớp Exception tùy chỉnh (giữ lại để có thể dùng sau nếu cần)
+open class ErrorLoadingException(message: String) : Exception(message)
+
 // ================================================================
 // --- DATA CLASSES ---
 // ================================================================
@@ -18,7 +21,7 @@ data class SearchItem(
     @JsonProperty("thumb_url") val thumbUrl: String?,
     @JsonProperty("total_episodes") val totalEpisodes: Int?,
     @JsonProperty("current_episode") val currentEpisode: String?,
-    @JsonProperty("language") val language: String? 
+    @JsonProperty("language") val language: String?
 )
 
 data class SearchApiResponse(
@@ -187,39 +190,64 @@ class NguoncProvider : MainAPI() {
             return null
         }
     }
-
+    
+    /**
+     * HÀM LOADLINKS - PHIÊN BẢN GỠ LỖI BẰNG GIAO DIỆN
+     */
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // Hàm này sẽ tạo ra các link giả, tên của link là thông báo gỡ lỗi
+        fun debugCallback(message: String) {
+            callback.invoke(
+                ExtractorLink(this.name, "DEBUG: $message", "https://example.com/debug", "", Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
+            )
+        }
+
         try {
-            val episodeVersions = tryParseJson<List<EpisodeItem>>(data) 
-                ?: throw ErrorLoadingException("Lỗi: Không thể phân tích dữ liệu tập phim (JSON).")
+            val episodeVersions = tryParseJson<List<EpisodeItem>>(data)
+            if (episodeVersions == null) {
+                debugCallback("LỖI: Không thể phân tích dữ liệu JSON từ `data`.")
+                return true // Trả về true để hiển thị thông báo lỗi
+            }
 
             episodeVersions.apmap { episode ->
-                val embedUrl = episode.embed 
-                    ?: throw ErrorLoadingException("Lỗi: Server ${episode.serverName} không có link embed.")
+                val embedUrl = episode.embed
+                if (embedUrl.isNullOrBlank()) {
+                    debugCallback("LỖI: Server ${episode.serverName} không có link embed.")
+                    return@apmap // Bỏ qua server này
+                }
                 
                 val embedPageHtml = app.get(embedUrl, headers = browserHeaders).text
 
-                // Thử tìm link trực tiếp trước (trường hợp dễ)
                 val streamUrlRegex = Regex("""const streamURL = "([^"]+)"""")
                 var relativeStreamUrl = streamUrlRegex.find(embedPageHtml)?.groupValues?.get(1)
 
-                // Nếu không có, thử tìm payload (trường hợp phức tạp)
                 if (relativeStreamUrl == null) {
-                    val payload = Regex("""name="payload" value="([^"]+)"""").find(embedPageHtml)?.groupValues?.get(1)
-                        ?: throw ErrorLoadingException("Lỗi: Không tìm thấy streamURL trực tiếp hoặc payload trong trang embed tại $embedUrl")
+                    val payloadRegex = Regex("""name="payload" value="([^"]+)"""")
+                    val payload = payloadRegex.find(embedPageHtml)?.groupValues?.get(1)
+                    if (payload == null) {
+                         debugCallback("LỖI: Không tìm thấy cả 'streamURL' và 'payload' trên server ${episode.serverName}")
+                         return@apmap
+                    }
                     
+                    debugCallback("Tìm thấy payload cho server ${episode.serverName}, đang gửi POST...")
                     val postData = mapOf("payload" to payload)
                     val playerPage = app.post(embedUrl, data = postData, headers = browserHeaders).text
                     relativeStreamUrl = streamUrlRegex.find(playerPage)?.groupValues?.get(1)
-                        ?: throw ErrorLoadingException("Lỗi: Không tìm thấy streamURL sau khi POST payload tại $embedUrl")
+
+                    if (relativeStreamUrl == null) {
+                        debugCallback("LỖI: Không tìm thấy 'streamURL' sau khi POST payload trên server ${episode.serverName}")
+                        return@apmap
+                    }
                 }
                 
                 val finalM3u8Url = URI(embedUrl).resolve(relativeStreamUrl).toString()
+                
+                // Thay vì gọi debugCallback, giờ chúng ta gọi callback thật
                 callback.invoke(
                     ExtractorLink(
                         source = this.name,
@@ -231,15 +259,9 @@ class NguoncProvider : MainAPI() {
                     )
                 )
             }
-            return true
         } catch (e: Exception) {
-            Log.e("NguoncProvider", "Lỗi trong quá trình loadLinks: ${e.message}", e)
-            // Ném lại lỗi để trình kiểm thử có thể bắt được thông báo
-            if (e is ErrorLoadingException) throw e
-            return false
+            debugCallback("LỖI NGOẠI LỆ: ${e.message}")
         }
+        return true // Luôn trả về true để danh sách debug (hoặc link thật) được hiển thị
     }
 }
-
-// Lớp Exception tùy chỉnh để gỡ lỗi chi tiết
-open class ErrorLoadingException(message: String) : Exception(message)
