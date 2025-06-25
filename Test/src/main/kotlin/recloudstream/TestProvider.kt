@@ -19,27 +19,13 @@ class Anime47Provider : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
 
-    // Lớp dữ liệu cho JSON được mã hóa và giải mã
     private data class EncryptedSource(val ct: String, val iv: String, val s: String)
     private data class DecryptedSource(val file: String?)
 
-    // =================================================================================
-    // HÀM HELPER TÁI CẤU TRÚC
-    // =================================================================================
-
-    /**
-     * Hàm helper mới để parse thông tin từ một thẻ phim (movie card).
-     * Dùng chung cho cả getMainPage và search để tránh lặp code.
-     */
     private fun parseMovieCard(element: Element): SearchResponse? {
-        // Selector chung cho thẻ a chứa thông tin phim
         val movieLink = element.selectFirst("a.movie-item") ?: return null
         val href = movieLink.attr("href")?.let { fixUrl(it) }
-        
-        // Lấy tiêu đề từ span.movie-title-1, phù hợp với cả trang chủ và trang tìm kiếm
         val title = movieLink.selectFirst("span.movie-title-1")?.text()?.trim()
-
-        // Lấy ảnh nền từ div.movie-thumbnail hoặc div.public-film-item-thumb
         val imageHolder = movieLink.selectFirst("div.movie-thumbnail, div.public-film-item-thumb")
         val image = getBackgroundImageUrl(imageHolder)
 
@@ -62,14 +48,12 @@ class Anime47Provider : MainAPI() {
         val document = app.get(mainUrl).document
         val lists = mutableListOf<HomePageList>()
 
-        // Lấy danh sách phim mới cập nhật
         document.select("div.last-film-box ul li")?.let { elements ->
             val homePageList = elements.mapNotNull { parseMovieCard(it) }
             if (homePageList.isNotEmpty()) {
                 lists.add(HomePageList("Mới Cập Nhật", homePageList))
             }
         }
-        // Lấy danh sách phim đề cử
         document.select("div.nominated-movie ul#movie-carousel-top li")?.let { elements ->
             val nominatedList = elements.mapNotNull { parseMovieCard(it) }
             if (nominatedList.isNotEmpty()) {
@@ -80,11 +64,9 @@ class Anime47Provider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        // Thêm tham số sapxep=1 (mới nhất) để có kết quả phù hợp hơn
         val searchUrl = "$mainUrl/tim-nang-cao/?keyword=${URLEncoder.encode(query, "UTF-8")}&sapxep=1"
         return try {
             val document = app.get(searchUrl).document
-            // *** ĐÂY LÀ DÒNG ĐƯỢC SỬA LẠI DỰA TRÊN FILE HTML BẠN CUNG CẤP ***
             document.select("ul.movie-last-movie li").mapNotNull {
                 parseMovieCard(it)
             }
@@ -139,7 +121,7 @@ class Anime47Provider : MainAPI() {
             hasher.update(salt)
             result = hasher.digest()
             derivedBytes += result
-            data = result // For next iteration
+            data = result 
             hasher.reset()
         }
         return Pair(derivedBytes.copyOfRange(0, keySize), derivedBytes.copyOfRange(keySize, keySize + ivSize))
@@ -182,7 +164,17 @@ class Anime47Provider : MainAPI() {
         if (thanhhoaB64 != null) {
             val videoUrl = decryptSource(thanhhoaB64, "caphedaklak")
             if (!videoUrl.isNullOrBlank()) {
-                callback(ExtractorLink(this.name, "${this.name} HLS", videoUrl, "$mainUrl/", Qualities.Unknown.value, ExtractorLinkType.M3U8))
+                // *** ĐÂY LÀ DÒNG ĐÃ ĐƯỢC CẬP NHẬT THEO CẤU TRÚC MỚI ***
+                callback(newExtractorLink(
+                    source = this.name,
+                    name = "${this.name} HLS",
+                    url = videoUrl,
+                    type = ExtractorLinkType.M3U8
+                ) {
+                    this.referer = "$mainUrl/"
+                    this.quality = Qualities.Unknown.value
+                })
+                
                 Regex("""tracks:\s*(\[.*?\])""", RegexOption.DOT_MATCHES_ALL).find(scriptContent)?.groupValues?.getOrNull(1)?.let { tracksJson ->
                     Regex("""file:\s*["'](.*?)["'].*?label:\s*["'](.*?)["']""").findAll(tracksJson).forEach { match ->
                         subtitleCallback(SubtitleFile(match.groupValues[2], fixUrl(match.groupValues[1])))
