@@ -216,15 +216,19 @@ class NguoncProvider : MainAPI() {
                         
                         val embedUri = URI(embedUrl)
                         val rootReferer = "${embedUri.scheme}://${embedUri.host}/"
-                        val rootAuthority = "${embedUri.host}"
                         
                         val streamHeaders = mapOf(
-                            "Referer" to rootReferer,
-                            "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
-                            "authority" to rootAuthority,
-                            "sec-ch-ua" to ""Chromium";v="137", "Not/A)Brand";v="24"",
+                            "authority" to embedUri.host,
+                            "accept" to "*/*",
+                            "accept-language" to "vi",
+                            "sec-ch-ua" to "\"Chromium\";v=\"137\", \"Not/A)Brand\";v=\"24\"",
                             "sec-ch-ua-mobile" to "?1",
-                            "sec-ch-ua-platform" to "Android"
+                            "sec-ch-ua-platform" to "\"Android\"",
+                            "sec-fetch-dest" to "empty",
+                            "sec-fetch-mode" to "cors",
+                            "sec-fetch-site" to "same-origin",
+                            "Referer" to rootReferer,
+                            "User-Agent" to browserHeaders["User-Agent"]!!
                         )
                         
                         callback.invoke(
