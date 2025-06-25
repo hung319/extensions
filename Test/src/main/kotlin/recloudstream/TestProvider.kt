@@ -4,6 +4,7 @@ import android.util.Base64
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
 import javax.crypto.Cipher
@@ -22,11 +23,18 @@ class Anime47Provider : MainAPI() {
     private data class EncryptedSource(val ct: String, val iv: String, val s: String)
     private data class DecryptedSource(val file: String?)
 
+    // =================================================================================
+    // HÀM HELPER - Được cải tiến để linh hoạt hơn
+    // =================================================================================
+
     private fun parseMovieCard(element: Element): SearchResponse? {
         val movieLink = element.selectFirst("a.movie-item") ?: return null
         val href = movieLink.attr("href")?.let { fixUrl(it) }
-        val title = movieLink.selectFirst("span.movie-title-1")?.text()?.trim()
-        val imageHolder = movieLink.selectFirst("div.movie-thumbnail, div.public-film-item-thumb")
+        
+        // Tiêu đề có thể nằm ở nhiều thẻ khác nhau
+        val title = movieLink.selectFirst(".movie-title-1, .movie-title-2")?.text()?.trim()
+
+        val imageHolder = movieLink.selectFirst(".movie-thumbnail, .public-film-item-thumb")
         val image = getBackgroundImageUrl(imageHolder)
 
         if (href != null && title != null) {
@@ -43,32 +51,54 @@ class Anime47Provider : MainAPI() {
         }
     }
 
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        if (page > 1) return null
+    // =================================================================================
+    // CÁC HÀM CHÍNH - Đã được cập nhật lại toàn bộ
+    // =================================================================================
+
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        if (page > 1) return HomePageResponse(emptyList())
+
         val document = app.get(mainUrl).document
         val lists = mutableListOf<HomePageList>()
 
-        document.select("div.last-film-box ul li")?.let { elements ->
-            val homePageList = elements.mapNotNull { parseMovieCard(it) }
-            if (homePageList.isNotEmpty()) {
-                lists.add(HomePageList("Mới Cập Nhật", homePageList))
-            }
+        // Khối "Phim đề cử"
+        val nominatedMovies = document.select("div.nominated-movie ul#movie-carousel-top li").mapNotNull {
+            parseMovieCard(it)
         }
-        document.select("div.nominated-movie ul#movie-carousel-top li")?.let { elements ->
-            val nominatedList = elements.mapNotNull { parseMovieCard(it) }
-            if (nominatedList.isNotEmpty()) {
-                lists.add(HomePageList("Phim Đề Cử", nominatedList))
-            }
+        if (nominatedMovies.isNotEmpty()) {
+            lists.add(HomePageList("Phim Đề Cử", nominatedMovies))
         }
-        return if (lists.isEmpty()) null else HomePageResponse(lists)
+
+        // Khối "Anime Mới Cập Nhật"
+        val updatedMovies = document.select("div.update .content[data-name=all] ul.last-film-box li").mapNotNull {
+            parseMovieCard(it)
+        }
+        if (updatedMovies.isNotEmpty()) {
+            lists.add(HomePageList("Mới Cập Nhật", updatedMovies))
+        }
+        
+        return HomePageResponse(lists)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/tim-nang-cao/?keyword=${URLEncoder.encode(query, "UTF-8")}&sapxep=1"
         return try {
             val document = app.get(searchUrl).document
-            document.select("ul.movie-last-movie li").mapNotNull {
-                parseMovieCard(it)
+            // Cập nhật selector chính xác từ file search.html
+            document.select("ul.last-film-box#movie-last-movie > li").mapNotNull {
+                // Tiêu đề phim trên trang search nằm trong thẻ a > title
+                val link = it.selectFirst("a.movie-item")
+                val title = link?.attr("title")
+                val href = link?.attr("href")?.let { fixUrl(it) }
+                val image = getBackgroundImageUrl(link?.selectFirst(".public-film-item-thumb"))
+
+                if (href != null && title != null) {
+                    newAnimeSearchResponse(title, href, TvType.Anime) {
+                        this.posterUrl = fixUrlNull(image)
+                    }
+                } else {
+                    null
+                }
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -78,34 +108,49 @@ class Anime47Provider : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
+
         val title = document.selectFirst("h1.movie-title span.title-1")?.text()?.trim() ?: "Không có tiêu đề"
         val poster = fixUrlNull(document.selectFirst("div.movie-l-img img")?.attr("src"))
-        val description = document.selectFirst("div.content-film")?.text()?.trim()
-        
-        val dlInfo = document.selectFirst("dl.movie-dl")
-        val statusText = dlInfo?.selectFirst("dt:contains(Trạng thái:) + dd")?.text()?.trim()
-        val status = when {
-            statusText?.contains("Hoàn thành", true) == true -> ShowStatus.Completed
-            statusText?.contains("Đang tiến hành", true) == true -> ShowStatus.Ongoing
-            else -> null
-        }
+        // Sửa selector lấy mô tả
+        val description = document.selectFirst("div.news-article")?.text()?.trim()
         val year = document.selectFirst("h1.movie-title span.title-year")?.text()
             ?.replace(Regex("[()]"), "")?.trim()?.toIntOrNull()
+        
+        val statusText = document.selectFirst("dl.movie-dl dt:contains(Trạng thái:) + dd")?.text()?.trim()
+        val status = when {
+            statusText?.contains("Hoàn thành", true) == true -> ShowStatus.Completed
+            statusText?.contains("/", true) -> {
+                val parts = statusText.split("/").mapNotNull { it.trim().toIntOrNull() }
+                if (parts.size == 2 && parts[0] == parts[1]) ShowStatus.Completed else ShowStatus.Ongoing
+            }
+            statusText != null -> ShowStatus.Ongoing
+            else -> null
+        }
 
-        val episodes = document.select("div.episodes ul li a").mapNotNull {
-            val epHref = it.attr("href")?.let { eUrl -> fixUrl(eUrl) }
-            val epName = it.attr("title")?.trim() ?: it.text()?.trim()
-            val epNum = epName?.filter { c -> c.isDigit() }?.toIntOrNull()
-            if (epHref != null && epName != null) {
-                Episode(data = epHref, name = epName, episode = epNum)
-            } else null
-        }.reversed()
+        val genres = document.select("dl.movie-dl dt:contains(Thể loại:) + dd a")?.map { it.text() }
+
+        // Logic lấy episode được ưu tiên từ script
+        var episodes = listOf<Episode>()
+        val scriptContent = document.select("script:containsData(let playButton)").html()
+        val anyEpisodesHtml = Regex("""anyEpisodes\s*=\s*'(.*?)';""").find(scriptContent)?.groupValues?.getOrNull(1)
+
+        if (anyEpisodesHtml != null) {
+            episodes = Jsoup.parse(anyEpisodesHtml).select("div.episodes ul li a").mapNotNull {
+                val epHref = it.attr("href")?.let { eUrl -> fixUrl(eUrl) }
+                val epName = it.attr("title")?.trim() ?: it.text()?.trim()
+                val epNum = epName.toIntOrNull()
+                if (epHref != null) {
+                    Episode(data = epHref, name = "Tập $epName", episode = epNum)
+                } else null
+            }.reversed() // Đảo ngược để tập mới nhất lên đầu
+        }
 
         return newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
             this.posterUrl = poster
             this.plot = description
             this.year = year
             this.showStatus = status
+            this.tags = genres
         }
     }
 
@@ -164,7 +209,6 @@ class Anime47Provider : MainAPI() {
         if (thanhhoaB64 != null) {
             val videoUrl = decryptSource(thanhhoaB64, "caphedaklak")
             if (!videoUrl.isNullOrBlank()) {
-                // *** ĐÂY LÀ DÒNG ĐÃ ĐƯỢC CẬP NHẬT THEO CẤU TRÚC MỚI ***
                 callback(newExtractorLink(
                     source = this.name,
                     name = "${this.name} HLS",
