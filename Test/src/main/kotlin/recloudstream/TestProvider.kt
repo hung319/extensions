@@ -45,7 +45,7 @@ class Anime47Provider : MainAPI() {
             Regex("""background-image:\s*url\(['"]?(.*?)['"]?\)""").find(it)?.groupValues?.getOrNull(1)
         }
     }
-
+    
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         if (page > 1) return null
 
@@ -65,7 +65,7 @@ class Anime47Provider : MainAPI() {
         if (updatedMovies.isNotEmpty()) {
             lists.add(HomePageList("Mới Cập Nhật", updatedMovies))
         }
-
+        
         return if(lists.isEmpty()) null else HomePageResponse(lists)
     }
 
@@ -90,13 +90,14 @@ class Anime47Provider : MainAPI() {
         val description = document.selectFirst("div.news-article")?.text()?.trim()
         val year = document.selectFirst("h1.movie-title span.title-year")?.text()
             ?.replace(Regex("[()]"), "")?.trim()?.toIntOrNull()
-
+        
         val statusText = document.selectFirst("dl.movie-dl dt:contains(Trạng thái:) + dd")?.text()?.trim()
-
+        
         val status = when {
             statusText?.contains("Hoàn thành", true) == true -> ShowStatus.Completed
             statusText?.contains("/") == true -> {
-                val parts = statusText.split("/").mapNotNull { it.trim().toIntOrNull() }
+                // *** DÒNG ĐƯỢC SỬA LỖI ***
+                val parts = statusText!!.split("/").mapNotNull { it.trim().toIntOrNull() }
                 if (parts.size == 2 && parts[0] == parts[1]) ShowStatus.Completed else ShowStatus.Ongoing
             }
             statusText != null -> ShowStatus.Ongoing
@@ -113,7 +114,8 @@ class Anime47Provider : MainAPI() {
             episodes = Jsoup.parse(anyEpisodesHtml).select("div.episodes ul li a").mapNotNull {
                 val epHref = it.attr("href")?.let { eUrl -> fixUrl(eUrl) }
                 val epName = it.attr("title")?.trim() ?: it.text()?.trim()
-                val epNum = epName.toIntOrNull()
+                val epNum = epName?.toIntOrNull()
+                
                 if (epHref != null) {
                     Episode(data = epHref, name = "Tập $epName", episode = epNum)
                 } else null
@@ -177,7 +179,6 @@ class Anime47Provider : MainAPI() {
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
         var sourceLoaded = false
 
-        // *** CƠ CHẾ 1: Thử giải mã 'thanhhoa' từ player.php (phổ biến nhất) ***
         runCatching {
             val episodeId = data.substringAfterLast('/').substringBefore('.').trim()
             val playerResponse = app.post("$mainUrl/player/player.php", data = mapOf("ID" to episodeId, "SV" to "4"), referer = data, headers = mapOf("X-Requested-With" to "XMLHttpRequest")).document
@@ -209,8 +210,6 @@ class Anime47Provider : MainAPI() {
 
         if (sourceLoaded) return true
 
-        // *** CƠ CHẾ 2 (FALLBACK): Nếu cách 1 thất bại, thử tìm iframe trên trang gốc ***
-        // Đây là bước quan trọng đối với các tập đặc biệt hoặc phim lẻ
         runCatching {
             val document = app.get(data).document
             document.select("iframe[src]").forEach { iframe ->
