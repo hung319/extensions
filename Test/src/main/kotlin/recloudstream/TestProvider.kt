@@ -215,8 +215,8 @@ class NguoncProvider : MainAPI() {
                         val finalM3u8Url = URI(embedUrl).resolve(cleanedUrl).toString()
                         
                         val streamHeaders = mapOf(
-                            "Referer" to embedUrl,
-                            "User-Agent" to browserHeaders["User-Agent"]!!
+                            "Referer" to "streamc.xyz",
+                            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
                         )
                         
                         callback.invoke(
@@ -224,7 +224,7 @@ class NguoncProvider : MainAPI() {
                                 source = this.name,
                                 name = episode.serverName ?: "Server",
                                 url = finalM3u8Url,
-                                referer = embedUrl,
+                                referer = "streamc.xyz",
                                 quality = Qualities.Unknown.value,
                                 type = ExtractorLinkType.M3U8,
                                 headers = streamHeaders
