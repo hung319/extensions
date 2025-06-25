@@ -188,9 +188,6 @@ class NguoncProvider : MainAPI() {
         }
     }
 
-    /**
-     * HÀM LOADLINKS - CẬP NHẬT THEO LOGIC MỚI NHẤT
-     */
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -198,39 +195,51 @@ class NguoncProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         try {
-            val episodeVersions = tryParseJson<List<EpisodeItem>>(data) ?: return false
+            val episodeVersions = tryParseJson<List<EpisodeItem>>(data) 
+                ?: throw ErrorLoadingException("Lỗi: Không thể phân tích dữ liệu tập phim (JSON).")
 
             episodeVersions.apmap { episode ->
-                val embedUrl = episode.embed ?: return@apmap
+                val embedUrl = episode.embed 
+                    ?: throw ErrorLoadingException("Lỗi: Server ${episode.serverName} không có link embed.")
                 
-                // Bước 1: Lấy mã HTML của trang embed
                 val embedPageHtml = app.get(embedUrl, headers = browserHeaders).text
 
-                // Bước 2: Dùng Regex để tìm link M3U8 tương đối trong biến `streamURL`
+                // Thử tìm link trực tiếp trước (trường hợp dễ)
                 val streamUrlRegex = Regex("""const streamURL = "([^"]+)"""")
-                val relativeStreamUrl = streamUrlRegex.find(embedPageHtml)?.groupValues?.get(1)
+                var relativeStreamUrl = streamUrlRegex.find(embedPageHtml)?.groupValues?.get(1)
 
-                if (relativeStreamUrl != null) {
-                    // Bước 3: Tạo link M3U8 đầy đủ
-                    val finalM3u8Url = URI(embedUrl).resolve(relativeStreamUrl).toString()
+                // Nếu không có, thử tìm payload (trường hợp phức tạp)
+                if (relativeStreamUrl == null) {
+                    val payload = Regex("""name="payload" value="([^"]+)"""").find(embedPageHtml)?.groupValues?.get(1)
+                        ?: throw ErrorLoadingException("Lỗi: Không tìm thấy streamURL trực tiếp hoặc payload trong trang embed tại $embedUrl")
                     
-                    // Bước 4: Gửi link cho trình phát
-                    callback.invoke(
-                        ExtractorLink(
-                            source = this.name,
-                            name = episode.serverName ?: "Server",
-                            url = finalM3u8Url,
-                            referer = embedUrl, // Referer là chính trang embed
-                            quality = Qualities.Unknown.value,
-                            type = ExtractorLinkType.M3U8
-                        )
-                    )
+                    val postData = mapOf("payload" to payload)
+                    val playerPage = app.post(embedUrl, data = postData, headers = browserHeaders).text
+                    relativeStreamUrl = streamUrlRegex.find(playerPage)?.groupValues?.get(1)
+                        ?: throw ErrorLoadingException("Lỗi: Không tìm thấy streamURL sau khi POST payload tại $embedUrl")
                 }
+                
+                val finalM3u8Url = URI(embedUrl).resolve(relativeStreamUrl).toString()
+                callback.invoke(
+                    ExtractorLink(
+                        source = this.name,
+                        name = episode.serverName ?: "Server",
+                        url = finalM3u8Url,
+                        referer = embedUrl,
+                        quality = Qualities.Unknown.value,
+                        type = ExtractorLinkType.M3U8
+                    )
+                )
             }
             return true
         } catch (e: Exception) {
             Log.e("NguoncProvider", "Lỗi trong quá trình loadLinks: ${e.message}", e)
+            // Ném lại lỗi để trình kiểm thử có thể bắt được thông báo
+            if (e is ErrorLoadingException) throw e
             return false
         }
     }
 }
+
+// Lớp Exception tùy chỉnh để gỡ lỗi chi tiết
+open class ErrorLoadingException(message: String) : Exception(message)
