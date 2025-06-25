@@ -28,10 +28,9 @@ class Anime47Provider : MainAPI() {
     // =================================================================================
     /**
      * Ghi log ra dưới dạng một ExtractorLink giả.
-     * @param callback callback của hàm loadLinks.
-     * @param message Nội dung cần ghi log.
+     * *** ĐÃ THÊM 'suspend' VÀO HÀM NÀY ***
      */
-    private fun logToLink(callback: (ExtractorLink) -> Unit, message: String) {
+    private suspend fun logToLink(callback: (ExtractorLink) -> Unit, message: String) {
         callback(
             newExtractorLink(
                 source = this.name,
@@ -164,22 +163,25 @@ class Anime47Provider : MainAPI() {
         }
         return Pair(derivedBytes.copyOfRange(0, keySize), derivedBytes.copyOfRange(keySize, keySize + ivSize))
     }
-
-    private fun decryptSource(encryptedDataB64: String, passwordStr: String, callback: (ExtractorLink) -> Unit): String? {
+    
+    /**
+     * *** ĐÃ THÊM 'suspend' VÀO HÀM NÀY ***
+     */
+    private suspend fun decryptSource(encryptedDataB64: String, passwordStr: String, callback: (ExtractorLink) -> Unit): String? {
         try {
             logToLink(callback, "Bắt đầu giải mã...")
             logToLink(callback, "Input B64 (50 chars): ${encryptedDataB64.take(50)}")
 
             val encryptedJsonStr = String(Base64.decode(encryptedDataB64, Base64.DEFAULT))
             logToLink(callback, "Decoded B64 to JSON: $encryptedJsonStr")
-            
+
             val encryptedSource = parseJson<EncryptedSource>(encryptedJsonStr)
             logToLink(callback, "Parsed JSON OK. Salt: ${encryptedSource.s}, IV: ${encryptedSource.iv}")
 
             val salt = hexStringToByteArray(encryptedSource.s)
             val iv = hexStringToByteArray(encryptedSource.iv)
             val ciphertext = Base64.decode(encryptedSource.ct, Base64.DEFAULT)
-            
+
             val (key, _) = evpBytesToKey(passwordStr.toByteArray(), salt, 32, 16)
             logToLink(callback, "Tạo Key thành công.")
 
@@ -191,7 +193,7 @@ class Anime47Provider : MainAPI() {
 
             val decryptedJsonStr = String(decryptedBytes)
             logToLink(callback, "Kết quả cuối cùng: $decryptedJsonStr")
-            
+
             val finalUrl = parseJson<DecryptedSource>(decryptedJsonStr).file
             logToLink(callback, "Lấy được URL: $finalUrl")
             return finalUrl
@@ -201,7 +203,7 @@ class Anime47Provider : MainAPI() {
             return null
         }
     }
-    
+
     private fun hexStringToByteArray(s: String): ByteArray {
         val data = ByteArray(s.length / 2)
         for (i in s.indices step 2) {
@@ -209,7 +211,7 @@ class Anime47Provider : MainAPI() {
         }
         return data
     }
-    
+
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
         logToLink(callback, "Bắt đầu loadLinks cho: $data")
         try {
@@ -230,12 +232,11 @@ class Anime47Provider : MainAPI() {
 
             if (thanhhoaB64 != null) {
                 logToLink(callback, "Tìm thấy 'thanhhoa'. Bắt đầu giải mã.")
-                // Chuyển callback vào hàm decryptSource
                 val videoUrl = decryptSource(thanhhoaB64, "caphedaklak", callback)
                 if (!videoUrl.isNullOrBlank()) {
                     callback(newExtractorLink(
                         source = this.name,
-                        name = "Server HLS (PLAY ME)", // Tên link thật
+                        name = "Server HLS (PLAY ME)",
                         url = videoUrl,
                         type = ExtractorLinkType.M3U8
                     ) {
