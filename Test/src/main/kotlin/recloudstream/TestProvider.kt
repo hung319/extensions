@@ -23,16 +23,11 @@ class Anime47Provider : MainAPI() {
     private data class EncryptedSource(val ct: String, val iv: String, val s: String)
     private data class DecryptedSource(val file: String?)
 
-    // =================================================================================
-    // HÀM HELPER - Được cải tiến để linh hoạt hơn
-    // =================================================================================
-
     private fun parseMovieCard(element: Element): SearchResponse? {
         val movieLink = element.selectFirst("a.movie-item") ?: return null
         val href = movieLink.attr("href")?.let { fixUrl(it) }
-        
-        // Tiêu đề có thể nằm ở nhiều thẻ khác nhau
-        val title = movieLink.selectFirst(".movie-title-1, .movie-title-2")?.text()?.trim()
+        val title = movieLink.selectFirst(".movie-title-1")?.text()?.trim()
+            ?: movieLink.attr("title")?.trim()
 
         val imageHolder = movieLink.selectFirst(".movie-thumbnail, .public-film-item-thumb")
         val image = getBackgroundImageUrl(imageHolder)
@@ -50,18 +45,13 @@ class Anime47Provider : MainAPI() {
             Regex("""background-image:\s*url\(['"]?(.*?)['"]?\)""").find(it)?.groupValues?.getOrNull(1)
         }
     }
-
-    // =================================================================================
-    // CÁC HÀM CHÍNH - Đã được cập nhật lại toàn bộ
-    // =================================================================================
-
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        if (page > 1) return HomePageResponse(emptyList())
+    
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+        if (page > 1) return null
 
         val document = app.get(mainUrl).document
         val lists = mutableListOf<HomePageList>()
 
-        // Khối "Phim đề cử"
         val nominatedMovies = document.select("div.nominated-movie ul#movie-carousel-top li").mapNotNull {
             parseMovieCard(it)
         }
@@ -69,7 +59,6 @@ class Anime47Provider : MainAPI() {
             lists.add(HomePageList("Phim Đề Cử", nominatedMovies))
         }
 
-        // Khối "Anime Mới Cập Nhật"
         val updatedMovies = document.select("div.update .content[data-name=all] ul.last-film-box li").mapNotNull {
             parseMovieCard(it)
         }
@@ -77,28 +66,15 @@ class Anime47Provider : MainAPI() {
             lists.add(HomePageList("Mới Cập Nhật", updatedMovies))
         }
         
-        return HomePageResponse(lists)
+        return if(lists.isEmpty()) null else HomePageResponse(lists)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/tim-nang-cao/?keyword=${URLEncoder.encode(query, "UTF-8")}&sapxep=1"
         return try {
             val document = app.get(searchUrl).document
-            // Cập nhật selector chính xác từ file search.html
             document.select("ul.last-film-box#movie-last-movie > li").mapNotNull {
-                // Tiêu đề phim trên trang search nằm trong thẻ a > title
-                val link = it.selectFirst("a.movie-item")
-                val title = link?.attr("title")
-                val href = link?.attr("href")?.let { fixUrl(it) }
-                val image = getBackgroundImageUrl(link?.selectFirst(".public-film-item-thumb"))
-
-                if (href != null && title != null) {
-                    newAnimeSearchResponse(title, href, TvType.Anime) {
-                        this.posterUrl = fixUrlNull(image)
-                    }
-                } else {
-                    null
-                }
+                parseMovieCard(it)
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -111,15 +87,16 @@ class Anime47Provider : MainAPI() {
 
         val title = document.selectFirst("h1.movie-title span.title-1")?.text()?.trim() ?: "Không có tiêu đề"
         val poster = fixUrlNull(document.selectFirst("div.movie-l-img img")?.attr("src"))
-        // Sửa selector lấy mô tả
         val description = document.selectFirst("div.news-article")?.text()?.trim()
         val year = document.selectFirst("h1.movie-title span.title-year")?.text()
             ?.replace(Regex("[()]"), "")?.trim()?.toIntOrNull()
         
         val statusText = document.selectFirst("dl.movie-dl dt:contains(Trạng thái:) + dd")?.text()?.trim()
+        
+        // *** KHỐI CODE ĐƯỢC SỬA LỖI NULL SAFETY SỐ 1 ***
         val status = when {
             statusText?.contains("Hoàn thành", true) == true -> ShowStatus.Completed
-            statusText?.contains("/", true) -> {
+            statusText?.contains("/") == true -> {
                 val parts = statusText.split("/").mapNotNull { it.trim().toIntOrNull() }
                 if (parts.size == 2 && parts[0] == parts[1]) ShowStatus.Completed else ShowStatus.Ongoing
             }
@@ -129,7 +106,6 @@ class Anime47Provider : MainAPI() {
 
         val genres = document.select("dl.movie-dl dt:contains(Thể loại:) + dd a")?.map { it.text() }
 
-        // Logic lấy episode được ưu tiên từ script
         var episodes = listOf<Episode>()
         val scriptContent = document.select("script:containsData(let playButton)").html()
         val anyEpisodesHtml = Regex("""anyEpisodes\s*=\s*'(.*?)';""").find(scriptContent)?.groupValues?.getOrNull(1)
@@ -138,11 +114,14 @@ class Anime47Provider : MainAPI() {
             episodes = Jsoup.parse(anyEpisodesHtml).select("div.episodes ul li a").mapNotNull {
                 val epHref = it.attr("href")?.let { eUrl -> fixUrl(eUrl) }
                 val epName = it.attr("title")?.trim() ?: it.text()?.trim()
-                val epNum = epName.toIntOrNull()
+                
+                // *** DÒNG CODE ĐƯỢC SỬA LỖI NULL SAFETY SỐ 2 ***
+                val epNum = epName?.toIntOrNull()
+                
                 if (epHref != null) {
                     Episode(data = epHref, name = "Tập $epName", episode = epNum)
                 } else null
-            }.reversed() // Đảo ngược để tập mới nhất lên đầu
+            }.reversed()
         }
 
         return newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
