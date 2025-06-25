@@ -1,4 +1,4 @@
-package com.lagradost.recloudstream // Đã thêm package
+package com.lagradost.recloudstream
 
 import android.util.Base64
 import com.lagradost.cloudstream3.*
@@ -12,93 +12,85 @@ import javax.crypto.spec.SecretKeySpec
 import java.security.MessageDigest
 
 class Anime47Provider : MainAPI() {
-    override var mainUrl = "https://anime47.shop" // Đã cập nhật domain
+    override var mainUrl = "https://anime47.shop"
     override var name = "Anime47"
     override val hasMainPage = true
     override var lang = "vi"
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
 
-    // Lớp dữ liệu cho JSON được mã hóa trong biến 'thanhhoa'
-    private data class EncryptedSource(
-        val ct: String,
-        val iv: String,
-        val s: String
-    )
+    // Lớp dữ liệu cho JSON được mã hóa và giải mã
+    private data class EncryptedSource(val ct: String, val iv: String, val s: String)
+    private data class DecryptedSource(val file: String?)
 
-    // Lớp dữ liệu cho JSON sau khi giải mã, chứa link HLS
-    private data class DecryptedSource(
-        val file: String?
-    )
+    // =================================================================================
+    // HÀM HELPER TÁI CẤU TRÚC
+    // =================================================================================
+
+    /**
+     * Hàm helper mới để parse thông tin từ một thẻ phim (movie card).
+     * Dùng chung cho cả getMainPage và search để tránh lặp code.
+     */
+    private fun parseMovieCard(element: Element): SearchResponse? {
+        // Selector chung cho thẻ a chứa thông tin phim
+        val movieLink = element.selectFirst("a.movie-item") ?: return null
+        val href = movieLink.attr("href")?.let { fixUrl(it) }
+        
+        // Lấy tiêu đề từ span.movie-title-1, phù hợp với cả trang chủ và trang tìm kiếm
+        val title = movieLink.selectFirst("span.movie-title-1")?.text()?.trim()
+
+        // Lấy ảnh nền từ div.movie-thumbnail hoặc div.public-film-item-thumb
+        val imageHolder = movieLink.selectFirst("div.movie-thumbnail, div.public-film-item-thumb")
+        val image = getBackgroundImageUrl(imageHolder)
+
+        if (href != null && title != null) {
+            return newAnimeSearchResponse(title, href, TvType.Anime) {
+                this.posterUrl = fixUrlNull(image)
+            }
+        }
+        return null
+    }
 
     private fun getBackgroundImageUrl(element: Element?): String? {
-        val style = element?.attr("style")
-        return style?.let {
+        return element?.attr("style")?.let {
             Regex("""background-image:\s*url\(['"]?(.*?)['"]?\)""").find(it)?.groupValues?.getOrNull(1)
         }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         if (page > 1) return null
-
         val document = app.get(mainUrl).document
         val lists = mutableListOf<HomePageList>()
 
-        // Phần "Mới Cập Nhật"
-        document.selectFirst("div.block.update div.content[data-name=all] ul.last-film-box")?.let { container ->
-            val homePageList = container.select("li").mapNotNull {
-                val movieItem = it.selectFirst("a.movie-item")
-                val href = movieItem?.attr("href")?.let { url -> fixUrl(url) }
-                val title = movieItem?.selectFirst("div.movie-title-1")?.text()?.trim()
-                val image = getBackgroundImageUrl(movieItem?.selectFirst("div.public-film-item-thumb"))
-
-                if (href != null && title != null) {
-                    newAnimeSearchResponse(title, href, TvType.Anime) {
-                        this.posterUrl = fixUrlNull(image)
-                    }
-                } else null
-            }
+        // Lấy danh sách phim mới cập nhật
+        document.select("div.last-film-box ul li")?.let { elements ->
+            val homePageList = elements.mapNotNull { parseMovieCard(it) }
             if (homePageList.isNotEmpty()) {
                 lists.add(HomePageList("Mới Cập Nhật", homePageList))
             }
         }
-
-        // Phần "Phim Đề Cử"
-        document.selectFirst("div.nominated-movie ul#movie-carousel-top")?.let { container ->
-            val nominatedList = container.select("li").mapNotNull {
-                val movieItem = it.selectFirst("a.movie-item")
-                val href = movieItem?.attr("href")?.let { url -> fixUrl(url) }
-                val title = movieItem?.selectFirst("div.movie-title-1")?.text()?.trim()
-                val image = getBackgroundImageUrl(movieItem?.selectFirst("div.public-film-item-thumb"))
-
-                if (href != null && title != null) {
-                    newAnimeSearchResponse(title, href, TvType.Anime) {
-                        this.posterUrl = fixUrlNull(image)
-                    }
-                } else null
-            }
+        // Lấy danh sách phim đề cử
+        document.select("div.nominated-movie ul#movie-carousel-top li")?.let { elements ->
+            val nominatedList = elements.mapNotNull { parseMovieCard(it) }
             if (nominatedList.isNotEmpty()) {
                 lists.add(HomePageList("Phim Đề Cử", nominatedList))
             }
         }
-
         return if (lists.isEmpty()) null else HomePageResponse(lists)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/tim-kiem/?keyword=${URLEncoder.encode(query, "UTF-8")}"
-        val document = app.get(searchUrl).document
-        return document.select("ul.last-film-box li").mapNotNull {
-            val movieItem = it.selectFirst("a.movie-item")
-            val href = movieItem?.attr("href")?.let { url -> fixUrl(url) }
-            val title = movieItem?.selectFirst("div.movie-title-1")?.text()?.trim()
-            val image = getBackgroundImageUrl(movieItem?.selectFirst("div.public-film-item-thumb"))
-
-            if (href != null && title != null) {
-                newAnimeSearchResponse(title, href, TvType.Anime) {
-                    this.posterUrl = fixUrlNull(image)
-                }
-            } else null
+        // Thêm tham số sapxep=1 (mới nhất) để có kết quả phù hợp hơn
+        val searchUrl = "$mainUrl/tim-nang-cao/?keyword=${URLEncoder.encode(query, "UTF-8")}&sapxep=1"
+        return try {
+            val document = app.get(searchUrl).document
+            // *** ĐÂY LÀ DÒNG ĐƯỢC SỬA LẠI DỰA TRÊN FILE HTML BẠN CUNG CẤP ***
+            document.select("ul.movie-last-movie li").mapNotNull {
+                parseMovieCard(it)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            emptyList()
         }
     }
 
@@ -135,137 +127,74 @@ class Anime47Provider : MainAPI() {
         }
     }
 
-    // =================================================================================
-    // HÀM GIẢI MÃ MỚI
-    // =================================================================================
-
-    /**
-     * Tạo ra khóa và IV từ mật khẩu và salt, mô phỏng lại cách hoạt động của
-     * CryptoJS.EVP_BytesToKey.
-     * Chỉ cần lấy khóa (key) từ hàm này.
-     */
+    // --- Các hàm giải mã giữ nguyên ---
     private fun evpBytesToKey(password: ByteArray, salt: ByteArray, keySize: Int, ivSize: Int): Pair<ByteArray, ByteArray> {
         var derivedBytes = ByteArray(0)
-        var result = ByteArray(0)
-        var hasher = MessageDigest.getInstance("MD5")
-
+        var result: ByteArray
+        val hasher = MessageDigest.getInstance("MD5")
+        var data = ByteArray(0)
         while (derivedBytes.size < keySize + ivSize) {
-            hasher.update(result)
+            hasher.update(data)
             hasher.update(password)
             hasher.update(salt)
             result = hasher.digest()
             derivedBytes += result
-            hasher = MessageDigest.getInstance("MD5")
+            data = result // For next iteration
+            hasher.reset()
         }
         return Pair(derivedBytes.copyOfRange(0, keySize), derivedBytes.copyOfRange(keySize, keySize + ivSize))
     }
 
-    /**
-     * Hàm chính để giải mã chuỗi 'thanhhoa'
-     */
     private fun decryptSource(encryptedDataB64: String, passwordStr: String): String? {
-        try {
-            // 1. Giải mã Base64 để lấy chuỗi JSON
+        return try {
             val encryptedJsonStr = String(Base64.decode(encryptedDataB64, Base64.DEFAULT))
             val encryptedSource = parseJson<EncryptedSource>(encryptedJsonStr)
-
-            // 2. Trích xuất ciphertext, iv, và salt
             val salt = hexStringToByteArray(encryptedSource.s)
             val iv = hexStringToByteArray(encryptedSource.iv)
             val ciphertext = Base64.decode(encryptedSource.ct, Base64.DEFAULT)
-
-            // 3. Tạo khóa từ mật khẩu và salt
-            // AES-256 sử dụng khóa 32-byte (256/8)
             val (key, _) = evpBytesToKey(passwordStr.toByteArray(), salt, 32, 16)
-
-            // 4. Giải mã dữ liệu
             val secretKey = SecretKeySpec(key, "AES")
             val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
             cipher.init(Cipher.DECRYPT_MODE, secretKey, IvParameterSpec(iv))
             val decryptedBytes = cipher.doFinal(ciphertext)
-
-            // 5. Chuyển kết quả sang chuỗi, parse JSON và lấy link
             val decryptedJsonStr = String(decryptedBytes)
-            val decryptedSource = parseJson<DecryptedSource>(decryptedJsonStr)
-            
-            return decryptedSource.file
+            parseJson<DecryptedSource>(decryptedJsonStr).file
         } catch (e: Exception) {
             e.printStackTrace()
-            return null
+            null
         }
     }
     
     private fun hexStringToByteArray(s: String): ByteArray {
-        val len = s.length
-        val data = ByteArray(len / 2)
-        var i = 0
-        while (i < len) {
+        val data = ByteArray(s.length / 2)
+        for (i in s.indices step 2) {
             data[i / 2] = ((Character.digit(s[i], 16) shl 4) + Character.digit(s[i + 1], 16)).toByte()
-            i += 2
         }
         return data
     }
-
-
-    override suspend fun loadLinks(
-        data: String, // URL của trang xem phim
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        // Trích xuất ID tập phim từ URL
+    
+    override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
         val episodeId = data.substringAfterLast('/').substringBefore('.').trim()
-
-        // Lấy nội dung từ player.php
-        val playerResponse = app.post(
-            "$mainUrl/player/player.php",
-            data = mapOf("ID" to episodeId, "SV" to "4"), // Mặc định dùng server Fe (ID=4)
-            referer = data,
-            headers = mapOf("X-Requested-With" to "XMLHttpRequest")
-        ).document
-
-        // Tìm biến 'thanhhoa' trong script
+        val playerResponse = app.post("$mainUrl/player/player.php", data = mapOf("ID" to episodeId, "SV" to "4"), referer = data, headers = mapOf("X-Requested-With" to "XMLHttpRequest")).document
         val scriptContent = playerResponse.select("script:containsData(var thanhhoa)").html()
         val thanhhoaB64 = Regex("""var\s+thanhhoa\s*=\s*atob\(['"]([^'"]+)['"]\)""").find(scriptContent)?.groupValues?.getOrNull(1)
 
         if (thanhhoaB64 != null) {
-            // Giải mã để lấy link video
             val videoUrl = decryptSource(thanhhoaB64, "caphedaklak")
-
             if (!videoUrl.isNullOrBlank()) {
-                callback(
-                    ExtractorLink(
-                        source = this.name,
-                        name = "${this.name} HLS",
-                        url = videoUrl,
-                        referer = "$mainUrl/",
-                        quality = Qualities.Unknown.value,
-                        type = ExtractorLinkType.M3U8
-                    )
-                )
-
-                // Lấy phụ đề
-                val tracksRegex = Regex("""tracks:\s*(\[.*?\])""", RegexOption.DOT_MATCHES_ALL)
-                tracksRegex.find(scriptContent)?.groupValues?.getOrNull(1)?.let { tracksJson ->
-                    val subtitleRegex = Regex("""file:\s*["'](.*?)["'].*?label:\s*["'](.*?)["']""")
-                    subtitleRegex.findAll(tracksJson).forEach { match ->
-                        val subUrl = fixUrl(match.groupValues[1])
-                        val subLabel = match.groupValues[2]
-                        subtitleCallback(SubtitleFile(subLabel, subUrl))
+                callback(ExtractorLink(this.name, "${this.name} HLS", videoUrl, "$mainUrl/", Qualities.Unknown.value, ExtractorLinkType.M3U8))
+                Regex("""tracks:\s*(\[.*?\])""", RegexOption.DOT_MATCHES_ALL).find(scriptContent)?.groupValues?.getOrNull(1)?.let { tracksJson ->
+                    Regex("""file:\s*["'](.*?)["'].*?label:\s*["'](.*?)["']""").findAll(tracksJson).forEach { match ->
+                        subtitleCallback(SubtitleFile(match.groupValues[2], fixUrl(match.groupValues[1])))
                     }
                 }
                 return true
             }
         }
-
-        // Fallback: nếu không giải mã được, thử tìm iframe
         playerResponse.select("iframe[src]").forEach { iframe ->
             val iframeSrc = iframe.attr("src").let { if (it.startsWith("//")) "https:$it" else it }
-            if (loadExtractor(iframeSrc, data, subtitleCallback, callback)) {
-                return true
-            }
+            if (loadExtractor(iframeSrc, data, subtitleCallback, callback)) return true
         }
-
         return false
     }
 }
