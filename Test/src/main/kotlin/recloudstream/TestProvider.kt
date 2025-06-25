@@ -230,6 +230,7 @@ class NguoncProvider : MainAPI() {
                         ).forEach { link ->
                             callback.invoke(link)
                         }
+                    }
                 } catch (e: Exception) {
                      Log.e("NguoncProvider", "Lỗi khi xử lý server ${episode.serverName}: ${e.message}")
                 }
