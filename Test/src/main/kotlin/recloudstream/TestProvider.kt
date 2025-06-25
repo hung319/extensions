@@ -4,11 +4,10 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import org.jsoup.nodes.Element
-import android.util.Base64
-// SỬA LỖI: Thêm tất cả các import cần thiết
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import java.net.URLEncoder
 
 class HentaiHavenProvider : MainAPI() {
     override var name = "HentaiHaven"
@@ -17,13 +16,10 @@ class HentaiHavenProvider : MainAPI() {
     override var supportedTypes = setOf(TvType.NSFW)
     override val hasMainPage = true
 
-    // Data class cho JSON đã được giải mã
-    private data class Source(
-        val file: String?,
-        val label: String?
-    )
-    private data class DecryptedResponse(
-        val sources: List<Source>?
+    // --- Data class cho JSON trả về từ API scraper ---
+    private data class ScraperResponse(
+        val success: Boolean?,
+        val links: List<String>?
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -120,15 +116,8 @@ class HentaiHavenProvider : MainAPI() {
             this.recommendations = recommendations
         }
     }
-
-    private fun decryptSource(encoded: String): String {
-        val key = "93422192433952489752342908585764"
-        val decoded = Base64.decode(encoded, Base64.DEFAULT)
-        val result = decoded.mapIndexed { index, byte ->
-            (byte.toInt() xor key[index % key.length].code).toByte()
-        }.toByteArray()
-        return String(result)
-    }
+    
+    private fun encode(input: String): String = URLEncoder.encode(input, "UTF-8")
 
     override suspend fun loadLinks(
         data: String,
@@ -136,38 +125,38 @@ class HentaiHavenProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val episodePage = app.get(data).document
+        val scraperApiUrl = "https://m3u8.h4rs.pp.ua/api/scrape"
+        val apiKey = "11042006"
+        val finalUrl = "$scraperApiUrl?url=${encode(data)}&key=$apiKey"
+        val responseText = app.get(finalUrl).text
         
-        // Thử phương pháp giải mã dữ liệu nhúng
-        try {
-            val scriptContent = episodePage.select("script#raven-js-extra").html()
-            val encodedData = Regex("""(?:"downloads"|"fembed_down"|"mirror_down"): *"([^"]+)"""").find(scriptContent)?.groupValues?.get(1)
-
-            if (encodedData != null && encodedData.isNotBlank() && encodedData != "2") {
-                val decryptedJson = decryptSource(encodedData)
-                parseJson<DecryptedResponse>(decryptedJson).sources?.forEach { source ->
-                    val videoUrl = source.file ?: return@forEach
-                    val quality = source.label ?: "Default"
-                    
-                    // SỬA LỖI: Sử dụng cấu trúc newExtractorLink với ExtractorLinkType và initializer block
-                    callback(
-                        newExtractorLink(
-                            source = this.name,
-                            name = "${this.name} $quality",
-                            url = videoUrl,
-                            type = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                        ) {
-                            this.quality = quality.filter { it.isDigit() }.toIntOrNull() ?: 0
-                            this.referer = mainUrl
-                        }
-                    )
-                }
-                return true // Nếu thành công thì kết thúc
+        if (responseText.isBlank()) {
+            throw ErrorLoadingException("API scraper trả về nội dung rỗng.")
+        }
+        
+        val scraperResponse = parseJson<ScraperResponse>(responseText)
+        
+        if (scraperResponse.success == true && !scraperResponse.links.isNullOrEmpty()) {
+            scraperResponse.links.forEach { link ->
+                // SỬA LỖI: Sử dụng đúng cấu trúc newExtractorLink mới nhất
+                callback(
+                    newExtractorLink(
+                        source = this.name,
+                        name = this.name,
+                        url = link,
+                        type = ExtractorLinkType.M3U8 // API của bạn trả về link M3U8
+                    ) {
+                        this.referer = data // Đặt referer là trang tập phim
+                        // API scraper không trả về chất lượng cụ thể, nên có thể bỏ qua
+                        // this.quality = Qualities.Unknown.value 
+                    }
+                )
             }
-        } catch (_: Exception) { /* Bỏ qua và thử cách khác */ }
-
-        // Nếu phương pháp trên thất bại, báo lỗi
-        throw ErrorLoadingException("Không thể tìm thấy link video. Trang web có thể đã cập nhật hoặc video này dùng một phương pháp không được hỗ trợ.")
+        } else {
+            throw ErrorLoadingException("API scraper không thành công hoặc không trả về link.")
+        }
+        
+        return true
     }
 }
 
