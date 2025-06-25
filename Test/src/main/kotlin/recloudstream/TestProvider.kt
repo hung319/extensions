@@ -188,6 +188,9 @@ class NguoncProvider : MainAPI() {
         }
     }
 
+    /**
+     * HÀM LOADLINKS - PHIÊN BẢN HOÀN CHỈNH
+     */
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -200,25 +203,15 @@ class NguoncProvider : MainAPI() {
             episodeVersions.apmap { episode ->
                 try {
                     val embedUrl = episode.embed ?: return@apmap
-                    
                     val embedPageHtml = app.get(embedUrl, headers = browserHeaders).text
 
-                    val streamUrlRegex = Regex("""const streamURL\s*=\s*"\\?([^"]+)"""")
+                    // Regex tìm `streamURL` có trong dấu ngoặc kép "..."
+                    val streamUrlRegex = Regex("""const streamURL = "([^"]+)"""")
                     var relativeStreamUrl = streamUrlRegex.find(embedPageHtml)?.groupValues?.get(1)
 
-                    if (relativeStreamUrl == null) {
-                        val payloadRegex = Regex("""name="payload" value="([^"]+)"""")
-                        val payload = payloadRegex.find(embedPageHtml)?.groupValues?.get(1)
-                        if (payload != null) {
-                            val postData = mapOf("payload" to payload)
-                            val playerPage = app.post(embedUrl, data = postData, headers = browserHeaders).text
-                            relativeStreamUrl = streamUrlRegex.find(playerPage)?.groupValues?.get(1)
-                        }
-                    }
-                    
-                    if(relativeStreamUrl != null) {
-                        // SỬA LỖI CUỐI CÙNG: Đảm bảo link luôn hợp lệ
-                        val cleanedUrl = if (relativeStreamUrl.startsWith("/")) relativeStreamUrl else "/$relativeStreamUrl"
+                    if (relativeStreamUrl != null) {
+                        // SỬA LỖI CUỐI CÙNG: Làm sạch chuỗi, thay thế `\/` bằng `/`
+                        val cleanedUrl = relativeStreamUrl.replace("\\/", "/")
                         val finalM3u8Url = URI(embedUrl).resolve(cleanedUrl).toString()
                         
                         callback.invoke(
