@@ -87,6 +87,7 @@ subprojects {
         implementation("com.github.vidstige:jadb:v1.2.1")
         implementation("io.karn:khttp-android:0.1.2")
         implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+        implementation("com.github.Marplex:CloudflareBypass:master-SNAPSHOT")
     }
 }
 
