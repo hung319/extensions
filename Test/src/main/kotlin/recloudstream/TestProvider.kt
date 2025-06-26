@@ -4,6 +4,7 @@ import android.util.Base64
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
@@ -44,7 +45,7 @@ class Anime47Provider : MainAPI() {
             Regex("""background-image:\s*url\(['"]?(.*?)['"]?\)""").find(it)?.groupValues?.getOrNull(1)
         }
     }
-
+    
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         if (page > 1) return null
         val document = app.get(mainUrl).document
@@ -63,8 +64,8 @@ class Anime47Provider : MainAPI() {
         if (updatedMovies.isNotEmpty()) {
             lists.add(HomePageList("Mới Cập Nhật", updatedMovies))
         }
-
-        return if (lists.isEmpty()) null else HomePageResponse(lists)
+        
+        return if(lists.isEmpty()) null else HomePageResponse(lists)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -178,22 +179,41 @@ class Anime47Provider : MainAPI() {
             val episodeId = data.substringAfterLast('/').substringBefore('.').trim()
             val playerResponse = app.post("$mainUrl/player/player.php", data = mapOf("ID" to episodeId, "SV" to "4"), referer = data, headers = mapOf("X-Requested-With" to "XMLHttpRequest")).document
             val scriptContent = playerResponse.select("script:containsData(var thanhhoa)").html()
-
+            
             val thanhhoaB64 = Regex("""var\s+thanhhoa\s*=\s*atob\(['"]([^'"]+)['"]\)""").find(scriptContent)?.groupValues?.getOrNull(1)
 
             if (thanhhoaB64 != null) {
                 val videoUrl = decryptSource(thanhhoaB64, "caphedaklak")
                 if (!videoUrl.isNullOrBlank()) {
-                    // *** ĐÂY LÀ PHẦN ĐÃ ĐƯỢC ĐƠN GIẢN HÓA LẠI ***
-                    // Chỉ cần gọi callback với link master M3U8 là đủ
+                    // *** LOGIC PROXY ĐƯỢC THÊM VÀO ĐÂY ***
+                    
+                    // 1. Máy chủ proxy. Bạn có thể thay bằng proxy khác nếu cần.
+                    val proxyBaseUrl = "https://proxy.h4rs.io.vn/proxy"
+
+                    // 2. Các headers mà proxy sẽ dùng khi nó gọi đến link M3U8 gốc
+                    val proxyRequestHeaders = mapOf(
+                        "Referer" to mainUrl,
+                        "Origin" to mainUrl,
+                        "User-Agent" to USER_AGENT
+                    )
+                    // Chuyển map header thành chuỗi JSON
+                    val proxyHeadersJsonString = toJson(proxyRequestHeaders)
+
+                    // 3. Mã hóa các thành phần để đưa vào URL của proxy
+                    val encodedOriginalUrl = URLEncoder.encode(videoUrl, "UTF-8")
+                    val encodedHeaders = URLEncoder.encode(proxyHeadersJsonString, "UTF-8")
+                    
+                    // 4. Tạo ra URL cuối cùng đã được proxy hóa
+                    val proxiedM3u8Url = "$proxyBaseUrl?url=$encodedOriginalUrl&headers=$encodedHeaders"
+
                     callback(newExtractorLink(
                         source = this.name,
-                        name = "Server HLS",
-                        url = videoUrl,
+                        name = "Server HLS (Proxied)",
+                        url = proxiedM3u8Url, // Sử dụng URL đã qua proxy
                         type = ExtractorLinkType.M3U8
                     ) {
-                        this.referer = mainUrl
-                        // Player của app sẽ tự chọn chất lượng tốt nhất hoặc cho người dùng chọn
+                        // Referer ở đây là trang xem phim gốc, không phải mainUrl
+                        this.referer = data 
                         this.quality = Qualities.Unknown.value 
                     })
 
