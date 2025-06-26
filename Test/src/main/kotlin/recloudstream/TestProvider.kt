@@ -146,7 +146,7 @@ class Anime47Provider : MainAPI() {
         }
         return Pair(derivedBytes.copyOfRange(0, keySize), derivedBytes.copyOfRange(keySize, keySize + ivSize))
     }
-    
+
     private fun decryptSource(encryptedDataB64: String, passwordStr: String): String? {
         return try {
             val encryptedJsonStr = String(Base64.decode(encryptedDataB64, Base64.DEFAULT))
@@ -180,31 +180,35 @@ class Anime47Provider : MainAPI() {
             val episodeId = data.substringAfterLast('/').substringBefore('.').trim()
             val playerResponse = app.post("$mainUrl/player/player.php", data = mapOf("ID" to episodeId, "SV" to "4"), referer = data, headers = mapOf("X-Requested-With" to "XMLHttpRequest")).document
             val scriptContent = playerResponse.select("script:containsData(var thanhhoa)").html()
-            
+
             val thanhhoaB64 = Regex("""var\s+thanhhoa\s*=\s*atob\(['"]([^'"]+)['"]\)""").find(scriptContent)?.groupValues?.getOrNull(1)
 
             if (thanhhoaB64 != null) {
                 val videoUrl = decryptSource(thanhhoaB64, "caphedaklak")
                 if (!videoUrl.isNullOrBlank()) {
+
+                    // *** TOÀN BỘ KHỐI CODE NÀY ĐÃ ĐƯỢC SỬA LẠI ***
                     
-                    // *** ĐÂY LÀ PHẦN THAY ĐỔI CHÍNH ***
-                    // Sử dụng M3u8Helper để phân tích và tạo link cho từng chất lượng
-                    M3u8Helper.m3u8Generation(
+                    // 1. Gọi m3u8Generation trực tiếp, không qua M3u8Helper
+                    val streams = m3u8Generation(
                         M3u8Helper.M3u8Stream(
                             streamUrl = videoUrl,
                             headers = mapOf("Referer" to mainUrl)
                         )
-                    ).forEach { stream ->
+                    )
+
+                    // 2. Dùng vòng lặp for thay cho forEach để giữ coroutine context
+                    for (stream in streams) {
                         callback(newExtractorLink(
                             source = this.name,
-                            name = if(stream.quality != null) "${this.name} ${stream.quality}p" else this.name,
+                            // Đặt tên thông minh hơn, chỉ thêm chất lượng nếu có
+                            name = stream.quality?.let { "${this.name} ${it}p" } ?: this.name,
                             url = stream.streamUrl,
                             type = ExtractorLinkType.M3U8
                         ) {
                             this.referer = mainUrl
-                            if(stream.quality != null) {
-                                this.quality = stream.quality!!
-                            }
+                            // Gán chất lượng từ stream
+                            this.quality = stream.quality ?: Qualities.Unknown.value
                         })
                     }
 
