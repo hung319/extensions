@@ -1,8 +1,6 @@
 package com.lagradost.recloudstream
 
 import android.util.Base64
-// Thêm import cho M3u8Helper
-import com.lagradost.cloudstream3.utils.M3u8Helper
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
@@ -146,7 +144,7 @@ class Anime47Provider : MainAPI() {
         }
         return Pair(derivedBytes.copyOfRange(0, keySize), derivedBytes.copyOfRange(keySize, keySize + ivSize))
     }
-
+    
     private fun decryptSource(encryptedDataB64: String, passwordStr: String): String? {
         return try {
             val encryptedJsonStr = String(Base64.decode(encryptedDataB64, Base64.DEFAULT))
@@ -186,31 +184,18 @@ class Anime47Provider : MainAPI() {
             if (thanhhoaB64 != null) {
                 val videoUrl = decryptSource(thanhhoaB64, "caphedaklak")
                 if (!videoUrl.isNullOrBlank()) {
-
-                    // *** TOÀN BỘ KHỐI CODE NÀY ĐÃ ĐƯỢC SỬA LẠI ***
-                    
-                    // 1. Gọi m3u8Generation trực tiếp, không qua M3u8Helper
-                    val streams = m3u8Generation(
-                        M3u8Helper.M3u8Stream(
-                            streamUrl = videoUrl,
-                            headers = mapOf("Referer" to mainUrl)
-                        )
-                    )
-
-                    // 2. Dùng vòng lặp for thay cho forEach để giữ coroutine context
-                    for (stream in streams) {
-                        callback(newExtractorLink(
-                            source = this.name,
-                            // Đặt tên thông minh hơn, chỉ thêm chất lượng nếu có
-                            name = stream.quality?.let { "${this.name} ${it}p" } ?: this.name,
-                            url = stream.streamUrl,
-                            type = ExtractorLinkType.M3U8
-                        ) {
-                            this.referer = mainUrl
-                            // Gán chất lượng từ stream
-                            this.quality = stream.quality ?: Qualities.Unknown.value
-                        })
-                    }
+                    // *** ĐÂY LÀ PHẦN ĐÃ ĐƯỢC ĐƠN GIẢN HÓA LẠI ***
+                    // Chỉ cần gọi callback với link master M3U8 là đủ
+                    callback(newExtractorLink(
+                        source = this.name,
+                        name = "Server HLS",
+                        url = videoUrl,
+                        type = ExtractorLinkType.M3U8
+                    ) {
+                        this.referer = mainUrl
+                        // Player của app sẽ tự chọn chất lượng tốt nhất hoặc cho người dùng chọn
+                        this.quality = Qualities.Unknown.value 
+                    })
 
                     // Lấy phụ đề (giữ nguyên)
                     Regex("""tracks:\s*(\[.*?\])""", RegexOption.DOT_MATCHES_ALL).find(scriptContent)?.groupValues?.getOrNull(1)?.let { tracksJson ->
