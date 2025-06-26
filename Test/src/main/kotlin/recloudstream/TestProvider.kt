@@ -1,6 +1,8 @@
 package com.lagradost.recloudstream
 
 import android.util.Base64
+// Thêm import cho M3u8Helper
+import com.lagradost.cloudstream3.utils.M3u8Helper
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
@@ -20,9 +22,7 @@ class Anime47Provider : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
 
-    // Lớp dữ liệu cho JSON được mã hóa
     private data class EncryptedSource(val ct: String, val iv: String, val s: String)
-    // Lớp DecryptedSource không còn cần thiết
 
     private fun parseMovieCard(element: Element): SearchResponse? {
         val movieLink = element.selectFirst("a.movie-item") ?: return null
@@ -46,7 +46,7 @@ class Anime47Provider : MainAPI() {
             Regex("""background-image:\s*url\(['"]?(.*?)['"]?\)""").find(it)?.groupValues?.getOrNull(1)
         }
     }
-    
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         if (page > 1) return null
         val document = app.get(mainUrl).document
@@ -65,8 +65,8 @@ class Anime47Provider : MainAPI() {
         if (updatedMovies.isNotEmpty()) {
             lists.add(HomePageList("Mới Cập Nhật", updatedMovies))
         }
-        
-        return if(lists.isEmpty()) null else HomePageResponse(lists)
+
+        return if (lists.isEmpty()) null else HomePageResponse(lists)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -151,22 +151,15 @@ class Anime47Provider : MainAPI() {
         return try {
             val encryptedJsonStr = String(Base64.decode(encryptedDataB64, Base64.DEFAULT))
             val encryptedSource = parseJson<EncryptedSource>(encryptedJsonStr)
-
             val salt = hexStringToByteArray(encryptedSource.s)
             val iv = hexStringToByteArray(encryptedSource.iv)
             val ciphertext = Base64.decode(encryptedSource.ct, Base64.DEFAULT)
-            
             val (key, _) = evpBytesToKey(passwordStr.toByteArray(), salt, 32, 16)
-
             val secretKey = SecretKeySpec(key, "AES")
             val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
             cipher.init(Cipher.DECRYPT_MODE, secretKey, IvParameterSpec(iv))
             val decryptedBytes = cipher.doFinal(ciphertext)
-
             val decryptedJsonStr = String(decryptedBytes)
-
-            // *** ĐÂY LÀ DÒNG THAY ĐỔI QUAN TRỌNG NHẤT ***
-            // Phân tích kết quả như một chuỗi String, không phải một đối tượng.
             parseJson<String>(decryptedJsonStr)
         } catch (e: Exception) {
             e.printStackTrace()
@@ -193,16 +186,29 @@ class Anime47Provider : MainAPI() {
             if (thanhhoaB64 != null) {
                 val videoUrl = decryptSource(thanhhoaB64, "caphedaklak")
                 if (!videoUrl.isNullOrBlank()) {
-                    callback(newExtractorLink(
-                        source = this.name,
-                        name = "Server HLS",
-                        url = videoUrl,
-                        type = ExtractorLinkType.M3U8
-                    ) {
-                        this.referer = "$mainUrl/"
-                        this.quality = Qualities.Unknown.value
-                    })
+                    
+                    // *** ĐÂY LÀ PHẦN THAY ĐỔI CHÍNH ***
+                    // Sử dụng M3u8Helper để phân tích và tạo link cho từng chất lượng
+                    M3u8Helper.m3u8Generation(
+                        M3u8Helper.M3u8Stream(
+                            streamUrl = videoUrl,
+                            headers = mapOf("Referer" to mainUrl)
+                        )
+                    ).forEach { stream ->
+                        callback(newExtractorLink(
+                            source = this.name,
+                            name = if(stream.quality != null) "${this.name} ${stream.quality}p" else this.name,
+                            url = stream.streamUrl,
+                            type = ExtractorLinkType.M3U8
+                        ) {
+                            this.referer = mainUrl
+                            if(stream.quality != null) {
+                                this.quality = stream.quality!!
+                            }
+                        })
+                    }
 
+                    // Lấy phụ đề (giữ nguyên)
                     Regex("""tracks:\s*(\[.*?\])""", RegexOption.DOT_MATCHES_ALL).find(scriptContent)?.groupValues?.getOrNull(1)?.let { tracksJson ->
                         Regex("""file:\s*["'](.*?)["'].*?label:\s*["'](.*?)["']""").findAll(tracksJson).forEach { match ->
                             subtitleCallback(SubtitleFile(match.groupValues[2], fixUrl(match.groupValues[1])))
