@@ -4,7 +4,7 @@ import android.util.Base64
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import com.lagradost.cloudstream3.utils.AppUtils.toJson
+import com.lagradost.cloudstream3.utils.AppUtils.toJson // Đảm bảo đã import toJson
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
@@ -185,39 +185,31 @@ class Anime47Provider : MainAPI() {
             if (thanhhoaB64 != null) {
                 val videoUrl = decryptSource(thanhhoaB64, "caphedaklak")
                 if (!videoUrl.isNullOrBlank()) {
-                    // *** LOGIC PROXY ĐƯỢC THÊM VÀO ĐÂY ***
-                    
-                    // 1. Máy chủ proxy. Bạn có thể thay bằng proxy khác nếu cần.
                     val proxyBaseUrl = "https://proxy.h4rs.io.vn/proxy"
 
-                    // 2. Các headers mà proxy sẽ dùng khi nó gọi đến link M3U8 gốc
                     val proxyRequestHeaders = mapOf(
                         "Referer" to mainUrl,
                         "Origin" to mainUrl,
                         "User-Agent" to USER_AGENT
                     )
-                    // Chuyển map header thành chuỗi JSON
-                    val proxyHeadersJsonString = toJson(proxyRequestHeaders)
+                    // *** DÒNG ĐÃ ĐƯỢC SỬA LẠI CÚ PHÁP ***
+                    val proxyHeadersJsonString = proxyRequestHeaders.toJson()
 
-                    // 3. Mã hóa các thành phần để đưa vào URL của proxy
                     val encodedOriginalUrl = URLEncoder.encode(videoUrl, "UTF-8")
                     val encodedHeaders = URLEncoder.encode(proxyHeadersJsonString, "UTF-8")
                     
-                    // 4. Tạo ra URL cuối cùng đã được proxy hóa
                     val proxiedM3u8Url = "$proxyBaseUrl?url=$encodedOriginalUrl&headers=$encodedHeaders"
 
                     callback(newExtractorLink(
                         source = this.name,
                         name = "Server HLS (Proxied)",
-                        url = proxiedM3u8Url, // Sử dụng URL đã qua proxy
+                        url = proxiedM3u8Url,
                         type = ExtractorLinkType.M3U8
                     ) {
-                        // Referer ở đây là trang xem phim gốc, không phải mainUrl
                         this.referer = data 
                         this.quality = Qualities.Unknown.value 
                     })
 
-                    // Lấy phụ đề (giữ nguyên)
                     Regex("""tracks:\s*(\[.*?\])""", RegexOption.DOT_MATCHES_ALL).find(scriptContent)?.groupValues?.getOrNull(1)?.let { tracksJson ->
                         Regex("""file:\s*["'](.*?)["'].*?label:\s*["'](.*?)["']""").findAll(tracksJson).forEach { match ->
                             subtitleCallback(SubtitleFile(match.groupValues[2], fixUrl(match.groupValues[1])))
