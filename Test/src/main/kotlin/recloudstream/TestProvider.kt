@@ -20,24 +20,9 @@ class Anime47Provider : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
 
+    // Lớp dữ liệu cho JSON được mã hóa
     private data class EncryptedSource(val ct: String, val iv: String, val s: String)
-    private data class DecryptedSource(val file: String?)
-
-    // =================================================================================
-    // HÀM GHI LOG MỚI - Đã được cập nhật để vượt qua bộ test
-    // =================================================================================
-    private suspend fun logToLink(callback: (ExtractorLink) -> Unit, message: String) {
-        val encodedMessage = URLEncoder.encode(message, "UTF-8")
-        callback(
-            newExtractorLink(
-                source = this.name,
-                name = "DEBUG: $message",
-                // URL trông hợp lệ để bộ test không báo lỗi
-                url = "https://debug.log/$encodedMessage", 
-                type = ExtractorLinkType.M3U8
-            ) {}
-        )
-    }
+    // Lớp DecryptedSource không còn cần thiết
 
     private fun parseMovieCard(element: Element): SearchResponse? {
         val movieLink = element.selectFirst("a.movie-item") ?: return null
@@ -61,7 +46,7 @@ class Anime47Provider : MainAPI() {
             Regex("""background-image:\s*url\(['"]?(.*?)['"]?\)""").find(it)?.groupValues?.getOrNull(1)
         }
     }
-
+    
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         if (page > 1) return null
         val document = app.get(mainUrl).document
@@ -80,8 +65,8 @@ class Anime47Provider : MainAPI() {
         if (updatedMovies.isNotEmpty()) {
             lists.add(HomePageList("Mới Cập Nhật", updatedMovies))
         }
-
-        return if (lists.isEmpty()) null else HomePageResponse(lists)
+        
+        return if(lists.isEmpty()) null else HomePageResponse(lists)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -162,40 +147,30 @@ class Anime47Provider : MainAPI() {
         return Pair(derivedBytes.copyOfRange(0, keySize), derivedBytes.copyOfRange(keySize, keySize + ivSize))
     }
     
-    private suspend fun decryptSource(encryptedDataB64: String, passwordStr: String, callback: (ExtractorLink) -> Unit): String? {
-        try {
-            logToLink(callback, "Bắt đầu giải mã...")
-            logToLink(callback, "Input B64 (50 chars): ${encryptedDataB64.take(50)}")
-
+    private fun decryptSource(encryptedDataB64: String, passwordStr: String): String? {
+        return try {
             val encryptedJsonStr = String(Base64.decode(encryptedDataB64, Base64.DEFAULT))
-            logToLink(callback, "Decoded B64 to JSON: $encryptedJsonStr")
-            
             val encryptedSource = parseJson<EncryptedSource>(encryptedJsonStr)
-            logToLink(callback, "Parsed JSON OK. Salt: ${encryptedSource.s}, IV: ${encryptedSource.iv}")
 
             val salt = hexStringToByteArray(encryptedSource.s)
             val iv = hexStringToByteArray(encryptedSource.iv)
             val ciphertext = Base64.decode(encryptedSource.ct, Base64.DEFAULT)
             
             val (key, _) = evpBytesToKey(passwordStr.toByteArray(), salt, 32, 16)
-            logToLink(callback, "Tạo Key thành công.")
 
             val secretKey = SecretKeySpec(key, "AES")
             val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
             cipher.init(Cipher.DECRYPT_MODE, secretKey, IvParameterSpec(iv))
             val decryptedBytes = cipher.doFinal(ciphertext)
-            logToLink(callback, "Giải mã AES thành công.")
 
             val decryptedJsonStr = String(decryptedBytes)
-            logToLink(callback, "Kết quả cuối cùng: $decryptedJsonStr")
-            
-            val finalUrl = parseJson<DecryptedSource>(decryptedJsonStr).file
-            logToLink(callback, "Lấy được URL: $finalUrl")
-            return finalUrl
+
+            // *** ĐÂY LÀ DÒNG THAY ĐỔI QUAN TRỌNG NHẤT ***
+            // Phân tích kết quả như một chuỗi String, không phải một đối tượng.
+            parseJson<String>(decryptedJsonStr)
         } catch (e: Exception) {
-            logToLink(callback, "LỖI TRONG KHI GIẢI MÃ: ${e.message}")
             e.printStackTrace()
-            return null
+            null
         }
     }
 
@@ -208,51 +183,37 @@ class Anime47Provider : MainAPI() {
     }
 
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
-        logToLink(callback, "Bắt đầu loadLinks cho: $data")
         try {
             val episodeId = data.substringAfterLast('/').substringBefore('.').trim()
-            logToLink(callback, "Episode ID: $episodeId")
-
             val playerResponse = app.post("$mainUrl/player/player.php", data = mapOf("ID" to episodeId, "SV" to "4"), referer = data, headers = mapOf("X-Requested-With" to "XMLHttpRequest")).document
-            logToLink(callback, "Đã gọi tới player.php")
-
             val scriptContent = playerResponse.select("script:containsData(var thanhhoa)").html()
-            if (scriptContent.isBlank()) {
-                logToLink(callback, "Lỗi: Không tìm thấy script chứa 'thanhhoa'.")
-                logToLink(callback, "Nội dung player.php (500 chars): ${playerResponse.html().take(500)}")
-                return false
-            }
-
+            
             val thanhhoaB64 = Regex("""var\s+thanhhoa\s*=\s*atob\(['"]([^'"]+)['"]\)""").find(scriptContent)?.groupValues?.getOrNull(1)
 
             if (thanhhoaB64 != null) {
-                logToLink(callback, "Tìm thấy 'thanhhoa'. Bắt đầu giải mã.")
-                val videoUrl = decryptSource(thanhhoaB64, "caphedaklak", callback)
+                val videoUrl = decryptSource(thanhhoaB64, "caphedaklak")
                 if (!videoUrl.isNullOrBlank()) {
                     callback(newExtractorLink(
                         source = this.name,
-                        name = "Server HLS (PLAY ME)",
+                        name = "Server HLS",
                         url = videoUrl,
                         type = ExtractorLinkType.M3U8
                     ) {
                         this.referer = "$mainUrl/"
                         this.quality = Qualities.Unknown.value
                     })
-                    logToLink(callback, "Thành công! Đã thêm link video thật.")
+
+                    Regex("""tracks:\s*(\[.*?\])""", RegexOption.DOT_MATCHES_ALL).find(scriptContent)?.groupValues?.getOrNull(1)?.let { tracksJson ->
+                        Regex("""file:\s*["'](.*?)["'].*?label:\s*["'](.*?)["']""").findAll(tracksJson).forEach { match ->
+                            subtitleCallback(SubtitleFile(match.groupValues[2], fixUrl(match.groupValues[1])))
+                        }
+                    }
                     return true
-                } else {
-                    logToLink(callback, "Lỗi: Giải mã 'thanhhoa' không trả về URL.")
                 }
-            } else {
-                logToLink(callback, "Lỗi: Không tìm thấy biến 'thanhhoa' trong script.")
-                logToLink(callback, "Nội dung script (500 chars): ${scriptContent.take(500)}")
             }
         } catch (e: Exception) {
-            logToLink(callback, "LỖI NGOẠI LỆ trong loadLinks: ${e.message}")
             e.printStackTrace()
         }
-
-        logToLink(callback, "loadLinks thất bại.")
         return false
     }
 }
