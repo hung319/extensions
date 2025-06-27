@@ -4,12 +4,12 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType // *** SỬA LỖI: Thêm import còn thiếu
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import org.jsoup.nodes.Element
 
 /**
  * Provider để tương tác với YouPorn.
- * Được cập nhật để sửa lỗi biên dịch theo API mới nhất.
+ * Được cập nhật để sử dụng đúng cấu trúc API mới nhất.
  */
 class YouPornProvider : MainAPI() {
     override var name = "YouPorn"
@@ -24,6 +24,7 @@ class YouPornProvider : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        // Xử lý phân trang: trang 1 không có tham số ?page=
         val url = if (page > 1) "${request.data}$page" else request.data.replace("?page=", "")
         val document = app.get(url).document
 
@@ -31,8 +32,8 @@ class YouPornProvider : MainAPI() {
             it.toSearchResult()
         }
         
-        // Kiểm tra xem có nút "Next" hay không để xác định trang tiếp theo
-        val hasNext = document.selectFirst("div.paginationWrapper a[rel=next]") != null
+        // Kiểm tra xem có nút "Next" hay không để xác định có trang tiếp theo
+        val hasNext = document.selectFirst("div.paginationWrapper li.next a") != null
         return newHomePageResponse(request.name, items, hasNext = hasNext)
     }
 
@@ -45,6 +46,9 @@ class YouPornProvider : MainAPI() {
         }
     }
 
+    /**
+     * Hàm này chỉ tải siêu dữ liệu (metadata) của video.
+     */
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
@@ -60,6 +64,9 @@ class YouPornProvider : MainAPI() {
         }
     }
 
+    /**
+     * Hàm này tải các liên kết (stream links) để phát video.
+     */
     override suspend fun loadLinks(
         dataUrl: String,
         isCasting: Boolean,
@@ -78,20 +85,15 @@ class YouPornProvider : MainAPI() {
                     val videoUrl = source.videoUrl ?: return@forEach
                     val quality = source.height ?: 0
 
-                    val type = if (source.format == "hls") {
-                        ExtractorLinkType.M3U8
-                    } else {
-                        ExtractorLinkType.VIDEO
-                    }
-
+                    // *** ĐÃ CẬP NHẬT THEO CẤU TRÚC MỚI BẠN CUNG CẤP ***
                     callback(
                         ExtractorLink(
-                            this.name,
-                            this.name,
-                            videoUrl,
-                            mainUrl,
-                            quality,
-                            type
+                            source = this.name,
+                            name = this.name,
+                            url = videoUrl,
+                            referer = mainUrl,
+                            quality = quality,
+                            type = if (source.format == "hls") ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                         )
                     )
                     foundLinks = true
@@ -103,6 +105,9 @@ class YouPornProvider : MainAPI() {
         return foundLinks
     }
 
+    /**
+     * Hàm tiện ích để chuyển đổi một khối HTML thành đối tượng SearchResponse.
+     */
     private fun Element.toSearchResult(): SearchResponse? {
         val href = this.selectFirst("a.video-box-image")?.attr("href") ?: return null
         val videoUrl = fixUrl(href)
@@ -110,15 +115,14 @@ class YouPornProvider : MainAPI() {
         val title = this.selectFirst("a.video-title-text")?.text()?.trim() ?: return null
         val posterUrl = this.selectFirst("img.thumb-image")?.attr("data-src")
         
-        // *** SỬA LỖI: Thay đổi cách gọi hàm tạo của MovieSearchResponse
-        // API yêu cầu truyền các tham số theo vị trí, không phải theo tên
+        // Sửa lại cách gọi hàm tạo cho đúng với API
         return MovieSearchResponse(
-            title,
-            videoUrl,
-            this@YouPornProvider.name,
-            TvType.NSFW,
-            fixUrlNull(posterUrl),
-            null
+            name = title,
+            url = videoUrl,
+            apiName = this@YouPornProvider.name,
+            type = TvType.NSFW,
+            posterUrl = fixUrlNull(posterUrl),
+            year = null
         )
     }
 }
