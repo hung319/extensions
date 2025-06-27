@@ -2,11 +2,10 @@ package com.lagradost.cloudstream3.providers
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.M3u8Helper
 import org.jsoup.nodes.Element
+import java.net.URLEncoder // *** SỬA LỖI: Thêm import cần thiết
 
 class YouPornProvider : MainAPI() {
     override var name = "YouPorn"
@@ -15,12 +14,6 @@ class YouPornProvider : MainAPI() {
     override val hasMainPage = true
 
     // Các hàm và lớp dữ liệu khác giữ nguyên
-    private data class MediaDefinition(
-        @JsonProperty("videoUrl") val videoUrl: String?,
-        @JsonProperty("height") val height: Int?,
-        @JsonProperty("format") val format: String?,
-    )
-
     override val mainPage = mainPageOf(
         "/?page=" to "Recommended",
         "/top_rated/?page=" to "Top Rated",
@@ -69,12 +62,15 @@ class YouPornProvider : MainAPI() {
     ): Boolean {
         val document = app.get(dataUrl).document
         
-        // Tạo một liên kết đặc biệt để sao chép HTML vào clipboard
+        // *** SỬA LỖI: Sử dụng đúng phương pháp clipboard:// của CloudStream ***
+        // Mã hóa HTML để đảm bảo URL hợp lệ
+        val encodedHtml = URLEncoder.encode(document.html(), "UTF-8")
+        
         callback(
             ExtractorLink(
                 source = this.name,
                 name = "DEBUG: Chạm để sao chép HTML",
-                url = toCopytext(document.html()), // Lệnh đặc biệt của CloudStream
+                url = "clipboard://$encodedHtml", // URL đặc biệt để sao chép
                 referer = mainUrl,
                 quality = 1,
                 type = ExtractorLinkType.VIDEO
