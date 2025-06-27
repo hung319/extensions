@@ -13,16 +13,25 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 
-// CÁC IMPORT MỚI CHO VIỆC GIẢI MÃ
+// CÁC IMPORT MỚI CHO VIỆC GIẢI MÃ VÀ LOCAL STORAGE
 import java.util.Base64
 import java.util.zip.Inflater
 import java.security.MessageDigest
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-
 class AnimeVietsubProvider : MainAPI() {
+
+    // companion object sẽ tồn tại và giữ dữ liệu trong bộ nhớ.
+    // Cơ chế chặn của CloudStream sẽ tìm đến biến này để lấy dữ liệu.
+    companion object {
+        // Key là một UUID duy nhất.
+        // Value là nội dung M3U8.
+        val dataStore = ConcurrentHashMap<String, String>()
+    }
 
     private val gson = Gson()
     override var mainUrl = "https://bit.ly/animevietsubtv"
@@ -41,29 +50,28 @@ class AnimeVietsubProvider : MainAPI() {
     private var currentActiveUrl = bitlyResolverUrl
     private var domainResolutionAttempted = false
 
-    // =================== PHẦN 1: KHAI BÁO CÁC MỤC TRANG CHỦ (GIỮ NGUYÊN) ===================
     override val mainPage = mainPageOf(
         "/anime-moi/" to "Mới Cập Nhật",
         "/anime-sap-chieu/" to "Sắp Chiếu",
         "/bang-xep-hang/day.html" to "Xem Nhiều Trong Ngày"
     )
 
-    // =================== CÁC HÀM GET MAIN PAGE, SEARCH, LOAD (GIỮ NGUYÊN) ===================
-    // ... (Toàn bộ các hàm từ getMainPage đến extractRecommendations không thay đổi)
-    // Tôi sẽ ẩn đi để cho cô đọng, bạn chỉ cần giữ nguyên chúng trong file của bạn
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val baseUrl = getBaseUrl()
+
         val url = if (page == 1) {
             "$baseUrl${request.data}"
         } else {
             if (request.data.contains("bang-xep-hang")) {
-                 "$baseUrl${request.data}" 
+                "$baseUrl${request.data}"
             } else {
                 val slug = request.data.removeSuffix("/")
                 "$baseUrl$slug/trang-$page.html"
             }
         }
+
         val document = app.get(url).document
+
         val home = when {
             request.data.contains("bang-xep-hang") -> {
                 document.select("ul.bxh-movie-phimletv li.group").mapNotNull { element ->
@@ -72,6 +80,7 @@ class AnimeVietsubProvider : MainAPI() {
                         val title = titleElement.text().trim()
                         val href = fixUrl(titleElement.attr("href"), baseUrl) ?: return@mapNotNull null
                         val posterUrl = fixUrl(element.selectFirst("a.thumb img")?.attr("src"), baseUrl)
+
                         newMovieSearchResponse(title, href, TvType.Anime) {
                             this.posterUrl = posterUrl
                         }
@@ -87,11 +96,13 @@ class AnimeVietsubProvider : MainAPI() {
                 }
             }
         }
+
         val hasNext = if (request.data.contains("bang-xep-hang")) {
             false
         } else {
             document.selectFirst("div.wp-pagenavi span.current + a.page, div.wp-pagenavi a.larger:contains(Trang Cuối)") != null
         }
+
         return newHomePageResponse(
             list = HomePageList(
                 name = request.name,
@@ -100,12 +111,13 @@ class AnimeVietsubProvider : MainAPI() {
             hasNext = hasNext
         )
     }
-    
+
     override suspend fun search(query: String): List<SearchResponse> {
         return try {
             val baseUrl = getBaseUrl()
             val requestUrl = "$baseUrl/tim-kiem/${query.encodeUri()}/"
             val document = app.get(requestUrl).document
+
             document.select("ul.MovieList.Rows li.TPostMv")
                 .mapNotNull { it.toSearchResponse(this, baseUrl) }
         } catch (e: Exception) {
@@ -113,7 +125,7 @@ class AnimeVietsubProvider : MainAPI() {
             emptyList()
         }
     }
-    
+
     private suspend fun getBaseUrl(): String {
         if (domainResolutionAttempted && !currentActiveUrl.contains("bit.ly")) {
             return currentActiveUrl
@@ -152,7 +164,7 @@ class AnimeVietsubProvider : MainAPI() {
         }
         return currentActiveUrl
     }
-    
+
     override suspend fun load(url: String): LoadResponse? {
         val baseUrl = getBaseUrl()
         try {
@@ -176,12 +188,6 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
 
-    // =================== PHẦN 2: LOGIC GIẢI MÃ MỚI (THAY THẾ API NGOÀI) ===================
-    
-    /**
-     * Khóa AES được tính toán một lần và lưu lại.
-     * `by lazy` đảm bảo code bên trong chỉ chạy lần đầu tiên khi aesKey được truy cập.
-     */
     private val aesKey: SecretKeySpec by lazy {
         val keyStringB64 = "ZG1fdGhhbmdfc3VjX3ZhdF9nZXRfbGlua19hbl9kYnQ="
         val decodedKeyBytes = Base64.getDecoder().decode(keyStringB64)
@@ -190,47 +196,30 @@ class AnimeVietsubProvider : MainAPI() {
         SecretKeySpec(hashedKeyBytes, "AES")
     }
 
-    /**
-     * Hàm giải mã và giải nén nội dung M3U8.
-     * @param encryptedDataString Chuỗi mã hóa Base64 nhận được từ API của web.
-     * @return Nội dung M3U8 đã giải mã dưới dạng String, hoặc null nếu có lỗi.
-     */
     private fun decryptM3u8Content(encryptedDataString: String): String? {
         return try {
-            // 1. Decode Base64
             val encryptedBytes = Base64.getDecoder().decode(encryptedDataString)
-
-            // 2. Tách IV (16 bytes đầu) và Ciphertext
             if (encryptedBytes.size < 16) return null
             val ivBytes = encryptedBytes.copyOfRange(0, 16)
             val ciphertextBytes = encryptedBytes.copyOfRange(16, encryptedBytes.size)
-
-            // 3. Giải mã AES-256-CBC
             val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
             cipher.init(Cipher.DECRYPT_MODE, aesKey, IvParameterSpec(ivBytes))
             val decryptedBytesPadded = cipher.doFinal(ciphertextBytes)
-
-            // 4. Giải nén Zlib (InflateRaw)
-            val inflater = Inflater(true) // true = no zlib header (inflateRaw)
+            val inflater = Inflater(true)
             inflater.setInput(decryptedBytesPadded, 0, decryptedBytesPadded.size)
-            val result = ByteArray(1024 * 1024) // Buffer lớn để chứa kết quả
+            val result = ByteArray(1024 * 1024)
             val decompressedLength = inflater.inflate(result)
             inflater.end()
             val decompressedBytes = result.copyOfRange(0, decompressedLength)
-            
-            // 5. Chuyển thành String và dọn dẹp
             var m3u8Content = decompressedBytes.toString(Charsets.UTF_8)
             m3u8Content = m3u8Content.trim().removeSurrounding("\"")
             m3u8Content = m3u8Content.replace("\\n", "\n")
-
             m3u8Content
         } catch (e: Exception) {
             Log.e(name, "Lỗi giải mã M3U8 nội bộ", e)
             null
         }
     }
-
-    // =================== PHẦN 3: HÀM loadLinks ĐÃ ĐƯỢC CẬP NHẬT HOÀN TOÀN ===================
 
     override suspend fun loadLinks(
         data: String,
@@ -244,7 +233,6 @@ class AnimeVietsubProvider : MainAPI() {
             val episodePageUrl = episodeData.url
             val baseUrl = getBaseUrl()
 
-            // Bước 1: Vẫn gọi API của web để lấy chuỗi mã hóa
             val postData = mutableMapOf("id" to episodeId, "play" to "api").apply {
                 episodeData.duHash?.let { put("link", it) }
             }
@@ -262,30 +250,28 @@ class AnimeVietsubProvider : MainAPI() {
             if (playerResponse?.success != 1 || playerResponse.link.isNullOrEmpty()) {
                 throw ErrorLoadingException("Failed to get links from AJAX response: $ajaxResponse")
             }
-            
-            // Bước 2: Lặp qua các link (thường chỉ có 1) và giải mã nội bộ
+
             coroutineScope {
                 playerResponse.link.forEach { linkSource ->
                     launch {
                         val encryptedUrl = linkSource.file ?: return@launch
-
-                        // Bước 3: THAY ĐỔI LỚN - Gọi hàm giải mã nội bộ thay vì API ngoài
                         val m3u8Content = decryptM3u8Content(encryptedUrl)
 
                         if (!m3u8Content.isNullOrBlank()) {
-                            // Bước 4: Tạo một link dạng data URI để player có thể đọc trực tiếp
-                            // Đây là cách hiệu quả để truyền nội dung M3U8 mà không cần file tạm
-                            val dataUri = "data:application/vnd.apple.mpegurl;base64," + Base64.getEncoder().encodeToString(m3u8Content.toByteArray())
+                            val key = UUID.randomUUID().toString()
+                            dataStore[key] = m3u8Content
+                            val localUrl = "http://animevietsub.m3u8.local/$key"
 
                             newExtractorLink(
                                 source = name,
                                 name = "$name HLS",
-                                url = dataUri, // Sử dụng data URI
-                                type = ExtractorLinkType.M3U8, // Luôn là M3U8
+                                url = localUrl,
+                                type = ExtractorLinkType.M3U8
                             ) {
                                 this.referer = episodePageUrl
                                 this.quality = Qualities.Unknown.value
                             }.let { callback(it) }
+
                         } else {
                             Log.w(name, "Giải mã M3U8 thất bại cho link: $encryptedUrl")
                         }
@@ -300,9 +286,6 @@ class AnimeVietsubProvider : MainAPI() {
         return true
     }
 
-    // =================== CÁC HÀM TIỆN ÍCH CÒN LẠI (GIỮ NGUYÊN) ===================
-    // ... (Toàn bộ các hàm từ toSearchResponse đến fixUrl không thay đổi)
-    // Tôi sẽ ẩn đi để cho cô đọng, bạn chỉ cần giữ nguyên chúng trong file của bạn
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): SearchResponse? {
         return try {
             val linkElement = this.selectFirst("article.TPost > a") ?: return null
@@ -367,7 +350,7 @@ class AnimeVietsubProvider : MainAPI() {
                 }
             } else { // Movie
                 val duration = this.extractDuration()
-                val data = episodes.firstOrNull()?.data 
+                val data = episodes.firstOrNull()?.data
                     ?: gson.toJson(EpisodeData(infoUrl, this.getDataIdFallback(infoUrl), null))
                 provider.newMovieLoadResponse(title, infoUrl, finalTvType, data) {
                     this.posterUrl = posterUrl; this.plot = plot; this.tags = tags; this.year = year
@@ -380,7 +363,7 @@ class AnimeVietsubProvider : MainAPI() {
             return null
         }
     }
-    
+
     private fun Document.extractPosterUrl(baseUrl: String): String? {
         val selectors = listOf(
             "meta[property=og:image]",
@@ -422,7 +405,7 @@ class AnimeVietsubProvider : MainAPI() {
         }?.substringBefore("/")?.replace(",", ".")
         return ratingText?.toDoubleOrNull()?.let { (it * 10).roundToInt() }
     }
-    
+
     private fun Document.extractDuration(): Int? {
         return this.selectFirst("li:has(strong:containsOwn(Thời lượng)), li.AAIco-adjust:contains(Thời lượng)")
             ?.ownText()?.filter { it.isDigit() }?.toIntOrNull()
@@ -436,7 +419,7 @@ class AnimeVietsubProvider : MainAPI() {
             } else null
         }
     }
-    
+
     private fun Document.extractRecommendations(provider: MainAPI, baseUrl: String): List<SearchResponse> {
         return this.select("div.Wdgt div.MovieListRelated.owl-carousel div.TPostMv").mapNotNull { item ->
             try {
@@ -507,7 +490,7 @@ class AnimeVietsubProvider : MainAPI() {
     data class EpisodeData(val url: String, val dataId: String?, val duHash: String?)
     data class AjaxPlayerResponse(val success: Int?, val link: List<LinkSource>?)
     data class LinkSource(val file: String?, val type: String?, val label: String?)
-    
+
     private fun String?.encodeUri(): String {
         if (this == null) return ""
         return try { URLEncoder.encode(this, "UTF-8").replace("+", "%20") }
