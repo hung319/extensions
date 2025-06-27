@@ -13,7 +13,7 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 
-// CÁC IMPORT MỚI CHO VIỆC GIẢI MÃ VÀ LOCAL STORAGE
+// CÁC IMPORT MỚI
 import java.util.Base64
 import java.util.zip.Inflater
 import java.security.MessageDigest
@@ -25,8 +25,6 @@ import javax.crypto.spec.SecretKeySpec
 
 class AnimeVietsubProvider : MainAPI() {
 
-    // companion object sẽ tồn tại và giữ dữ liệu trong bộ nhớ.
-    // Cơ chế chặn của CloudStream sẽ tìm đến biến này để lấy dữ liệu.
     companion object {
         val dataStore = ConcurrentHashMap<String, String>()
     }
@@ -41,7 +39,6 @@ class AnimeVietsubProvider : MainAPI() {
     )
     override var lang = "vi"
     override val hasMainPage = true
-    // User-Agent được cập nhật để khớp với yêu cầu bypass segment
     private val USER_AGENT = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
 
     private val bitlyResolverUrl = "https://bit.ly/animevietsubtv"
@@ -57,7 +54,6 @@ class AnimeVietsubProvider : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val baseUrl = getBaseUrl()
-
         val url = if (page == 1) {
             "$baseUrl${request.data}"
         } else {
@@ -68,9 +64,7 @@ class AnimeVietsubProvider : MainAPI() {
                 "$baseUrl$slug/trang-$page.html"
             }
         }
-
         val document = app.get(url).document
-
         val home = when {
             request.data.contains("bang-xep-hang") -> {
                 document.select("ul.bxh-movie-phimletv li.group").mapNotNull { element ->
@@ -79,7 +73,6 @@ class AnimeVietsubProvider : MainAPI() {
                         val title = titleElement.text().trim()
                         val href = fixUrl(titleElement.attr("href"), baseUrl) ?: return@mapNotNull null
                         val posterUrl = fixUrl(element.selectFirst("a.thumb img")?.attr("src"), baseUrl)
-
                         newMovieSearchResponse(title, href, TvType.Anime) {
                             this.posterUrl = posterUrl
                         }
@@ -95,13 +88,11 @@ class AnimeVietsubProvider : MainAPI() {
                 }
             }
         }
-
         val hasNext = if (request.data.contains("bang-xep-hang")) {
             false
         } else {
             document.selectFirst("div.wp-pagenavi span.current + a.page, div.wp-pagenavi a.larger:contains(Trang Cuối)") != null
         }
-
         return newHomePageResponse(
             list = HomePageList(
                 name = request.name,
@@ -116,7 +107,6 @@ class AnimeVietsubProvider : MainAPI() {
             val baseUrl = getBaseUrl()
             val requestUrl = "$baseUrl/tim-kiem/${query.encodeUri()}/"
             val document = app.get(requestUrl).document
-
             document.select("ul.MovieList.Rows li.TPostMv")
                 .mapNotNull { it.toSearchResponse(this, baseUrl) }
         } catch (e: Exception) {
@@ -254,18 +244,8 @@ class AnimeVietsubProvider : MainAPI() {
                         val encryptedUrl = linkSource.file ?: return@launch
                         val m3u8Content = decryptM3u8Content(encryptedUrl) ?: return@launch
 
-                        val modifiedM3u8 = m3u8Content.lines().joinToString("\n") { line ->
-                            if (line.isNotBlank() && !line.startsWith("#")) {
-                                val encodedSegmentUrl = URLEncoder.encode(line, "UTF-8")
-                                val encodedReferer = URLEncoder.encode(episodePageUrl, "UTF-8")
-                                "http://rat.local/segment-proxy?url=$encodedSegmentUrl&referer=$encodedReferer"
-                            } else {
-                                line
-                            }
-                        }
-
                         val key = UUID.randomUUID().toString()
-                        dataStore[key] = modifiedM3u8
+                        dataStore[key] = m3u8Content
 
                         val localM3u8Url = "http://rat.local/$key"
 
@@ -289,61 +269,7 @@ class AnimeVietsubProvider : MainAPI() {
         return true
     }
 
-    override suspend fun loadExtractor(url: String, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
-        try {
-            val parsedUrl = URL(url)
-            val host = parsedUrl.host
-            val path = parsedUrl.path.removePrefix("/")
-
-            if (host == "rat.local") {
-                if (path.startsWith("segment-proxy")) {
-                    val query = parsedUrl.query
-                    val originalUrl = getUrlParameter(query, "url")
-                    val referer = getUrlParameter(query, "referer")
-
-                    // Chuyển tiếp yêu cầu segment với header chính xác
-                    val segmentResponse = app.get(originalUrl, referer = referer, headers = mapOf("User-Agent" to USER_AGENT))
-
-                    callback(
-                        ExtractorLink(
-                            this.name,
-                            "Segment",
-                            segmentResponse.url,
-                            referer,
-                            Qualities.Unknown.value,
-                            type = if (segmentResponse.url.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
-                            headers = segmentResponse.headers.toMap()
-                        )
-                    )
-                } else {
-                    // Cung cấp nội dung M3U8 từ dataStore
-                    val m3u8Data = dataStore[path]
-                    if (m3u8Data != null) {
-                        callback(
-                            ExtractorLink(
-                                this.name,
-                                this.name,
-                                "data:application/vnd.apple.mpegurl;base64," + Base64.getEncoder().encodeToString(m3u8Data.toByteArray()),
-                                "",
-                                Qualities.Unknown.value,
-                                type = ExtractorLinkType.M3U8
-                            )
-                        )
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(name, "Error in loadExtractor for url: $url", e)
-        }
-    }
-
-    private fun getUrlParameter(query: String, param: String): String {
-        return try {
-            query.split('&').find { it.startsWith("$param=") }?.substringAfter('=') ?: ""
-        } catch (e: Exception) {
-            ""
-        }
-    }
+    // HÀM loadExtractor ĐÃ ĐƯỢC XÓA BỎ VÌ KHÔNG HỢP LỆ
 
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): SearchResponse? {
         return try {
