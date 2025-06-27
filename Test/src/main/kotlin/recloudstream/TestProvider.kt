@@ -14,7 +14,7 @@ class YouPornProvider : MainAPI() {
     override var supportedTypes = setOf(TvType.NSFW)
     override val hasMainPage = true
 
-    // --- Data Classes để parse các loại JSON khác nhau ---
+    // --- Data Classes ---
     private data class InitialMedia(
         @JsonProperty("videoUrl") val videoUrl: String?,
     )
@@ -64,7 +64,17 @@ class YouPornProvider : MainAPI() {
 
     // Hàm tiện ích để gửi log debug
     private fun sendDebugCallback(callback: (ExtractorLink) -> Unit, message: String) {
-        callback(ExtractorLink(this.name, "DEBUG: $message", "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4", mainUrl, 1, ExtractorLinkType.VIDEO))
+        // *** ĐÃ SỬA: Gọi ExtractorLink với đầy đủ tên tham số ***
+        callback(
+            ExtractorLink(
+                source = this.name,
+                name = "DEBUG: $message",
+                url = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+                referer = mainUrl,
+                quality = 1,
+                type = ExtractorLinkType.VIDEO
+            )
+        )
     }
     
     override suspend fun loadLinks(
@@ -77,7 +87,6 @@ class YouPornProvider : MainAPI() {
         val scriptContent = document.select("script").joinToString { it.data() }
         var intermediateApiUrl: String? = null
 
-        // --- Bắt đầu quá trình debug ---
         sendDebugCallback(callback, "Starting extractor...")
 
         // CÁCH 1: Tìm `flashvars_...`
