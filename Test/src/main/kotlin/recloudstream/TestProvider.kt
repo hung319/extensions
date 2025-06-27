@@ -4,7 +4,6 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.M3u8Helper
 import org.jsoup.nodes.Element
 
@@ -14,14 +13,11 @@ class YouPornProvider : MainAPI() {
     override var supportedTypes = setOf(TvType.NSFW)
     override val hasMainPage = true
 
-    // --- Data Classes ---
+    // --- Data Classes để parse các loại JSON khác nhau ---
     private data class InitialMedia(
         @JsonProperty("videoUrl") val videoUrl: String?,
     )
     private data class Flashvars(
-        @JsonProperty("mediaDefinitions") val mediaDefinitions: List<InitialMedia>?
-    )
-    private data class PlayerVars(
         @JsonProperty("mediaDefinitions") val mediaDefinitions: List<InitialMedia>?
     )
     private data class FinalStreamInfo(
@@ -37,6 +33,7 @@ class YouPornProvider : MainAPI() {
         "/most_favorited/?page=" to "Most Favorited",
         "/browse/time/?page=" to "Newest Videos"
     )
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = "$mainUrl${request.data}$page"
         val document = app.get(url).document
@@ -44,17 +41,20 @@ class YouPornProvider : MainAPI() {
         val hasNext = document.selectFirst("div.paginationWrapper a[rel=next]") != null
         return newHomePageResponse(request.name, items, hasNext = hasNext)
     }
+
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/search/?query=$query"
         val document = app.get(url).document
         return document.select("div.searchResults div.video-box").mapNotNull { it.toSearchResult() }
     }
+
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
         val title = document.selectFirst("h1.videoTitle")?.text()?.trim() ?: "Untitled"
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         val description = document.selectFirst("meta[name=description]")?.attr("content")
         val recommendations = document.select("div#relatedVideosWrapper div.video-box").mapNotNull { it.toSearchResult() }
+
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
             this.plot = description
@@ -62,21 +62,9 @@ class YouPornProvider : MainAPI() {
         }
     }
 
-    // Hàm tiện ích để gửi log debug
-    private fun sendDebugCallback(callback: (ExtractorLink) -> Unit, message: String) {
-        // *** ĐÃ SỬA: Gọi ExtractorLink với đầy đủ tên tham số ***
-        callback(
-            ExtractorLink(
-                source = this.name,
-                name = "DEBUG: $message",
-                url = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
-                referer = mainUrl,
-                quality = 1,
-                type = ExtractorLinkType.VIDEO
-            )
-        )
-    }
-    
+    /**
+     * Hàm `loadLinks` cuối cùng, với Regex được cải tiến.
+     */
     override suspend fun loadLinks(
         dataUrl: String,
         isCasting: Boolean,
@@ -84,65 +72,52 @@ class YouPornProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val document = app.get(dataUrl).document
-        val scriptContent = document.select("script").joinToString { it.data() }
+        val htmlContent = document.html()
+
         var intermediateApiUrl: String? = null
 
-        sendDebugCallback(callback, "Starting extractor...")
+        // Tạo một danh sách các biểu thức chính quy để thử lần lượt
+        // Regex mới (ưu tiên cao nhất) có thể xử lý cả dấu ":" và "="
+        val regexes = listOf(
+            """['"]mediaDefinition['"]\s*[:=]\s*(\[.*?\])""".toRegex(),
+            """var\s*flashvars_\d+\s*=\s*(\{.+?\});""".toRegex()
+        )
 
-        // CÁCH 1: Tìm `flashvars_...`
-        sendDebugCallback(callback, "1. Trying 'flashvars'")
-        val flashvarsRegex = """var\s*flashvars_\d+\s*=\s*(\{.+?\});""".toRegex()
-        flashvarsRegex.find(scriptContent)?.groupValues?.get(1)?.let { flashvarsJson ->
-            sendDebugCallback(callback, "1. OK, 'flashvars' found")
-            intermediateApiUrl = parseJson<Flashvars>(flashvarsJson).mediaDefinitions?.firstOrNull()?.videoUrl
+        for (regex in regexes) {
+            val match = regex.find(htmlContent)?.groupValues?.get(1) ?: continue
+            
+            // Thử parse JSON theo cấu trúc tương ứng
+            intermediateApiUrl = try {
+                 parseJson<List<InitialMedia>>(match).firstOrNull()?.videoUrl
+            } catch (e: Exception) {
+                try {
+                    parseJson<Flashvars>(match).mediaDefinitions?.firstOrNull()?.videoUrl
+                } catch (e2: Exception) {
+                    null
+                }
+            }
+
+            if (intermediateApiUrl != null) break
         }
-
-        // CÁCH 2: Tìm `mediaDefinition`
-        if (intermediateApiUrl == null) {
-            sendDebugCallback(callback, "2. Trying 'mediaDefinition'")
-            val mediaDefRegex = """"mediaDefinition"\s*:\s*(\[.+?\])""".toRegex()
-            mediaDefRegex.find(scriptContent)?.groupValues?.get(1)?.let { mediaJson ->
-                sendDebugCallback(callback, "2. OK, 'mediaDefinition' found")
-                intermediateApiUrl = parseJson<List<InitialMedia>>(mediaJson).firstOrNull()?.videoUrl
+        
+        // Nếu một trong các cách trên tìm được URL API, hãy xử lý nó
+        if (intermediateApiUrl != null) {
+            return try {
+                val streamApiResponse = app.get(intermediateApiUrl!!, referer = dataUrl).text
+                parseJson<List<FinalStreamInfo>>(streamApiResponse).mapNotNull { it.videoUrl }.apmap { streamUrl ->
+                    M3u8Helper.generateM3u8(
+                        name,
+                        streamUrl,
+                        mainUrl
+                    ).forEach(callback)
+                }.isNotEmpty()
+            } catch (e: Exception) {
+                e.printStackTrace()
+                false
             }
         }
         
-        // CÁCH 3: Tìm `playervars`
-        if (intermediateApiUrl == null) {
-            sendDebugCallback(callback, "3. Trying 'playervars'")
-            val playerVarsRegex = """"playervars":\s*(\{.*?\})""".toRegex()
-            playerVarsRegex.find(scriptContent)?.groupValues?.get(1)?.let { playerVarsJson ->
-                sendDebugCallback(callback, "3. OK, 'playervars' found")
-                intermediateApiUrl = parseJson<PlayerVars>(playerVarsJson).mediaDefinitions?.firstOrNull()?.videoUrl
-            }
-        }
-
-        // Nếu một trong các cách trên tìm được URL API, hãy xử lý nó
-        if (intermediateApiUrl != null) {
-            sendDebugCallback(callback, "API URL Found: ${intermediateApiUrl!!.take(100)}...")
-            try {
-                val streamApiResponse = app.get(intermediateApiUrl!!, referer = dataUrl).text
-                sendDebugCallback(callback, "API Call OK. Response: ${streamApiResponse.take(100)}...")
-                parseJson<List<FinalStreamInfo>>(streamApiResponse).forEach { streamInfo ->
-                    streamInfo.videoUrl?.let { M3u8Helper.generateM3u8(name, it, mainUrl).forEach(callback) }
-                }
-            } catch (e: Exception) {
-                sendDebugCallback(callback, "API Call FAILED: ${e.message}")
-            }
-        } else {
-             // CÁCH 4: Tìm trực tiếp link M3U8
-            sendDebugCallback(callback, "No API URL. Trying direct M3U8 search")
-            val m3u8Regex = """(https?://[^\s"'<>]+\.m3u8[^\s"'<>]*?)""".toRegex()
-            val m3u8Links = m3u8Regex.findAll(document.html()).map { it.value }.toList()
-            if (m3u8Links.isNotEmpty()) {
-                sendDebugCallback(callback, "Found ${m3u8Links.size} direct M3U8 links.")
-                m3u8Links.forEach { M3u8Helper.generateM3u8(name, it, mainUrl).forEach(callback) }
-            } else {
-                sendDebugCallback(callback, "All methods FAILED.")
-            }
-        }
-
-        return true // Luôn trả về true để hiển thị log
+        return false // Trả về false nếu tất cả các phương pháp đều thất bại
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
@@ -150,6 +125,14 @@ class YouPornProvider : MainAPI() {
         val videoUrl = fixUrl(href)
         val title = this.selectFirst("a.video-title-text")?.text()?.trim() ?: return null
         val posterUrl = this.selectFirst("img.thumb-image")?.attr("data-src")
-        return MovieSearchResponse(name, videoUrl, this@YouPornProvider.name, TvType.NSFW, fixUrlNull(posterUrl), null)
+        
+        return MovieSearchResponse(
+            name = title,
+            url = videoUrl,
+            apiName = this@YouPornProvider.name,
+            type = TvType.NSFW,
+            posterUrl = fixUrlNull(posterUrl),
+            year = null
+        )
     }
 }
