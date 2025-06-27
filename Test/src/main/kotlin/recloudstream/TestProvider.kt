@@ -34,7 +34,7 @@ class YouPornProvider : MainAPI() {
         val items = document.select("div.video-box").mapNotNull {
             it.toSearchResult()
         }
-        
+
         val hasNext = document.selectFirst("div.paginationWrapper a[rel=next]") != null
         return newHomePageResponse(request.name, items, hasNext = hasNext)
     }
@@ -42,7 +42,7 @@ class YouPornProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/search/?query=$query"
         val document = app.get(url).document
-        
+
         return document.select("div.searchResults div.video-box").mapNotNull {
             it.toSearchResult()
         }
@@ -64,7 +64,7 @@ class YouPornProvider : MainAPI() {
     }
 
     /**
-     * Hàm loadLinks đã được thêm các callback DEBUG để hiển thị trạng thái.
+     * Hàm loadLinks đã được sửa để chỉ hiển thị một link DEBUG duy nhất.
      */
     override suspend fun loadLinks(
         dataUrl: String,
@@ -73,54 +73,65 @@ class YouPornProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val document = app.get(dataUrl).document
-        
-        // Regex linh hoạt hơn để tìm JSON
-        val mediaDefinitionRegex = """"mediaDefinition"\s*:\s*(\[.+?\])""".toRegex()
-        var foundLinks = false
 
-        // Tìm JSON trong tất cả các thẻ script
+        val mediaDefinitionRegex = """"mediaDefinition"\s*:\s*(\[.+?\])""".toRegex()
         val scriptContent = document.select("script").joinToString { it.data() }
         val mediaJson = mediaDefinitionRegex.find(scriptContent)?.groupValues?.get(1)
 
+        // URL video mẫu để đảm bảo link không bị lỗi
+        val placeholderUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
+
         if (mediaJson == null) {
-            // DEBUG: Thông báo nếu Regex không tìm thấy gì
-            callback(ExtractorLink(this.name, "DEBUG: Regex FAILED to find mediaDefinition", "#", "", -1, ExtractorLinkType.VIDEO))
-            return false
-        }
-        
-        // DEBUG: Thông báo Regex đã thành công và hiển thị một phần JSON
-        callback(ExtractorLink(this.name, "DEBUG: Regex OK, JSON: ${mediaJson.take(150)}...", "#", "", -1, ExtractorLinkType.VIDEO))
-
-        try {
-            val sources = parseJson<List<MediaDefinition>>(mediaJson)
-            if (sources.isEmpty()) {
-                // DEBUG: Thông báo nếu parse JSON thành công nhưng không có link nào
-                 callback(ExtractorLink(this.name, "DEBUG: JSON Parsed but list is empty", "#", "", -1, ExtractorLinkType.VIDEO))
-            }
-
-            sources.forEach { source ->
-                val videoUrl = source.videoUrl ?: return@forEach
-                val quality = source.height ?: 0
-
-                callback(
-                    ExtractorLink(
-                        source = this.name,
-                        name = "${this.name} ${quality}p", // Tên link hiển thị chất lượng
-                        url = videoUrl,
-                        referer = mainUrl,
-                        quality = quality,
-                        type = if (source.format == "hls") ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+            // Nếu không tìm thấy JSON, tạo một link debug báo lỗi.
+            callback(ExtractorLink(
+                source = this.name,
+                name = "DEBUG: Regex FAILED. No mediaDefinition found.",
+                url = placeholderUrl,
+                referer = mainUrl,
+                quality = 1,
+                type = ExtractorLinkType.VIDEO
+            ))
+        } else {
+            // Nếu tìm thấy JSON, tạo một link debug chứa nội dung JSON đó.
+            callback(ExtractorLink(
+                source = this.name,
+                name = "DEBUG: JSON Found -> ${mediaJson.take(300)}...", // Lấy 300 ký tự đầu của JSON
+                url = placeholderUrl,
+                referer = mainUrl,
+                quality = 1,
+                type = ExtractorLinkType.VIDEO
+            ))
+            // Đồng thời, vẫn thử lấy link thật. Nếu thành công, bạn sẽ thấy cả link debug và link thật.
+            // Nếu thất bại, bạn vẫn có link debug để xem dữ liệu.
+            try {
+                parseJson<List<MediaDefinition>>(mediaJson).forEach { source ->
+                    val videoUrl = source.videoUrl ?: return@forEach
+                    val quality = source.height ?: 0
+                    callback(
+                        ExtractorLink(
+                            source = this.name,
+                            name = "${this.name} ${quality}p",
+                            url = videoUrl,
+                            referer = mainUrl,
+                            quality = quality,
+                            type = if (source.format == "hls") ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                        )
                     )
-                )
-                foundLinks = true
+                }
+            } catch (e: Exception) {
+                // Nếu parse lỗi, tạo thêm một link debug báo lỗi parse.
+                 callback(ExtractorLink(
+                    source = this.name,
+                    name = "DEBUG: JSON PARSE FAILED -> ${e.message}",
+                    url = placeholderUrl,
+                    referer = mainUrl,
+                    quality = 1,
+                    type = ExtractorLinkType.VIDEO
+                ))
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            // DEBUG: Thông báo nếu parse JSON thất bại
-            callback(ExtractorLink(this.name, "DEBUG: JSON Parse FAILED - ${e.message?.take(100)}", "#", "", -1, ExtractorLinkType.VIDEO))
         }
-        
-        return foundLinks
+
+        return true // Luôn trả về true để đảm bảo link debug được hiển thị
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
