@@ -13,10 +13,16 @@ class YouPornProvider : MainAPI() {
     override var supportedTypes = setOf(TvType.NSFW)
     override val hasMainPage = true
 
+    // Cấu trúc dữ liệu cho các link video
     private data class MediaDefinition(
         @JsonProperty("videoUrl") val videoUrl: String?,
         @JsonProperty("height") val height: Int?,
         @JsonProperty("format") val format: String?,
+    )
+    
+    // Cấu trúc dữ liệu cho phương pháp trích xuất thứ hai (dự phòng)
+    private data class PlayerVars(
+        @JsonProperty("mediaDefinitions") val mediaDefinitions: List<MediaDefinition>?
     )
 
     override val mainPage = mainPageOf(
@@ -31,10 +37,8 @@ class YouPornProvider : MainAPI() {
         val url = "$mainUrl${request.data}$page"
         val document = app.get(url).document
 
-        val items = document.select("div.video-box").mapNotNull {
-            it.toSearchResult()
-        }
-
+        val items = document.select("div.video-box").mapNotNull { it.toSearchResult() }
+        
         val hasNext = document.selectFirst("div.paginationWrapper a[rel=next]") != null
         return newHomePageResponse(request.name, items, hasNext = hasNext)
     }
@@ -42,10 +46,8 @@ class YouPornProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/search/?query=$query"
         val document = app.get(url).document
-
-        return document.select("div.searchResults div.video-box").mapNotNull {
-            it.toSearchResult()
-        }
+        
+        return document.select("div.searchResults div.video-box").mapNotNull { it.toSearchResult() }
     }
 
     override suspend fun load(url: String): LoadResponse {
@@ -64,7 +66,7 @@ class YouPornProvider : MainAPI() {
     }
 
     /**
-     * Hàm loadLinks đã được sửa để chỉ hiển thị một link DEBUG duy nhất.
+     * Nâng cấp `loadLinks` để thử nhiều phương pháp trích xuất khác nhau.
      */
     override suspend fun loadLinks(
         dataUrl: String,
@@ -73,65 +75,56 @@ class YouPornProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val document = app.get(dataUrl).document
+        var foundLinks = false
 
-        val mediaDefinitionRegex = """"mediaDefinition"\s*:\s*(\[.+?\])""".toRegex()
+        // Lấy toàn bộ nội dung của các thẻ script
         val scriptContent = document.select("script").joinToString { it.data() }
-        val mediaJson = mediaDefinitionRegex.find(scriptContent)?.groupValues?.get(1)
 
-        // URL video mẫu để đảm bảo link không bị lỗi
-        val placeholderUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
-
-        if (mediaJson == null) {
-            // Nếu không tìm thấy JSON, tạo một link debug báo lỗi.
-            callback(ExtractorLink(
-                source = this.name,
-                name = "DEBUG: Regex FAILED. No mediaDefinition found.",
-                url = placeholderUrl,
-                referer = mainUrl,
-                quality = 1,
-                type = ExtractorLinkType.VIDEO
-            ))
-        } else {
-            // Nếu tìm thấy JSON, tạo một link debug chứa nội dung JSON đó.
-            callback(ExtractorLink(
-                source = this.name,
-                name = "DEBUG: JSON Found -> ${mediaJson.take(300)}...", // Lấy 300 ký tự đầu của JSON
-                url = placeholderUrl,
-                referer = mainUrl,
-                quality = 1,
-                type = ExtractorLinkType.VIDEO
-            ))
-            // Đồng thời, vẫn thử lấy link thật. Nếu thành công, bạn sẽ thấy cả link debug và link thật.
-            // Nếu thất bại, bạn vẫn có link debug để xem dữ liệu.
+        // === CÁCH 1: Tìm "mediaDefinition" ===
+        val mediaDefRegex = """"mediaDefinition"\s*:\s*(\[.+?\])""".toRegex()
+        mediaDefRegex.find(scriptContent)?.groupValues?.get(1)?.let { mediaJson ->
             try {
                 parseJson<List<MediaDefinition>>(mediaJson).forEach { source ->
-                    val videoUrl = source.videoUrl ?: return@forEach
-                    val quality = source.height ?: 0
-                    callback(
-                        ExtractorLink(
-                            source = this.name,
-                            name = "${this.name} ${quality}p",
-                            url = videoUrl,
-                            referer = mainUrl,
-                            quality = quality,
-                            type = if (source.format == "hls") ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                        )
-                    )
+                    source.videoUrl?.let { url ->
+                        callback(createExtractorLink(source.format, url, source.height ?: 0))
+                        foundLinks = true
+                    }
                 }
             } catch (e: Exception) {
-                // Nếu parse lỗi, tạo thêm một link debug báo lỗi parse.
-                 callback(ExtractorLink(
-                    source = this.name,
-                    name = "DEBUG: JSON PARSE FAILED -> ${e.message}",
-                    url = placeholderUrl,
-                    referer = mainUrl,
-                    quality = 1,
-                    type = ExtractorLinkType.VIDEO
-                ))
+                e.printStackTrace()
             }
         }
-
-        return true // Luôn trả về true để đảm bảo link debug được hiển thị
+        
+        // === CÁCH 2 (DỰ PHÒNG): Nếu cách 1 không thành công, tìm "playervars" ===
+        if (!foundLinks) {
+            val playerVarsRegex = """"playervars":\s*(\{.*?\})""".toRegex()
+            playerVarsRegex.find(scriptContent)?.groupValues?.get(1)?.let { playerVarsJson ->
+                try {
+                    parseJson<PlayerVars>(playerVarsJson).mediaDefinitions?.forEach { source ->
+                        source.videoUrl?.let { url ->
+                            callback(createExtractorLink(source.format, url, source.height ?: 0))
+                            foundLinks = true
+                        }
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
+        
+        return foundLinks
+    }
+    
+    // Hàm tiện ích để tạo ExtractorLink
+    private fun createExtractorLink(format: String?, url: String, quality: Int): ExtractorLink {
+        return ExtractorLink(
+            source = this.name,
+            name = "${this.name} ${quality}p",
+            url = url,
+            referer = mainUrl,
+            quality = quality,
+            type = if (format == "hls") ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+        )
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
