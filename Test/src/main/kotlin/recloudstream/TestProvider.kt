@@ -282,8 +282,8 @@ class AnimeVietsubProvider : MainAPI() {
                                 name = "$name HLS",
                                 url = dataUri, // Sử dụng data URI
                                 type = ExtractorLinkType.M3U8, // Luôn là M3U8
-                                referer = episodePageUrl
                             ) {
+                                this.referer = episodePageUrl
                                 this.quality = Qualities.Unknown.value
                             }.let { callback(it) }
                         } else {
