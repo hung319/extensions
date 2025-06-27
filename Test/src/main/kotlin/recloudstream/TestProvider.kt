@@ -4,7 +4,7 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.M3u8Helper
 import org.jsoup.nodes.Element
 
 class YouPornProvider : MainAPI() {
@@ -13,16 +13,16 @@ class YouPornProvider : MainAPI() {
     override var supportedTypes = setOf(TvType.NSFW)
     override val hasMainPage = true
 
-    // Cấu trúc dữ liệu cho các link video
-    private data class MediaDefinition(
+    // Cấu trúc data class để parse JSON từ bước 1
+    private data class InitialMedia(
         @JsonProperty("videoUrl") val videoUrl: String?,
-        @JsonProperty("height") val height: Int?,
-        @JsonProperty("format") val format: String?,
     )
-    
-    // Cấu trúc dữ liệu cho phương pháp trích xuất thứ hai (dự phòng)
-    private data class PlayerVars(
-        @JsonProperty("mediaDefinitions") val mediaDefinitions: List<MediaDefinition>?
+
+    // Cấu trúc data class để parse JSON response cuối cùng (từ cURL của bạn)
+    private data class FinalStreamInfo(
+        @JsonProperty("format") val format: String?,
+        @JsonProperty("videoUrl") val videoUrl: String?,
+        @JsonProperty("quality") val quality: String?,
     )
 
     override val mainPage = mainPageOf(
@@ -36,9 +36,7 @@ class YouPornProvider : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = "$mainUrl${request.data}$page"
         val document = app.get(url).document
-
         val items = document.select("div.video-box").mapNotNull { it.toSearchResult() }
-        
         val hasNext = document.selectFirst("div.paginationWrapper a[rel=next]") != null
         return newHomePageResponse(request.name, items, hasNext = hasNext)
     }
@@ -46,13 +44,11 @@ class YouPornProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/search/?query=$query"
         val document = app.get(url).document
-        
         return document.select("div.searchResults div.video-box").mapNotNull { it.toSearchResult() }
     }
 
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
-
         val title = document.selectFirst("h1.videoTitle")?.text()?.trim() ?: "Untitled"
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         val description = document.selectFirst("meta[name=description]")?.attr("content")
@@ -66,7 +62,7 @@ class YouPornProvider : MainAPI() {
     }
 
     /**
-     * Nâng cấp `loadLinks` để thử nhiều phương pháp trích xuất khác nhau.
+     * Hàm `loadLinks` đã được viết lại hoàn toàn để mô phỏng quy trình 2 bước.
      */
     override suspend fun loadLinks(
         dataUrl: String,
@@ -75,65 +71,47 @@ class YouPornProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val document = app.get(dataUrl).document
+        val scriptContent = document.select("script").joinToString { it.data() }
         var foundLinks = false
 
-        // Lấy toàn bộ nội dung của các thẻ script
-        val scriptContent = document.select("script").joinToString { it.data() }
+        // Bước 1: Trích xuất URL API trung gian từ JSON trong mã nguồn
+        val mediaDefinitionRegex = """"mediaDefinition"\s*:\s*(\[.+?\])""".toRegex()
+        val intermediateApiUrl = mediaDefinitionRegex.find(scriptContent)?.groupValues?.get(1)?.let { mediaJson ->
+            parseJson<List<InitialMedia>>(mediaJson).firstOrNull()?.videoUrl
+        } ?: return false // Nếu không tìm thấy URL API, dừng lại
 
-        // === CÁCH 1: Tìm "mediaDefinition" ===
-        val mediaDefRegex = """"mediaDefinition"\s*:\s*(\[.+?\])""".toRegex()
-        mediaDefRegex.find(scriptContent)?.groupValues?.get(1)?.let { mediaJson ->
-            try {
-                parseJson<List<MediaDefinition>>(mediaJson).forEach { source ->
-                    source.videoUrl?.let { url ->
-                        callback(createExtractorLink(source.format, url, source.height ?: 0))
-                        foundLinks = true
-                    }
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
+        // Bước 2: Gọi đến URL API đó để lấy JSON chứa các link stream cuối cùng
+        val streamApiResponse = app.get(intermediateApiUrl, referer = dataUrl).text
         
-        // === CÁCH 2 (DỰ PHÒNG): Nếu cách 1 không thành công, tìm "playervars" ===
-        if (!foundLinks) {
-            val playerVarsRegex = """"playervars":\s*(\{.*?\})""".toRegex()
-            playerVarsRegex.find(scriptContent)?.groupValues?.get(1)?.let { playerVarsJson ->
-                try {
-                    parseJson<PlayerVars>(playerVarsJson).mediaDefinitions?.forEach { source ->
-                        source.videoUrl?.let { url ->
-                            callback(createExtractorLink(source.format, url, source.height ?: 0))
-                            foundLinks = true
-                        }
-                    }
-                } catch (e: Exception) {
-                    e.printStackTrace()
+        try {
+            // Bước 3: Parse JSON response cuối cùng
+            parseJson<List<FinalStreamInfo>>(streamApiResponse).forEach { streamInfo ->
+                val finalStreamUrl = streamInfo.videoUrl ?: return@forEach
+                val quality = streamInfo.quality?.toIntOrNull() ?: 0
+
+                // Bước 4: Dùng M3u8Helper để xử lý link HLS và tạo ExtractorLink
+                M3u8Helper.generateM3u8(
+                    name = "${this.name} ${quality}p",
+                    streamUrl = finalStreamUrl,
+                    referer = mainUrl
+                ).forEach { link ->
+                    callback(link)
+                    foundLinks = true
                 }
             }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
-        
+
         return foundLinks
-    }
-    
-    // Hàm tiện ích để tạo ExtractorLink
-    private fun createExtractorLink(format: String?, url: String, quality: Int): ExtractorLink {
-        return ExtractorLink(
-            source = this.name,
-            name = "${this.name} ${quality}p",
-            url = url,
-            referer = mainUrl,
-            quality = quality,
-            type = if (format == "hls") ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-        )
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
         val href = this.selectFirst("a.video-box-image")?.attr("href") ?: return null
         val videoUrl = fixUrl(href)
-
         val title = this.selectFirst("a.video-title-text")?.text()?.trim() ?: return null
         val posterUrl = this.selectFirst("img.thumb-image")?.attr("data-src")
-        
+
         return MovieSearchResponse(
             name = title,
             url = videoUrl,
