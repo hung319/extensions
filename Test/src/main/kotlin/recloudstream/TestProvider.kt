@@ -4,14 +4,14 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import org.jsoup.nodes.Element
 
 /**
  * Provider để tương tác với YouPorn.
- * Lớp này chứa các hàm chính: getMainPage, search, và load.
+ * Được cập nhật để sửa lỗi biên dịch theo API mới nhất.
  */
 class YouPornProvider : MainAPI() {
+    // Thông tin cơ bản của provider
     override var name = "YouPorn"
     override var mainUrl = "https://www.youporn.com"
     override var supportedTypes = setOf(TvType.NSFW)
@@ -27,10 +27,11 @@ class YouPornProvider : MainAPI() {
     /**
      * Hàm định nghĩa các mục trên trang chủ của plugin.
      */
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = "${request.data}$page"
         val document = app.get(url).document
 
+        // Phân tích các thẻ video và chuyển đổi chúng thành kết quả có thể hiển thị
         val items = document.select("div.video-box").mapNotNull {
             it.toSearchResult()
         }
@@ -45,13 +46,14 @@ class YouPornProvider : MainAPI() {
         val url = "$mainUrl/search/?query=$query"
         val document = app.get(url).document
         
+        // Phân tích các thẻ video từ trang kết quả tìm kiếm
         return document.select("div.searchResults div.video-box").mapNotNull {
             it.toSearchResult()
         }
     }
 
     /**
-     * Hàm lấy thông tin chi tiết và các liên kết để phát video.
+     * Hàm này chỉ tải siêu dữ liệu (metadata) của video.
      */
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
@@ -60,45 +62,57 @@ class YouPornProvider : MainAPI() {
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         val description = document.selectFirst("meta[name=description]")?.attr("content")
         val recommendations = document.select("div#relatedVideosWrapper div.video-box").mapNotNull { it.toSearchResult() }
-        
-        val mediaDefinitionRegex = """"mediaDefinition":(\[.*?\])""".toRegex()
-        val mediaJson = mediaDefinitionRegex.find(document.html())?.groupValues?.get(1)
 
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
             this.plot = description
             this.recommendations = recommendations
+        }
+    }
 
-            if (mediaJson != null) {
-                try {
-                    parseJson<List<MediaDefinition>>(mediaJson).forEach { source ->
-                        val videoUrl = source.videoUrl ?: return@forEach
-                        val quality = source.height ?: 0
+    /**
+     * Hàm này tải các liên kết (stream links) để phát video.
+     */
+    override suspend fun loadLinks(
+        dataUrl: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val document = app.get(dataUrl).document
 
-                        // *** ĐÃ SỬA ĐỔI THEO YÊU CẦU CỦA BẠN ***
-                        // Xác định loại link (HLS hay MP4) bằng ExtractorLinkType
-                        val type = if (source.format == "hls") {
-                            ExtractorLinkType.M3U8
-                        } else {
-                            ExtractorLinkType.VIDEO
-                        }
+        // Regex để tìm đoạn JSON chứa link video trong mã nguồn trang
+        val mediaDefinitionRegex = """"mediaDefinition":(\[.*?\])""".toRegex()
+        val mediaJson = mediaDefinitionRegex.find(document.html())?.groupValues?.get(1)
+        
+        var foundLinks = false
+        if (mediaJson != null) {
+            try {
+                // Parse chuỗi JSON và lặp qua các nguồn video
+                parseJson<List<MediaDefinition>>(mediaJson).forEach { source ->
+                    val videoUrl = source.videoUrl ?: return@forEach
+                    val quality = source.height ?: 0
 
-                        addExtractor(
-                            ExtractorLink(
-                                source = this@YouPornProvider.name,
-                                name = this@YouPornProvider.name,
-                                url = videoUrl,
-                                referer = mainUrl,
-                                quality = quality,
-                                type = type // Sử dụng enum thay cho isM3u8
-                            )
+                    // Sử dụng callback để trả về link đã tìm thấy
+                    callback(
+                        ExtractorLink(
+                            source = this.name,
+                            name = this.name,
+                            url = videoUrl,
+                            referer = mainUrl,
+                            quality = quality,
+                            // isM3u8 đã được thay thế bằng 'type'
+                            type = if (source.format == "hls") ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                         )
-                    }
-                } catch (e: Exception) {
-                    e.printStackTrace()
+                    )
+                    foundLinks = true
                 }
+            } catch (e: Exception) {
+                // In ra lỗi nếu có vấn đề khi parse JSON
+                e.printStackTrace()
             }
         }
+        return foundLinks
     }
 
     /**
@@ -111,8 +125,12 @@ class YouPornProvider : MainAPI() {
         val title = this.selectFirst("a.video-title-text")?.text()?.trim() ?: return null
         val posterUrl = this.selectFirst("img.thumb-image")?.attr("data-src")
         
-        return newMovieSearchResponse(name = title, url = videoUrl, tvType = TvType.NSFW) {
-            this.posterUrl = fixUrlNull(posterUrl)
-        }
+        // Cập nhật hàm tạo cho MovieSearchResponse theo API mới
+        return newMovieSearchResponse(
+            name = title,
+            url = videoUrl,
+            type = TvType.NSFW, // Loại nội dung
+            posterUrl = fixUrlNull(posterUrl)
+        )
     }
 }
