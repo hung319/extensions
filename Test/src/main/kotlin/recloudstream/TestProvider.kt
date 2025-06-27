@@ -14,16 +14,11 @@ class YouPornProvider : MainAPI() {
     override var supportedTypes = setOf(TvType.NSFW)
     override val hasMainPage = true
 
-    // Cấu trúc data class để parse JSON từ bước 1
-    private data class InitialMedia(
+    // Các hàm và lớp dữ liệu khác giữ nguyên
+    private data class MediaDefinition(
         @JsonProperty("videoUrl") val videoUrl: String?,
-    )
-
-    // Cấu trúc data class để parse JSON response cuối cùng
-    private data class FinalStreamInfo(
+        @JsonProperty("height") val height: Int?,
         @JsonProperty("format") val format: String?,
-        @JsonProperty("videoUrl") val videoUrl: String?,
-        @JsonProperty("quality") val quality: String?,
     )
 
     override val mainPage = mainPageOf(
@@ -61,7 +56,11 @@ class YouPornProvider : MainAPI() {
             this.recommendations = recommendations
         }
     }
-    
+
+    /**
+     * *** CHỨC NĂNG DEBUG ĐẶC BIỆT ***
+     * Hàm này sẽ tạo một link để sao chép mã nguồn HTML của trang lỗi.
+     */
     override suspend fun loadLinks(
         dataUrl: String,
         isCasting: Boolean,
@@ -69,39 +68,20 @@ class YouPornProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val document = app.get(dataUrl).document
-        val scriptContent = document.select("script").joinToString { it.data() }
-        var foundLinks = false
-
-        // Bước 1: Tìm URL API trung gian
-        val mediaDefinitionRegex = """"mediaDefinition"\s*:\s*(\[.+?\])""".toRegex()
-        val intermediateApiUrl = mediaDefinitionRegex.find(scriptContent)?.groupValues?.get(1)?.let { mediaJson ->
-            parseJson<List<InitialMedia>>(mediaJson).firstOrNull()?.videoUrl
-        } ?: return false
-
-        // Bước 2: Gọi URL API để lấy danh sách stream cuối cùng
-        val streamApiResponse = app.get(intermediateApiUrl, referer = dataUrl).text
         
-        try {
-            // Bước 3: Parse JSON response và tạo link
-            parseJson<List<FinalStreamInfo>>(streamApiResponse).forEach { streamInfo ->
-                val finalStreamUrl = streamInfo.videoUrl ?: return@forEach
-                
-                // *** SỬA LỖI: Thêm tham số `source` còn thiếu vào hàm generateM3u8 ***
-                M3u8Helper.generateM3u8(
-                    source = this.name, // Tham số bị thiếu
-                    name = "${this.name} ${streamInfo.quality}p",
-                    streamUrl = finalStreamUrl,
-                    referer = mainUrl
-                ).forEach { link ->
-                    callback(link)
-                    foundLinks = true
-                }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-
-        return foundLinks
+        // Tạo một liên kết đặc biệt để sao chép HTML vào clipboard
+        callback(
+            ExtractorLink(
+                source = this.name,
+                name = "DEBUG: Chạm để sao chép HTML",
+                url = toCopytext(document.html()), // Lệnh đặc biệt của CloudStream
+                referer = mainUrl,
+                quality = 1,
+                type = ExtractorLinkType.VIDEO
+            )
+        )
+        
+        return true // Luôn trả về true để link debug được hiển thị
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
