@@ -7,10 +7,6 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import org.jsoup.nodes.Element
 
-/**
- * Provider để tương tác với YouPorn.
- * Được cập nhật để sử dụng đúng cấu trúc API mới nhất.
- */
 class YouPornProvider : MainAPI() {
     override var name = "YouPorn"
     override var mainUrl = "https://www.youporn.com"
@@ -23,17 +19,32 @@ class YouPornProvider : MainAPI() {
         @JsonProperty("format") val format: String?,
     )
 
+    /**
+     * Sửa đổi cách định nghĩa trang chủ để xử lý phân trang một cách an toàn hơn.
+     * Mỗi mục sẽ chứa một đường dẫn tương đối với tham số page.
+     */
+    override val mainPage = mainPageOf(
+        "/?page=" to "Recommended",
+        "/top_rated/?page=" to "Top Rated",
+        "/most_viewed/?page=" to "Most Viewed",
+        "/most_favorited/?page=" to "Most Favorited",
+        "/browse/time/?page=" to "Newest Videos"
+    )
+
+    /**
+     * Sửa đổi hàm getMainPage để xây dựng URL một cách chính xác.
+     * Đây là nơi đã xảy ra lỗi ở phiên bản trước.
+     */
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Xử lý phân trang: trang 1 không có tham số ?page=
-        val url = if (page > 1) "${request.data}$page" else request.data.replace("?page=", "")
+        // Xây dựng URL hoàn chỉnh và an toàn
+        val url = "$mainUrl${request.data}$page"
         val document = app.get(url).document
 
         val items = document.select("div.video-box").mapNotNull {
             it.toSearchResult()
         }
         
-        // Kiểm tra xem có nút "Next" hay không để xác định có trang tiếp theo
-        val hasNext = document.selectFirst("div.paginationWrapper li.next a") != null
+        val hasNext = document.selectFirst("div.paginationWrapper a[rel=next]") != null
         return newHomePageResponse(request.name, items, hasNext = hasNext)
     }
 
@@ -46,9 +57,6 @@ class YouPornProvider : MainAPI() {
         }
     }
 
-    /**
-     * Hàm này chỉ tải siêu dữ liệu (metadata) của video.
-     */
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
@@ -64,9 +72,6 @@ class YouPornProvider : MainAPI() {
         }
     }
 
-    /**
-     * Hàm này tải các liên kết (stream links) để phát video.
-     */
     override suspend fun loadLinks(
         dataUrl: String,
         isCasting: Boolean,
@@ -85,7 +90,6 @@ class YouPornProvider : MainAPI() {
                     val videoUrl = source.videoUrl ?: return@forEach
                     val quality = source.height ?: 0
 
-                    // *** ĐÃ CẬP NHẬT THEO CẤU TRÚC MỚI BẠN CUNG CẤP ***
                     callback(
                         ExtractorLink(
                             source = this.name,
@@ -105,9 +109,6 @@ class YouPornProvider : MainAPI() {
         return foundLinks
     }
 
-    /**
-     * Hàm tiện ích để chuyển đổi một khối HTML thành đối tượng SearchResponse.
-     */
     private fun Element.toSearchResult(): SearchResponse? {
         val href = this.selectFirst("a.video-box-image")?.attr("href") ?: return null
         val videoUrl = fixUrl(href)
@@ -115,14 +116,14 @@ class YouPornProvider : MainAPI() {
         val title = this.selectFirst("a.video-title-text")?.text()?.trim() ?: return null
         val posterUrl = this.selectFirst("img.thumb-image")?.attr("data-src")
         
-        // Sửa lại cách gọi hàm tạo cho đúng với API
+        // Sử dụng hàm tạo với các tham số theo đúng vị trí
         return MovieSearchResponse(
-            name = title,
-            url = videoUrl,
-            apiName = this@YouPornProvider.name,
-            type = TvType.NSFW,
-            posterUrl = fixUrlNull(posterUrl),
-            year = null
+            title,
+            videoUrl,
+            this@YouPornProvider.name,
+            TvType.NSFW,
+            fixUrlNull(posterUrl),
+            null
         )
     }
 }
