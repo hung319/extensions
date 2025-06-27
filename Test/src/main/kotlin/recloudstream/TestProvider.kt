@@ -1,17 +1,17 @@
-package com.lagradost.cloudstream3.providers // Thêm package ở đầu file
+package com.lagradost.cloudstream3.providers
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import org.jsoup.nodes.Element
 
 /**
  * Provider để tương tác với YouPorn.
- * Lớp này chứa các hàm chính: mainPage, loadPage, search, và load.
+ * Lớp này chứa các hàm chính: getMainPage, search, và load.
  */
 class YouPornProvider : MainAPI() {
-    // Thông tin cơ bản của provider
     override var name = "YouPorn"
     override var mainUrl = "https://www.youporn.com"
     override var supportedTypes = setOf(TvType.NSFW)
@@ -19,39 +19,23 @@ class YouPornProvider : MainAPI() {
 
     // Dữ liệu từ JSON để lấy link video
     private data class MediaDefinition(
-        @JsonProperty("videoUrl") val videoUrl: String,
-        @JsonProperty("height") val height: Int,
-        @JsonProperty("format") val format: String,
+        @JsonProperty("videoUrl") val videoUrl: String?,
+        @JsonProperty("height") val height: Int?,
+        @JsonProperty("format") val format: String?,
     )
 
     /**
      * Hàm định nghĩa các mục trên trang chủ của plugin.
-     * CloudStream sẽ gọi hàm `loadPage` tương ứng khi người dùng chọn một mục.
      */
-    override val mainPage = mainPageOf(
-        "$mainUrl/?page=" to "Recommended",
-        "$mainUrl/top_rated/?page=" to "Top Rated",
-        "$mainUrl/most_viewed/?page=" to "Most Viewed",
-        "$mainUrl/most_favorited/?page=" to "Most Favorited",
-        "$mainUrl/browse/time/?page=" to "Newest Videos"
-    )
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+        val url = "${request.data}$page"
+        val document = app.get(url).document
 
-    /**
-     * Hàm tải danh sách video cho các mục trên trang chủ.
-     */
-    override suspend fun loadPage(page: HomePageList): HomePageResponse {
-        val document = app.get(page.data).document
-        
-        // Phân tích các thẻ video và chuyển đổi chúng thành kết quả có thể hiển thị
         val items = document.select("div.video-box").mapNotNull {
             it.toSearchResult()
         }
         
-        return newHomePageResponse(
-            page.name,
-            items,
-            hasNext = document.selectFirst("div.paginationWrapper li.next") != null
-        )
+        return newHomePageResponse(request.name, items, hasNext = true)
     }
 
     /**
@@ -61,7 +45,6 @@ class YouPornProvider : MainAPI() {
         val url = "$mainUrl/search/?query=$query"
         val document = app.get(url).document
         
-        // Phân tích các thẻ video từ trang kết quả tìm kiếm
         return document.select("div.searchResults div.video-box").mapNotNull {
             it.toSearchResult()
         }
@@ -69,49 +52,52 @@ class YouPornProvider : MainAPI() {
 
     /**
      * Hàm lấy thông tin chi tiết và các liên kết để phát video.
-     * Đây là nơi xử lý `load+loadlinks.html`.
      */
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
-        // Trích xuất các thông tin cơ bản
         val title = document.selectFirst("h1.videoTitle")?.text()?.trim() ?: return null
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         val description = document.selectFirst("meta[name=description]")?.attr("content")
         val recommendations = document.select("div#relatedVideosWrapper div.video-box").mapNotNull { it.toSearchResult() }
         
-        // Regex để tìm đoạn JSON chứa link video trong mã nguồn trang
         val mediaDefinitionRegex = """"mediaDefinition":(\[.*?\])""".toRegex()
         val mediaJson = mediaDefinitionRegex.find(document.html())?.groupValues?.get(1)
 
-        val extractorLinks = arrayListOf<ExtractorLink>()
-        
-        if (mediaJson != null) {
-            try {
-                // Parse chuỗi JSON và lặp qua các nguồn video
-                parseJson<List<MediaDefinition>>(mediaJson).forEach { source ->
-                    extractorLinks.add(
-                        ExtractorLink(
-                            name = "YouPorn - ${source.height}p",
-                            url = source.videoUrl,
-                            referer = "$mainUrl/",
-                            quality = source.height,
-                            isM3u8 = source.format == "hls"
-                        )
-                    )
-                }
-            } catch (e: Exception) {
-                // Ghi log nếu có lỗi xảy ra
-                logError(e)
-            }
-        }
-        
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
             this.plot = description
             this.recommendations = recommendations
-            // Thêm các link đã trích xuất để CloudStream có thể phát
-            addLinks(extractorLinks.sortedBy { -it.quality }) // Sắp xếp chất lượng từ cao đến thấp
+
+            if (mediaJson != null) {
+                try {
+                    parseJson<List<MediaDefinition>>(mediaJson).forEach { source ->
+                        val videoUrl = source.videoUrl ?: return@forEach
+                        val quality = source.height ?: 0
+
+                        // *** ĐÃ SỬA ĐỔI THEO YÊU CẦU CỦA BẠN ***
+                        // Xác định loại link (HLS hay MP4) bằng ExtractorLinkType
+                        val type = if (source.format == "hls") {
+                            ExtractorLinkType.M3U8
+                        } else {
+                            ExtractorLinkType.VIDEO
+                        }
+
+                        addExtractor(
+                            ExtractorLink(
+                                source = this@YouPornProvider.name,
+                                name = this@YouPornProvider.name,
+                                url = videoUrl,
+                                referer = mainUrl,
+                                quality = quality,
+                                type = type // Sử dụng enum thay cho isM3u8
+                            )
+                        )
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
         }
     }
 
@@ -124,25 +110,9 @@ class YouPornProvider : MainAPI() {
 
         val title = this.selectFirst("a.video-title-text")?.text()?.trim() ?: return null
         val posterUrl = this.selectFirst("img.thumb-image")?.attr("data-src")
-
-        return newMovieSearchResponse(name = title, url = videoUrl, TvType.NSFW, fixUrlNull(posterUrl)) {
-            val durationText = this@toSearchResult.selectFirst("div.video-duration")?.text()?.trim()
-            if (durationText != null) {
-                this.duration = durationText.toMinutes()
-            }
+        
+        return newMovieSearchResponse(name = title, url = videoUrl, tvType = TvType.NSFW) {
+            this.posterUrl = fixUrlNull(posterUrl)
         }
-    }
-    
-    /**
-     * Hàm tiện ích để chuyển đổi chuỗi thời gian (vd: "19:33") thành phút.
-     */
-    private fun String.toMinutes(): Int {
-        return this.split(':').let { parts ->
-            when (parts.size) {
-                2 -> (parts[0].toIntOrNull() ?: 0) * 60 + (parts[1].toIntOrNull() ?: 0)
-                1 -> parts[0].toIntOrNull() ?: 0
-                else -> 0
-            }
-        } / 60
     }
 }
