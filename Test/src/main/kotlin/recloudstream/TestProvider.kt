@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.M3u8Helper
 import org.jsoup.nodes.Element
 
@@ -18,7 +19,7 @@ class YouPornProvider : MainAPI() {
         @JsonProperty("videoUrl") val videoUrl: String?,
     )
 
-    // Cấu trúc data class để parse JSON response cuối cùng (từ cURL của bạn)
+    // Cấu trúc data class để parse JSON response cuối cùng
     private data class FinalStreamInfo(
         @JsonProperty("format") val format: String?,
         @JsonProperty("videoUrl") val videoUrl: String?,
@@ -60,10 +61,7 @@ class YouPornProvider : MainAPI() {
             this.recommendations = recommendations
         }
     }
-
-    /**
-     * Hàm `loadLinks` đã được viết lại hoàn toàn để mô phỏng quy trình 2 bước.
-     */
+    
     override suspend fun loadLinks(
         dataUrl: String,
         isCasting: Boolean,
@@ -74,24 +72,24 @@ class YouPornProvider : MainAPI() {
         val scriptContent = document.select("script").joinToString { it.data() }
         var foundLinks = false
 
-        // Bước 1: Trích xuất URL API trung gian từ JSON trong mã nguồn
+        // Bước 1: Tìm URL API trung gian
         val mediaDefinitionRegex = """"mediaDefinition"\s*:\s*(\[.+?\])""".toRegex()
         val intermediateApiUrl = mediaDefinitionRegex.find(scriptContent)?.groupValues?.get(1)?.let { mediaJson ->
             parseJson<List<InitialMedia>>(mediaJson).firstOrNull()?.videoUrl
-        } ?: return false // Nếu không tìm thấy URL API, dừng lại
+        } ?: return false
 
-        // Bước 2: Gọi đến URL API đó để lấy JSON chứa các link stream cuối cùng
+        // Bước 2: Gọi URL API để lấy danh sách stream cuối cùng
         val streamApiResponse = app.get(intermediateApiUrl, referer = dataUrl).text
         
         try {
-            // Bước 3: Parse JSON response cuối cùng
+            // Bước 3: Parse JSON response và tạo link
             parseJson<List<FinalStreamInfo>>(streamApiResponse).forEach { streamInfo ->
                 val finalStreamUrl = streamInfo.videoUrl ?: return@forEach
-                val quality = streamInfo.quality?.toIntOrNull() ?: 0
-
-                // Bước 4: Dùng M3u8Helper để xử lý link HLS và tạo ExtractorLink
+                
+                // *** SỬA LỖI: Thêm tham số `source` còn thiếu vào hàm generateM3u8 ***
                 M3u8Helper.generateM3u8(
-                    name = "${this.name} ${quality}p",
+                    source = this.name, // Tham số bị thiếu
+                    name = "${this.name} ${streamInfo.quality}p",
                     streamUrl = finalStreamUrl,
                     referer = mainUrl
                 ).forEach { link ->
@@ -111,7 +109,7 @@ class YouPornProvider : MainAPI() {
         val videoUrl = fixUrl(href)
         val title = this.selectFirst("a.video-title-text")?.text()?.trim() ?: return null
         val posterUrl = this.selectFirst("img.thumb-image")?.attr("data-src")
-
+        
         return MovieSearchResponse(
             name = title,
             url = videoUrl,
