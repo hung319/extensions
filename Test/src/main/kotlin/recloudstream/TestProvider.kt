@@ -2,10 +2,10 @@ package com.lagradost.cloudstream3.providers
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.M3u8Helper
 import org.jsoup.nodes.Element
-import java.net.URLEncoder // *** SỬA LỖI: Thêm import cần thiết
 
 class YouPornProvider : MainAPI() {
     override var name = "YouPorn"
@@ -13,7 +13,25 @@ class YouPornProvider : MainAPI() {
     override var supportedTypes = setOf(TvType.NSFW)
     override val hasMainPage = true
 
-    // Các hàm và lớp dữ liệu khác giữ nguyên
+    // --- Data Classes để parse các loại JSON khác nhau ---
+    private data class InitialMedia(
+        @JsonProperty("videoUrl") val videoUrl: String?,
+    )
+
+    private data class Flashvars(
+        @JsonProperty("mediaDefinitions") val mediaDefinitions: List<InitialMedia>?
+    )
+
+    private data class PlayerVars(
+        @JsonProperty("mediaDefinitions") val mediaDefinitions: List<InitialMedia>?
+    )
+    
+    private data class FinalStreamInfo(
+        @JsonProperty("videoUrl") val videoUrl: String?,
+        @JsonProperty("quality") val quality: String?,
+    )
+
+    // --- Các hàm không thay đổi ---
     override val mainPage = mainPageOf(
         "/?page=" to "Recommended",
         "/top_rated/?page=" to "Top Rated",
@@ -51,8 +69,7 @@ class YouPornProvider : MainAPI() {
     }
 
     /**
-     * *** CHỨC NĂNG DEBUG ĐẶC BIỆT ***
-     * Hàm này sẽ tạo một link để sao chép mã nguồn HTML của trang lỗi.
+     * Hàm `loadLinks` cuối cùng, xử lý tất cả các trường hợp đã biết.
      */
     override suspend fun loadLinks(
         dataUrl: String,
@@ -61,23 +78,59 @@ class YouPornProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val document = app.get(dataUrl).document
+        val scriptContent = document.select("script").joinToString { it.data() }
+
+        // Cố gắng tìm URL API trung gian bằng nhiều phương pháp
+        var intermediateApiUrl: String? = null
+
+        // CÁCH 1: Tìm `flashvars_...` (phát hiện mới nhất)
+        val flashvarsRegex = """var\s*flashvars_\d+\s*=\s*(\{.+?\});""".toRegex()
+        flashvarsRegex.find(scriptContent)?.groupValues?.get(1)?.let { flashvarsJson ->
+            intermediateApiUrl = parseJson<Flashvars>(flashvarsJson).mediaDefinitions?.firstOrNull()?.videoUrl
+        }
+
+        // CÁCH 2: Nếu cách 1 thất bại, tìm `mediaDefinition`
+        if (intermediateApiUrl == null) {
+            val mediaDefRegex = """"mediaDefinition"\s*:\s*(\[.+?\])""".toRegex()
+            mediaDefRegex.find(scriptContent)?.groupValues?.get(1)?.let { mediaJson ->
+                intermediateApiUrl = parseJson<List<InitialMedia>>(mediaJson).firstOrNull()?.videoUrl
+            }
+        }
         
-        // *** SỬA LỖI: Sử dụng đúng phương pháp clipboard:// của CloudStream ***
-        // Mã hóa HTML để đảm bảo URL hợp lệ
-        val encodedHtml = URLEncoder.encode(document.html(), "UTF-8")
+        // CÁCH 3: Nếu cách 2 thất bại, tìm `playervars`
+        if (intermediateApiUrl == null) {
+            val playerVarsRegex = """"playervars":\s*(\{.*?\})""".toRegex()
+            playerVarsRegex.find(scriptContent)?.groupValues?.get(1)?.let { playerVarsJson ->
+                intermediateApiUrl = parseJson<PlayerVars>(playerVarsJson).mediaDefinitions?.firstOrNull()?.videoUrl
+            }
+        }
+
+        // Nếu một trong các cách trên tìm được URL API, hãy xử lý nó
+        if (intermediateApiUrl != null) {
+            return try {
+                val streamApiResponse = app.get(intermediateApiUrl!!, referer = dataUrl).text
+                parseJson<List<FinalStreamInfo>>(streamApiResponse).mapNotNull { it.videoUrl }.apmap {  streamUrl ->
+                    M3u8Helper.generateM3u8(
+                        name,
+                        streamUrl,
+                        mainUrl
+                    ).forEach(callback)
+                }.isNotEmpty()
+            } catch (e: Exception) {
+                e.printStackTrace()
+                false
+            }
+        }
         
-        callback(
-            ExtractorLink(
-                source = this.name,
-                name = "DEBUG: Chạm để sao chép HTML",
-                url = "clipboard://$encodedHtml", // URL đặc biệt để sao chép
-                referer = mainUrl,
-                quality = 1,
-                type = ExtractorLinkType.VIDEO
-            )
-        )
-        
-        return true // Luôn trả về true để link debug được hiển thị
+        // CÁCH 4 (Dự phòng cuối cùng): Tìm trực tiếp link M3U8 trong toàn bộ trang
+        val m3u8Regex = """(https?://[^\s"'<>]+\.m3u8[^\s"'<>]*?)""".toRegex()
+        return m3u8Regex.findAll(document.html()).map { it.value }.toList().apmap { m3u8Url ->
+            M3u8Helper.generateM3u8(
+                name,
+                m3u8Url,
+                mainUrl
+            ).forEach(callback)
+        }.isNotEmpty()
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
