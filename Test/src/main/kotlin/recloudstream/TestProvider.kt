@@ -1,28 +1,26 @@
 package com.lagradost.cloudstream3
 
-import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
-import com.lagradost.cloudstream3.LoadResponse.Companion.addDuration
-import com.lagradost.cloudstream3.utils.*
 import android.util.Log
 import com.google.gson.Gson
+import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
+import com.lagradost.cloudstream3.LoadResponse.Companion.addDuration
+import com.lagradost.cloudstream3.network.CloudflareKiller
+import com.lagradost.cloudstream3.utils.*
+import okhttp3.Interceptor
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import java.net.URLEncoder
 import java.net.URL
-import kotlin.math.roundToInt
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
-
-// CÁC IMPORT CẦN THIẾT ĐÃ ĐƯỢC THÊM VÀO
-import com.lagradost.cloudstream3.network.CloudflareKiller
-import okhttp3.Interceptor
-import java.util.UUID
-import java.util.Base64
-import java.util.zip.Inflater
+import java.net.URLEncoder
 import java.security.MessageDigest
+import java.util.*
+import java.util.zip.Inflater
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
+import kotlin.math.roundToInt
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 
 class AnimeVietsubProvider : MainAPI() {
 
@@ -43,7 +41,7 @@ class AnimeVietsubProvider : MainAPI() {
     private var currentActiveUrl = bitlyResolverUrl
     private var domainResolutionAttempted = false
 
-    // ===== CÁC THAY ĐỔI BẮT ĐẦU TỪ ĐÂY =====
+    // ===== CÁC THAY ĐỔI VÀ TÍCH HỢP =====
 
     // 1. Thêm CloudflareKiller Interceptor để vượt qua bảo vệ của Cloudflare
     private val cfInterceptor = CloudflareKiller()
@@ -59,7 +57,6 @@ class AnimeVietsubProvider : MainAPI() {
         "/bang-xep-hang/day.html" to "Xem Nhiều Trong Ngày"
     )
 
-    // Cập nhật các hàm gọi mạng để sử dụng Cloudflare Interceptor
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val baseUrl = getBaseUrl()
         val url = if (page == 1) {
@@ -72,7 +69,6 @@ class AnimeVietsubProvider : MainAPI() {
                 "$baseUrl$slug/trang-$page.html"
             }
         }
-        // Sử dụng interceptor
         val document = app.get(url, interceptor = cfInterceptor).document
         val home = when {
             request.data.contains("bang-xep-hang") -> {
@@ -115,7 +111,6 @@ class AnimeVietsubProvider : MainAPI() {
         return try {
             val baseUrl = getBaseUrl()
             val requestUrl = "$baseUrl/tim-kiem/${query.encodeUri()}/"
-            // Sử dụng interceptor
             val document = app.get(requestUrl, interceptor = cfInterceptor).document
             document.select("ul.MovieList.Rows li.TPostMv")
                 .mapNotNull { it.toSearchResponse(this, baseUrl) }
@@ -136,7 +131,6 @@ class AnimeVietsubProvider : MainAPI() {
             currentActiveUrl
         }
         try {
-            // Sử dụng interceptor
             val response = app.get(urlToAttemptResolution, allowRedirects = true, timeout = 15_000, interceptor = cfInterceptor)
             val finalUrlString = response.url
             if (finalUrlString.startsWith("http") && !finalUrlString.contains("bit.ly")) {
@@ -168,13 +162,11 @@ class AnimeVietsubProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val baseUrl = getBaseUrl()
         try {
-            // Sử dụng interceptor
             val infoDocument = app.get(url, headers = mapOf("Referer" to baseUrl), interceptor = cfInterceptor).document
             val genres = infoDocument.getGenres()
             val watchPageDoc = if (!genres.any { it.equals("Anime sắp chiếu", ignoreCase = true) }) {
                 try {
                     val watchPageUrl = if (url.endsWith("/")) "${url}xem-phim.html" else "$url/xem-phim.html"
-                    // Sử dụng interceptor
                     app.get(watchPageUrl, referer = url, interceptor = cfInterceptor).document
                 } catch (e: Exception) {
                     Log.w(name, "Failed to load watch page. Error: ${e.message}")
@@ -209,22 +201,21 @@ class AnimeVietsubProvider : MainAPI() {
             val decryptedBytesPadded = cipher.doFinal(ciphertextBytes)
             val inflater = Inflater(true)
             inflater.setInput(decryptedBytesPadded, 0, decryptedBytesPadded.size)
-            val result = ByteArray(1024 * 1024)
-            val decompressedLength = inflater.inflate(result)
+            val resultStream = java.io.ByteArrayOutputStream()
+            val buffer = ByteArray(1024)
+            while (!inflater.finished()) {
+                val count = inflater.inflate(buffer)
+                resultStream.write(buffer, 0, count)
+            }
             inflater.end()
-            val decompressedBytes = result.copyOfRange(0, decompressedLength)
-            var m3u8Content = decompressedBytes.toString(Charsets.UTF_8)
+            var m3u8Content = resultStream.toByteArray().toString(Charsets.UTF_8)
             m3u8Content = m3u8Content.trim().removeSurrounding("\"")
-            // Không cần replace \\n nữa vì interceptor sẽ xử lý chuỗi trực tiếp
             return m3u8Content
         } catch (e: Exception) {
             throw ErrorLoadingException("Giải mã thất bại: ${e.message}")
         }
     }
-    
-    // =================================================================
-    // HÀM loadLinks ĐÃ ĐƯỢC VIẾT LẠI HOÀN TOÀN
-    // =================================================================
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -248,7 +239,6 @@ class AnimeVietsubProvider : MainAPI() {
             )
             val ajaxUrl = "$baseUrl/ajax/player?v=2019a"
             
-            // Sử dụng Cloudflare Interceptor cho request lấy link
             val playerResponse = app.post(ajaxUrl, data = postData, headers = headers, referer = episodePageUrl, interceptor = cfInterceptor).parsed<AjaxPlayerResponse>()
 
             if (playerResponse.success != 1 || playerResponse.link.isNullOrEmpty()) {
@@ -262,23 +252,20 @@ class AnimeVietsubProvider : MainAPI() {
                             val encryptedUrl = linkSource.file ?: return@launch
                             val m3u8Content = decryptM3u8Content(encryptedUrl)
 
-                            // 1. Tạo một key duy nhất cho M3U8 này
                             val key = UUID.randomUUID().toString()
-                            
-                            // 2. Lưu nội dung M3U8 vào bộ nhớ đệm
                             m3u8Contents[key] = m3u8Content
 
-                            // 3. Tạo một URL giả để trỏ tới Interceptor
                             val proxyUrl = "${mainUrl}/m3u8-proxy/${key}.m3u8"
 
                             callback(newExtractorLink(
                                 source = name,
                                 name = linkSource.label ?: "$name HLS",
-                                url = proxyUrl, // Sử dụng URL giả
-                                type = ExtractorLinkType.M3U8,
+                                url = proxyUrl,
                                 referer = episodePageUrl,
-                                quality = Qualities.Unknown.value
-                            ))
+                                type = ExtractorLinkType.M3U8
+                            ).apply {
+                                this.quality = Qualities.Unknown.value
+                            })
                         } catch (e: Exception) {
                             Log.e(name, "Lỗi xử lý link source: ${e.message}")
                         }
@@ -287,40 +274,25 @@ class AnimeVietsubProvider : MainAPI() {
             }
         } catch (e: Exception) {
             Log.e(name, "Lỗi nghiêm trọng trong loadLinks: ${e.message}", e)
-            val errorName = "Lỗi: ${e.message ?: "Không rõ"}"
-            callback(newExtractorLink(
-                source = name,
-                name = errorName,
-                url = "https://error.debug/log",
-                type = ExtractorLinkType.M3U8
-            ){
-                this.quality = Qualities.Unknown.value
-            })
         }
         return true
     }
 
-    // =================================================================
-    // HÀM getVideoInterceptor ĐÃ ĐƯỢC THÊM VÀO
-    // =================================================================
-    override fun getVideoInterceptor(url: String): Interceptor? {
-        // Kiểm tra nếu URL là URL giả của chúng ta
+    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
+        val url = extractorLink.url
         if (!url.contains("/m3u8-proxy/")) return null
         
         return Interceptor { chain ->
             val request = chain.request()
-            val requestUrl = request.url.toString()
+            val requestUrl = request.url().toString()
             
-            // Lấy key từ URL
             val key = requestUrl.substringAfterLast("/m3u8-proxy/").substringBefore(".m3u8")
             
-            // Lấy nội dung M3U8 từ bộ nhớ đệm
             val m3u8Content = m3u8Contents[key]
 
             if (m3u8Content != null) {
-                // Trả về response giả với nội dung M3U8 đã giải mã
                 val responseBody = okhttp3.ResponseBody.create(
-                    okhttp3.MediaType.parse("application/vnd.apple.mpegurl"),
+                    "application/vnd.apple.mpegurl".toMediaTypeOrNull(),
                     m3u8Content
                 )
                 okhttp3.Response.Builder()
@@ -331,7 +303,6 @@ class AnimeVietsubProvider : MainAPI() {
                     .body(responseBody)
                     .build()
             } else {
-                // Nếu không tìm thấy, trả về lỗi 404
                  okhttp3.Response.Builder()
                     .request(request)
                     .protocol(okhttp3.Protocol.HTTP_1_1)
@@ -343,8 +314,6 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
 
-
-    // ... (Toàn bộ các hàm tiện ích còn lại từ toSearchResponse đến fixUrl giữ nguyên) ...
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): SearchResponse? {
         return try {
             val linkElement = this.selectFirst("article.TPost > a") ?: return null
