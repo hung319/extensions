@@ -217,102 +217,104 @@ class AnimeVietsubProvider : MainAPI() {
     }
 
     override suspend fun loadLinks(
-        data: String,
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        try {
-            val episodeData = gson.fromJson(data, EpisodeData::class.java)
-            val episodePageUrl = episodeData.url
-            val baseUrl = getBaseUrl()
+    data: String,
+    isCasting: Boolean,
+    subtitleCallback: (SubtitleFile) -> Unit,
+    callback: (ExtractorLink) -> Unit
+): Boolean {
+    try {
+        val episodeData = gson.fromJson(data, EpisodeData::class.java)
+        val episodePageUrl = episodeData.url
+        val baseUrl = getBaseUrl()
 
-            val postData = mutableMapOf("id" to (episodeData.dataId ?: throw ErrorLoadingException("Thiếu episode ID")), "play" to "api").apply {
-                episodeData.duHash?.let { put("link", it) }
-            }
-            val headers = mapOf(
-                "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8",
-                "Accept" to "application/json, text/javascript, */*; q=0.01",
-                "X-Requested-With" to "XMLHttpRequest",
-                "User-Agent" to USER_AGENT,
-                "Referer" to episodePageUrl
-            )
-            val ajaxUrl = "$baseUrl/ajax/player?v=2019a"
-            
-            val playerResponse = app.post(ajaxUrl, data = postData, headers = headers, referer = episodePageUrl, interceptor = cfInterceptor).parsed<AjaxPlayerResponse>()
+        val postData = mutableMapOf("id" to (episodeData.dataId ?: throw ErrorLoadingException("Thiếu episode ID")), "play" to "api").apply {
+            episodeData.duHash?.let { put("link", it) }
+        }
+        val headers = mapOf(
+            "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8",
+            "Accept" to "application/json, text/javascript, */*; q=0.01",
+            "X-Requested-With" to "XMLHttpRequest",
+            "User-Agent" to USER_AGENT,
+            "Referer" to episodePageUrl
+        )
+        val ajaxUrl = "$baseUrl/ajax/player?v=2019a"
+        
+        val playerResponse = app.post(ajaxUrl, data = postData, headers = headers, referer = episodePageUrl, interceptor = cfInterceptor).parsed<AjaxPlayerResponse>()
 
-            if (playerResponse.success != 1 || playerResponse.link.isNullOrEmpty()) {
-                throw ErrorLoadingException("Lấy link thất bại từ AJAX: $playerResponse")
-            }
+        if (playerResponse.success != 1 || playerResponse.link.isNullOrEmpty()) {
+            throw ErrorLoadingException("Lấy link thất bại từ AJAX: $playerResponse")
+        }
 
-            coroutineScope {
-                playerResponse.link.forEach { linkSource ->
-                    launch {
-                        try {
-                            val encryptedUrl = linkSource.file ?: return@launch
-                            val m3u8Content = decryptM3u8Content(encryptedUrl)
+        coroutineScope {
+            playerResponse.link.forEach { linkSource ->
+                launch {
+                    try {
+                        val encryptedUrl = linkSource.file ?: return@launch
+                        val m3u8Content = decryptM3u8Content(encryptedUrl)
 
-                            val key = UUID.randomUUID().toString()
-                            m3u8Contents[key] = m3u8Content
+                        val key = UUID.randomUUID().toString()
+                        m3u8Contents[key] = m3u8Content
 
-                            val proxyUrl = "${mainUrl}/m3u8-proxy/${key}.m3u8"
+                        val proxyUrl = "${mainUrl}/m3u8-proxy/${key}.m3u8"
 
-                            callback(newExtractorLink(
-                                source = name,
-                                name = linkSource.label ?: "$name HLS",
-                                url = proxyUrl,
-                                referer = episodePageUrl,
-                                type = ExtractorLinkType.M3U8
-                            ).apply {
-                                this.quality = Qualities.Unknown.value
-                            })
-                        } catch (e: Exception) {
-                            Log.e(name, "Lỗi xử lý link source: ${e.message}")
-                        }
+                        // SỬA LỖI TẠI ĐÂY: Chuyển referer vào khối .apply
+                        callback(newExtractorLink(
+                            source = name,
+                            name = linkSource.label ?: "$name HLS",
+                            url = proxyUrl,
+                            type = ExtractorLinkType.M3U8
+                        ).apply {
+                            this.referer = episodePageUrl
+                            this.quality = Qualities.Unknown.value
+                        })
+                    } catch (e: Exception) {
+                        Log.e(name, "Lỗi xử lý link source: ${e.message}")
                     }
                 }
             }
-        } catch (e: Exception) {
-            Log.e(name, "Lỗi nghiêm trọng trong loadLinks: ${e.message}", e)
         }
-        return true
+    } catch (e: Exception) {
+        Log.e(name, "Lỗi nghiêm trọng trong loadLinks: ${e.message}", e)
     }
+    return true
+}
 
-    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
-        val url = extractorLink.url
-        if (!url.contains("/m3u8-proxy/")) return null
+override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
+    val url = extractorLink.url
+    if (!url.contains("/m3u8-proxy/")) return null
+    
+    return Interceptor { chain ->
+        val request = chain.request()
+        // SỬA LỖI TẠI ĐÂY: Bỏ dấu () khỏi request.url
+        val requestUrl = request.url.toString()
         
-        return Interceptor { chain ->
-            val request = chain.request()
-            val requestUrl = request.url().toString()
-            
-            val key = requestUrl.substringAfterLast("/m3u8-proxy/").substringBefore(".m3u8")
-            
-            val m3u8Content = m3u8Contents[key]
+        val key = requestUrl.substringAfterLast("/m3u8-proxy/").substringBefore(".m3u8")
+        
+        val m3u8Content = m3u8Contents[key]
 
-            if (m3u8Content != null) {
-                val responseBody = okhttp3.ResponseBody.create(
-                    "application/vnd.apple.mpegurl".toMediaTypeOrNull(),
-                    m3u8Content
-                )
-                okhttp3.Response.Builder()
-                    .request(request)
-                    .protocol(okhttp3.Protocol.HTTP_1_1)
-                    .code(200)
-                    .message("OK")
-                    .body(responseBody)
-                    .build()
-            } else {
-                 okhttp3.Response.Builder()
-                    .request(request)
-                    .protocol(okhttp3.Protocol.HTTP_1_1)
-                    .code(404)
-                    .message("M3U8 Not Found in Cache")
-                    .body(okhttp3.ResponseBody.create(null, ""))
-                    .build()
-            }
+        if (m3u8Content != null) {
+            val responseBody = okhttp3.ResponseBody.create(
+                "application/vnd.apple.mpegurl".toMediaTypeOrNull(),
+                m3u8Content
+            )
+            okhttp3.Response.Builder()
+                .request(request)
+                .protocol(okhttp3.Protocol.HTTP_1_1)
+                .code(200)
+                .message("OK")
+                .body(responseBody)
+                .build()
+        } else {
+             okhttp3.Response.Builder()
+                .request(request)
+                .protocol(okhttp3.Protocol.HTTP_1_1)
+                .code(404)
+                .message("M3U8 Not Found in Cache")
+                .body(okhttp3.ResponseBody.create(null, ""))
+                .build()
         }
     }
+}
 
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): SearchResponse? {
         return try {
