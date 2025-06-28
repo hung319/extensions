@@ -13,21 +13,17 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 
-// CÁC IMPORT MỚI
+// CÁC IMPORT CẦN THIẾT CHO VIỆC GIẢI MÃ
 import java.util.Base64
 import java.util.zip.Inflater
 import java.security.MessageDigest
-import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 class AnimeVietsubProvider : MainAPI() {
 
-    companion object {
-        val dataStore = ConcurrentHashMap<String, String>()
-    }
+    // Không cần companion object nữa vì mọi logic nặng đã được chuyển sang server ngoài
 
     private val gson = Gson()
     override var mainUrl = "https://bit.ly/animevietsubtv"
@@ -216,6 +212,9 @@ class AnimeVietsubProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // URL của server proxy Python bạn đã triển khai
+        val myProxyServerUrl = "https://monetary-jerrilee-hvn-99a37519.koyeb.app/proxy"
+
         try {
             val episodeData = gson.fromJson(data, EpisodeData::class.java)
             val episodePageUrl = episodeData.url
@@ -244,15 +243,25 @@ class AnimeVietsubProvider : MainAPI() {
                         val encryptedUrl = linkSource.file ?: return@launch
                         val m3u8Content = decryptM3u8Content(encryptedUrl) ?: return@launch
 
-                        val key = UUID.randomUUID().toString()
-                        dataStore[key] = m3u8Content
-
-                        val localM3u8Url = "http://rat.local/$key"
+                        // Sửa đổi M3U8 để trỏ TẤT CẢ segment về server proxy của bạn
+                        val modifiedM3u8 = m3u8Content.lines().joinToString("\n") { line ->
+                            if (line.isNotBlank() && !line.startsWith("#")) {
+                                val encodedSegmentUrl = URLEncoder.encode(line, "UTF-8")
+                                val encodedReferer = URLEncoder.encode(episodePageUrl, "UTF-8")
+                                // Link segment giờ đây là một lệnh gọi đến server proxy của bạn
+                                "$myProxyServerUrl?url=$encodedSegmentUrl&referer=$encodedReferer"
+                            } else {
+                                line
+                            }
+                        }
+                        
+                        // Trả về M3U8 đã sửa đổi dưới dạng data-uri, cách này ổn định nhất để truyền nội dung M3U8
+                        val m3u8DataUri = "data:application/vnd.apple.mpegurl;base64," + Base64.getEncoder().encodeToString(modifiedM3u8.toByteArray())
 
                         newExtractorLink(
                             source = name,
                             name = "$name HLS",
-                            url = localM3u8Url,
+                            url = m3u8DataUri,
                             type = ExtractorLinkType.M3U8
                         ) {
                             this.referer = episodePageUrl
@@ -261,15 +270,12 @@ class AnimeVietsubProvider : MainAPI() {
                     }
                 }
             }
-
         } catch (e: Exception) {
             Log.e(name, "Error in loadLinks for data: $data", e)
             return false
         }
         return true
     }
-
-    // HÀM loadExtractor ĐÃ ĐƯỢC XÓA BỎ VÌ KHÔNG HỢP LỆ
 
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): SearchResponse? {
         return try {
