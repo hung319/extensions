@@ -13,17 +13,22 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 
-// CÁC IMPORT CẦN THIẾT CHO VIỆC GIẢI MÃ
+// CÁC IMPORT CẦN THIẾT
 import java.util.Base64
 import java.util.zip.Inflater
 import java.security.MessageDigest
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 class AnimeVietsubProvider : MainAPI() {
 
-    // Không cần companion object nữa vì mọi logic nặng đã được chuyển sang server ngoài
+    // Khôi phục lại companion object để làm kho chứa tạm cho link local
+    companion object {
+        val dataStore = ConcurrentHashMap<String, String>()
+    }
 
     private val gson = Gson()
     override var mainUrl = "https://bit.ly/animevietsubtv"
@@ -248,20 +253,21 @@ class AnimeVietsubProvider : MainAPI() {
                             if (line.isNotBlank() && !line.startsWith("#")) {
                                 val encodedSegmentUrl = URLEncoder.encode(line, "UTF-8")
                                 val encodedReferer = URLEncoder.encode(episodePageUrl, "UTF-8")
-                                // Link segment giờ đây là một lệnh gọi đến server proxy của bạn
                                 "$myProxyServerUrl?url=$encodedSegmentUrl&referer=$encodedReferer"
                             } else {
                                 line
                             }
                         }
                         
-                        // Trả về M3U8 đã sửa đổi dưới dạng data-uri, cách này ổn định nhất để truyền nội dung M3U8
-                        val m3u8DataUri = "data:application/vnd.apple.mpegurl;base64," + Base64.getEncoder().encodeToString(modifiedM3u8.toByteArray())
+                        // Sử dụng phương pháp link local để cung cấp M3U8 đã sửa đổi
+                        val key = UUID.randomUUID().toString()
+                        dataStore[key] = modifiedM3u8
+                        val localM3u8Url = "http://rat.local/$key"
 
                         newExtractorLink(
                             source = name,
                             name = "$name HLS",
-                            url = m3u8DataUri,
+                            url = localM3u8Url,
                             type = ExtractorLinkType.M3U8
                         ) {
                             this.referer = episodePageUrl
