@@ -17,11 +17,18 @@ import kotlinx.coroutines.launch
 import java.util.Base64
 import java.util.zip.Inflater
 import java.security.MessageDigest
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 class AnimeVietsubProvider : MainAPI() {
+
+    // Kho chứa tạm để phục vụ link http://rat.local
+    companion object {
+        val dataStore = ConcurrentHashMap<String, String>()
+    }
 
     private val gson = Gson()
     override var mainUrl = "https://bit.ly/animevietsubtv"
@@ -180,44 +187,26 @@ class AnimeVietsubProvider : MainAPI() {
     }
 
     private fun decryptM3u8Content(encryptedDataString: String): String {
-        val encryptedBytes = try {
-            Base64.getDecoder().decode(encryptedDataString)
-        } catch (e: Exception) {
-            throw ErrorLoadingException("Debug Lỗi: Base64 Decode thất bại. Dữ liệu nhận được có thể không hợp lệ. Lỗi gốc: ${e.message}")
-        }
-
-        if (encryptedBytes.size < 16) {
-            throw ErrorLoadingException("Debug Lỗi: Dữ liệu sau khi decode (${encryptedBytes.size} bytes) quá ngắn, không đủ chứa IV (16 bytes).")
-        }
-        val ivBytes = encryptedBytes.copyOfRange(0, 16)
-        val ciphertextBytes = encryptedBytes.copyOfRange(16, encryptedBytes.size)
-
-        val decryptedBytesPadded = try {
+        try {
+            val encryptedBytes = Base64.getDecoder().decode(encryptedDataString)
+            if (encryptedBytes.size < 16) throw Exception("Dữ liệu sau decode quá ngắn")
+            val ivBytes = encryptedBytes.copyOfRange(0, 16)
+            val ciphertextBytes = encryptedBytes.copyOfRange(16, encryptedBytes.size)
             val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
             cipher.init(Cipher.DECRYPT_MODE, aesKey, IvParameterSpec(ivBytes))
-            cipher.doFinal(ciphertextBytes)
-        } catch (e: Exception) {
-            throw ErrorLoadingException("Debug Lỗi: Giải mã AES thất bại. Khóa hoặc IV có thể bị sai. Lỗi gốc: ${e.message}")
-        }
-
-        val decompressedBytes = try {
+            val decryptedBytesPadded = cipher.doFinal(ciphertextBytes)
             val inflater = Inflater(true)
             inflater.setInput(decryptedBytesPadded, 0, decryptedBytesPadded.size)
             val result = ByteArray(1024 * 1024)
             val decompressedLength = inflater.inflate(result)
             inflater.end()
-            result.copyOfRange(0, decompressedLength)
-        } catch (e: Exception) {
-            throw ErrorLoadingException("Debug Lỗi: Giải nén ZLIB thất bại. Dữ liệu sau giải mã AES không đúng định dạng. Lỗi gốc: ${e.message}")
-        }
-        
-        try {
+            val decompressedBytes = result.copyOfRange(0, decompressedLength)
             var m3u8Content = decompressedBytes.toString(Charsets.UTF_8)
             m3u8Content = m3u8Content.trim().removeSurrounding("\"")
             m3u8Content = m3u8Content.replace("\\n", "\n")
             return m3u8Content
         } catch (e: Exception) {
-            throw ErrorLoadingException("Debug Lỗi: Chuyển đổi byte array thành String thất bại. Lỗi gốc: ${e.message}")
+            throw ErrorLoadingException("Giải mã thất bại: ${e.message}")
         }
     }
 
@@ -227,9 +216,10 @@ class AnimeVietsubProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Bọc toàn bộ logic trong try-catch để bắt lỗi và hiển thị qua ExtractorLink
         try {
-            val myProxyServerUrl = "https://monetary-jerrilee-hvn-99a37519.koyeb.app/proxy"
+            // URL của server proxy Python bạn đã triển khai
+            val myProxyServerUrl = "https://avsproxy.onrender.com/proxy"
+            
             val episodeData = gson.fromJson(data, EpisodeData::class.java)
             val episodePageUrl = episodeData.url
             val baseUrl = getBaseUrl()
@@ -254,25 +244,28 @@ class AnimeVietsubProvider : MainAPI() {
             coroutineScope {
                 playerResponse.link.forEach { linkSource ->
                     launch {
-                        val encryptedUrl = linkSource.file ?: throw ErrorLoadingException("Link mã hóa rỗng")
+                        val encryptedUrl = linkSource.file ?: return@launch
                         val m3u8Content = decryptM3u8Content(encryptedUrl)
 
+                        // Sửa đổi M3U8 để trỏ segment về proxy, KHÔNG MÃ HÓA THAM SỐ
                         val modifiedM3u8 = m3u8Content.lines().joinToString("\n") { line ->
                             if (line.isNotBlank() && !line.startsWith("#")) {
-                                val encodedSegmentUrl = URLEncoder.encode(line, "UTF-8")
-                                val encodedReferer = URLEncoder.encode(episodePageUrl, "UTF-8")
-                                "$myProxyServerUrl?url=$encodedSegmentUrl&referer=$encodedReferer"
+                                // Ghép chuỗi trực tiếp, không dùng URLEncoder
+                                "$myProxyServerUrl?url=$line&referer=$episodePageUrl"
                             } else {
                                 line
                             }
                         }
                         
-                        val m3u8DataUri = "data:application/vnd.apple.mpegurl;base64," + Base64.getEncoder().encodeToString(modifiedM3u8.toByteArray())
+                        // Sử dụng phương pháp link local để cung cấp M3U8 đã sửa đổi
+                        val key = UUID.randomUUID().toString()
+                        dataStore[key] = modifiedM3u8
+                        val localM3u8Url = "http://rat.local/$key"
 
                         callback(newExtractorLink(
                             source = name,
                             name = "$name HLS",
-                            url = m3u8DataUri,
+                            url = localM3u8Url,
                             type = ExtractorLinkType.M3U8
                         ) {
                             this.referer = episodePageUrl
@@ -282,18 +275,18 @@ class AnimeVietsubProvider : MainAPI() {
                 }
             }
         } catch (e: Exception) {
-            // NẾU CÓ BẤT KỲ LỖI NÀO XẢY RA, TẠO MỘT LINK GIẢ VỚI TÊN LÀ THÔNG BÁO LỖI
+            // In lỗi ra link để debug
             val errorName = "Lỗi: ${e.message ?: "Không rõ"}"
             callback(newExtractorLink(
                 source = name,
-                name = errorName, // IN LOG VÀO ĐÂY
-                url = "https://error.debug/log", // URL giả
+                name = errorName,
+                url = "https://error.debug/log",
                 type = ExtractorLinkType.M3U8
             ){
                 this.quality = Qualities.Unknown.value
             })
         }
-        return true // Luôn trả về true để đảm bảo link lỗi được hiển thị
+        return true
     }
 
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): SearchResponse? {
