@@ -13,22 +13,15 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 
-// CÁC IMPORT CẦN THIẾT
+// CÁC IMPORT CẦN THIẾT CHO VIỆC GIẢI MÃ
 import java.util.Base64
 import java.util.zip.Inflater
 import java.security.MessageDigest
-import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 class AnimeVietsubProvider : MainAPI() {
-
-    // Khôi phục lại companion object để làm kho chứa tạm cho link local
-    companion object {
-        val dataStore = ConcurrentHashMap<String, String>()
-    }
 
     private val gson = Gson()
     override var mainUrl = "https://bit.ly/animevietsubtv"
@@ -186,28 +179,51 @@ class AnimeVietsubProvider : MainAPI() {
         SecretKeySpec(hashedKeyBytes, "AES")
     }
 
-    private fun decryptM3u8Content(encryptedDataString: String): String? {
-        return try {
-            val encryptedBytes = Base64.getDecoder().decode(encryptedDataString)
-            if (encryptedBytes.size < 16) return null
-            val ivBytes = encryptedBytes.copyOfRange(0, 16)
-            val ciphertextBytes = encryptedBytes.copyOfRange(16, encryptedBytes.size)
+    private fun decryptM3u8Content(encryptedDataString: String): String {
+        // BƯỚC 1: DECODE BASE64
+        val encryptedBytes = try {
+            Base64.getDecoder().decode(encryptedDataString)
+        } catch (e: Exception) {
+            throw ErrorLoadingException("Debug Lỗi: Base64 Decode thất bại. Dữ liệu nhận được có thể không hợp lệ. Lỗi gốc: ${e.message}")
+        }
+
+        // BƯỚC 2: TÁCH IV VÀ CIPHERTEXT
+        if (encryptedBytes.size < 16) {
+            throw ErrorLoadingException("Debug Lỗi: Dữ liệu sau khi decode (${encryptedBytes.size} bytes) quá ngắn, không đủ chứa IV (16 bytes).")
+        }
+        val ivBytes = encryptedBytes.copyOfRange(0, 16)
+        val ciphertextBytes = encryptedBytes.copyOfRange(16, encryptedBytes.size)
+
+        // BƯỚC 3: GIẢI MÃ AES-256-CBC
+        val decryptedBytesPadded = try {
             val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
             cipher.init(Cipher.DECRYPT_MODE, aesKey, IvParameterSpec(ivBytes))
-            val decryptedBytesPadded = cipher.doFinal(ciphertextBytes)
-            val inflater = Inflater(true)
+            cipher.doFinal(ciphertextBytes)
+        } catch (e: Exception) {
+            throw ErrorLoadingException("Debug Lỗi: Giải mã AES thất bại. Khóa hoặc IV có thể bị sai. Lỗi gốc: ${e.message}")
+        }
+
+        // BƯỚC 4: GIẢI NÉN ZLIB (INFLATERAW)
+        val decompressedBytes = try {
+            val inflater = Inflater(true) // true = no zlib header (inflateRaw)
             inflater.setInput(decryptedBytesPadded, 0, decryptedBytesPadded.size)
             val result = ByteArray(1024 * 1024)
             val decompressedLength = inflater.inflate(result)
             inflater.end()
-            val decompressedBytes = result.copyOfRange(0, decompressedLength)
+            result.copyOfRange(0, decompressedLength)
+        } catch (e: Exception) {
+            throw ErrorLoadingException("Debug Lỗi: Giải nén ZLIB thất bại. Dữ liệu sau giải mã AES không đúng định dạng. Lỗi gốc: ${e.message}")
+        }
+        
+        // BƯỚC 5: CHUYỂN THÀNH STRING VÀ DỌN DẸP
+        try {
             var m3u8Content = decompressedBytes.toString(Charsets.UTF_8)
             m3u8Content = m3u8Content.trim().removeSurrounding("\"")
             m3u8Content = m3u8Content.replace("\\n", "\n")
-            m3u8Content
+            
+            return m3u8Content
         } catch (e: Exception) {
-            Log.e(name, "Lỗi giải mã M3U8 nội bộ", e)
-            null
+            throw ErrorLoadingException("Debug Lỗi: Chuyển đổi byte array thành String thất bại. Lỗi gốc: ${e.message}")
         }
     }
 
@@ -246,7 +262,7 @@ class AnimeVietsubProvider : MainAPI() {
                 playerResponse.link.forEach { linkSource ->
                     launch {
                         val encryptedUrl = linkSource.file ?: return@launch
-                        val m3u8Content = decryptM3u8Content(encryptedUrl) ?: return@launch
+                        val m3u8Content = decryptM3u8Content(encryptedUrl) // Hàm này giờ sẽ throw lỗi nếu thất bại
 
                         // Sửa đổi M3U8 để trỏ TẤT CẢ segment về server proxy của bạn
                         val modifiedM3u8 = m3u8Content.lines().joinToString("\n") { line ->
@@ -259,15 +275,12 @@ class AnimeVietsubProvider : MainAPI() {
                             }
                         }
                         
-                        // Sử dụng phương pháp link local để cung cấp M3U8 đã sửa đổi
-                        val key = UUID.randomUUID().toString()
-                        dataStore[key] = modifiedM3u8
-                        val localM3u8Url = "http://rat.local/$key"
+                        val m3u8DataUri = "data:application/vnd.apple.mpegurl;base64," + Base64.getEncoder().encodeToString(modifiedM3u8.toByteArray())
 
                         newExtractorLink(
                             source = name,
                             name = "$name HLS",
-                            url = localM3u8Url,
+                            url = m3u8DataUri,
                             type = ExtractorLinkType.M3U8
                         ) {
                             this.referer = episodePageUrl
@@ -277,8 +290,8 @@ class AnimeVietsubProvider : MainAPI() {
                 }
             }
         } catch (e: Exception) {
-            Log.e(name, "Error in loadLinks for data: $data", e)
-            return false
+            // Bắt lỗi từ các bước trên (bao gồm cả lỗi từ hàm giải mã) và throw lại để user thấy
+            throw ErrorLoadingException(e.message ?: "Lỗi không xác định trong loadLinks")
         }
         return true
     }
