@@ -23,6 +23,7 @@ import kotlin.collections.set
 import kotlin.math.roundToInt
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
 class AnimeVietsubProvider : MainAPI() {
 
@@ -284,62 +285,63 @@ class AnimeVietsubProvider : MainAPI() {
         return true
     }
 
-    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
-        val url = extractorLink.url
-        // ===== THAY ĐỔI LỚN: INTERCEPTOR GIỜ ĐÂY XỬ LÝ 2 LOẠI URL =====
-        val isManifestRequest = url.contains("/m3u8-manifest-proxy/")
-        val isSegmentRequest = url.contains("/m3u8-segment-proxy/")
+override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
+    val url = extractorLink.url
+    val isManifestRequest = url.contains("/m3u8-manifest-proxy/")
+    val isSegmentRequest = url.contains("/m3u8-segment-proxy/")
 
-        if (!isManifestRequest && !isSegmentRequest) return null
+    if (!isManifestRequest && !isSegmentRequest) return null
+    
+    return Interceptor { chain ->
+        val request = chain.request()
         
-        return Interceptor { chain ->
-            val request = chain.request()
-            
-            if (isManifestRequest) {
-                // Xử lý request cho file manifest .m3u8
-                val key = url.substringAfterLast("/").substringBefore(".m3u8")
-                val m3u8Content = m3u8Contents[key]
-                m3u8Contents.remove(key) // Xóa sau khi dùng
+        if (isManifestRequest) {
+            // Xử lý request cho file manifest .m3u8
+            val key = url.substringAfterLast("/").substringBefore(".m3u8")
+            val m3u8Content = m3u8Contents[key]
+            m3u8Contents.remove(key) // Xóa sau khi dùng
 
-                if (m3u8Content != null) {
-                    val responseBody = okhttp3.ResponseBody.create("application/vnd.apple.mpegurl".toMediaTypeOrNull(), m3u8Content)
-                    Response.Builder()
-                        .request(request)
-                        .protocol(okhttp3.Protocol.HTTP_1_1)
-                        .code(200).message("OK")
-                        .body(responseBody)
-                        .build()
-                } else {
-                    Response.Builder()
-                        .request(request)
-                        .protocol(okhttp3.Protocol.HTTP_1_1)
-                        .code(404).message("M3U8 Manifest Not Found in Cache")
-                        .body(okhttp3.ResponseBody.create(null, ""))
-                        .build()
-                }
-            } else { // isSegmentRequest
-                // Xử lý request cho các đoạn video .ts
-                val b64Url = url.substringAfter("/m3u8-segment-proxy/").substringBefore("?")
-                val b64Referer = url.substringAfter("?referer=")
-                
-                val segmentUrl = String(Base64.getUrlDecoder().decode(b64Url))
-                val referer = String(Base64.getUrlDecoder().decode(b64Referer))
-                
-                // Thực hiện request thật đến server chứa file .ts với đúng referer
-                val segmentResponse = app.get(segmentUrl, referer = referer)
-                
-                // Trả về response của file .ts cho trình phát
+            if (m3u8Content != null) {
+                val responseBody = okhttp3.ResponseBody.create("application/vnd.apple.mpegurl".toMediaTypeOrNull(), m3u8Content)
                 Response.Builder()
                     .request(request)
-                    .protocol(segmentResponse.rawResponse.protocol())
-                    .code(segmentResponse.code)
-                    .message(segmentResponse.message)
-                    .headers(segmentResponse.headers)
-                    .body(segmentResponse.body)
+                    .protocol(okhttp3.Protocol.HTTP_1_1)
+                    .code(200).message("OK")
+                    .body(responseBody)
+                    .build()
+            } else {
+                Response.Builder()
+                    .request(request)
+                    .protocol(okhttp3.Protocol.HTTP_1_1)
+                    .code(404).message("M3U8 Manifest Not Found in Cache")
+                    .body(okhttp3.ResponseBody.create(null, ""))
                     .build()
             }
+        } else { // isSegmentRequest
+            // Xử lý request cho các đoạn video .ts
+            val b64Url = url.substringAfter("/m3u8-segment-proxy/").substringBefore("?")
+            val b64Referer = url.substringAfter("?referer=")
+            
+            val segmentUrl = String(Base64.getUrlDecoder().decode(b64Url))
+            val referer = String(Base64.getUrlDecoder().decode(b64Referer))
+            
+            // SỬA LỖI Ở ĐÂY: Dùng runBlocking để gọi hàm suspend
+            val segmentResponse = runBlocking {
+                app.get(segmentUrl, referer = referer)
+            }
+            
+            // SỬA LỖI Ở ĐÂY: Xây dựng lại response với các giá trị mặc định
+            Response.Builder()
+                .request(request)
+                .protocol(okhttp3.Protocol.HTTP_1_1)
+                .code(segmentResponse.code)
+                .message("OK") // Message có thể đặt cứng là OK nếu code là 2xx
+                .headers(segmentResponse.headers)
+                .body(segmentResponse.body)
+                .build()
         }
     }
+}
     
     // ... các hàm tiện ích ...
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): SearchResponse? {
