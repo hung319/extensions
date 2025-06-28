@@ -19,19 +19,16 @@ import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import kotlin.collections.set
+import kotlin.math.roundToInt
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
-import kotlin.math.roundToInt
 
 class AnimeVietsubProvider : MainAPI() {
 
-    // ===== THAY ĐỔI QUAN TRỌNG =====
-    // Di chuyển bộ nhớ đệm M3U8 vào companion object.
-    // Giờ đây nó sẽ tồn tại và được chia sẻ giữa tất cả các instance của provider.
+    // companion object để lưu trữ trạng thái M3U8, tồn tại qua các lần tái tạo provider
     companion object {
         private val m3u8Contents = mutableMapOf<String, String>()
     }
-    // ===============================
 
     private val gson = Gson()
     override var mainUrl = "https://bit.ly/animevietsubtv"
@@ -51,14 +48,12 @@ class AnimeVietsubProvider : MainAPI() {
     private var domainResolutionAttempted = false
     private val cfInterceptor = CloudflareKiller()
 
-
     override val mainPage = mainPageOf(
         "/anime-moi/" to "Mới Cập Nhật",
         "/anime-sap-chieu/" to "Sắp Chiếu",
         "/bang-xep-hang/day.html" to "Xem Nhiều Trong Ngày"
     )
 
-    // ... các hàm từ getMainPage đến load không thay đổi, chỉ cần đảm bảo chúng dùng cfInterceptor ...
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val baseUrl = getBaseUrl()
         val url = if (page == 1) {
@@ -184,7 +179,6 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
 
-
     private val aesKey: SecretKeySpec by lazy {
         val keyStringB64 = "ZG1fdGhhbmdfc3VjX3ZhdF9nZXRfbGlua19hbl9kYnQ="
         val decodedKeyBytes = Base64.getDecoder().decode(keyStringB64)
@@ -225,6 +219,7 @@ class AnimeVietsubProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // Bọc toàn bộ hàm trong try-catch để bắt mọi lỗi
         try {
             val episodeData = gson.fromJson(data, EpisodeData::class.java)
             val episodePageUrl = episodeData.url
@@ -245,23 +240,27 @@ class AnimeVietsubProvider : MainAPI() {
             val playerResponse = app.post(ajaxUrl, data = postData, headers = headers, referer = episodePageUrl, interceptor = cfInterceptor).parsed<AjaxPlayerResponse>()
 
             if (playerResponse.success != 1 || playerResponse.link.isNullOrEmpty()) {
-                throw ErrorLoadingException("Lấy link thất bại từ AJAX: $playerResponse")
+                // DEBUG: Báo cáo nếu response từ server không thành công
+                callback(newExtractorLink(name, "Lỗi Server: ${playerResponse.toString().take(200)}", "debug", ExtractorLinkType.M3U8) {})
+                return true
             }
 
-            // ===== THAY ĐỔI QUAN TRỌNG: Bỏ coroutineScope và launch =====
-            // Thay vào đó, dùng một vòng lặp forEach đơn giản để xử lý tuần tự
             playerResponse.link.forEach { linkSource ->
                 try {
                     val encryptedUrl = linkSource.file ?: return@forEach // Bỏ qua link source nếu không có file
                     val m3u8Content = decryptM3u8Content(encryptedUrl)
 
-                    val key = UUID.randomUUID().toString()
-                    // Bước 1: Lưu vào map. Bước này giờ sẽ luôn hoàn thành trước.
-                    m3u8Contents[key] = m3u8Content
+                    // DEBUG: Kiểm tra nội dung M3U8 sau khi giải mã
+                    if (m3u8Content.isBlank() || !m3u8Content.contains("#EXTM3U")) {
+                        callback(newExtractorLink(name, "Lỗi: M3U8 không hợp lệ!", "debug", ExtractorLinkType.M3U8) {})
+                        callback(newExtractorLink(name, "Nội dung nhận được: ${m3u8Content.take(300)}", "debug", ExtractorLinkType.M3U8) {})
+                        return@forEach
+                    }
 
+                    val key = UUID.randomUUID().toString()
+                    m3u8Contents[key] = m3u8Content
                     val proxyUrl = "$mainUrl/m3u8-proxy/$key.m3u8"
                     
-                    // Bước 2: Gửi URL cho player. Giờ thì player có thể truy cập an toàn.
                     callback(newExtractorLink(
                         source = name,
                         name = linkSource.label ?: "$name HLS",
@@ -272,12 +271,13 @@ class AnimeVietsubProvider : MainAPI() {
                         this.quality = Qualities.Unknown.value
                     })
                 } catch (e: Exception) {
-                    Log.e(name, "Lỗi xử lý link source: ${e.message}")
+                    // DEBUG: Báo cáo lỗi trong quá trình xử lý từng link
+                    callback(newExtractorLink(name, "Lỗi xử lý link: ${e.message}", "debug", ExtractorLinkType.M3U8) {})
                 }
             }
-            // ========================================================
-
         } catch (e: Exception) {
+            // DEBUG: Báo cáo lỗi của toàn bộ hàm loadLinks
+            callback(newExtractorLink(name, "Lỗi Toàn cục: ${e.message}", "debug", ExtractorLinkType.M3U8) {})
             Log.e(name, "Lỗi nghiêm trọng trong loadLinks: ${e.message}", e)
         }
         return true
@@ -293,11 +293,9 @@ class AnimeVietsubProvider : MainAPI() {
             
             val key = requestUrl.substringAfterLast("/m3u8-proxy/").substringBefore(".m3u8")
             
-            // Đọc từ map của companion object
             val m3u8Content = m3u8Contents[key]
 
             if (m3u8Content != null) {
-                // Xóa key khỏi map sau khi dùng để tránh rò rỉ bộ nhớ
                 m3u8Contents.remove(key)
                 
                 val responseBody = okhttp3.ResponseBody.create(
@@ -323,7 +321,6 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
     
-    // ... các hàm tiện ích còn lại ...
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): SearchResponse? {
         return try {
             val linkElement = this.selectFirst("article.TPost > a") ?: return null
