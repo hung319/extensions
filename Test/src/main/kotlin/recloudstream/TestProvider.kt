@@ -248,34 +248,35 @@ class AnimeVietsubProvider : MainAPI() {
                 throw ErrorLoadingException("Lấy link thất bại từ AJAX: $playerResponse")
             }
 
-            coroutineScope {
-                playerResponse.link.forEach { linkSource ->
-                    launch {
-                        try {
-                            val encryptedUrl = linkSource.file ?: return@launch
-                            val m3u8Content = decryptM3u8Content(encryptedUrl)
+            // ===== THAY ĐỔI QUAN TRỌNG: Bỏ coroutineScope và launch =====
+            // Thay vào đó, dùng một vòng lặp forEach đơn giản để xử lý tuần tự
+            playerResponse.link.forEach { linkSource ->
+                try {
+                    val encryptedUrl = linkSource.file ?: return@forEach // Bỏ qua link source nếu không có file
+                    val m3u8Content = decryptM3u8Content(encryptedUrl)
 
-                            val key = UUID.randomUUID().toString()
-                            // Ghi vào map của companion object
-                            m3u8Contents[key] = m3u8Content
+                    val key = UUID.randomUUID().toString()
+                    // Bước 1: Lưu vào map. Bước này giờ sẽ luôn hoàn thành trước.
+                    m3u8Contents[key] = m3u8Content
 
-                            val proxyUrl = "$mainUrl/m3u8-proxy/$key.m3u8"
-
-                            callback(newExtractorLink(
-                                source = name,
-                                name = linkSource.label ?: "$name HLS",
-                                url = proxyUrl,
-                                type = ExtractorLinkType.M3U8
-                            ).apply {
-                                this.referer = episodePageUrl
-                                this.quality = Qualities.Unknown.value
-                            })
-                        } catch (e: Exception) {
-                            Log.e(name, "Lỗi xử lý link source: ${e.message}")
-                        }
-                    }
+                    val proxyUrl = "$mainUrl/m3u8-proxy/$key.m3u8"
+                    
+                    // Bước 2: Gửi URL cho player. Giờ thì player có thể truy cập an toàn.
+                    callback(newExtractorLink(
+                        source = name,
+                        name = linkSource.label ?: "$name HLS",
+                        url = proxyUrl,
+                        type = ExtractorLinkType.M3U8
+                    ).apply {
+                        this.referer = episodePageUrl
+                        this.quality = Qualities.Unknown.value
+                    })
+                } catch (e: Exception) {
+                    Log.e(name, "Lỗi xử lý link source: ${e.message}")
                 }
             }
+            // ========================================================
+
         } catch (e: Exception) {
             Log.e(name, "Lỗi nghiêm trọng trong loadLinks: ${e.message}", e)
         }
