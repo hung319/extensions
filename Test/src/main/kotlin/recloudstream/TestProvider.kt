@@ -13,7 +13,7 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 
-// CÁC IMPORT CẦN THIẾT CHO VIỆC GIẢI MÃ
+// CÁC IMPORT CẦN THIẾT
 import java.util.Base64
 import java.util.zip.Inflater
 import java.security.MessageDigest
@@ -180,21 +180,18 @@ class AnimeVietsubProvider : MainAPI() {
     }
 
     private fun decryptM3u8Content(encryptedDataString: String): String {
-        // BƯỚC 1: DECODE BASE64
         val encryptedBytes = try {
             Base64.getDecoder().decode(encryptedDataString)
         } catch (e: Exception) {
             throw ErrorLoadingException("Debug Lỗi: Base64 Decode thất bại. Dữ liệu nhận được có thể không hợp lệ. Lỗi gốc: ${e.message}")
         }
 
-        // BƯỚC 2: TÁCH IV VÀ CIPHERTEXT
         if (encryptedBytes.size < 16) {
             throw ErrorLoadingException("Debug Lỗi: Dữ liệu sau khi decode (${encryptedBytes.size} bytes) quá ngắn, không đủ chứa IV (16 bytes).")
         }
         val ivBytes = encryptedBytes.copyOfRange(0, 16)
         val ciphertextBytes = encryptedBytes.copyOfRange(16, encryptedBytes.size)
 
-        // BƯỚC 3: GIẢI MÃ AES-256-CBC
         val decryptedBytesPadded = try {
             val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
             cipher.init(Cipher.DECRYPT_MODE, aesKey, IvParameterSpec(ivBytes))
@@ -203,9 +200,8 @@ class AnimeVietsubProvider : MainAPI() {
             throw ErrorLoadingException("Debug Lỗi: Giải mã AES thất bại. Khóa hoặc IV có thể bị sai. Lỗi gốc: ${e.message}")
         }
 
-        // BƯỚC 4: GIẢI NÉN ZLIB (INFLATERAW)
         val decompressedBytes = try {
-            val inflater = Inflater(true) // true = no zlib header (inflateRaw)
+            val inflater = Inflater(true)
             inflater.setInput(decryptedBytesPadded, 0, decryptedBytesPadded.size)
             val result = ByteArray(1024 * 1024)
             val decompressedLength = inflater.inflate(result)
@@ -215,12 +211,10 @@ class AnimeVietsubProvider : MainAPI() {
             throw ErrorLoadingException("Debug Lỗi: Giải nén ZLIB thất bại. Dữ liệu sau giải mã AES không đúng định dạng. Lỗi gốc: ${e.message}")
         }
         
-        // BƯỚC 5: CHUYỂN THÀNH STRING VÀ DỌN DẸP
         try {
             var m3u8Content = decompressedBytes.toString(Charsets.UTF_8)
             m3u8Content = m3u8Content.trim().removeSurrounding("\"")
             m3u8Content = m3u8Content.replace("\\n", "\n")
-            
             return m3u8Content
         } catch (e: Exception) {
             throw ErrorLoadingException("Debug Lỗi: Chuyển đổi byte array thành String thất bại. Lỗi gốc: ${e.message}")
@@ -233,15 +227,14 @@ class AnimeVietsubProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // URL của server proxy Python bạn đã triển khai
-        val myProxyServerUrl = "https://monetary-jerrilee-hvn-99a37519.koyeb.app/proxy"
-
+        // Bọc toàn bộ logic trong try-catch để bắt lỗi và hiển thị qua ExtractorLink
         try {
+            val myProxyServerUrl = "https://monetary-jerrilee-hvn-99a37519.koyeb.app/proxy"
             val episodeData = gson.fromJson(data, EpisodeData::class.java)
             val episodePageUrl = episodeData.url
             val baseUrl = getBaseUrl()
 
-            val postData = mutableMapOf("id" to (episodeData.dataId ?: throw ErrorLoadingException("Missing episode ID")), "play" to "api").apply {
+            val postData = mutableMapOf("id" to (episodeData.dataId ?: throw ErrorLoadingException("Thiếu episode ID")), "play" to "api").apply {
                 episodeData.duHash?.let { put("link", it) }
             }
             val headers = mapOf(
@@ -255,16 +248,15 @@ class AnimeVietsubProvider : MainAPI() {
             val playerResponse = app.post(ajaxUrl, data = postData, headers = headers, referer = episodePageUrl).parsed<AjaxPlayerResponse>()
 
             if (playerResponse.success != 1 || playerResponse.link.isNullOrEmpty()) {
-                throw ErrorLoadingException("Failed to get links from AJAX response: $playerResponse")
+                throw ErrorLoadingException("Lấy link thất bại từ AJAX: $playerResponse")
             }
 
             coroutineScope {
                 playerResponse.link.forEach { linkSource ->
                     launch {
-                        val encryptedUrl = linkSource.file ?: return@launch
-                        val m3u8Content = decryptM3u8Content(encryptedUrl) // Hàm này giờ sẽ throw lỗi nếu thất bại
+                        val encryptedUrl = linkSource.file ?: throw ErrorLoadingException("Link mã hóa rỗng")
+                        val m3u8Content = decryptM3u8Content(encryptedUrl)
 
-                        // Sửa đổi M3U8 để trỏ TẤT CẢ segment về server proxy của bạn
                         val modifiedM3u8 = m3u8Content.lines().joinToString("\n") { line ->
                             if (line.isNotBlank() && !line.startsWith("#")) {
                                 val encodedSegmentUrl = URLEncoder.encode(line, "UTF-8")
@@ -277,7 +269,7 @@ class AnimeVietsubProvider : MainAPI() {
                         
                         val m3u8DataUri = "data:application/vnd.apple.mpegurl;base64," + Base64.getEncoder().encodeToString(modifiedM3u8.toByteArray())
 
-                        newExtractorLink(
+                        callback(newExtractorLink(
                             source = name,
                             name = "$name HLS",
                             url = m3u8DataUri,
@@ -285,15 +277,23 @@ class AnimeVietsubProvider : MainAPI() {
                         ) {
                             this.referer = episodePageUrl
                             this.quality = Qualities.Unknown.value
-                        }.let { callback(it) }
+                        })
                     }
                 }
             }
         } catch (e: Exception) {
-            // Bắt lỗi từ các bước trên (bao gồm cả lỗi từ hàm giải mã) và throw lại để user thấy
-            throw ErrorLoadingException(e.message ?: "Lỗi không xác định trong loadLinks")
+            // NẾU CÓ BẤT KỲ LỖI NÀO XẢY RA, TẠO MỘT LINK GIẢ VỚI TÊN LÀ THÔNG BÁO LỖI
+            val errorName = "Lỗi: ${e.message ?: "Không rõ"}"
+            callback(newExtractorLink(
+                source = name,
+                name = errorName, // IN LOG VÀO ĐÂY
+                url = "https://error.debug/log", // URL giả
+                type = ExtractorLinkType.M3U8
+            ){
+                this.quality = Qualities.Unknown.value
+            })
         }
-        return true
+        return true // Luôn trả về true để đảm bảo link lỗi được hiển thị
     }
 
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): SearchResponse? {
