@@ -21,6 +21,7 @@ import javax.crypto.spec.SecretKeySpec
 import kotlin.collections.set
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 class AnimeVietsubProvider : MainAPI() {
 
