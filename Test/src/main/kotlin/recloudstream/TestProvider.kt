@@ -31,6 +31,7 @@ class YouPornProvider : MainAPI() {
         "/most_favorited/?page=" to "Most Favorited",
         "/browse/time/?page=" to "Newest Videos"
     )
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = "$mainUrl${request.data}$page"
         val document = app.get(url).document
@@ -38,17 +39,20 @@ class YouPornProvider : MainAPI() {
         val hasNext = document.selectFirst("div.paginationWrapper a[rel=next]") != null
         return newHomePageResponse(request.name, items, hasNext = hasNext)
     }
+
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/search/?query=$query"
         val document = app.get(url).document
         return document.select("div.searchResults div.video-box").mapNotNull { it.toSearchResult() }
     }
+
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
         val title = document.selectFirst("h1.videoTitle")?.text()?.trim() ?: "Untitled"
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         val description = document.selectFirst("meta[name=description]")?.attr("content")
         val recommendations = document.select("div#relatedVideosWrapper div.video-box").mapNotNull { it.toSearchResult() }
+
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
             this.plot = description
@@ -75,7 +79,7 @@ class YouPornProvider : MainAPI() {
     }
 
     /**
-     * Hàm `loadLinks` cuối cùng, với logic thêm header để giả dạng trình duyệt.
+     * Hàm `loadLinks` được cập nhật để đảm bảo URL có trailing slash
      */
     override suspend fun loadLinks(
         dataUrl: String, // Đây là link /watch/
@@ -83,31 +87,31 @@ class YouPornProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Bước 1: Lấy ID và xây dựng URL của trang embed
-        val videoId = """/watch/(\d+)/""".toRegex().find(dataUrl)?.groupValues?.get(1) ?: return false
+        // *** SỬA LỖI QUAN TRỌNG: Đảm bảo URL có dấu "/" ở cuối ***
+        val correctedDataUrl = if (dataUrl.contains("/watch/") && !dataUrl.endsWith("/")) "$dataUrl/" else dataUrl
+
+        // Bước 1: Trích xuất ID video
+        val videoId = """/watch/(\d+)/""".toRegex().find(correctedDataUrl)?.groupValues?.get(1) ?: return false
         val embedUrl = "$mainUrl/embed/$videoId/"
         
-        // *** THAY ĐỔI QUAN TRỌNG: Thêm các header để giả dạng trình duyệt mobile ***
         val headers = mapOf(
             "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
             "Cookie" to "platform=mobile"
         )
-        
-        // Bước 2: Tải trang embed với header đã được thêm vào
-        val embedHtmlContent = app.get(embedUrl, referer = dataUrl, headers = headers).text
+        val embedHtmlContent = app.get(embedUrl, referer = correctedDataUrl, headers = headers).text
         var intermediateApiUrl: String? = null
 
-        // Bước 3: Trích xuất JSON chứa `mediaDefinition`
+        // Bước 2: Trích xuất JSON chứa `mediaDefinition`
         val mediaJson = extractJsonArray(embedHtmlContent, "\"mediaDefinition\"") ?: return false
 
-        // Bước 4: Parse JSON để lấy URL API trung gian
+        // Bước 3: Parse JSON để lấy URL API trung gian
         intermediateApiUrl = try {
             parseJson<List<InitialMedia>>(mediaJson).firstOrNull { it.videoUrl?.contains("/hls/") == true }?.videoUrl
         } catch (e: Exception) {
             null
         } ?: return false
         
-        // Bước 5: Dọn dẹp URL và gọi API để lấy link cuối cùng
+        // Bước 4: Dọn dẹp URL và gọi API để lấy link cuối cùng
         val correctedApiUrl = intermediateApiUrl.replace("\\/", "/")
         
         return try {
@@ -137,7 +141,13 @@ class YouPornProvider : MainAPI() {
 
     private fun Element.toSearchResult(): SearchResponse? {
         val href = this.selectFirst("a.video-box-image")?.attr("href") ?: return null
-        val videoUrl = fixUrl(href)
+        var videoUrl = fixUrl(href)
+
+        // *** SỬA LỖI QUAN TRỌNG: Đảm bảo URL có dấu "/" ở cuối ngay khi tạo ***
+        if (videoUrl.contains("/watch/") && !videoUrl.endsWith("/")) {
+            videoUrl += "/"
+        }
+
         val title = this.selectFirst("a.video-title-text")?.text()?.trim() ?: return null
         val posterUrl = this.selectFirst("img.thumb-image")?.attr("data-src")
         
