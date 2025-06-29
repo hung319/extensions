@@ -25,7 +25,7 @@ class YouPornProvider : MainAPI() {
         @JsonProperty("videoUrl") val videoUrl: String?
     )
 
-    // SỬA LỖI: Logic trang chủ đơn giản hóa
+    // Logic trang chủ đơn giản hóa
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         return try {
             val document = app.get(mainUrl, headers = defaultHeaders).document
@@ -39,7 +39,7 @@ class YouPornProvider : MainAPI() {
         }
     }
     
-    // Logic phân tích danh sách video (đã hoạt động tốt)
+    // Logic phân tích danh sách video
     private fun parseVideoList(element: Element): List<MovieSearchResponse> {
         val results = mutableListOf<SearchResponse>()
         element.select("a[href*=/watch/]").forEach { linkElement ->
@@ -58,10 +58,11 @@ class YouPornProvider : MainAPI() {
                 }
             } catch (e: Exception) { /* Bỏ qua lỗi item */ }
         }
-        return results.filterIsinstance<MovieSearchResponse>()
+        // SỬA LỖI: filterIsinstance -> filterIsInstance
+        return results.filterIsInstance<MovieSearchResponse>()
     }
 
-    // Hàm tìm kiếm (đã hoạt động tốt)
+    // Hàm tìm kiếm
     override suspend fun search(query: String): List<SearchResponse> {
         return try {
             val url = "$mainUrl/search/?query=$query"
@@ -85,7 +86,7 @@ class YouPornProvider : MainAPI() {
         }
     }
 
-    // SỬA LỖI: Logic loadLinks mới, tìm kiếm "khóa" trực tiếp
+    // Logic loadLinks mới, tìm kiếm "khóa" trực tiếp
     override suspend fun loadLinks(
         url: String,
         isCasting: Boolean,
@@ -96,14 +97,12 @@ class YouPornProvider : MainAPI() {
             val pageHeaders = defaultHeaders + mapOf("Referer" to url)
             val videoPage = app.get(url, headers = pageHeaders).document
 
-            // Logic mới: Tìm chuỗi khóa mã hóa bắt đầu bằng "ey"
             val keyRegex = Regex("""['"](ey[a-zA-Z0-9=_\-]+)['"]""")
             var encryptedData: String? = null
 
             videoPage.select("script").forEach { script ->
                 if (encryptedData == null) {
                      keyRegex.find(script.data())?.groupValues?.get(1)?.let { key ->
-                        // Kiểm tra sơ bộ xem có phải là json hợp lệ không
                         if (key.length > 50) {
                             encryptedData = key
                         }
