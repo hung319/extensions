@@ -333,9 +333,12 @@ class AnimeVietsubProvider : MainAPI() {
                 val segmentUrl = String(Base64.getUrlDecoder().decode(b64Url))
                 val referer = String(Base64.getUrlDecoder().decode(b64Referer))
                 
+                // ===== THAY ĐỔI CUỐI CÙNG VÀ QUAN TRỌNG NHẤT =====
+                // Thêm cfInterceptor vào request lấy file .ts
                 val segmentResponse = runBlocking {
-                    app.get(segmentUrl, referer = referer)
+                    app.get(segmentUrl, referer = referer, interceptor = cfInterceptor)
                 }
+                // ================================================
                 
                 Response.Builder()
                     .request(request)
