@@ -41,21 +41,21 @@ class AnimeVietsubProvider : MainAPI() {
 
     private val cfInterceptor = CloudflareKiller()
 
-    // TÁI CẤU TRÚC: Sử dụng lazy property cho mainUrl, giống hệt provider gốc
-    // Nó sẽ chỉ chạy một lần và cache kết quả lại.
-    override val mainUrl: String by lazy {
-        runBlocking {
-            try {
-                // Thử phân giải link bit.ly với CloudflareKiller
-                val response = app.get("https://bit.ly/animevietsubtv", interceptor = cfInterceptor, allowRedirects = true)
-                val finalUrl = URL(response.url)
-                "${finalUrl.protocol}://${finalUrl.host}"
-            } catch (e: Exception) {
-                // Nếu thất bại, dùng domain dự phòng
-                "https://animevietsub.lol"
-            }
+    // ===== SỬA LỖI Ở ĐÂY =====
+    // Đổi 'val' thành 'var' và gán giá trị trực tiếp để tuân thủ lớp cha MainAPI.
+    // Logic runBlocking vẫn đảm bảo nó chỉ chạy một lần khi provider được khởi tạo.
+    override var mainUrl: String = runBlocking {
+        try {
+            // Thử phân giải link bit.ly với CloudflareKiller
+            val response = app.get("https://bit.ly/animevietsubtv", interceptor = cfInterceptor, allowRedirects = true)
+            val finalUrl = URL(response.url)
+            "${finalUrl.protocol}://${finalUrl.host}"
+        } catch (e: Exception) {
+            // Nếu thất bại, dùng domain dự phòng
+            "https://animevietsub.lol"
         }
     }
+    // ===========================
 
     override val mainPage = mainPageOf(
         "/anime-moi/" to "Mới Cập Nhật",
@@ -202,7 +202,7 @@ class AnimeVietsubProvider : MainAPI() {
 
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
         val url = extractorLink.url
-        if (!url.startsWith(PROXY_DOMAIN)) return null
+        if (!url.startsWith(PROXY_DOMAIN) || !url.contains("/manifest/")) return null
         
         return Interceptor { chain ->
             val request = chain.request()
