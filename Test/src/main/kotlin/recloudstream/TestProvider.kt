@@ -5,7 +5,6 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import com.fasterxml.jackson.annotation.JsonProperty
-import com.lagradost.cloudstream3.extractors.helper.AesHelper
 
 // Lớp chính của plugin, kế thừa từ MainAPI
 class YouPornProvider : MainAPI() {
@@ -13,7 +12,7 @@ class YouPornProvider : MainAPI() {
     override var name = "YouPorn"
     // URL chính của trang web
     override var mainUrl = "https://www.youporn.com"
-    // Các loại nội dung được hỗ trợ, đổi thành NSFW
+    // Các loại nội dung được hỗ trợ
     override var supportedTypes = setOf(TvType.NSFW)
     // Báo cho CloudStream biết plugin có trang chủ
     override var hasMainPage = true
@@ -31,14 +30,18 @@ class YouPornProvider : MainAPI() {
 
         // Tìm tất cả các khối nội dung trên trang chủ
         document.select("div.section-title").forEach { sectionElement ->
-            val title = sectionElement.selectFirst("h2")?.text()?.trim() ?: return@forEach
-            // Tìm danh sách video ngay sau tiêu đề
-            val videoContainer = sectionElement.nextElementSibling()
-            if (videoContainer != null) {
-                val videos = parsePage(videoContainer)
-                if(videos.isNotEmpty()) {
-                    homePageList.add(HomePageList(title, videos))
+            try {
+                val title = sectionElement.selectFirst("h2")?.text()?.trim() ?: return@forEach
+                // Tìm danh sách video ngay sau tiêu đề, đảm bảo đó là video-listing
+                val videoContainer = sectionElement.nextElementSibling()
+                if (videoContainer?.hasClass("video-listing") == true) {
+                    val videos = parseVideoList(videoContainer)
+                    if (videos.isNotEmpty()) {
+                        homePageList.add(HomePageList(title, videos))
+                    }
                 }
+            } catch (e: Exception) {
+                // Bỏ qua nếu có lỗi ở một section nào đó
             }
         }
         
@@ -46,18 +49,24 @@ class YouPornProvider : MainAPI() {
         return HomePageResponse(homePageList)
     }
 
-    // Hàm trợ giúp để phân tích và trích xuất video từ một khối HTML
-    private fun parsePage(element: Element): List<MovieSearchResponse> {
-        // Tìm tất cả các phần tử có class 'video-box'
+    // Hàm trợ giúp mới để phân tích danh sách video từ một khối HTML
+    private fun parseVideoList(element: Element): List<MovieSearchResponse> {
         return element.select("div.video-box").mapNotNull { videoElement ->
-            val link = videoElement.selectFirst("a") ?: return@mapNotNull null
-            val href = fixUrl(link.attr("href"))
-            val title = videoElement.selectFirst("div.video-title")?.text()?.trim() ?: return@mapNotNull null
-            val posterUrl = videoElement.selectFirst("img")?.attr("data-original")
-            
-            // Tạo đối tượng phim mới với TvType.NSFW
-            newMovieSearchResponse(title, href, TvType.NSFW) {
-                this.posterUrl = posterUrl
+            try {
+                val link = videoElement.selectFirst("a") ?: return@mapNotNull null
+                val href = fixUrl(link.attr("href"))
+                // Bỏ qua nếu không có link hợp lệ
+                if (href == mainUrl) return@mapNotNull null
+
+                val title = videoElement.selectFirst("div.video-title")?.text()?.trim() ?: return@mapNotNull null
+                val posterUrl = videoElement.selectFirst("img")?.attr("data-original")
+                
+                // Tạo đối tượng phim mới
+                newMovieSearchResponse(title, href, TvType.NSFW) {
+                    this.posterUrl = posterUrl
+                }
+            } catch (e: Exception) {
+                null // Trả về null nếu có lỗi khi phân tích một video
             }
         }
     }
@@ -66,8 +75,15 @@ class YouPornProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/search/?query=$query"
         val document = app.get(url).document
-        // Sử dụng lại hàm parsePage để xử lý kết quả
-        return parsePage(document)
+        
+        // Sử dụng selector cụ thể cho trang tìm kiếm
+        val searchResultContainer = document.selectFirst("#video-listing-search")
+        
+        return if (searchResultContainer != null) {
+            parseVideoList(searchResultContainer)
+        } else {
+            emptyList()
+        }
     }
     
     // Hàm load chi tiết
@@ -76,7 +92,6 @@ class YouPornProvider : MainAPI() {
         val title = document.selectFirst("h1.video-title")?.text()?.trim() ?: "Video"
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         
-        // Trả về thông tin chi tiết với TvType.NSFW
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
         }
@@ -107,7 +122,6 @@ class YouPornProvider : MainAPI() {
                     url = videoUrl,
                     referer = mainUrl,
                     quality = qualityStr?.toIntOrNull() ?: Qualities.Unknown.value,
-                    // Sửa lỗi: Sử dụng ExtractorLinkType.M3U8 thay vì isM3u8
                     type = ExtractorLinkType.M3U8,
                 )
             )
