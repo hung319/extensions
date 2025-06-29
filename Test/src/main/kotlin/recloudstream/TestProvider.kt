@@ -1,5 +1,6 @@
 package com.lagradost.cloudstream3
 
+// QUAN TRỌNG: Đảm bảo bạn có đủ các import này
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.LoadResponse.Companion.addDuration
 import com.lagradost.cloudstream3.utils.*
@@ -17,7 +18,7 @@ import java.net.URL
 import kotlin.math.roundToInt
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
-import com.lagradost.cloudstream3.network.CloudflareKiller // <<<<<<< SỬA LỖI 1
+import com.lagradost.cloudstream3.network.CloudflareKiller
 
 // Các import cần thiết cho logic giải mã
 import java.util.Base64
@@ -337,7 +338,7 @@ class AnimeVietsubProvider : MainAPI() {
                 provider.newMovieLoadResponse(title, infoUrl, TvType.Movie, data) {
                     this.posterUrl = posterUrl; this.plot = plot; this.tags = tags; this.year = year
                     this.rating = rating; this.actors = actors; this.recommendations = recommendations
-                    duration?.let { addDuration(it) } // <<<<<<< SỬA LỖI 2 & 3
+                    duration?.let { addDuration(it) } // <<<<<<< ĐÂY LÀ DÒNG SỬA LỖI
                 }
             }
         } catch (e: Exception) {
