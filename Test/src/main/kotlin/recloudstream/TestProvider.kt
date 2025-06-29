@@ -23,6 +23,7 @@ import kotlin.collections.set
 import kotlin.math.roundToInt
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
 class AnimeVietsubProvider : MainAPI() {
 
