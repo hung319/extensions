@@ -4,7 +4,6 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.M3u8Helper
 import org.jsoup.nodes.Element
 
@@ -14,7 +13,10 @@ class YouPornProvider : MainAPI() {
     override var supportedTypes = setOf(TvType.NSFW)
     override val hasMainPage = true
 
-    // --- Data Class để parse JSON response cuối cùng ---
+    // --- Data Classes để parse JSON ---
+    private data class InitialMedia(
+        @JsonProperty("videoUrl") val videoUrl: String?,
+    )
     private data class FinalStreamInfo(
         @JsonProperty("videoUrl") val videoUrl: String?,
         @JsonProperty("quality") val quality: String?,
@@ -56,84 +58,75 @@ class YouPornProvider : MainAPI() {
             this.recommendations = recommendations
         }
     }
-    
-    // Hàm tiện ích để gửi log debug
-    private fun sendDebugCallback(callback: (ExtractorLink) -> Unit, message: String) {
-        callback(
-            ExtractorLink(
-                source = this.name,
-                name = "DEBUG: $message",
-                url = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
-                referer = mainUrl,
-                quality = 1,
-                type = ExtractorLinkType.VIDEO
-            )
-        )
+
+    /**
+     * Hàm tiện ích dùng để trích xuất một mảng JSON một cách an toàn.
+     */
+    private fun extractJsonArray(htmlContent: String, key: String): String? {
+        val keyIndex = htmlContent.indexOf(key)
+        if (keyIndex == -1) return null
+
+        val startIndex = htmlContent.indexOf('[', keyIndex)
+        if (startIndex == -1) return null
+
+        var bracketCount = 1
+        for (i in (startIndex + 1) until htmlContent.length) {
+            when (htmlContent[i]) {
+                '[' -> bracketCount++
+                ']' -> bracketCount--
+            }
+            if (bracketCount == 0) {
+                return htmlContent.substring(startIndex, i + 1)
+            }
+        }
+        return null // Không tìm thấy dấu ngoặc đóng tương ứng
     }
 
     /**
-     * Hàm `loadLinks` được viết lại hoàn toàn để thêm log chi tiết.
+     * Hàm `loadLinks` được viết lại để sử dụng trang /embed/
      */
     override suspend fun loadLinks(
-        dataUrl: String,
+        dataUrl: String, // Đây là link /watch/
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(dataUrl).document
-        val htmlContent = document.html()
+        // Bước 1: Trích xuất ID video từ URL xem phim (/watch/...)
+        val videoId = """/watch/(\d+)/""".toRegex().find(dataUrl)?.groupValues?.get(1) ?: return false
 
-        // Bước 1: Dùng Regex để tìm URL API trung gian
-        val apiRegex = """"(https://www\.youporn\.com/media/hls/\?s=[^"]+)"""".toRegex()
-        val intermediateApiUrl = apiRegex.find(htmlContent)?.groupValues?.get(1)
+        // Bước 2: Xây dựng URL của trang embed
+        val embedUrl = "$mainUrl/embed/$videoId/"
 
-        if (intermediateApiUrl == null) {
-            sendDebugCallback(callback, "Regex FAILED to find API URL in HTML")
-            return true // Trả về true để hiển thị log
-        }
-        
-        // Log 1: Hiển thị URL gốc lấy từ HTML
-        sendDebugCallback(callback, "1. Raw URL from HTML: ${intermediateApiUrl.take(150)}...")
-        
-        // Sửa lỗi các ký tự `\/`
-        val correctedApiUrl = intermediateApiUrl.replace("\\/", "/")
-        
-        // Log 2: Hiển thị URL đã được sửa lỗi
-        sendDebugCallback(callback, "2. Corrected URL: ${correctedApiUrl.take(150)}...")
+        // Bước 3: Tải trang embed và lấy mã nguồn HTML
+        val embedHtmlContent = app.get(embedUrl, referer = dataUrl).text
 
-        // Bước 2: Gọi đến URL API đã được sửa lỗi
-        try {
-            val streamApiResponse = app.get(correctedApiUrl, referer = dataUrl).text
-            
-            // Log 3: Hiển thị response từ API
-            sendDebugCallback(callback, "3. API Response OK: ${streamApiResponse.take(150)}...")
-            
-            var foundLinks = false
-            // Bước 3: Parse JSON response và tạo link
-            parseJson<List<FinalStreamInfo>>(streamApiResponse).forEach { streamInfo ->
-                val finalStreamUrl = streamInfo.videoUrl ?: return@forEach
-                val quality = streamInfo.quality
-                
-                M3u8Helper.generateM3u8(
-                    name = "${this.name} ${quality}p",
-                    streamUrl = finalStreamUrl,
-                    referer = mainUrl,
-                    source = this.name
-                ).forEach { link ->
-                    callback(link)
-                    foundLinks = true
-                }
-            }
-            if (!foundLinks) {
-                sendDebugCallback(callback, "4. JSON Parsed but no links were generated")
-            }
+        // Bước 4: Trích xuất JSON chứa `mediaDefinition` từ trang embed
+        val mediaJson = extractJsonArray(embedHtmlContent, "\"mediaDefinition\"") ?: return false
+
+        // Bước 5: Parse JSON để lấy URL API trung gian
+        val intermediateApiUrl = try {
+            parseJson<List<InitialMedia>>(mediaJson).firstOrNull { it.videoUrl?.contains("/hls/") == true }?.videoUrl
         } catch (e: Exception) {
             e.printStackTrace()
-            // Log 4: Hiển thị lỗi nếu gọi API thất bại
-            sendDebugCallback(callback, "3. API Call FAILED: ${e.message}")
-        }
+            null
+        } ?: return false
         
-        return true // Luôn trả về true để đảm bảo tất cả các log được hiển thị
+        // Bước 6: Dọn dẹp URL và gọi API để lấy link cuối cùng
+        val correctedApiUrl = intermediateApiUrl.replace("\\/", "/")
+
+        return try {
+            val streamApiResponse = app.get(correctedApiUrl, referer = embedUrl).text
+            parseJson<List<FinalStreamInfo>>(streamApiResponse).mapNotNull { it.videoUrl }.apmap { streamUrl ->
+                M3u8Helper.generateM3u8(
+                    name,
+                    streamUrl,
+                    mainUrl
+                ).forEach(callback)
+            }.isNotEmpty()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
