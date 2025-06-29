@@ -6,6 +6,9 @@ import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.LoadResponse.Companion.addDuration
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.utils.*
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.Response
@@ -21,15 +24,11 @@ import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import kotlin.collections.set
 import kotlin.math.roundToInt
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 
 class AnimeVietsubProvider : MainAPI() {
 
     companion object {
         private val m3u8Contents = mutableMapOf<String, String>()
-        // ===== THAY ĐỔI: Sử dụng domain .local để tránh xung đột =====
         private const val PROXY_DOMAIN = "https://animevietsub.local"
     }
 
@@ -51,7 +50,12 @@ class AnimeVietsubProvider : MainAPI() {
     private var domainResolutionAttempted = false
     private val cfInterceptor = CloudflareKiller()
 
-    // ... các hàm từ getMainPage đến load giữ nguyên ...
+    override val mainPage = mainPageOf(
+        "/anime-moi/" to "Mới Cập Nhật",
+        "/anime-sap-chieu/" to "Sắp Chiếu",
+        "/bang-xep-hang/day.html" to "Xem Nhiều Trong Ngày"
+    )
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val baseUrl = getBaseUrl()
         val url = if (page == 1) {
@@ -206,6 +210,12 @@ class AnimeVietsubProvider : MainAPI() {
             inflater.end()
             var m3u8Content = resultStream.toByteArray().toString(Charsets.UTF_8)
             m3u8Content = m3u8Content.trim().removeSurrounding("\"")
+            
+            // ===== BẢN SỬA LỖI CUỐI CÙNG =====
+            // Thay thế chuỗi ký tự "\n" bằng ký tự xuống dòng thật sự.
+            m3u8Content = m3u8Content.replace("\\n", "\n")
+            // ===================================
+            
             return m3u8Content
         } catch (e: Exception) {
             throw ErrorLoadingException("Giải mã thất bại: ${e.message}")
@@ -238,25 +248,16 @@ class AnimeVietsubProvider : MainAPI() {
             val playerResponse = app.post(ajaxUrl, data = postData, headers = headers, referer = episodePageUrl, interceptor = cfInterceptor).parsed<AjaxPlayerResponse>()
 
             if (playerResponse.success != 1 || playerResponse.link.isNullOrEmpty()) {
-                callback(newExtractorLink(name, "Lỗi Server: ${playerResponse.toString().take(200)}", "debug", ExtractorLinkType.M3U8) {})
-                return true
+                throw ErrorLoadingException("Lấy link thất bại từ AJAX: $playerResponse")
             }
 
             playerResponse.link.forEach { linkSource ->
                 try {
                     val encryptedUrl = linkSource.file ?: return@forEach
                     val m3u8Content = decryptM3u8Content(encryptedUrl)
-                    
-                    // ===== DEBUG LOGGING: Hiển thị thông tin M3U8 ra giao diện =====
-                    val lineCount = m3u8Content.lines().size
-                    callback(newExtractorLink(name, "DEBUG: M3U8 dài ${m3u8Content.length} ký tự, có $lineCount dòng.", "debug", ExtractorLinkType.M3U8) {})
-                    callback(newExtractorLink(name, "ĐẦU FILE: ${m3u8Content.take(150).replace("\n", " ")}", "debug", ExtractorLinkType.M3U8) {})
-                    callback(newExtractorLink(name, "CUỐI FILE: ${m3u8Content.takeLast(150).replace("\n", " ")}", "debug", ExtractorLinkType.M3U8) {})
-                    // =============================================================
 
                     if (m3u8Content.isBlank() || !m3u8Content.contains("#EXTM3U")) {
-                       callback(newExtractorLink(name, "Lỗi: Nội dung M3U8 không hợp lệ!", "debug", ExtractorLinkType.M3U8) {})
-                       return@forEach // Dừng xử lý link này
+                       throw ErrorLoadingException("Nội dung M3U8 không hợp lệ sau khi giải mã.")
                     }
 
                     val refererForSegments = episodePageUrl
@@ -271,9 +272,6 @@ class AnimeVietsubProvider : MainAPI() {
                             line
                         }
                     }.joinToString("\n")
-                    
-                    val firstSegment = modifiedM3u8.lines().firstOrNull { it.startsWith(PROXY_DOMAIN) } ?: "Không có segment nào"
-                    callback(newExtractorLink(name, "SEGMENT MẪU: ${firstSegment.take(150)}", "debug", ExtractorLinkType.M3U8) {})
 
                     m3u8Contents[key] = modifiedM3u8
                     val manifestProxyUrl = "$PROXY_DOMAIN/m3u8-manifest-proxy/$key.m3u8"
@@ -288,11 +286,10 @@ class AnimeVietsubProvider : MainAPI() {
                         this.quality = Qualities.Unknown.value
                     })
                 } catch (e: Exception) {
-                    callback(newExtractorLink(name, "Lỗi xử lý link: ${e.message}", "debug", ExtractorLinkType.M3U8) {})
+                    Log.e(name, "Lỗi xử lý link source: ${e.message}")
                 }
             }
         } catch (e: Exception) {
-            callback(newExtractorLink(name, "Lỗi Toàn cục: ${e.message}", "debug", ExtractorLinkType.M3U8) {})
             Log.e(name, "Lỗi nghiêm trọng trong loadLinks: ${e.message}", e)
         }
         return true
@@ -300,7 +297,6 @@ class AnimeVietsubProvider : MainAPI() {
 
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
         val url = extractorLink.url
-        // ===== THAY ĐỔI: Kiểm tra bằng domain .local =====
         if (!url.startsWith(PROXY_DOMAIN)) return null
 
         val isManifestRequest = url.contains("/m3u8-manifest-proxy/")
@@ -350,7 +346,6 @@ class AnimeVietsubProvider : MainAPI() {
                     .body(segmentResponse.body)
                     .build()
             } else {
-                 // Nếu URL không khớp, trả về lỗi
                 Response.Builder()
                     .request(request)
                     .protocol(okhttp3.Protocol.HTTP_1_1)
