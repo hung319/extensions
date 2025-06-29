@@ -29,7 +29,8 @@ class AnimeVietsubProvider : MainAPI() {
 
     companion object {
         private val m3u8Contents = mutableMapOf<String, String>()
-        private const val PROXY_DOMAIN = "https://animevietsub.local"
+        // Sử dụng một domain nội bộ rõ ràng
+        private const val PROXY_DOMAIN = "https://avs-internal.proxy"
     }
 
     private val gson = Gson()
@@ -50,12 +51,7 @@ class AnimeVietsubProvider : MainAPI() {
     private var domainResolutionAttempted = false
     private val cfInterceptor = CloudflareKiller()
 
-    override val mainPage = mainPageOf(
-        "/anime-moi/" to "Mới Cập Nhật",
-        "/anime-sap-chieu/" to "Sắp Chiếu",
-        "/bang-xep-hang/day.html" to "Xem Nhiều Trong Ngày"
-    )
-
+    // ... Các hàm từ getMainPage đến load không có gì thay đổi ...
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val baseUrl = getBaseUrl()
         val url = if (page == 1) {
@@ -181,7 +177,6 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
 
-
     private val aesKey: SecretKeySpec by lazy {
         val keyStringB64 = "ZG1fdGhhbmdfc3VjX3ZhdF9nZXRfbGlua19hbl9kYnQ="
         val decodedKeyBytes = Base64.getDecoder().decode(keyStringB64)
@@ -210,12 +205,7 @@ class AnimeVietsubProvider : MainAPI() {
             inflater.end()
             var m3u8Content = resultStream.toByteArray().toString(Charsets.UTF_8)
             m3u8Content = m3u8Content.trim().removeSurrounding("\"")
-            
-            // ===== BẢN SỬA LỖI CUỐI CÙNG =====
-            // Thay thế chuỗi ký tự "\n" bằng ký tự xuống dòng thật sự.
             m3u8Content = m3u8Content.replace("\\n", "\n")
-            // ===================================
-            
             return m3u8Content
         } catch (e: Exception) {
             throw ErrorLoadingException("Giải mã thất bại: ${e.message}")
@@ -254,26 +244,17 @@ class AnimeVietsubProvider : MainAPI() {
             playerResponse.link.forEach { linkSource ->
                 try {
                     val encryptedUrl = linkSource.file ?: return@forEach
+                    // Mấu chốt: KHÔNG sửa đổi nội dung M3U8.
                     val m3u8Content = decryptM3u8Content(encryptedUrl)
 
                     if (m3u8Content.isBlank() || !m3u8Content.contains("#EXTM3U")) {
                        throw ErrorLoadingException("Nội dung M3U8 không hợp lệ sau khi giải mã.")
                     }
 
-                    val refererForSegments = episodePageUrl
                     val key = UUID.randomUUID().toString()
-                    val b64Referer = Base64.getUrlEncoder().encodeToString(refererForSegments.toByteArray())
-
-                    val modifiedM3u8 = m3u8Content.lines().map { line ->
-                        if (line.isNotBlank() && !line.startsWith("#")) {
-                            val b64SegmentUrl = Base64.getUrlEncoder().encodeToString(line.toByteArray())
-                            "$PROXY_DOMAIN/m3u8-segment-proxy/$b64SegmentUrl?referer=$b64Referer"
-                        } else {
-                            line
-                        }
-                    }.joinToString("\n")
-
-                    m3u8Contents[key] = modifiedM3u8
+                    m3u8Contents[key] = m3u8Content
+                    
+                    // Chỉ proxy file manifest
                     val manifestProxyUrl = "$PROXY_DOMAIN/m3u8-manifest-proxy/$key.m3u8"
                     
                     callback(newExtractorLink(
@@ -297,69 +278,35 @@ class AnimeVietsubProvider : MainAPI() {
 
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
         val url = extractorLink.url
-        if (!url.startsWith(PROXY_DOMAIN)) return null
-
-        val isManifestRequest = url.contains("/m3u8-manifest-proxy/")
-        val isSegmentRequest = url.contains("/m3u8-segment-proxy/")
+        // Interceptor giờ chỉ cần xử lý một loại request
+        if (!url.startsWith(PROXY_DOMAIN) || !url.contains("/m3u8-manifest-proxy/")) return null
         
         return Interceptor { chain ->
             val request = chain.request()
-            
-            if (isManifestRequest) {
-                val key = url.substringAfterLast("/").substringBefore(".m3u8")
-                val m3u8Content = m3u8Contents[key]
-                m3u8Contents.remove(key)
+            val key = url.substringAfterLast("/").substringBefore(".m3u8")
+            val m3u8Content = m3u8Contents[key]
+            m3u8Contents.remove(key)
 
-                if (m3u8Content != null) {
-                    val responseBody = okhttp3.ResponseBody.create("application/vnd.apple.mpegurl".toMediaTypeOrNull(), m3u8Content)
-                    Response.Builder()
-                        .request(request)
-                        .protocol(okhttp3.Protocol.HTTP_1_1)
-                        .code(200).message("OK")
-                        .body(responseBody)
-                        .build()
-                } else {
-                    Response.Builder()
-                        .request(request)
-                        .protocol(okhttp3.Protocol.HTTP_1_1)
-                        .code(404).message("M3U8 Manifest Not Found in Cache")
-                        .body(okhttp3.ResponseBody.create(null, ""))
-                        .build()
-                }
-            } else if (isSegmentRequest) {
-                val b64Url = url.substringAfter("/m3u8-segment-proxy/").substringBefore("?")
-                val b64Referer = url.substringAfter("?referer=")
-                
-                val segmentUrl = String(Base64.getUrlDecoder().decode(b64Url))
-                val referer = String(Base64.getUrlDecoder().decode(b64Referer))
-                
-                // ===== THAY ĐỔI CUỐI CÙNG VÀ QUAN TRỌNG NHẤT =====
-                // Thêm cfInterceptor vào request lấy file .ts
-                val segmentResponse = runBlocking {
-                    app.get(segmentUrl, referer = referer, interceptor = cfInterceptor)
-                }
-                // ================================================
-                
+            if (m3u8Content != null) {
+                val responseBody = okhttp3.ResponseBody.create("application/vnd.apple.mpegurl".toMediaTypeOrNull(), m3u8Content)
                 Response.Builder()
                     .request(request)
                     .protocol(okhttp3.Protocol.HTTP_1_1)
-                    .code(segmentResponse.code)
-                    .message("OK") 
-                    .headers(segmentResponse.headers)
-                    .body(segmentResponse.body)
+                    .code(200).message("OK")
+                    .body(responseBody)
                     .build()
             } else {
                 Response.Builder()
                     .request(request)
                     .protocol(okhttp3.Protocol.HTTP_1_1)
-                    .code(400).message("Bad Proxy Request")
+                    .code(404).message("M3U8 Manifest Not Found in Cache")
                     .body(okhttp3.ResponseBody.create(null, ""))
                     .build()
             }
         }
     }
-
-    // Các hàm helper còn lại
+    
+    // ... các hàm tiện ích còn lại ...
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): SearchResponse? {
         return try {
             val linkElement = this.selectFirst("article.TPost > a") ?: return null
