@@ -5,7 +5,6 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import com.fasterxml.jackson.annotation.JsonProperty
-import android.util.Log
 
 // Lớp chính của plugin, kế thừa từ MainAPI
 class YouPornProvider : MainAPI() {
@@ -15,8 +14,8 @@ class YouPornProvider : MainAPI() {
     override var mainUrl = "https://www.youporn.com"
     // Các loại nội dung được hỗ trợ
     override var supportedTypes = setOf(TvType.NSFW)
-    // Báo cho CloudStream biết plugin có trang chủ
-    override var hasMainPage = true
+    // Tạm thời vô hiệu hóa trang chủ để tập trung vào tìm kiếm
+    override var hasMainPage = false
 
     // Thêm User-Agent của trình duyệt để tránh bị chặn
     private val defaultHeaders = mapOf(
@@ -28,35 +27,8 @@ class YouPornProvider : MainAPI() {
         @JsonProperty("quality") val quality: String?,
         @JsonProperty("videoUrl") val videoUrl: String?
     )
-
-    // Hàm xây dựng trang chủ của plugin
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        return try {
-            val document = app.get(mainUrl, headers = defaultHeaders).document
-            val homePageList = mutableListOf<HomePageList>()
-
-            document.select("div.section-title").forEach { sectionElement ->
-                try {
-                    val title = sectionElement.selectFirst("h2")?.text()?.trim() ?: return@forEach
-                    val videoContainer = sectionElement.nextElementSibling()
-                    if (videoContainer?.hasClass("video-listing") == true) {
-                        val videos = parseVideoList(videoContainer)
-                        if (videos.isNotEmpty()) {
-                            homePageList.add(HomePageList(title, videos))
-                        }
-                    }
-                } catch (e: Exception) {
-                    // Bỏ qua nếu có lỗi ở một section nào đó
-                }
-            }
-            
-            if (homePageList.isEmpty()) return null
-            HomePageResponse(homePageList)
-        } catch (e: Exception) {
-            e.printStackTrace()
-            null
-        }
-    }
+    
+    // Bỏ qua getMainPage
 
     // Hàm trợ giúp để phân tích danh sách video từ một khối HTML
     private fun parseVideoList(element: Element): List<MovieSearchResponse> {
@@ -78,18 +50,13 @@ class YouPornProvider : MainAPI() {
         }
     }
 
-    // Hàm tìm kiếm
+    // Hàm tìm kiếm - sử dụng logic phân tích đơn giản nhất
     override suspend fun search(query: String): List<SearchResponse> {
          return try {
             val url = "$mainUrl/search/?query=$query"
             val document = app.get(url, headers = defaultHeaders).document
-            val searchResultContainer = document.selectFirst("#video-listing-search")
-            
-            if (searchResultContainer != null) {
-                parseVideoList(searchResultContainer)
-            } else {
-                emptyList()
-            }
+            // Quét toàn bộ document thay vì một container cụ thể
+            parseVideoList(document)
         } catch (e: Exception) {
             e.printStackTrace()
             emptyList()
