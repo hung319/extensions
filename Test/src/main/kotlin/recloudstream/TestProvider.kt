@@ -25,13 +25,12 @@ class YouPornProvider : MainAPI() {
         @JsonProperty("videoUrl") val videoUrl: String?
     )
 
-    // Logic trang chủ đơn giản hóa
+    // Logic trang chủ đã hoạt động
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         return try {
             val document = app.get(mainUrl, headers = defaultHeaders).document
             val videos = parseVideoList(document)
             if (videos.isEmpty()) return null
-            // Chỉ hiển thị một danh sách duy nhất để đảm bảo hoạt động
             HomePageResponse(listOf(HomePageList("Homepage", videos)))
         } catch (e: Exception) {
             e.printStackTrace()
@@ -39,7 +38,7 @@ class YouPornProvider : MainAPI() {
         }
     }
     
-    // Logic phân tích danh sách video
+    // Logic phân tích danh sách video đã hoạt động
     private fun parseVideoList(element: Element): List<MovieSearchResponse> {
         val results = mutableListOf<SearchResponse>()
         element.select("a[href*=/watch/]").forEach { linkElement ->
@@ -58,11 +57,10 @@ class YouPornProvider : MainAPI() {
                 }
             } catch (e: Exception) { /* Bỏ qua lỗi item */ }
         }
-        // SỬA LỖI: filterIsinstance -> filterIsInstance
         return results.filterIsInstance<MovieSearchResponse>()
     }
 
-    // Hàm tìm kiếm
+    // Hàm tìm kiếm đã hoạt động
     override suspend fun search(query: String): List<SearchResponse> {
         return try {
             val url = "$mainUrl/search/?query=$query"
@@ -86,7 +84,7 @@ class YouPornProvider : MainAPI() {
         }
     }
 
-    // Logic loadLinks mới, tìm kiếm "khóa" trực tiếp
+    // NỖ LỰC CUỐI CÙNG CHO LOADLINKS
     override suspend fun loadLinks(
         url: String,
         isCasting: Boolean,
@@ -94,19 +92,16 @@ class YouPornProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         return try {
-            val pageHeaders = defaultHeaders + mapOf("Referer" to url)
+            val pageHeaders = defaultHeaders + mapOf("Referer" to mainUrl) // Sử dụng referer chung
             val videoPage = app.get(url, headers = pageHeaders).document
 
-            val keyRegex = Regex("""['"](ey[a-zA-Z0-9=_\-]+)['"]""")
+            // Phương pháp cuối cùng: Tìm chính xác biến javascript 'player_hls_source'
+            val keyRegex = Regex("""player_hls_source\s*=\s*['"](ey[a-zA-Z0-9=_\-]+)['"]""")
             var encryptedData: String? = null
 
             videoPage.select("script").forEach { script ->
-                if (encryptedData == null) {
-                     keyRegex.find(script.data())?.groupValues?.get(1)?.let { key ->
-                        if (key.length > 50) {
-                            encryptedData = key
-                        }
-                    }
+                if (encryptedData == null && script.data().contains("player_hls_source")) {
+                     encryptedData = keyRegex.find(script.data())?.groupValues?.get(1)
                 }
             }
             
