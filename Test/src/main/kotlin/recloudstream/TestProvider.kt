@@ -41,21 +41,15 @@ class AnimeVietsubProvider : MainAPI() {
 
     private val cfInterceptor = CloudflareKiller()
 
-    // ===== SỬA LỖI Ở ĐÂY =====
-    // Đổi 'val' thành 'var' và gán giá trị trực tiếp để tuân thủ lớp cha MainAPI.
-    // Logic runBlocking vẫn đảm bảo nó chỉ chạy một lần khi provider được khởi tạo.
     override var mainUrl: String = runBlocking {
         try {
-            // Thử phân giải link bit.ly với CloudflareKiller
             val response = app.get("https://bit.ly/animevietsubtv", interceptor = cfInterceptor, allowRedirects = true)
             val finalUrl = URL(response.url)
             "${finalUrl.protocol}://${finalUrl.host}"
         } catch (e: Exception) {
-            // Nếu thất bại, dùng domain dự phòng
             "https://animevietsub.lol"
         }
     }
-    // ===========================
 
     override val mainPage = mainPageOf(
         "/anime-moi/" to "Mới Cập Nhật",
@@ -177,9 +171,21 @@ class AnimeVietsubProvider : MainAPI() {
                     val m3u8Content = decryptM3u8Content(encryptedUrl)
                     if (!m3u8Content.contains("#EXTM3U")) return@forEach
 
+                    val refererForSegments = episodeData.url
                     val key = UUID.randomUUID().toString()
-                    m3u8Contents[key] = m3u8Content
-                    
+                    val b64Referer = Base64.getUrlEncoder().encodeToString(refererForSegments.toByteArray())
+
+                    // VIẾT LẠI URL CỦA SEGMENT ĐỂ TRỎ VỀ PROXY
+                    val modifiedM3u8 = m3u8Content.lines().joinToString("\n") { line ->
+                        if (line.isNotBlank() && !line.startsWith("#")) {
+                            val b64SegmentUrl = Base64.getUrlEncoder().encodeToString(line.toByteArray())
+                            "$PROXY_DOMAIN/segment/$b64SegmentUrl?referer=$b64Referer"
+                        } else {
+                            line
+                        }
+                    }
+
+                    m3u8Contents[key] = modifiedM3u8
                     val manifestProxyUrl = "$PROXY_DOMAIN/manifest/$key.m3u8"
                     
                     callback(newExtractorLink(
@@ -202,34 +208,67 @@ class AnimeVietsubProvider : MainAPI() {
 
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
         val url = extractorLink.url
-        if (!url.startsWith(PROXY_DOMAIN) || !url.contains("/manifest/")) return null
+        if (!url.startsWith(PROXY_DOMAIN)) return null
+
+        val isManifestRequest = url.contains("/manifest/")
+        val isSegmentRequest = url.contains("/segment/")
         
         return Interceptor { chain ->
-            val request = chain.request()
-            val key = url.substringAfterLast("/").substringBefore(".m3u8")
-            val m3u8Content = m3u8Contents[key]
-            m3u8Contents.remove(key)
+            try {
+                val request = chain.request()
+                
+                if (isManifestRequest) {
+                    val key = url.substringAfterLast("/").substringBefore(".m3u8")
+                    val m3u8Content = m3u8Contents[key]
+                    m3u8Contents.remove(key)
 
-            if (m3u8Content != null) {
-                val responseBody = okhttp3.ResponseBody.create("application/vnd.apple.mpegurl".toMediaTypeOrNull(), m3u8Content)
+                    if (m3u8Content != null) {
+                        val responseBody = okhttp3.ResponseBody.create("application/vnd.apple.mpegurl".toMediaTypeOrNull(), m3u8Content)
+                        Response.Builder()
+                            .request(request).protocol(okhttp3.Protocol.HTTP_1_1)
+                            .code(200).message("OK")
+                            .body(responseBody).build()
+                    } else {
+                        Response.Builder()
+                            .request(request).protocol(okhttp3.Protocol.HTTP_1_1)
+                            .code(404).message("Not Found in Cache")
+                            .body(okhttp3.ResponseBody.create(null, "")).build()
+                    }
+                } else if (isSegmentRequest) {
+                    val b64Url = url.substringAfter("/segment/").substringBefore("?")
+                    val b64Referer = url.substringAfter("?referer=")
+                    
+                    val segmentUrl = String(Base64.getUrlDecoder().decode(b64Url))
+                    val referer = String(Base64.getUrlDecoder().decode(b64Referer))
+                    
+                    val segmentResponse = runBlocking {
+                        app.get(segmentUrl, referer = referer, interceptor = cfInterceptor)
+                    }
+                    
+                    // Trả về response thật của segment cho player
+                    Response.Builder()
+                        .request(request).protocol(okhttp3.Protocol.HTTP_1_1)
+                        .code(segmentResponse.code).message("OK") 
+                        .headers(segmentResponse.headers)
+                        .body(segmentResponse.body).build()
+                } else {
+                    // Trường hợp URL proxy không hợp lệ
+                    Response.Builder()
+                        .request(request).protocol(okhttp3.Protocol.HTTP_1_1)
+                        .code(400).message("Bad Proxy Request")
+                        .body(okhttp3.ResponseBody.create(null, "")).build()
+                }
+            } catch(e: Exception) {
+                // Nếu có bất kỳ lỗi nào trong interceptor, trả về lỗi 500
                 Response.Builder()
-                    .request(request)
-                    .protocol(okhttp3.Protocol.HTTP_1_1)
-                    .code(200).message("OK")
-                    .body(responseBody)
-                    .build()
-            } else {
-                Response.Builder()
-                    .request(request)
-                    .protocol(okhttp3.Protocol.HTTP_1_1)
-                    .code(404).message("Not Found in Cache")
-                    .body(okhttp3.ResponseBody.create(null, ""))
-                    .build()
+                    .request(chain.request()).protocol(okhttp3.Protocol.HTTP_1_1)
+                    .code(500).message("Interceptor Error: ${e.message}")
+                    .body(okhttp3.ResponseBody.create(null, "")).build()
             }
         }
     }
     
-    // ... Phần còn lại của các hàm helper ...
+    // ... các hàm tiện ích còn lại ...
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): SearchResponse? {
         return try {
             val linkElement = this.selectFirst("article.TPost > a") ?: return null
@@ -245,9 +284,7 @@ class AnimeVietsubProvider : MainAPI() {
             provider.newMovieSearchResponse(title, href, tvType) {
                 this.posterUrl = posterUrl
             }
-        } catch (e: Exception) {
-            null
-        }
+        } catch (e: Exception) { null }
     }
     
     private suspend fun Document.toLoadResponse(
