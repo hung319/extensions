@@ -1,10 +1,11 @@
-package recloudstream // Thêm package theo yêu cầu
+package recloudstream
 
 // Import các thư viện cần thiết cho CloudStream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.lagradost.cloudstream3.extractors.helper.AesHelper
 
 // Lớp chính của plugin, kế thừa từ MainAPI
 class YouPornProvider : MainAPI() {
@@ -12,8 +13,8 @@ class YouPornProvider : MainAPI() {
     override var name = "YouPorn"
     // URL chính của trang web
     override var mainUrl = "https://www.youporn.com"
-    // Các loại nội dung được hỗ trợ
-    override var supportedTypes = setOf(TvType.Movie)
+    // Các loại nội dung được hỗ trợ, đổi thành NSFW
+    override var supportedTypes = setOf(TvType.NSFW)
     // Báo cho CloudStream biết plugin có trang chủ
     override var hasMainPage = true
 
@@ -54,8 +55,8 @@ class YouPornProvider : MainAPI() {
             val title = videoElement.selectFirst("div.video-title")?.text()?.trim() ?: return@mapNotNull null
             val posterUrl = videoElement.selectFirst("img")?.attr("data-original")
             
-            // Tạo đối tượng phim mới
-            newMovieSearchResponse(title, href, TvType.Movie) {
+            // Tạo đối tượng phim mới với TvType.NSFW
+            newMovieSearchResponse(title, href, TvType.NSFW) {
                 this.posterUrl = posterUrl
             }
         }
@@ -69,14 +70,17 @@ class YouPornProvider : MainAPI() {
         return parsePage(document)
     }
     
-    // Hàm load giờ sẽ không cần thiết vì đã có getMainPage và search
-    // Nhưng chúng ta giữ lại để tương thích nếu cần
+    // Hàm load chi tiết
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
-        val results = parsePage(document)
-        return newMovieLoadResponse(this.name, url, TvType.Movie, results)
+        val title = document.selectFirst("h1.video-title")?.text()?.trim() ?: "Video"
+        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
+        
+        // Trả về thông tin chi tiết với TvType.NSFW
+        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
+            this.posterUrl = poster
+        }
     }
-
 
     // Hàm được gọi khi người dùng chọn một video để xem
     override suspend fun loadLinks(
@@ -93,18 +97,20 @@ class YouPornProvider : MainAPI() {
         val videoStreams = AppUtils.parseJson<List<VideoStream>>(apiResponse)
 
         videoStreams.forEach { stream ->
-            if (stream.videoUrl != null && stream.quality != null) {
-                callback(
-                    ExtractorLink(
-                        source = this.name,
-                        name = "${this.name} - ${stream.quality}p",
-                        url = stream.videoUrl,
-                        referer = mainUrl,
-                        quality = Qualities.P${stream.quality}.value,
-                        isM3u8 = true // Thêm dòng này để báo cho trình phát đây là link HLS
-                    )
+            val videoUrl = stream.videoUrl ?: return@forEach
+            val qualityStr = stream.quality
+            
+            callback(
+                ExtractorLink(
+                    source = this.name,
+                    name = "${this.name} - ${qualityStr}p",
+                    url = videoUrl,
+                    referer = mainUrl,
+                    quality = qualityStr?.toIntOrNull() ?: Qualities.Unknown.value,
+                    // Sửa lỗi: Sử dụng ExtractorLinkType.M3U8 thay vì isM3u8
+                    type = ExtractorLinkType.M3U8,
                 )
-            }
+            )
         }
         
         return true
