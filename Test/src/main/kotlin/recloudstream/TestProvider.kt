@@ -1,6 +1,5 @@
 package com.lagradost.cloudstream3
 
-// QUAN TRỌNG: Đảm bảo bạn có đủ các import này
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.LoadResponse.Companion.addDuration
 import com.lagradost.cloudstream3.utils.*
@@ -18,7 +17,7 @@ import java.net.URL
 import kotlin.math.roundToInt
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
-import com.lagradost.cloudstream3.utils.CloudflareKiller // <--- SỬA LỖI 1
+import com.lagradost.cloudstream3.network.CloudflareKiller // <<<<<<< SỬA LỖI 1
 
 // Các import cần thiết cho logic giải mã
 import java.util.Base64
@@ -30,31 +29,26 @@ import javax.crypto.spec.SecretKeySpec
 
 class AnimeVietsubProvider : MainAPI() {
 
-    // Thông tin cơ bản của Provider
     override var name = "AnimeVietsub (Coder)"
-    override var mainUrl = "https://animevietsub.lol" // Fallback URL
+    override var mainUrl = "https://animevietsub.lol" 
     override val supportedTypes = setOf(TvType.Anime, TvType.Cartoon, TvType.Movie)
     override var lang = "vi"
     override val hasMainPage = true
 
-    // Các biến hằng số và quản lý trạng thái
     private val USER_AGENT = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
     private val gson = Gson()
     
-    // Logic quản lý tên miền động
     private val bitlyResolverUrl = "https://bit.ly/animevietsubtv"
     private val ultimateFallbackDomain = "https://animevietsub.lol"
     private var currentActiveUrl = bitlyResolverUrl
     private var domainResolutionAttempted = false
     
-    // Danh sách trang chủ
     override val mainPage = mainPageOf(
         "/anime-moi/" to "Mới Cập Nhật",
         "/anime-sap-chieu/" to "Sắp Chiếu",
         "/bang-xep-hang/day.html" to "Xem Nhiều Trong Ngày"
     )
 
-    // Companion Object để lưu trữ biến M3U8
     companion object {
         var M3U8_CONTENT = ""
     }
@@ -208,12 +202,12 @@ class AnimeVietsubProvider : MainAPI() {
                                 source = name,
                                 name = "$name HLS",
                                 url = fakeM3u8Url,
-                                type = ExtractorLinkType.M3U8,
+                                type = ExtractorLinkType.M3U8
                             ) {
                                 this.quality = Qualities.Unknown.value
                                 this.isM3u8 = true 
                                 this.headers = mapOf("Referer" to episodePageUrl)
-                                this.referer = episodePageUrl // <--- SỬA LỖI 2
+                                this.referer = episodePageUrl
                             })
                         } catch (e: Exception) {
                             Log.e(name, "Error processing a link source", e)
@@ -304,7 +298,6 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
     
-    // <--- SỬA LỖI 4
     private suspend fun Document.toLoadResponse(
         provider: MainAPI, infoUrl: String, baseUrl: String, watchPageDoc: Document?
     ): LoadResponse? {
@@ -344,7 +337,7 @@ class AnimeVietsubProvider : MainAPI() {
                 provider.newMovieLoadResponse(title, infoUrl, TvType.Movie, data) {
                     this.posterUrl = posterUrl; this.plot = plot; this.tags = tags; this.year = year
                     this.rating = rating; this.actors = actors; this.recommendations = recommendations
-                    duration?.let { addDuration(it) } // <--- SỬA LỖI 3
+                    duration?.let { addDuration(it) } // <<<<<<< SỬA LỖI 2 & 3
                 }
             }
         } catch (e: Exception) {
