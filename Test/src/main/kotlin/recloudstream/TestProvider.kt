@@ -84,18 +84,20 @@ class YouPornProvider : MainAPI() {
         }
     }
 
-    // NỖ LỰC CUỐI CÙNG CHO LOADLINKS
+    // Hàm loadLinks đang bị chặn bởi trang web
     override suspend fun loadLinks(
         url: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // Ghi chú: Logic dưới đây là đúng về mặt lý thuyết,
+        // nhưng yêu cầu đến trang video đang bị máy chủ của YouPorn chặn hoặc trả về nội dung khác.
+        // Vấn đề này nằm ngoài khả năng xử lý của plugin bằng các phương pháp thông thường.
         return try {
-            val pageHeaders = defaultHeaders + mapOf("Referer" to mainUrl) // Sử dụng referer chung
+            val pageHeaders = defaultHeaders + mapOf("Referer" to mainUrl)
             val videoPage = app.get(url, headers = pageHeaders).document
 
-            // Phương pháp cuối cùng: Tìm chính xác biến javascript 'player_hls_source'
             val keyRegex = Regex("""player_hls_source\s*=\s*['"](ey[a-zA-Z0-9=_\-]+)['"]""")
             var encryptedData: String? = null
 
