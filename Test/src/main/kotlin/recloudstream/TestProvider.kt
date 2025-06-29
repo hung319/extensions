@@ -14,7 +14,7 @@ class YouPornProvider : MainAPI() {
     override var mainUrl = "https://www.youporn.com"
     // Các loại nội dung được hỗ trợ
     override var supportedTypes = setOf(TvType.NSFW)
-    // Tạm thời vô hiệu hóa trang chủ để tập trung vào tìm kiếm
+    // Tạm thời vô hiệu hóa trang chủ
     override var hasMainPage = false
 
     // Thêm User-Agent của trình duyệt để tránh bị chặn
@@ -28,8 +28,6 @@ class YouPornProvider : MainAPI() {
         @JsonProperty("videoUrl") val videoUrl: String?
     )
     
-    // Bỏ qua getMainPage
-
     // Hàm trợ giúp để phân tích danh sách video từ một khối HTML
     private fun parseVideoList(element: Element): List<MovieSearchResponse> {
         return element.select("div.video-box").mapNotNull { videoElement ->
@@ -37,7 +35,6 @@ class YouPornProvider : MainAPI() {
                 val link = videoElement.selectFirst("a") ?: return@mapNotNull null
                 val href = fixUrl(link.attr("href"))
                 if (href == mainUrl || !href.contains("/watch/")) return@mapNotNull null
-
                 val title = videoElement.selectFirst("div.video-title")?.text()?.trim() ?: return@mapNotNull null
                 val posterUrl = videoElement.selectFirst("img")?.attr("data-original")
                 
@@ -50,12 +47,12 @@ class YouPornProvider : MainAPI() {
         }
     }
 
-    // Hàm tìm kiếm - sử dụng logic phân tích đơn giản nhất
+    // NỖ LỰC CUỐI CÙNG: Thay đổi định dạng URL tìm kiếm
     override suspend fun search(query: String): List<SearchResponse> {
          return try {
-            val url = "$mainUrl/search/?query=$query"
+            // Thay đổi từ /search/?query=... thành /search/.../
+            val url = "$mainUrl/search/$query/"
             val document = app.get(url, headers = defaultHeaders).document
-            // Quét toàn bộ document thay vì một container cụ thể
             parseVideoList(document)
         } catch (e: Exception) {
             e.printStackTrace()
