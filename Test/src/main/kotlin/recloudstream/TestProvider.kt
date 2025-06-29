@@ -240,19 +240,24 @@ class AnimeVietsubProvider : MainAPI() {
                     val segmentUrl = String(Base64.getUrlDecoder().decode(b64Url))
                     val referer = String(Base64.getUrlDecoder().decode(b64Referer))
                     
-                    // ===== THAY ĐỔI LỚN VÀ QUAN TRỌNG NHẤT =====
-                    // Bước 1: Lấy "tấm vé thông hành" (headers chứa cookie và user-agent) từ CloudflareKiller.
+                    // ===== THAY ĐỔI CUỐI CÙNG Ở ĐÂY =====
+                    // Bước 1: Lấy headers từ CloudflareKiller (kiểu okhttp3.Headers)
                     val bypassHeaders = cfInterceptor.getCookieHeaders(segmentUrl)
                     
-                    // Bước 2: Tạo map header mới bao gồm "tấm vé" và referer.
-                    val segmentHeaders = bypassHeaders.newBuilder().add("Referer", referer).build()
+                    // Bước 2: Tạo một Map và chuyển đổi headers từ bypassHeaders vào đó
+                    val segmentHeaders = mutableMapOf<String, String>()
+                    bypassHeaders.forEach { (key, value) ->
+                        segmentHeaders[key] = value
+                    }
                     
-                    // Bước 3: Gửi request với header đã được chuẩn bị.
-                    // QUAN TRỌNG: KHÔNG dùng interceptor ở đây nữa!
+                    // Bước 3: Thêm Referer của chúng ta vào Map
+                    segmentHeaders["Referer"] = referer
+
+                    // Bước 4: Gọi app.get với Map đã đúng kiểu dữ liệu
                     val segmentResponse = runBlocking {
                         app.get(segmentUrl, headers = segmentHeaders)
                     }
-                    // ===============================================
+                    // ===================================
                     
                     Response.Builder()
                         .request(request).protocol(okhttp3.Protocol.HTTP_1_1)
