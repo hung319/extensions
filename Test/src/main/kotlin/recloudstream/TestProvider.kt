@@ -11,7 +11,6 @@ class YouPornProvider : MainAPI() {
     override var name = "YouPorn"
     override var mainUrl = "https://www.youporn.com"
     override var supportedTypes = setOf(TvType.NSFW)
-    // Bật lại trang chủ
     override var hasMainPage = true
 
     private val defaultHeaders = mapOf(
@@ -21,35 +20,26 @@ class YouPornProvider : MainAPI() {
         "Referer" to "$mainUrl/"
     )
 
-    // Cấu trúc dữ liệu cho API video
     data class VideoStream(
         @JsonProperty("quality") val quality: String?,
         @JsonProperty("videoUrl") val videoUrl: String?
     )
 
-    // Hàm xây dựng trang chủ
+    // SỬA LỖI: Logic trang chủ đơn giản hóa
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        val document = app.get(mainUrl, headers = defaultHeaders).document
-        val homePageList = mutableListOf<HomePageList>()
-
-        document.select("div.section-title").forEach { sectionElement ->
-            try {
-                val title = sectionElement.selectFirst("h2")?.text()?.trim() ?: return@forEach
-                val videoContainer = sectionElement.nextElementSibling()
-                if (videoContainer?.hasClass("video-listing") == true) {
-                    val videos = parseVideoList(videoContainer)
-                    if (videos.isNotEmpty()) {
-                        homePageList.add(HomePageList(title, videos))
-                    }
-                }
-            } catch (e: Exception) { /* Bỏ qua lỗi section */ }
+        return try {
+            val document = app.get(mainUrl, headers = defaultHeaders).document
+            val videos = parseVideoList(document)
+            if (videos.isEmpty()) return null
+            // Chỉ hiển thị một danh sách duy nhất để đảm bảo hoạt động
+            HomePageResponse(listOf(HomePageList("Homepage", videos)))
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
         }
-        
-        if (homePageList.isEmpty()) return null
-        return HomePageResponse(homePageList)
     }
     
-    // Hàm trợ giúp phân tích, sử dụng logic đã thành công
+    // Logic phân tích danh sách video (đã hoạt động tốt)
     private fun parseVideoList(element: Element): List<MovieSearchResponse> {
         val results = mutableListOf<SearchResponse>()
         element.select("a[href*=/watch/]").forEach { linkElement ->
@@ -68,10 +58,10 @@ class YouPornProvider : MainAPI() {
                 }
             } catch (e: Exception) { /* Bỏ qua lỗi item */ }
         }
-        return results.filterIsInstance<MovieSearchResponse>()
+        return results.filterIsinstance<MovieSearchResponse>()
     }
 
-    // Hàm tìm kiếm sử dụng logic đã thành công
+    // Hàm tìm kiếm (đã hoạt động tốt)
     override suspend fun search(query: String): List<SearchResponse> {
         return try {
             val url = "$mainUrl/search/?query=$query"
@@ -95,7 +85,7 @@ class YouPornProvider : MainAPI() {
         }
     }
 
-    // Hàm load link video - ĐÃ ĐƯỢC SỬA LỖI
+    // SỬA LỖI: Logic loadLinks mới, tìm kiếm "khóa" trực tiếp
     override suspend fun loadLinks(
         url: String,
         isCasting: Boolean,
@@ -106,19 +96,22 @@ class YouPornProvider : MainAPI() {
             val pageHeaders = defaultHeaders + mapOf("Referer" to url)
             val videoPage = app.get(url, headers = pageHeaders).document
 
+            // Logic mới: Tìm chuỗi khóa mã hóa bắt đầu bằng "ey"
+            val keyRegex = Regex("""['"](ey[a-zA-Z0-9=_\-]+)['"]""")
             var encryptedData: String? = null
-            // Logic mới: Quét tất cả các thẻ script để tìm dữ liệu HLS
-            val hlsRegex = Regex("""new Hls\(['"]([^'"]+)['"]\)""")
+
             videoPage.select("script").forEach { script ->
                 if (encryptedData == null) {
-                    encryptedData = hlsRegex.find(script.data())?.groupValues?.get(1)
+                     keyRegex.find(script.data())?.groupValues?.get(1)?.let { key ->
+                        // Kiểm tra sơ bộ xem có phải là json hợp lệ không
+                        if (key.length > 50) {
+                            encryptedData = key
+                        }
+                    }
                 }
             }
             
-            // Nếu không tìm thấy dữ liệu sau khi quét, thoát
-            if (encryptedData == null) {
-                return false
-            }
+            if (encryptedData == null) return false
 
             val apiUrl = "$mainUrl/media/hls/?s=$encryptedData"
             val apiResponse = app.get(apiUrl, headers = pageHeaders).text
