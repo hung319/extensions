@@ -3,7 +3,7 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.json.JSONObject
-import org.jsoup.nodes.Element // Cần import Element
+import org.jsoup.nodes.Element
 
 class SpankbangProvider : MainAPI() {
     override var mainUrl = "https://spankbang.party"
@@ -12,7 +12,6 @@ class SpankbangProvider : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
 
-    // Hàm tiện ích để phân tích cú pháp các mục video từ một Element Jsoup
     private fun Element.toSearchResponse(): SearchResponse? {
         val linkElement = this.selectFirst("a.thumb") ?: return null
         val href = linkElement.attr("href")
@@ -44,9 +43,7 @@ class SpankbangProvider : MainAPI() {
 
         mainSections.forEach { (sectionName, sectionUrl) ->
             try {
-                // SỬA LỖI: Tải trực tiếp url và lấy document
                 val sectionDocument = app.get(mainUrl + sectionUrl).document
-                // SỬA LỖI: Sử dụng hàm tiện ích `toSearchResponse` đã tạo
                 val videoList = sectionDocument.select("div.video-item").mapNotNull {
                     it.toSearchResponse()
                 }
@@ -64,13 +61,12 @@ class SpankbangProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/s/${query.replace(" ", "+")}/"
         val document = app.get(searchUrl).document
-        // SỬA LỖI: Sử dụng hàm tiện ích `toSearchResponse`
         return document.select("div.video-item").mapNotNull {
             it.toSearchResponse()
         }
     }
-
-    // SỬA LỖI: Sửa lại hàm load và các tham số của `newMovieLoadResponse`
+    
+    // SỬA LỖI: Sửa tên tham số `url` thành `dataUrl` để khớp với API của bạn
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
         val title = document.selectFirst("h1.main_content_title")?.text()?.trim()
@@ -84,10 +80,9 @@ class SpankbangProvider : MainAPI() {
 
         return newMovieLoadResponse(
             name = title,
-            url = url, // `url` là tham số đúng, không phải `dataUrl`
+            dataUrl = url, // <-- THAY ĐỔI Ở ĐÂY
             type = TvType.NSFW,
         ) {
-            // SỬA LỖI: Thêm các thuộc tính tùy chọn vào bên trong lambda
             this.posterUrl = poster
             this.plot = description
             this.recommendations = recommendations
