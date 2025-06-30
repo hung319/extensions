@@ -1,151 +1,160 @@
-package com.lagradost.cloudstream3.providers
+package recloudstream // Đã thêm package theo yêu cầu
 
-import com.fasterxml.jackson.annotation.JsonProperty
+// Import các thư viện cần thiết của CloudStream và Jsoup
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.M3u8Helper
+import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
+import org.json.JSONObject
 
-class YouPornProvider : MainAPI() {
-    override var name = "YouPorn"
-    override var mainUrl = "https://www.youporn.com"
-    override var supportedTypes = setOf(TvType.NSFW)
+// Lớp Provider chính, kế thừa từ MainAPI
+class SpankbangProvider : MainAPI() {
+    // Thông tin cơ bản về provider
+    override var mainUrl = "https://spankbang.party"
+    override var name = "SpankBang"
+    override var lang = "en"
     override val hasMainPage = true
-
-    // Header chung để giả dạng trình duyệt
-    private val browserHeaders = mapOf(
-        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
-        "Cookie" to "platform=mobile; access=1;"
+    // Xác định loại nội dung được hỗ trợ
+    override val supportedTypes = setOf(
+        TvType.NSFW
     )
 
-    // --- Các hàm không thay đổi ---
-    override val mainPage = mainPageOf(
-        "/?page=" to "Recommended",
-        "/top_rated/?page=" to "Top Rated",
-        "/most_viewed/?page=" to "Most Viewed",
-        "/most_favorited/?page=" to "Most Favorited",
-        "/browse/time/?page=" to "Newest Videos"
-    )
-
+    // Hàm tạo các mục trên trang chủ
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = "$mainUrl${request.data}$page"
-        val document = app.get(url, headers = browserHeaders).document
-        val items = document.select("div.video-box").mapNotNull { it.toSearchResult() }
-        val hasNext = document.selectFirst("div.paginationWrapper a[rel=next]") != null
-        return newHomePageResponse(request.name, items, hasNext = hasNext)
+        val document = app.get(mainUrl).document
+        val homePageList = mutableListOf<HomePageList>()
+
+        // Lấy các mục từ thanh điều hướng chính
+        document.select("div.video-list[data-testid=video-list]").forEach { list ->
+            val title = list.parent()?.selectFirst("h2")?.text() ?: "Trending"
+            val videos = list.select("div.video-item").mapNotNull { element ->
+                val linkElement = element.selectFirst("a.thumb")
+                val videoTitle = linkElement?.attr("title")?.trim()
+                val href = linkElement?.attr("href")
+                val posterUrl = element.selectFirst("img.cover")?.attr("data-src")
+
+                if (videoTitle != null && href != null && posterUrl != null) {
+                    MovieSearchResponse(
+                        name = videoTitle,
+                        url = fixUrl(href),
+                        apiName = this.name,
+                        type = TvType.Movie,
+                        posterUrl = posterUrl
+                    )
+                } else {
+                    null
+                }
+            }
+            if (videos.isNotEmpty()) {
+                homePageList.add(HomePageList(title, videos))
+            }
+        }
+        return HomePageResponse(homePageList)
     }
+    
+    // Hàm phân tích HTML để lấy danh sách phim
+    private fun parseVideoItems(html: String): List<SearchResponse> {
+        val document = app.parseHTML(html)
+        val videoItems = document.select("div.video-item")
 
-    override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$mainUrl/search/?query=$query"
-        val document = app.get(url, headers = browserHeaders).document
-        return document.select("div.searchResults div.video-box").mapNotNull { it.toSearchResult() }
-    }
+        return videoItems.mapNotNull { element ->
+            val linkElement = element.selectFirst("a.thumb")
+            val title = linkElement?.attr("title")?.trim()
+            val href = linkElement?.attr("href")
+            // Sử dụng data-src cho hình ảnh lazy-loaded
+            val posterUrl = element.selectFirst("img.cover")?.attr("data-src")
 
-    override suspend fun load(url: String): LoadResponse {
-        val correctedUrl = if (url.contains("/watch/") && !url.endsWith("/")) "$url/" else url
-        val document = app.get(correctedUrl, headers = browserHeaders).document
-        val title = document.selectFirst("h1.videoTitle")?.text()?.trim() ?: "Untitled"
-        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
-        val description = document.selectFirst("meta[name=description]")?.attr("content")
-        val recommendations = document.select("div#relatedVideosWrapper div.video-box").mapNotNull { it.toSearchResult() }
-
-        return newMovieLoadResponse(title, correctedUrl, TvType.NSFW, correctedUrl) {
-            this.posterUrl = poster
-            this.plot = description
-            this.recommendations = recommendations
+            if (title != null && href != null && posterUrl != null) {
+                MovieSearchResponse(
+                    name = title,
+                    url = fixUrl(href),
+                    apiName = this.name,
+                    type = TvType.Movie,
+                    posterUrl = posterUrl
+                )
+            } else {
+                null
+            }
         }
     }
 
-    // Hàm tiện ích để gửi log debug
-    private fun sendDebugCallback(callback: (ExtractorLink) -> Unit, message: String) {
-        callback(
-            ExtractorLink(
-                source = this.name,
-                name = "DEBUG: $message",
-                url = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
-                referer = mainUrl,
-                quality = 1,
-                type = ExtractorLinkType.VIDEO
-            )
+    // Hàm xử lý tìm kiếm
+    override suspend fun search(query: String): List<SearchResponse> {
+        val searchUrl = "$mainUrl/s/${query.replace(" ", "+")}/"
+        val response = app.get(searchUrl)
+        return parseVideoItems(response.text)
+    }
+
+    // Hàm tải chi tiết phim (ở đây ta chỉ cần tiêu đề và url nên không cần load gì thêm)
+    override suspend fun load(url: String): LoadResponse {
+        val response = app.get(url).document
+        val title = response.selectFirst("h1.main_content_title")?.text()?.trim()
+            ?: response.selectFirst("meta[property=og:title]")?.attr("content")?.trim()
+            ?: "Video"
+        
+        return newMovieLoadResponse(
+            name = title,
+            url = url,
+            type = TvType.NSFW,
+            // Các thông tin khác có thể được thêm ở đây nếu cần
         )
     }
 
-    /**
-     * Hàm `loadLinks` được viết lại để tìm các khối JavaScript cụ thể trong trang watch.
-     */
+    // ⭐ HÀM CẬP NHẬT: Sử dụng cấu trúc ExtractorLink mới
     override suspend fun loadLinks(
-        dataUrl: String,
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        sendDebugCallback(callback, "1. Starting analysis on watch page...")
-        
-        val correctedDataUrl = if (dataUrl.contains("/watch/") && !dataUrl.endsWith("/")) "$dataUrl/" else dataUrl
+        val response = app.get(data)
+        val document = response.text
 
-        val watchHtmlContent = try {
-            app.get(correctedDataUrl, referer = mainUrl, headers = browserHeaders).text
-        } catch (e: Exception) {
-            sendDebugCallback(callback, "2. FAILED to fetch watch page: ${e.message}")
-            return true
-        }
-        sendDebugCallback(callback, "2. OK, fetched watch page content.")
+        // Sử dụng regex để tìm và trích xuất đối tượng JSON 'stream_data'
+        val streamDataRegex = Regex("""var stream_data = (\{.*?\});""")
+        val matchResult = streamDataRegex.find(document)
 
-        var foundData = false
+        if (matchResult != null) {
+            val streamDataJson = matchResult.groupValues[1]
+            val streamData = JSONObject(streamDataJson)
 
-        // Cách 1: Tìm `page_params.generalVideoConfig`
-        sendDebugCallback(callback, "3. Trying to find 'generalVideoConfig'...")
-        val generalConfigRegex = """page_params\.generalVideoConfig\s*=\s*(\{.+?\});""".toRegex()
-        var match = generalConfigRegex.find(watchHtmlContent)
-        if (match != null) {
-            val configJson = match.groupValues[1]
-            sendDebugCallback(callback, "3.1 SUCCESS, Found 'generalVideoConfig':")
-            sendDebugCallback(callback, configJson.take(300))
-            foundData = true
-        } else {
-            sendDebugCallback(callback, "3.1 FAILED to find 'generalVideoConfig'")
-        }
-        
-        // Cách 2: Tìm `page_params.video_player_setup`
-        sendDebugCallback(callback, "4. Trying to find 'video_player_setup'...")
-        val playerSetupRegex = """page_params\.video_player_setup\s*=\s*(\{.+?\});""".toRegex()
-        match = playerSetupRegex.find(watchHtmlContent)
-        if (match != null) {
-            val setupJson = match.groupValues[1]
-            sendDebugCallback(callback, "4.1 SUCCESS, Found 'video_player_setup':")
-            sendDebugCallback(callback, setupJson.take(300))
-            foundData = true
-        } else {
-            sendDebugCallback(callback, "4.1 FAILED to find 'video_player_setup'")
-        }
+            // Ưu tiên link HLS (m3u8) để có chất lượng thích ứng
+            streamData.optJSONArray("m3u8")?.let {
+                if (it.length() > 0) {
+                    val m3u8Url = it.getString(0)
+                    callback(
+                        ExtractorLink(
+                            source = this.name,
+                            name = "HLS (Auto)",
+                            url = m3u8Url,
+                            referer = mainUrl,
+                            quality = Qualities.Unknown.value,
+                            type = ExtractorLinkType.M3U8 // <-- Cấu trúc mới
+                        )
+                    )
+                }
+            }
 
-        if (!foundData) {
-            sendDebugCallback(callback, "5. ALL METHODS FAILED.")
-        }
-        
-        return true // Luôn trả về true để hiển thị log
-    }
-
-    private fun Element.toSearchResult(): SearchResponse? {
-        val href = this.selectFirst("a.video-box-image")?.attr("href") ?: return null
-        var videoUrl = fixUrl(href)
-
-        if (videoUrl.contains("/watch/") && !videoUrl.endsWith("/")) {
-            videoUrl += "/"
+            // Thêm các link MP4 với chất lượng cụ thể
+            val qualities = listOf("1080p", "720p", "480p", "240p")
+            qualities.forEach { quality ->
+                streamData.optJSONArray(quality)?.let {
+                    if (it.length() > 0) {
+                        val mp4Url = it.getString(0)
+                        callback(
+                            ExtractorLink(
+                                source = this.name,
+                                name = "MP4 $quality",
+                                url = mp4Url,
+                                referer = mainUrl,
+                                quality = quality.replace("p", "").toIntOrNull() ?: Qualities.Unknown.value, // Chuyển "1080p" thành 1080
+                                type = ExtractorLinkType.VIDEO // <-- Cấu trúc mới
+                            )
+                        )
+                    }
+                }
+            }
         }
 
-        val title = this.selectFirst("a.video-title-text")?.text()?.trim() ?: return null
-        val posterUrl = this.selectFirst("img.thumb-image")?.attr("data-src")
-        
-        return MovieSearchResponse(
-            name = title,
-            url = videoUrl,
-            apiName = this@YouPornProvider.name,
-            type = TvType.NSFW,
-            posterUrl = fixUrlNull(posterUrl),
-            year = null
-        )
+        return true
     }
 }
