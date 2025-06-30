@@ -12,17 +12,20 @@ class SpankbangProvider : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
 
-    // Hàm tiện ích để phân tích một video item
+    /**
+     * SỬA LỖI: Cập nhật lại logic lấy tiêu đề để không bị dính thông tin thừa.
+     * Tên video sẽ được lấy từ thuộc tính `alt` của ảnh.
+     */
     private fun Element.toSearchResponse(): SearchResponse? {
-        // Selector chính xác hơn để lấy link và tiêu đề
-        val titleElement = this.selectFirst("a.thumb") ?: return null
-        val href = titleElement.attr("href")
-        val title = titleElement.attr("title").ifBlank { titleElement.text() }.trim()
+        val linkElement = this.selectFirst("a.thumb") ?: return null
+        val href = linkElement.attr("href")
 
-        // Selector cho ảnh poster
+        // Lấy tiêu đề từ thuộc tính "alt" của ảnh, đây là nơi chứa tên video chính xác
+        val title = linkElement.selectFirst("img")?.attr("alt")?.trim() ?: return null
+
         var posterUrl = this.selectFirst("img.cover, img.lazyload")?.attr("data-src")
 
-        if (href.isBlank() || title.isBlank() || posterUrl.isNullOrBlank()) {
+        if (href.isBlank() || posterUrl.isNullOrBlank()) {
             return null
         }
 
@@ -39,56 +42,38 @@ class SpankbangProvider : MainAPI() {
         )
     }
 
-    /**
-     * SỬA LỖI: Đơn giản hóa hàm getMainPage để chỉ tải các mục tĩnh.
-     * Bỏ qua phân trang tại đây để tránh lỗi.
-     */
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val items = mutableListOf<HomePageList>()
-        val sections = listOf(
-            "Trending Videos" to "/trending_videos/",
-            "New Videos" to "/new_videos/",
-            "Popular" to "/most_popular/"
-        )
+        val document = app.get(mainUrl).document
+        val homePageList = mutableListOf<HomePageList>()
 
-        // Tải và phân tích dữ liệu cho từng mục
-        for ((sectionName, sectionUrl) in sections) {
-            try {
-                val document = app.get(mainUrl + sectionUrl).document
-                val videoList = document.select("div.video-item").mapNotNull {
-                    it.toSearchResponse()
-                }
-                if (videoList.isNotEmpty()) {
-                    // SỬA LỖI: Sử dụng constructor HomePageList đơn giản, không có các tham số không được hỗ trợ
-                    items.add(HomePageList(sectionName, videoList))
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
+        document.select("div.video-list").forEach { list ->
+            val title = list.parent()?.selectFirst("h2")?.text()?.trim() ?: "Recommended"
+            val videos = list.select("div.video-item").mapNotNull { element ->
+                element.toSearchResponse()
+            }
+            if (videos.isNotEmpty()) {
+                homePageList.add(HomePageList(title, videos))
             }
         }
         
-        return HomePageResponse(items)
+        return HomePageResponse(homePageList.filter { it.list.isNotEmpty() })
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/s/${query.replace(" ", "+")}/"
         val document = app.get(searchUrl).document
-        // Selector này cần phải chính xác cho trang tìm kiếm
         return document.select("div.main_results div.video-item").mapNotNull {
             it.toSearchResponse()
         }
     }
     
-    /**
-     * SỬA LỖI: Hàm load chỉ xử lý một loại response duy nhất là LoadResponse.
-     * Không còn logic kiểm tra và trả về MovieSearchResponse gây lỗi type mismatch.
-     */
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
         val title = document.selectFirst("h1.main_content_title")?.text()?.trim()
             ?: "Video"
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         val description = document.selectFirst("meta[name=description]")?.attr("content")
+        
         val recommendations = document.select("div.similar div.video-item").mapNotNull {
             it.toSearchResponse()
         }
