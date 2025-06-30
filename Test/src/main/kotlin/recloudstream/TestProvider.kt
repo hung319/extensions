@@ -14,20 +14,19 @@ class YouPornProvider : MainAPI() {
     override var supportedTypes = setOf(TvType.NSFW)
     override val hasMainPage = true
 
-    // Data class để parse JSON chứa link API trung gian
+    // --- Data Classes ---
     private data class InitialMedia(
         @JsonProperty("videoUrl") val videoUrl: String?,
     )
-    
-    // Data class để parse JSON chứa link video cuối cùng
     private data class FinalStreamInfo(
         @JsonProperty("videoUrl") val videoUrl: String?,
         @JsonProperty("quality") val quality: String?,
     )
-
+    
+    // *** THAY ĐỔI QUAN TRỌNG: Thêm `access=1` vào cookie để vượt qua cổng kiểm tra tuổi ***
     private val browserHeaders = mapOf(
         "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
-        "Cookie" to "platform=mobile; access=1"
+        "Cookie" to "platform=mobile; access=1;" // Chìa khóa để vào trang
     )
 
     override val mainPage = mainPageOf(
@@ -53,7 +52,6 @@ class YouPornProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        // Đảm bảo URL có dấu "/" ở cuối
         val correctedUrl = if (url.contains("/watch/") && !url.endsWith("/")) "$url/" else url
         val document = app.get(correctedUrl, headers = browserHeaders).document
         val title = document.selectFirst("h1.videoTitle")?.text()?.trim() ?: "Untitled"
@@ -67,48 +65,61 @@ class YouPornProvider : MainAPI() {
             this.recommendations = recommendations
         }
     }
+    
+    private fun extractJsonArray(htmlContent: String, key: String): String? {
+        val keyIndex = htmlContent.indexOf(key)
+        if (keyIndex == -1) return null
+        val startIndex = htmlContent.indexOf('[', keyIndex)
+        if (startIndex == -1) return null
+        var bracketCount = 1
+        for (i in (startIndex + 1) until htmlContent.length) {
+            when (htmlContent[i]) {
+                '[' -> bracketCount++
+                ']' -> bracketCount--
+            }
+            if (bracketCount == 0) {
+                return htmlContent.substring(startIndex, i + 1)
+            }
+        }
+        return null
+    }
 
-    /**
-     * Hàm `loadLinks` cuối cùng, với logic chuẩn xác nhất.
-     */
     override suspend fun loadLinks(
-        dataUrl: String, // Đây là link /watch/
+        dataUrl: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Bước 1: Lấy ID và xây dựng URL của trang embed
-        val videoId = """/watch/(\d+)/""".toRegex().find(dataUrl)?.groupValues?.get(1) ?: return false
+        // Đảm bảo URL có dấu "/" ở cuối
+        val correctedDataUrl = if (dataUrl.contains("/watch/") && !dataUrl.endsWith("/")) "$dataUrl/" else dataUrl
+        
+        // Bước 1: Trích xuất ID video và xây dựng URL của trang embed
+        val videoId = """/watch/(\d+)/""".toRegex().find(correctedDataUrl)?.groupValues?.get(1) ?: return false
         val embedUrl = "$mainUrl/embed/$videoId/"
         
         // Bước 2: Tải trang embed với header chuẩn
-        val embedHtmlContent = app.get(embedUrl, referer = dataUrl, headers = browserHeaders).text
-        var intermediateApiUrl: String? = null
-
-        // Bước 3: Dùng Regex để tìm TẤT CẢ các đoạn mediaDefinition
+        val embedHtmlContent = app.get(embedUrl, referer = correctedDataUrl, headers = browserHeaders).text
+        
+        // Bước 3: Tìm và trích xuất khối mediaDefinition
         val mediaDefRegex = """"mediaDefinition"\s*:\s*(\[.*?\])""".toRegex()
-        val allMatches = mediaDefRegex.findAll(embedHtmlContent)
-
-        // Bước 4: Lặp qua tất cả các kết quả để tìm cái hợp lệ
-        for (match in allMatches) {
+        var intermediateApiUrl: String? = null
+        
+        mediaDefRegex.findAll(embedHtmlContent).forEach { match ->
             val mediaJson = match.groupValues[1]
             val hlsSource = try {
                 parseJson<List<InitialMedia>>(mediaJson).firstOrNull { it.videoUrl?.contains("/hls/") == true }
-            } catch (e: Exception) {
-                null
-            }
-
-            // Nếu tìm thấy một nguồn HLS hợp lệ, lấy URL và dừng vòng lặp
+            } catch (e: Exception) { null }
+            
             if (hlsSource?.videoUrl != null) {
                 intermediateApiUrl = hlsSource.videoUrl
-                break
+                return@forEach
             }
         }
 
         if (intermediateApiUrl == null) return false
         
-        // Bước 5: Dọn dẹp URL và gọi API để lấy link cuối cùng
-        val correctedApiUrl = intermediateApiUrl.replace("\\/", "/")
+        // Bước 4: Dọn dẹp URL và gọi API để lấy link cuối cùng
+        val correctedApiUrl = intermediateApiUrl!!.replace("\\/", "/")
         
         return try {
             val streamApiResponse = app.get(correctedApiUrl, referer = embedUrl, headers = browserHeaders).text
@@ -138,8 +149,7 @@ class YouPornProvider : MainAPI() {
     private fun Element.toSearchResult(): SearchResponse? {
         val href = this.selectFirst("a.video-box-image")?.attr("href") ?: return null
         var videoUrl = fixUrl(href)
-
-        // Đảm bảo URL có dấu "/" ở cuối ngay khi tạo
+        
         if (videoUrl.contains("/watch/") && !videoUrl.endsWith("/")) {
             videoUrl += "/"
         }
