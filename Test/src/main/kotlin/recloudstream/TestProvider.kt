@@ -14,15 +14,7 @@ class YouPornProvider : MainAPI() {
     override var supportedTypes = setOf(TvType.NSFW)
     override val hasMainPage = true
 
-    // --- Data Classes ---
-    private data class InitialMedia(
-        @JsonProperty("videoUrl") val videoUrl: String?,
-    )
-    private data class FinalStreamInfo(
-        @JsonProperty("videoUrl") val videoUrl: String?,
-        @JsonProperty("quality") val quality: String?,
-    )
-
+    // Header chung để giả dạng trình duyệt
     private val browserHeaders = mapOf(
         "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
         "Cookie" to "platform=mobile; access=1;"
@@ -65,10 +57,9 @@ class YouPornProvider : MainAPI() {
             this.recommendations = recommendations
         }
     }
-    
+
     // Hàm tiện ích để gửi log debug
     private fun sendDebugCallback(callback: (ExtractorLink) -> Unit, message: String) {
-        // *** ĐÃ SỬA: Gọi ExtractorLink với đầy đủ tên tham số ***
         callback(
             ExtractorLink(
                 source = this.name,
@@ -80,102 +71,67 @@ class YouPornProvider : MainAPI() {
             )
         )
     }
-    
-    // Hàm tiện ích để trích xuất JSON
-    private fun extractJsonArray(htmlContent: String, key: String): String? {
-        val keyIndex = htmlContent.indexOf(key)
-        if (keyIndex == -1) return null
-        val startIndex = htmlContent.indexOf('[', keyIndex)
-        if (startIndex == -1) return null
-        var bracketCount = 1
-        for (i in (startIndex + 1) until htmlContent.length) {
-            when (htmlContent[i]) {
-                '[' -> bracketCount++
-                ']' -> bracketCount--
-            }
-            if (bracketCount == 0) {
-                return htmlContent.substring(startIndex, i + 1)
-            }
-        }
-        return null
-    }
 
     /**
-     * Hàm `loadLinks` được viết lại hoàn toàn để thêm log chi tiết.
+     * Hàm `loadLinks` được viết lại để tìm các khối JavaScript cụ thể trong trang watch.
      */
     override suspend fun loadLinks(
-        dataUrl: String, // Đây là link /watch/
+        dataUrl: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        sendDebugCallback(callback, "1. Starting loadLinks function...")
+        sendDebugCallback(callback, "1. Starting analysis on watch page...")
         
-        // Đảm bảo URL có dấu "/" ở cuối
         val correctedDataUrl = if (dataUrl.contains("/watch/") && !dataUrl.endsWith("/")) "$dataUrl/" else dataUrl
-        
-        val videoId = """/watch/(\d+)/""".toRegex().find(correctedDataUrl)?.groupValues?.get(1)
-        if (videoId == null) {
-            sendDebugCallback(callback, "1.1 FAILED to get videoId from URL: $correctedDataUrl")
-            return true
-        }
-        sendDebugCallback(callback, "1.1 OK, videoId is: $videoId")
-        
-        val embedUrl = "$mainUrl/embed/$videoId/"
-        sendDebugCallback(callback, "2. Built embed URL: $embedUrl")
-        
-        val embedHtmlContent = try {
-            app.get(embedUrl, referer = correctedDataUrl, headers = browserHeaders).text
-        } catch (e: Exception) {
-            sendDebugCallback(callback, "2.1 FAILED to fetch embed page: ${e.message}")
-            return true
-        }
-        sendDebugCallback(callback, "2.1 OK, fetched embed page content")
 
-        sendDebugCallback(callback, "3. Trying to extract mediaDefinition JSON...")
-        val mediaJson = extractJsonArray(embedHtmlContent, "\"mediaDefinition\"")
-        if (mediaJson == null) {
-             sendDebugCallback(callback, "3.1 FAILED to find mediaDefinition JSON in embed HTML")
-             return true
-        }
-        sendDebugCallback(callback, "3.1 OK, Found JSON: ${mediaJson.take(100)}...")
-        
-        sendDebugCallback(callback, "4. Parsing JSON for intermediate API URL...")
-        val intermediateApiUrl = try {
-            parseJson<List<InitialMedia>>(mediaJson).firstOrNull { it.videoUrl?.contains("/hls/") == true }?.videoUrl
+        val watchHtmlContent = try {
+            app.get(correctedDataUrl, referer = mainUrl, headers = browserHeaders).text
         } catch (e: Exception) {
-            sendDebugCallback(callback, "4.1 FAILED to parse JSON: ${e.message}")
+            sendDebugCallback(callback, "2. FAILED to fetch watch page: ${e.message}")
             return true
         }
-        if (intermediateApiUrl == null) {
-            sendDebugCallback(callback, "4.1 FAILED, no HLS videoUrl found in JSON")
-            return true
-        }
-        sendDebugCallback(callback, "4.1 OK, API URL is: ${intermediateApiUrl.take(100)}...")
+        sendDebugCallback(callback, "2. OK, fetched watch page content.")
 
-        val correctedApiUrl = intermediateApiUrl.replace("\\/", "/")
-        sendDebugCallback(callback, "5. Corrected API URL: ${correctedApiUrl.take(100)}...")
+        var foundData = false
 
-        try {
-            val streamApiResponse = app.get(correctedApiUrl, referer = embedUrl, headers = browserHeaders).text
-            sendDebugCallback(callback, "6. API Call OK. Response: ${streamApiResponse.take(100)}...")
-            
-            val links = parseJson<List<FinalStreamInfo>>(streamApiResponse)
-            sendDebugCallback(callback, "7. Parsing final links... Found ${links.size} qualities.")
-            links.forEach { streamInfo ->
-                streamInfo.videoUrl?.let { M3u8Helper.generateM3u8(name, it, mainUrl, source = this.name).forEach(callback) }
-            }
-        } catch (e: Exception) {
-            sendDebugCallback(callback, "6. FAILED API Call: ${e.message}")
+        // Cách 1: Tìm `page_params.generalVideoConfig`
+        sendDebugCallback(callback, "3. Trying to find 'generalVideoConfig'...")
+        val generalConfigRegex = """page_params\.generalVideoConfig\s*=\s*(\{.+?\});""".toRegex()
+        var match = generalConfigRegex.find(watchHtmlContent)
+        if (match != null) {
+            val configJson = match.groupValues[1]
+            sendDebugCallback(callback, "3.1 SUCCESS, Found 'generalVideoConfig':")
+            sendDebugCallback(callback, configJson.take(300))
+            foundData = true
+        } else {
+            sendDebugCallback(callback, "3.1 FAILED to find 'generalVideoConfig'")
         }
         
-        return true 
+        // Cách 2: Tìm `page_params.video_player_setup`
+        sendDebugCallback(callback, "4. Trying to find 'video_player_setup'...")
+        val playerSetupRegex = """page_params\.video_player_setup\s*=\s*(\{.+?\});""".toRegex()
+        match = playerSetupRegex.find(watchHtmlContent)
+        if (match != null) {
+            val setupJson = match.groupValues[1]
+            sendDebugCallback(callback, "4.1 SUCCESS, Found 'video_player_setup':")
+            sendDebugCallback(callback, setupJson.take(300))
+            foundData = true
+        } else {
+            sendDebugCallback(callback, "4.1 FAILED to find 'video_player_setup'")
+        }
+
+        if (!foundData) {
+            sendDebugCallback(callback, "5. ALL METHODS FAILED.")
+        }
+        
+        return true // Luôn trả về true để hiển thị log
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
         val href = this.selectFirst("a.video-box-image")?.attr("href") ?: return null
         var videoUrl = fixUrl(href)
-        
+
         if (videoUrl.contains("/watch/") && !videoUrl.endsWith("/")) {
             videoUrl += "/"
         }
