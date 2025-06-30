@@ -15,7 +15,8 @@ class SpankbangProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.NSFW)
 
     /**
-     * SỬA CẢNH BÁO #1: Sử dụng hàm `newMovieSearchResponse` thay vì constructor cũ.
+     * SỬA LỖI: Cập nhật hàm toSearchResponse để sử dụng đúng constructor
+     * và gán posterUrl bên trong lambda.
      */
     private fun Element.toSearchResponse(): SearchResponse? {
         val linkElement = this.selectFirst("a.thumb") ?: return null
@@ -23,21 +24,16 @@ class SpankbangProvider : MainAPI() {
         val title = linkElement.selectFirst("img")?.attr("alt")?.trim() ?: return null
         var posterUrl = this.selectFirst("img.cover, img.lazyload")?.attr("data-src")
 
-        if (href.isBlank() || title.isBlank() || posterUrl.isNullOrBlank()) {
-            return null
-        }
+        if (href.isBlank() || posterUrl.isNullOrBlank()) return null
 
         if (posterUrl.startsWith("//")) {
             posterUrl = "https:$posterUrl"
         }
 
-        return newMovieSearchResponse( // <-- Đã thay đổi
-            name = title,
-            url = fixUrl(href),
-            // apiName = this@SpankbangProvider.name,  // apiName được tự động thêm
-            type = TvType.Movie,
-            posterUrl = posterUrl,
-        )
+        // SỬA LỖI: Sử dụng named arguments và gán posterUrl trong lambda
+        return newMovieSearchResponse(name = title, url = fixUrl(href)) {
+            this.posterUrl = posterUrl
+        }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -48,10 +44,10 @@ class SpankbangProvider : MainAPI() {
         )
 
         /**
-         * SỬA CẢNH BÁO #2: Thay thế `apmap` bằng `coroutineScope` và `async`/`awaitAll`
-         * để xử lý bất đồng bộ một cách an toàn và hiện đại.
+         * SỬA LỖI: Sửa lại cấu trúc coroutineScope để hoạt động chính xác
+         * và tránh lỗi unresolved reference 'awaitAll'.
          */
-        val items = coroutineScope {
+        val homePageList = coroutineScope {
             sections.map { (sectionName, sectionUrl) ->
                 async {
                     try {
@@ -71,11 +67,8 @@ class SpankbangProvider : MainAPI() {
                 }
             }.awaitAll().filterNotNull()
         }
-        
-        /**
-         * SỬA CẢNH BÁO #3: Sử dụng hàm `newHomePageResponse` thay cho constructor cũ.
-         */
-        return newHomePageResponse(items) // <-- Đã thay đổi
+
+        return newHomePageResponse(homePageList)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
