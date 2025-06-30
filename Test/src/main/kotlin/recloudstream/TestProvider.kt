@@ -3,81 +3,74 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.json.JSONObject
+import org.jsoup.nodes.Element // Cần import Element
 
-// Lớp Provider chính, kế thừa từ MainAPI
 class SpankbangProvider : MainAPI() {
-    // Thông tin cơ bản về provider
     override var mainUrl = "https://spankbang.party"
     override var name = "SpankBang"
     override var lang = "en"
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
 
-    // SỬA LỖI: Cấu trúc lại MainPage để tải dữ liệu đúng cách
+    // Hàm tiện ích để phân tích cú pháp các mục video từ một Element Jsoup
+    private fun Element.toSearchResponse(): SearchResponse? {
+        val linkElement = this.selectFirst("a.thumb") ?: return null
+        val href = linkElement.attr("href")
+        val title = linkElement.attr("title").trim()
+        val posterUrl = this.selectFirst("img.cover")?.attr("data-src")
+
+        if (href.isBlank() || title.isBlank() || posterUrl.isNullOrBlank()) {
+            return null
+        }
+
+        return MovieSearchResponse(
+            name = title,
+            url = fixUrl(href),
+            apiName = this@SpankbangProvider.name,
+            type = TvType.Movie,
+            posterUrl = posterUrl
+        )
+    }
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val items = mutableListOf<HomePageList>()
-        val sections = listOf(
+        val document = app.get(mainUrl).document
+        val homePageList = mutableListOf<HomePageList>()
+
+        val mainSections = mapOf(
             "Trending Videos" to "/trending_videos/",
             "New Videos" to "/new_videos/",
             "Popular Videos" to "/most_popular/"
         )
 
-        // Tải và phân tích dữ liệu cho từng mục trên trang chủ
-        sections.forEach { (sectionName, sectionUrl) ->
+        mainSections.forEach { (sectionName, sectionUrl) ->
             try {
-                val document = app.get(mainUrl + sectionUrl).document
-                val videoList = document.select("div.video-item").mapNotNull { element ->
-                    val link = element.selectFirst("a.thumb")
-                    val href = link?.attr("href") ?: return@mapNotNull null
-                    val title = link.attr("title").trim()
-                    val posterUrl = element.selectFirst("img.cover")?.attr("data-src")
-
-                    MovieSearchResponse(
-                        name = title,
-                        url = fixUrl(href),
-                        apiName = this.name,
-                        type = TvType.Movie,
-                        posterUrl = posterUrl
-                    )
+                // SỬA LỖI: Tải trực tiếp url và lấy document
+                val sectionDocument = app.get(mainUrl + sectionUrl).document
+                // SỬA LỖI: Sử dụng hàm tiện ích `toSearchResponse` đã tạo
+                val videoList = sectionDocument.select("div.video-item").mapNotNull {
+                    it.toSearchResponse()
                 }
                 if (videoList.isNotEmpty()) {
-                    items.add(HomePageList(sectionName, videoList))
+                    homePageList.add(HomePageList(sectionName, videoList))
                 }
             } catch (e: Exception) {
-                // Bỏ qua nếu có lỗi tải một mục
                 e.printStackTrace()
             }
         }
 
-        return HomePageResponse(items)
+        return HomePageResponse(homePageList)
     }
 
-    // Hàm phân tích HTML để lấy danh sách phim (dùng cho tìm kiếm)
-    private fun parseSearch(html: String): List<SearchResponse> {
-        val document = app.parseHTML(html)
+    override suspend fun search(query: String): List<SearchResponse> {
+        val searchUrl = "$mainUrl/s/${query.replace(" ", "+")}/"
+        val document = app.get(searchUrl).document
+        // SỬA LỖI: Sử dụng hàm tiện ích `toSearchResponse`
         return document.select("div.video-item").mapNotNull {
-            val link = it.selectFirst("a.thumb") ?: return@mapNotNull null
-            val href = link.attr("href")
-            val title = link.attr("title").trim()
-            val posterUrl = it.selectFirst("img.cover")?.attr("data-src")
-            MovieSearchResponse(
-                title,
-                fixUrl(href),
-                this.name,
-                TvType.Movie,
-                posterUrl,
-            )
+            it.toSearchResponse()
         }
     }
 
-    // Hàm xử lý tìm kiếm
-    override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/s/${query.replace(" ", "+")}/"
-        val response = app.get(searchUrl)
-        return parseSearch(response.text)
-    }
-    
-    // SỬA LỖI: Implement hàm load một cách đầy đủ
+    // SỬA LỖI: Sửa lại hàm load và các tham số của `newMovieLoadResponse`
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
         val title = document.selectFirst("h1.main_content_title")?.text()?.trim()
@@ -85,32 +78,22 @@ class SpankbangProvider : MainAPI() {
             ?: "Video"
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         val description = document.selectFirst("meta[name=description]")?.attr("content")
-        val recommendations = document.select("div.video-item").mapNotNull {
-            val link = it.selectFirst("a.thumb") ?: return@mapNotNull null
-            val href = link.attr("href")
-            val recTitle = link.attr("title").trim()
-            val recPosterUrl = it.selectFirst("img.cover")?.attr("data-src")
-            MovieSearchResponse(
-                recTitle,
-                fixUrl(href),
-                this.name,
-                TvType.Movie,
-                recPosterUrl,
-            )
+        val recommendations = document.select("div.similar > div.video-list > div.video-item").mapNotNull {
+            it.toSearchResponse()
         }
 
         return newMovieLoadResponse(
             name = title,
-            url = url,
+            url = url, // `url` là tham số đúng, không phải `dataUrl`
             type = TvType.NSFW,
-            posterUrl = poster,
-            plot = description,
-            recommendations = recommendations
-        )
+        ) {
+            // SỬA LỖI: Thêm các thuộc tính tùy chọn vào bên trong lambda
+            this.posterUrl = poster
+            this.plot = description
+            this.recommendations = recommendations
+        }
     }
 
-
-    // ⭐ HÀM CẬP NHẬT: Sử dụng cấu trúc ExtractorLink mới và sửa lỗi type mismatch
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -126,7 +109,6 @@ class SpankbangProvider : MainAPI() {
         val streamDataJson = matchResult.groupValues[1]
         val streamData = JSONObject(streamDataJson)
 
-        // SỬA LỖI: Duyệt mảng JSON đúng cách để tránh type mismatch
         streamData.optJSONArray("m3u8")?.let { arr ->
             for (i in 0 until arr.length()) {
                 val m3u8Url = arr.getString(i)
