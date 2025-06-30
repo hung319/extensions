@@ -12,17 +12,22 @@ class SpankbangProvider : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
 
-    // SỬA LỖI: Loại bỏ tham số `quality` không hợp lệ
+    /**
+     * SỬA LỖI LỚN: Viết lại hoàn toàn logic phân tích HTML để khớp với cấu trúc thực tế.
+     * Hàm này sẽ chuyển đổi một khối HTML `div.video-item` thành đối tượng SearchResponse.
+     */
     private fun Element.toSearchResponse(): SearchResponse? {
-        val linkElement = this.selectFirst("a[href*=/video/]") ?: return null
-        val href = linkElement.attr("href")
-        val title = linkElement.attr("title").trim()
-        var posterUrl = this.selectFirst("img[data-src]")?.attr("data-src")
+        // Lấy link và tiêu đề từ thẻ <a> bên trong khối thông tin
+        val titleElement = this.selectFirst("p.line-clamp-2 a")
+        val title = titleElement?.attr("title")?.trim() ?: return null
+        val href = titleElement.attr("href")
 
-        if (href.isBlank() || title.isBlank() || posterUrl.isNullOrBlank()) {
-            return null
-        }
+        // Lấy ảnh poster từ thuộc tính 'data-src' của thẻ img
+        var posterUrl = this.selectFirst("img[data-src]")?.attr("data-src")?.trim()
 
+        if (href.isBlank() || posterUrl.isNullOrBlank()) return null
+        
+        // Xử lý trường hợp URL ảnh bắt đầu bằng "//"
         if (posterUrl.startsWith("//")) {
             posterUrl = "https:$posterUrl"
         }
@@ -33,8 +38,6 @@ class SpankbangProvider : MainAPI() {
             apiName = this@SpankbangProvider.name,
             type = TvType.Movie,
             posterUrl = posterUrl
-            // Tham số `quality` đã được loại bỏ để sửa lỗi build.
-            // Chất lượng thực tế của luồng sẽ được xử lý trong `loadLinks`.
         )
     }
 
@@ -42,58 +45,37 @@ class SpankbangProvider : MainAPI() {
         val document = app.get(mainUrl).document
         val homePageList = mutableListOf<HomePageList>()
 
-        val mainSections = mapOf(
-            "Trending Videos" to "/trending_videos/",
-            "New Videos" to "/new_videos/",
-            "Popular Videos" to "/most_popular/"
-        )
-
-        mainSections.forEach { (sectionName, sectionUrl) ->
-            try {
-                val sectionDocument = app.get(mainUrl + sectionUrl).document
-                val videoList = sectionDocument.select("div.video-item").mapNotNull {
-                    it.toSearchResponse()
-                }
-                if (videoList.isNotEmpty()) {
-                    homePageList.add(HomePageList(sectionName, videoList))
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
+        // Lấy các mục video từ trang chủ, ví dụ: "Recommended", "Creator Videos"
+        document.select("div[data-testid=video-list]").forEach { list ->
+            val title = list.parent()?.selectFirst("h1, h2")?.text()?.trim() ?: "Homepage"
+            val videos = list.select("div[data-testid=video-item]").mapNotNull { element ->
+                element.toSearchResponse()
             }
-        }
-
-        // Thêm các mục trên trang chủ nếu các mục trên không tải được
-        if (homePageList.isEmpty()) {
-            document.select("div[data-testid=video-list]").forEach { list ->
-                val title = list.parent()?.selectFirst("h2")?.text()?.trim() ?: "Recommended"
-                val videos = list.select("div.video-item").mapNotNull { element ->
-                    element.toSearchResponse()
-                }
-                if (videos.isNotEmpty()) {
-                    homePageList.add(HomePageList(title, videos))
-                }
+            if (videos.isNotEmpty()) {
+                homePageList.add(HomePageList(title, videos))
             }
         }
         
-        return HomePageResponse(homePageList)
+        return HomePageResponse(homePageList.filter { it.list.isNotEmpty() })
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/s/${query.replace(" ", "+")}/"
         val document = app.get(searchUrl).document
-        return document.select("div.video-item").mapNotNull {
+        // Sử dụng selector chính xác cho trang tìm kiếm
+        return document.select("div.main_results div.video-item").mapNotNull {
             it.toSearchResponse()
         }
     }
-    
+
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
         val title = document.selectFirst("h1.main_content_title")?.text()?.trim()
-            ?: document.selectFirst("meta[property=og:title]")?.attr("content")?.trim()
             ?: "Video"
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         val description = document.selectFirst("meta[name=description]")?.attr("content")
         
+        // Sửa lại selector cho video đề xuất
         val recommendations = document.select("div.similar div.video-item").mapNotNull {
             it.toSearchResponse()
         }
