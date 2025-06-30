@@ -66,7 +66,7 @@ class SpankbangProvider : MainAPI() {
         }
     }
     
-    // SỬA LỖI: Sửa tên tham số `url` thành `dataUrl` để khớp với API của bạn
+    // Sửa lỗi cuối cùng: Cung cấp đầy đủ tham số cho newMovieLoadResponse
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
         val title = document.selectFirst("h1.main_content_title")?.text()?.trim()
@@ -80,7 +80,8 @@ class SpankbangProvider : MainAPI() {
 
         return newMovieLoadResponse(
             name = title,
-            dataUrl = url, // <-- THAY ĐỔI Ở ĐÂY
+            url = url,      // <-- Thêm tham số còn thiếu
+            dataUrl = url,
             type = TvType.NSFW,
         ) {
             this.posterUrl = poster
