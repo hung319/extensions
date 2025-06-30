@@ -4,8 +4,10 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.json.JSONObject
 import org.jsoup.nodes.Element
+// SỬA LỖI #2: Thêm các import cần thiết cho coroutine
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.awaitAll
 
 class SpankbangProvider : MainAPI() {
     override var mainUrl = "https://spankbang.party"
@@ -14,10 +16,6 @@ class SpankbangProvider : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
 
-    /**
-     * SỬA LỖI: Cập nhật hàm toSearchResponse để sử dụng đúng constructor
-     * và gán posterUrl bên trong lambda.
-     */
     private fun Element.toSearchResponse(): SearchResponse? {
         val linkElement = this.selectFirst("a.thumb") ?: return null
         val href = linkElement.attr("href")
@@ -30,7 +28,6 @@ class SpankbangProvider : MainAPI() {
             posterUrl = "https:$posterUrl"
         }
 
-        // SỬA LỖI: Sử dụng named arguments và gán posterUrl trong lambda
         return newMovieSearchResponse(name = title, url = fixUrl(href)) {
             this.posterUrl = posterUrl
         }
@@ -42,14 +39,11 @@ class SpankbangProvider : MainAPI() {
             Pair("New Videos", "/new_videos/"),
             Pair("Popular", "/most_popular/")
         )
-
-        /**
-         * SỬA LỖI: Sửa lại cấu trúc coroutineScope để hoạt động chính xác
-         * và tránh lỗi unresolved reference 'awaitAll'.
-         */
+        
         val homePageList = coroutineScope {
             sections.map { (sectionName, sectionUrl) ->
-                async {
+                // SỬA LỖI #1: Chỉ định rõ kiểu dữ liệu trả về cho async
+                async<HomePageList?> {
                     try {
                         val document = app.get(mainUrl + sectionUrl).document
                         val videos = document.select("div.video-item").mapNotNull {
@@ -65,7 +59,7 @@ class SpankbangProvider : MainAPI() {
                         null
                     }
                 }
-            }.awaitAll().filterNotNull()
+            }.awaitAll().filterNotNull() // Bây giờ awaitAll() sẽ được nhận dạng
         }
 
         return newHomePageResponse(homePageList)
