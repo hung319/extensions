@@ -4,6 +4,8 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.json.JSONObject
 import org.jsoup.nodes.Element
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 
 class SpankbangProvider : MainAPI() {
     override var mainUrl = "https://spankbang.party"
@@ -12,6 +14,9 @@ class SpankbangProvider : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
 
+    /**
+     * SỬA CẢNH BÁO #1: Sử dụng hàm `newMovieSearchResponse` thay vì constructor cũ.
+     */
     private fun Element.toSearchResponse(): SearchResponse? {
         val linkElement = this.selectFirst("a.thumb") ?: return null
         val href = linkElement.attr("href")
@@ -26,43 +31,51 @@ class SpankbangProvider : MainAPI() {
             posterUrl = "https:$posterUrl"
         }
 
-        return MovieSearchResponse(
+        return newMovieSearchResponse( // <-- Đã thay đổi
             name = title,
             url = fixUrl(href),
-            apiName = this@SpankbangProvider.name,
+            // apiName = this@SpankbangProvider.name,  // apiName được tự động thêm
             type = TvType.Movie,
             posterUrl = posterUrl,
         )
     }
 
-    /**
-     * SỬA LỖI: Thay đổi hoàn toàn logic để không parse trang chủ.
-     * Thay vào đó, tải trực tiếp từ các trang danh mục ổn định.
-     */
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val items = mutableListOf<HomePageList>()
         val sections = listOf(
             Pair("Trending Videos", "/trending_videos/"),
             Pair("New Videos", "/new_videos/"),
             Pair("Popular", "/most_popular/")
         )
 
-        // Sử dụng apmap để tải các mục song song, tăng tốc độ load trang chủ
-        sections.apmap { (sectionName, sectionUrl) ->
-            try {
-                val document = app.get(mainUrl + sectionUrl).document
-                val videos = document.select("div.video-item").mapNotNull {
-                    it.toSearchResponse()
+        /**
+         * SỬA CẢNH BÁO #2: Thay thế `apmap` bằng `coroutineScope` và `async`/`awaitAll`
+         * để xử lý bất đồng bộ một cách an toàn và hiện đại.
+         */
+        val items = coroutineScope {
+            sections.map { (sectionName, sectionUrl) ->
+                async {
+                    try {
+                        val document = app.get(mainUrl + sectionUrl).document
+                        val videos = document.select("div.video-item").mapNotNull {
+                            it.toSearchResponse()
+                        }
+                        if (videos.isNotEmpty()) {
+                            HomePageList(sectionName, videos)
+                        } else {
+                            null
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        null
+                    }
                 }
-                if (videos.isNotEmpty()) {
-                    items.add(HomePageList(sectionName, videos))
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
+            }.awaitAll().filterNotNull()
         }
         
-        return HomePageResponse(items)
+        /**
+         * SỬA CẢNH BÁO #3: Sử dụng hàm `newHomePageResponse` thay cho constructor cũ.
+         */
+        return newHomePageResponse(items) // <-- Đã thay đổi
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
