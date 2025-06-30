@@ -14,7 +14,22 @@ class YouPornProvider : MainAPI() {
     override var supportedTypes = setOf(TvType.NSFW)
     override val hasMainPage = true
 
-    // --- Các hàm không thay đổi ---
+    // Data class để parse JSON chứa link API trung gian
+    private data class InitialMedia(
+        @JsonProperty("videoUrl") val videoUrl: String?,
+    )
+    
+    // Data class để parse JSON chứa link video cuối cùng
+    private data class FinalStreamInfo(
+        @JsonProperty("videoUrl") val videoUrl: String?,
+        @JsonProperty("quality") val quality: String?,
+    )
+
+    private val browserHeaders = mapOf(
+        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
+        "Cookie" to "platform=mobile; access=1"
+    )
+
     override val mainPage = mainPageOf(
         "/?page=" to "Recommended",
         "/top_rated/?page=" to "Top Rated",
@@ -38,87 +53,93 @@ class YouPornProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url, headers = browserHeaders).document
+        // Đảm bảo URL có dấu "/" ở cuối
+        val correctedUrl = if (url.contains("/watch/") && !url.endsWith("/")) "$url/" else url
+        val document = app.get(correctedUrl, headers = browserHeaders).document
         val title = document.selectFirst("h1.videoTitle")?.text()?.trim() ?: "Untitled"
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         val description = document.selectFirst("meta[name=description]")?.attr("content")
         val recommendations = document.select("div#relatedVideosWrapper div.video-box").mapNotNull { it.toSearchResult() }
 
-        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
+        return newMovieLoadResponse(title, correctedUrl, TvType.NSFW, correctedUrl) {
             this.posterUrl = poster
             this.plot = description
             this.recommendations = recommendations
         }
     }
-    
-    // Header chung để giả dạng trình duyệt
-    private val browserHeaders = mapOf(
-        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
-        "Cookie" to "platform=mobile; access=1"
-    )
 
-    // Hàm tiện ích để gửi log debug
-    private fun sendDebugCallback(callback: (ExtractorLink) -> Unit, message: String) {
-        callback(
-            ExtractorLink(
-                source = this.name,
-                name = "DEBUG: $message",
-                url = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
-                referer = mainUrl,
-                quality = 1,
-                type = ExtractorLinkType.VIDEO
-            )
-        )
-    }
-    
     /**
-     * Hàm `loadLinks` được viết lại để tìm trực tiếp chuỗi URL chứa 'media/hls/'
+     * Hàm `loadLinks` cuối cùng, với logic chuẩn xác nhất.
      */
     override suspend fun loadLinks(
-        dataUrl: String,
+        dataUrl: String, // Đây là link /watch/
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        sendDebugCallback(callback, "1. Starting extractor...")
-
-        val videoId = """/watch/(\d+)/""".toRegex().find(dataUrl)?.groupValues?.get(1)
-        if (videoId == null) {
-            sendDebugCallback(callback, "1.1 FAILED to get videoId from URL: $dataUrl")
-            return true
-        }
-        sendDebugCallback(callback, "1.1 OK, videoId is: $videoId")
-        
+        // Bước 1: Lấy ID và xây dựng URL của trang embed
+        val videoId = """/watch/(\d+)/""".toRegex().find(dataUrl)?.groupValues?.get(1) ?: return false
         val embedUrl = "$mainUrl/embed/$videoId/"
-        sendDebugCallback(callback, "2. Built embed URL: $embedUrl")
         
-        val embedHtmlContent = try {
-            app.get(embedUrl, referer = dataUrl, headers = browserHeaders).text
-        } catch (e: Exception) {
-            sendDebugCallback(callback, "2.1 FAILED to fetch embed page: ${e.message}")
-            return true
-        }
-        sendDebugCallback(callback, "2.1 OK, fetched embed page content. Searching for URL...")
+        // Bước 2: Tải trang embed với header chuẩn
+        val embedHtmlContent = app.get(embedUrl, referer = dataUrl, headers = browserHeaders).text
+        var intermediateApiUrl: String? = null
 
-        // *** THAY ĐỔI CHÍNH: Dùng Regex để tìm trực tiếp URL chứa /media/hls/ ***
-        val apiRegex = """"(https://www\.youporn\.com/media/hls/\?s=[^"]+)"""".toRegex()
-        val match = apiRegex.find(embedHtmlContent)
-        
-        if (match != null) {
-            val foundUrl = match.groupValues[1]
-            sendDebugCallback(callback, "3. SUCCESS, Found URL:")
-            sendDebugCallback(callback, foundUrl.take(300))
-        } else {
-            sendDebugCallback(callback, "3. FAILED to find any URL containing '/media/hls/'")
+        // Bước 3: Dùng Regex để tìm TẤT CẢ các đoạn mediaDefinition
+        val mediaDefRegex = """"mediaDefinition"\s*:\s*(\[.*?\])""".toRegex()
+        val allMatches = mediaDefRegex.findAll(embedHtmlContent)
+
+        // Bước 4: Lặp qua tất cả các kết quả để tìm cái hợp lệ
+        for (match in allMatches) {
+            val mediaJson = match.groupValues[1]
+            val hlsSource = try {
+                parseJson<List<InitialMedia>>(mediaJson).firstOrNull { it.videoUrl?.contains("/hls/") == true }
+            } catch (e: Exception) {
+                null
+            }
+
+            // Nếu tìm thấy một nguồn HLS hợp lệ, lấy URL và dừng vòng lặp
+            if (hlsSource?.videoUrl != null) {
+                intermediateApiUrl = hlsSource.videoUrl
+                break
+            }
         }
+
+        if (intermediateApiUrl == null) return false
         
-        return true // Luôn trả về true để hiển thị log
+        // Bước 5: Dọn dẹp URL và gọi API để lấy link cuối cùng
+        val correctedApiUrl = intermediateApiUrl.replace("\\/", "/")
+        
+        return try {
+            val streamApiResponse = app.get(correctedApiUrl, referer = embedUrl, headers = browserHeaders).text
+            var foundLinks = false
+            parseJson<List<FinalStreamInfo>>(streamApiResponse).forEach { streamInfo ->
+                val finalStreamUrl = streamInfo.videoUrl ?: return@forEach
+                val qualityInt = streamInfo.quality?.toIntOrNull()
+                callback(
+                    ExtractorLink(
+                        source = this.name,
+                        name = "${this.name} ${streamInfo.quality}p",
+                        url = finalStreamUrl,
+                        referer = mainUrl,
+                        quality = qualityInt ?: 0,
+                        type = ExtractorLinkType.M3U8
+                    )
+                )
+                foundLinks = true
+            }
+            foundLinks
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
         val href = this.selectFirst("a.video-box-image")?.attr("href") ?: return null
         var videoUrl = fixUrl(href)
 
+        // Đảm bảo URL có dấu "/" ở cuối ngay khi tạo
         if (videoUrl.contains("/watch/") && !videoUrl.endsWith("/")) {
             videoUrl += "/"
         }
