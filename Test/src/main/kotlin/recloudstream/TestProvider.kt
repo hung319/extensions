@@ -12,22 +12,17 @@ class SpankbangProvider : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
 
-    /**
-     * SỬA LỖI LỚN: Viết lại hoàn toàn logic phân tích HTML để khớp với cấu trúc thực tế.
-     * Hàm này sẽ chuyển đổi một khối HTML `div.video-item` thành đối tượng SearchResponse.
-     */
+    // Hàm tiện ích để phân tích một video item
     private fun Element.toSearchResponse(): SearchResponse? {
-        // Lấy link và tiêu đề từ thẻ <a> bên trong khối thông tin
-        val titleElement = this.selectFirst("p.line-clamp-2 a")
-        val title = titleElement?.attr("title")?.trim() ?: return null
+        val titleElement = this.selectFirst("a.thumb") ?: return null
         val href = titleElement.attr("href")
+        val title = titleElement.attr("title").trim()
+        var posterUrl = this.selectFirst("img.cover")?.attr("data-src")
 
-        // Lấy ảnh poster từ thuộc tính 'data-src' của thẻ img
-        var posterUrl = this.selectFirst("img[data-src]")?.attr("data-src")?.trim()
+        if (href.isBlank() || title.isBlank() || posterUrl.isNullOrBlank()) {
+            return null
+        }
 
-        if (href.isBlank() || posterUrl.isNullOrBlank()) return null
-        
-        // Xử lý trường hợp URL ảnh bắt đầu bằng "//"
         if (posterUrl.startsWith("//")) {
             posterUrl = "https:$posterUrl"
         }
@@ -37,60 +32,100 @@ class SpankbangProvider : MainAPI() {
             url = fixUrl(href),
             apiName = this@SpankbangProvider.name,
             type = TvType.Movie,
-            posterUrl = posterUrl
+            posterUrl = posterUrl,
         )
     }
 
+    /**
+     * SỬA LỖI #2: Thêm hàm parsePage để xử lý phân trang
+     * Hàm này sẽ được gọi bởi cả `getMainPage` và `load`
+     */
+    private suspend fun parsePage(url: String): MovieSearchResponse {
+        val document = app.get(url).document
+        val list = document.select("div.video-list > div.video-item").mapNotNull {
+            it.toSearchResponse()
+        }
+        
+        // Tìm link của trang tiếp theo
+        val nextUrl = document.selectFirst("li.next > a")?.attr("href")
+        
+        return newMovieSearchResponse(document.title(), list) {
+            this.nextUrl = nextUrl?.let { fixUrl(it) }
+        }
+    }
+
+    /**
+     * SỬA LỖI #1: Cấu trúc lại trang chủ và thêm layoutType
+     */
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get(mainUrl).document
         val homePageList = mutableListOf<HomePageList>()
 
-        // Lấy các mục video từ trang chủ, ví dụ: "Recommended", "Creator Videos"
-        document.select("div[data-testid=video-list]").forEach { list ->
-            val title = list.parent()?.selectFirst("h1, h2")?.text()?.trim() ?: "Homepage"
-            val videos = list.select("div[data-testid=video-item]").mapNotNull { element ->
-                element.toSearchResponse()
-            }
-            if (videos.isNotEmpty()) {
-                homePageList.add(HomePageList(title, videos))
+        val sections = listOf(
+            Pair("Trending Videos", "/trending_videos/"),
+            Pair("New Videos", "/new_videos/"),
+            Pair("Popular", "/most_popular/")
+        )
+
+        sections.forEach { (sectionName, sectionUrl) ->
+            try {
+                // Chỉ tải trang đầu tiên cho trang chủ
+                val response = parsePage(mainUrl + sectionUrl)
+                if (response.list.isNotEmpty()) {
+                    homePageList.add(
+                        HomePageList(
+                            sectionName,
+                            response.list,
+                            // Thêm layoutType để hiển thị dạng lưới
+                            layoutType = HomePageListLayout.Grid,
+                            // Thêm url để CloudStream biết cách tải trang tiếp theo
+                            url = response.nextUrl 
+                        )
+                    )
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
         }
         
-        return HomePageResponse(homePageList.filter { it.list.isNotEmpty() })
+        return HomePageResponse(homePageList, hasNext = true)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/s/${query.replace(" ", "+")}/"
-        val document = app.get(searchUrl).document
-        // Sử dụng selector chính xác cho trang tìm kiếm
-        return document.select("div.main_results div.video-item").mapNotNull {
-            it.toSearchResponse()
-        }
+        return parsePage(searchUrl).list
     }
-
+    
+    /**
+     * SỬA LỖI #2: Cập nhật hàm `load` để xử lý cả trang danh sách và trang chi tiết
+     */
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url).document
-        val title = document.selectFirst("h1.main_content_title")?.text()?.trim()
-            ?: "Video"
-        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
-        val description = document.selectFirst("meta[name=description]")?.attr("content")
-        
-        // Sửa lại selector cho video đề xuất
-        val recommendations = document.select("div.similar div.video-item").mapNotNull {
-            it.toSearchResponse()
-        }
+        // Kiểm tra xem URL là trang video chi tiết hay trang danh sách
+        if (url.contains("/video/")) {
+            // Đây là trang video chi tiết, lấy link stream
+            val document = app.get(url).document
+            val title = document.selectFirst("h1.main_content_title")?.text()?.trim() ?: "Video"
+            val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
+            val description = document.selectFirst("meta[name=description]")?.attr("content")
+            val recommendations = document.select("div.similar div.video-item").mapNotNull {
+                it.toSearchResponse()
+            }
 
-        return newMovieLoadResponse(
-            name = title,
-            url = url,
-            dataUrl = url,
-            type = TvType.NSFW,
-        ) {
-            this.posterUrl = poster
-            this.plot = description
-            this.recommendations = recommendations
+            return newMovieLoadResponse(
+                name = title,
+                url = url,
+                dataUrl = url,
+                type = TvType.NSFW,
+            ) {
+                this.posterUrl = poster
+                this.plot = description
+                this.recommendations = recommendations
+            }
+        } else {
+            // Đây là trang danh sách (category/search), tải danh sách video và phân trang
+            return parsePage(url)
         }
     }
+
 
     override suspend fun loadLinks(
         data: String,
