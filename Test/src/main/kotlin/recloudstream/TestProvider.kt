@@ -12,20 +12,13 @@ class SpankbangProvider : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
 
-    /**
-     * SỬA LỖI: Cập nhật lại logic lấy tiêu đề để không bị dính thông tin thừa.
-     * Tên video sẽ được lấy từ thuộc tính `alt` của ảnh.
-     */
     private fun Element.toSearchResponse(): SearchResponse? {
         val linkElement = this.selectFirst("a.thumb") ?: return null
         val href = linkElement.attr("href")
-
-        // Lấy tiêu đề từ thuộc tính "alt" của ảnh, đây là nơi chứa tên video chính xác
         val title = linkElement.selectFirst("img")?.attr("alt")?.trim() ?: return null
-
         var posterUrl = this.selectFirst("img.cover, img.lazyload")?.attr("data-src")
 
-        if (href.isBlank() || posterUrl.isNullOrBlank()) {
+        if (href.isBlank() || title.isBlank() || posterUrl.isNullOrBlank()) {
             return null
         }
 
@@ -42,13 +35,19 @@ class SpankbangProvider : MainAPI() {
         )
     }
 
+    /**
+     * SỬA LỖI: Sử dụng selector `div[data-testid=video-list]` chính xác hơn để tìm các danh sách video
+     * trên trang chủ.
+     */
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(mainUrl).document
         val homePageList = mutableListOf<HomePageList>()
 
-        document.select("div.video-list").forEach { list ->
-            val title = list.parent()?.selectFirst("h2")?.text()?.trim() ?: "Recommended"
-            val videos = list.select("div.video-item").mapNotNull { element ->
+        // Selector `data-testid` ổn định hơn class name.
+        document.select("div[data-testid=video-list]").forEach { list ->
+            // Tìm tiêu đề của danh sách ở thẻ h1/h2 gần nhất phía trên nó
+            val title = list.parent()?.selectFirst("h1, h2")?.text()?.trim() ?: "Recommended"
+            val videos = list.select("div[data-testid=video-item]").mapNotNull { element ->
                 element.toSearchResponse()
             }
             if (videos.isNotEmpty()) {
@@ -56,7 +55,7 @@ class SpankbangProvider : MainAPI() {
             }
         }
         
-        return HomePageResponse(homePageList.filter { it.list.isNotEmpty() })
+        return HomePageResponse(homePageList)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
