@@ -12,14 +12,26 @@ class SpankbangProvider : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
 
+    /**
+     * SỬA LỖI: Đây là hàm tiện ích được viết lại hoàn toàn để phân tích cú pháp
+     * một 'video-item' một cách chính xác và ổn định hơn.
+     */
     private fun Element.toSearchResponse(): SearchResponse? {
-        val linkElement = this.selectFirst("a.thumb") ?: return null
+        // Tìm thẻ <a> chính chứa link và tiêu đề. Selector này ổn định hơn.
+        val linkElement = this.selectFirst("a[href*=/video/]") ?: return null
         val href = linkElement.attr("href")
         val title = linkElement.attr("title").trim()
-        val posterUrl = this.selectFirst("img.cover")?.attr("data-src")
+
+        // Tìm ảnh thumbnail, chúng thường được tải lười (lazy-loaded) qua thuộc tính 'data-src'
+        var posterUrl = this.selectFirst("img[data-src]")?.attr("data-src")
 
         if (href.isBlank() || title.isBlank() || posterUrl.isNullOrBlank()) {
             return null
+        }
+        
+        // Đảm bảo URL của ảnh là tuyệt đối
+        if (posterUrl.startsWith("//")) {
+            posterUrl = "https:$posterUrl"
         }
 
         return MovieSearchResponse(
@@ -27,7 +39,9 @@ class SpankbangProvider : MainAPI() {
             url = fixUrl(href),
             apiName = this@SpankbangProvider.name,
             type = TvType.Movie,
-            posterUrl = posterUrl
+            posterUrl = posterUrl,
+            // Thử lấy chất lượng video từ các huy hiệu (badge) nếu có
+            quality = if (this.select("span.hd, span.h").isNotEmpty()) TvType.HD else null
         )
     }
 
@@ -35,25 +49,36 @@ class SpankbangProvider : MainAPI() {
         val document = app.get(mainUrl).document
         val homePageList = mutableListOf<HomePageList>()
 
-        val mainSections = mapOf(
-            "Trending Videos" to "/trending_videos/",
-            "New Videos" to "/new_videos/",
-            "Popular Videos" to "/most_popular/"
-        )
-
-        mainSections.forEach { (sectionName, sectionUrl) ->
-            try {
-                val sectionDocument = app.get(mainUrl + sectionUrl).document
-                val videoList = sectionDocument.select("div.video-item").mapNotNull {
-                    it.toSearchResponse()
-                }
-                if (videoList.isNotEmpty()) {
-                    homePageList.add(HomePageList(sectionName, videoList))
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
+        // Lấy các mục video trực tiếp từ trang chủ
+        document.select("div[data-testid=video-list]").forEach { list ->
+            val title = list.parent()?.selectFirst("h2")?.text()?.trim() ?: "Recommended"
+            val videos = list.select("div.video-item").mapNotNull { element ->
+                element.toSearchResponse()
+            }
+            if (videos.isNotEmpty()) {
+                homePageList.add(HomePageList(title, videos))
             }
         }
+        
+        // Thêm các mục từ các trang khác nếu trang chủ không có đủ
+        if (homePageList.isEmpty()) {
+             val mainSections = mapOf(
+                "Trending Videos" to "/trending_videos/",
+                "New Videos" to "/new_videos/"
+            )
+            mainSections.forEach { (sectionName, sectionUrl) ->
+                 try {
+                    val sectionDocument = app.get(mainUrl + sectionUrl).document
+                    val videoList = sectionDocument.select("div.video-item").mapNotNull { it.toSearchResponse() }
+                    if (videoList.isNotEmpty()) {
+                        homePageList.add(HomePageList(sectionName, videoList))
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
+
 
         return HomePageResponse(homePageList)
     }
@@ -66,7 +91,6 @@ class SpankbangProvider : MainAPI() {
         }
     }
     
-    // Sửa lỗi cuối cùng: Cung cấp đầy đủ tham số cho newMovieLoadResponse
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
         val title = document.selectFirst("h1.main_content_title")?.text()?.trim()
@@ -74,13 +98,15 @@ class SpankbangProvider : MainAPI() {
             ?: "Video"
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         val description = document.selectFirst("meta[name=description]")?.attr("content")
-        val recommendations = document.select("div.similar > div.video-list > div.video-item").mapNotNull {
+        
+        // Sửa lại selector cho video đề xuất
+        val recommendations = document.select("div.similar div.video-item").mapNotNull {
             it.toSearchResponse()
         }
 
         return newMovieLoadResponse(
             name = title,
-            url = url,      // <-- Thêm tham số còn thiếu
+            url = url,
             dataUrl = url,
             type = TvType.NSFW,
         ) {
@@ -96,9 +122,7 @@ class SpankbangProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val response = app.get(data)
-        val document = response.text
-
+        val document = app.get(data).text
         val streamDataRegex = Regex("""var stream_data = (\{.*?\});""")
         val matchResult = streamDataRegex.find(document) ?: return false
 
@@ -139,7 +163,6 @@ class SpankbangProvider : MainAPI() {
                 }
             }
         }
-
         return true
     }
 }
