@@ -36,26 +36,33 @@ class SpankbangProvider : MainAPI() {
     }
 
     /**
-     * SỬA LỖI: Sử dụng selector `div[data-testid=video-list]` chính xác hơn để tìm các danh sách video
-     * trên trang chủ.
+     * SỬA LỖI: Thay đổi hoàn toàn logic để không parse trang chủ.
+     * Thay vào đó, tải trực tiếp từ các trang danh mục ổn định.
      */
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get(mainUrl).document
-        val homePageList = mutableListOf<HomePageList>()
+        val items = mutableListOf<HomePageList>()
+        val sections = listOf(
+            Pair("Trending Videos", "/trending_videos/"),
+            Pair("New Videos", "/new_videos/"),
+            Pair("Popular", "/most_popular/")
+        )
 
-        // Selector `data-testid` ổn định hơn class name.
-        document.select("div[data-testid=video-list]").forEach { list ->
-            // Tìm tiêu đề của danh sách ở thẻ h1/h2 gần nhất phía trên nó
-            val title = list.parent()?.selectFirst("h1, h2")?.text()?.trim() ?: "Recommended"
-            val videos = list.select("div[data-testid=video-item]").mapNotNull { element ->
-                element.toSearchResponse()
-            }
-            if (videos.isNotEmpty()) {
-                homePageList.add(HomePageList(title, videos))
+        // Sử dụng apmap để tải các mục song song, tăng tốc độ load trang chủ
+        sections.apmap { (sectionName, sectionUrl) ->
+            try {
+                val document = app.get(mainUrl + sectionUrl).document
+                val videos = document.select("div.video-item").mapNotNull {
+                    it.toSearchResponse()
+                }
+                if (videos.isNotEmpty()) {
+                    items.add(HomePageList(sectionName, videos))
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
         }
         
-        return HomePageResponse(homePageList)
+        return HomePageResponse(items)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
