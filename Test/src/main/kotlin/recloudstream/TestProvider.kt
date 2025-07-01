@@ -29,7 +29,6 @@ class PhimHHTQProvider : MainAPI() {
             "$mainUrl/${request.data}/page/$page/"
         }
 
-        // SỬA LỖI: Hoàn tác về `app.get`
         val document = app.get(url).document
         val items = document.select("div.halim_box article.thumb").mapNotNull {
             it.toSearchResult()
@@ -54,7 +53,6 @@ class PhimHHTQProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/?s=$query"
-        // SỬA LỖI: Hoàn tác về `app.get`
         val document = app.get(searchUrl).document
 
         return document.select("div.halim_box article.thumb").mapNotNull {
@@ -63,7 +61,6 @@ class PhimHHTQProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        // SỬA LỖI: Hoàn tác về `app.get`
         val document = app.get(url).document
         val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: return null
         val poster = document.selectFirst("img.movie-thumb")?.attr("src")
@@ -72,10 +69,13 @@ class PhimHHTQProvider : MainAPI() {
             Regex("(\\d{4})").find(it)?.value?.toIntOrNull()
         }
 
+        // SỬA CẢNH BÁO: Thay thế constructor Episode cũ bằng hàm newEpisode
         val episodes = document.select("ul.halim-list-eps li.halim-episode a").map {
             val epName = it.text().trim()
             val epHref = it.attr("href")
-            Episode(epHref, "Tập $epName")
+            newEpisode(epHref) {
+                this.name = "Tập $epName"
+            }
         }.reversed()
 
         val recommendations = document.select("section.related-movies div.halim_box article.thumb").mapNotNull {
@@ -97,7 +97,6 @@ class PhimHHTQProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // SỬA LỖI: Hoàn tác về `app.get`
         val watchPageSource = app.get(data).text
         val postId = Regex("""post_id:(\d+)""").find(watchPageSource)?.groupValues?.get(1) ?: return false
         val nonce = Regex("""nonce":"([a-zA-Z0-9]+)"""").find(watchPageSource)?.groupValues?.get(1) ?: return false
@@ -113,7 +112,6 @@ class PhimHHTQProvider : MainAPI() {
             "episode" to episode,
             "server" to server
         )
-        // SỬA LỖI: Hoàn tác về `app.post`
         val ajaxResponseText = app.post(
             ajaxUrl,
             data = ajaxData,
