@@ -69,14 +69,13 @@ class PhimHHTQProvider : MainAPI() {
             Regex("(\\d{4})").find(it)?.value?.toIntOrNull()
         }
 
-        // SỬA CẢNH BÁO: Thay thế constructor Episode cũ bằng hàm newEpisode
         val episodes = document.select("ul.halim-list-eps li.halim-episode a").map {
             val epName = it.text().trim()
             val epHref = it.attr("href")
             newEpisode(epHref) {
                 this.name = "Tập $epName"
             }
-        }.reversed()
+        } // THAY ĐỔI: Đã xóa .reversed() để đảo lại thứ tự tập phim theo yêu cầu.
 
         val recommendations = document.select("section.related-movies div.halim_box article.thumb").mapNotNull {
             it.toSearchResult()
