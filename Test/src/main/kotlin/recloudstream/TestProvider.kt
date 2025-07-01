@@ -1,4 +1,4 @@
-// Dán toàn bộ code này vào file TestProvider.kt
+// Dán toàn bộ code này vào file provider của bạn
 package recloudstream
 
 import com.lagradost.cloudstream3.*
@@ -18,28 +18,26 @@ class PhimHHTQProvider : MainAPI() {
         TvType.Cartoon
     )
 
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get(mainUrl).document
-        val homePageList = ArrayList<HomePageList>()
+    // =================================================================================
+    // THAY ĐỔI LỚN: SỬ DỤNG CẤU TRÚC `mainPageOf` ĐỂ TỐI ƯU HÓA
+    // Code sẽ gọn và dễ bảo trì hơn rất nhiều.
+    // =================================================================================
+    override val mainPage = mainPageOf(
+        "moi-cap-nhat" to "Mới Cập Nhật",
+        "xem-nhieu" to "Phim Xem Nhiều"
+        // Bạn có thể dễ dàng thêm các mục khác ở đây, ví dụ:
+        // "hhtq-3d" to "Hoạt Hình 3D",
+        // "hhtq-2d" to "Hoạt Hình 2D",
+    )
 
-        val mainItems = document.select("section#halim-advanced-widget-2 div.halim_box article.thumb")
-        val mainResult = mainItems.mapNotNull {
+    override suspend fun loadPage(url: String): List<SearchResponse> {
+        val document = app.get(url).document
+        return document.select("div.halim_box article.thumb").mapNotNull {
             it.toSearchResult()
         }
-        if (mainResult.isNotEmpty()) {
-            homePageList.add(HomePageList("Mới Cập Nhật", mainResult))
-        }
-        
-        val sliderItems = document.select("div#halim-carousel-widget-2 article.thumb")
-        val sliderResult = sliderItems.mapNotNull {
-            it.toSearchResult()
-        }
-        if(sliderResult.isNotEmpty()){
-            homePageList.add(HomePageList("Phim Đề Cử", sliderResult))
-        }
-
-        return HomePageResponse(homePageList)
     }
+
+    // Hàm getMainPage đã được thay thế bằng `mainPage` và `loadPage` nên không cần thiết nữa.
 
     private fun Element.toSearchResult(): SearchResponse? {
         val title = this.selectFirst("h2.entry-title")?.text()?.trim() ?: return null
@@ -52,7 +50,6 @@ class PhimHHTQProvider : MainAPI() {
         return newAnimeSearchResponse(title, href, TvType.Cartoon) {
             this.posterUrl = posterUrl
             this.posterHeaders = mapOf("Referer" to mainUrl)
-            // SỬA LỖI TẠI ĐÂY: Thêm `?: ""` để xử lý giá trị null
             addQuality(episodeStr ?: "")
         }
     }
@@ -81,11 +78,17 @@ class PhimHHTQProvider : MainAPI() {
             val epHref = it.attr("href")
             Episode(epHref, "Tập $epName")
         }.reversed()
+
+        val recommendations = document.select("section.related-movies div.halim_box article.thumb").mapNotNull {
+            it.toSearchResult()
+        }
+
         return newTvSeriesLoadResponse(title, url, TvType.Cartoon, episodes) {
             this.posterUrl = poster
             this.posterHeaders = mapOf("Referer" to mainUrl)
             this.year = year
             this.plot = plot
+            this.recommendations = recommendations
         }
     }
 
@@ -104,7 +107,7 @@ class PhimHHTQProvider : MainAPI() {
         val matchResult = epDataRegex.find(data)
 
         val episode = matchResult?.groupValues?.get(1) ?: "1"
-        val server = matchResult?.groupValues?.get(2) ?: "1"
+        val server = matchResult?.get(2) ?: "1"
 
         val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
         val ajaxData = mapOf(
