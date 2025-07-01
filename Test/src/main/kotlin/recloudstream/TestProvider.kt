@@ -1,4 +1,3 @@
-// Dán toàn bộ code này vào file provider của bạn
 package recloudstream
 
 import com.lagradost.cloudstream3.*
@@ -19,25 +18,33 @@ class PhimHHTQProvider : MainAPI() {
     )
 
     // =================================================================================
-    // THAY ĐỔI LỚN: SỬ DỤNG CẤU TRÚC `mainPageOf` ĐỂ TỐI ƯU HÓA
-    // Code sẽ gọn và dễ bảo trì hơn rất nhiều.
+    // ÁP DỤNG CẤU TRÚC MỚI
+    // 1. Khai báo các mục trên trang chủ bằng `mainPageOf`
     // =================================================================================
     override val mainPage = mainPageOf(
         "moi-cap-nhat" to "Mới Cập Nhật",
         "xem-nhieu" to "Phim Xem Nhiều"
-        // Bạn có thể dễ dàng thêm các mục khác ở đây, ví dụ:
-        // "hhtq-3d" to "Hoạt Hình 3D",
-        // "hhtq-2d" to "Hoạt Hình 2D",
     )
 
-    override suspend fun loadPage(url: String): List<SearchResponse> {
-        val document = app.get(url).document
-        return document.select("div.halim_box article.thumb").mapNotNull {
+    // =================================================================================
+    // 2. Triển khai `getMainPage` để xử lý logic tải dữ liệu cho các mục đã khai báo
+    // =================================================================================
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        // `request.data` sẽ chứa slug tương ứng ("moi-cap-nhat" hoặc "xem-nhieu")
+        // Xử lý URL có cấu trúc phân trang là /page/
+        val url = if (page == 1) {
+            "$mainUrl/${request.data}/"
+        } else {
+            "$mainUrl/${request.data}/page/$page/"
+        }
+
+        val document = get(url).document
+        val items = document.select("div.halim_box article.thumb").mapNotNull {
             it.toSearchResult()
         }
+        // `request.name` đã chứa sẵn tên ("Mới Cập Nhật" hoặc "Phim Xem Nhiều")
+        return newHomePageResponse(request.name, items)
     }
-
-    // Hàm getMainPage đã được thay thế bằng `mainPage` và `loadPage` nên không cần thiết nữa.
 
     private fun Element.toSearchResult(): SearchResponse? {
         val title = this.selectFirst("h2.entry-title")?.text()?.trim() ?: return null
@@ -56,7 +63,7 @@ class PhimHHTQProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/?s=$query"
-        val document = app.get(searchUrl).document
+        val document = get(searchUrl).document
 
         return document.select("div.halim_box article.thumb").mapNotNull {
             it.toSearchResult()
@@ -64,8 +71,7 @@ class PhimHHTQProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url).document
-
+        val document = get(url).document
         val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: return null
         val poster = document.selectFirst("img.movie-thumb")?.attr("src")
         val plot = document.selectFirst("div.entry-content article")?.text()?.trim()
@@ -92,23 +98,20 @@ class PhimHHTQProvider : MainAPI() {
         }
     }
 
+    // Phần `loadLinks` được giữ nguyên vì logic của PhimHHTQ khác với MissAV
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val watchPageSource = app.get(data).text
-        
+        val watchPageSource = get(data).text
         val postId = Regex("""post_id:(\d+)""").find(watchPageSource)?.groupValues?.get(1) ?: return false
         val nonce = Regex("""nonce":"([a-zA-Z0-9]+)"""").find(watchPageSource)?.groupValues?.get(1) ?: return false
-        
         val epDataRegex = Regex("""-tap-(\d+)-sv-(\d+)""")
         val matchResult = epDataRegex.find(data)
-
         val episode = matchResult?.groupValues?.get(1) ?: "1"
-        val server = matchResult?.get(2) ?: "1"
-
+        val server = matchResult?.groupValues?.get(2) ?: "1"
         val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
         val ajaxData = mapOf(
             "action" to "halim_ajax_player",
@@ -117,15 +120,12 @@ class PhimHHTQProvider : MainAPI() {
             "episode" to episode,
             "server" to server
         )
-        
-        val ajaxResponseText = app.post(
-            ajaxUrl, 
-            data = ajaxData, 
+        val ajaxResponseText = post(
+            ajaxUrl,
+            data = ajaxData,
             headers = mapOf("Referer" to data)
         ).text
-
         val videoUrl = Regex("""file":"([^"]+)"""").find(ajaxResponseText)?.groupValues?.get(1)?.replace("\\", "")
-
         if (videoUrl != null) {
             callback(
                 ExtractorLink(
@@ -140,7 +140,6 @@ class PhimHHTQProvider : MainAPI() {
             )
             return true
         }
-
         return false
     }
 }
