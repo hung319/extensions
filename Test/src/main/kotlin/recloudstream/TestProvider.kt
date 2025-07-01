@@ -17,32 +17,23 @@ class PhimHHTQProvider : MainAPI() {
         TvType.Cartoon
     )
 
-    // =================================================================================
-    // ÁP DỤNG CẤU TRÚC MỚI
-    // 1. Khai báo các mục trên trang chủ bằng `mainPageOf`
-    // =================================================================================
     override val mainPage = mainPageOf(
         "moi-cap-nhat" to "Mới Cập Nhật",
         "xem-nhieu" to "Phim Xem Nhiều"
     )
 
-    // =================================================================================
-    // 2. Triển khai `getMainPage` để xử lý logic tải dữ liệu cho các mục đã khai báo
-    // =================================================================================
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // `request.data` sẽ chứa slug tương ứng ("moi-cap-nhat" hoặc "xem-nhieu")
-        // Xử lý URL có cấu trúc phân trang là /page/
         val url = if (page == 1) {
             "$mainUrl/${request.data}/"
         } else {
             "$mainUrl/${request.data}/page/$page/"
         }
 
-        val document = get(url).document
+        // SỬA LỖI: Hoàn tác về `app.get`
+        val document = app.get(url).document
         val items = document.select("div.halim_box article.thumb").mapNotNull {
             it.toSearchResult()
         }
-        // `request.name` đã chứa sẵn tên ("Mới Cập Nhật" hoặc "Phim Xem Nhiều")
         return newHomePageResponse(request.name, items)
     }
 
@@ -63,7 +54,8 @@ class PhimHHTQProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/?s=$query"
-        val document = get(searchUrl).document
+        // SỬA LỖI: Hoàn tác về `app.get`
+        val document = app.get(searchUrl).document
 
         return document.select("div.halim_box article.thumb").mapNotNull {
             it.toSearchResult()
@@ -71,7 +63,8 @@ class PhimHHTQProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = get(url).document
+        // SỬA LỖI: Hoàn tác về `app.get`
+        val document = app.get(url).document
         val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: return null
         val poster = document.selectFirst("img.movie-thumb")?.attr("src")
         val plot = document.selectFirst("div.entry-content article")?.text()?.trim()
@@ -98,14 +91,14 @@ class PhimHHTQProvider : MainAPI() {
         }
     }
 
-    // Phần `loadLinks` được giữ nguyên vì logic của PhimHHTQ khác với MissAV
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val watchPageSource = get(data).text
+        // SỬA LỖI: Hoàn tác về `app.get`
+        val watchPageSource = app.get(data).text
         val postId = Regex("""post_id:(\d+)""").find(watchPageSource)?.groupValues?.get(1) ?: return false
         val nonce = Regex("""nonce":"([a-zA-Z0-9]+)"""").find(watchPageSource)?.groupValues?.get(1) ?: return false
         val epDataRegex = Regex("""-tap-(\d+)-sv-(\d+)""")
@@ -120,7 +113,8 @@ class PhimHHTQProvider : MainAPI() {
             "episode" to episode,
             "server" to server
         )
-        val ajaxResponseText = post(
+        // SỬA LỖI: Hoàn tác về `app.post`
+        val ajaxResponseText = app.post(
             ajaxUrl,
             data = ajaxData,
             headers = mapOf("Referer" to data)
