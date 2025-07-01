@@ -1,5 +1,5 @@
-// Dán toàn bộ code này vào file PhimHHTQProvider.kt
-package recloudstream // Đã đổi package
+// Dán toàn bộ code này vào file TestProvider.kt
+package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -52,7 +52,8 @@ class PhimHHTQProvider : MainAPI() {
         return newAnimeSearchResponse(title, href, TvType.Cartoon) {
             this.posterUrl = posterUrl
             this.posterHeaders = mapOf("Referer" to mainUrl)
-            addQuality(episodeStr)
+            // SỬA LỖI TẠI ĐÂY: Thêm `?: ""` để xử lý giá trị null
+            addQuality(episodeStr ?: "")
         }
     }
 
