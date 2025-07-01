@@ -1,98 +1,90 @@
-package recloudstream
+// Dán toàn bộ code này vào file PhimHHTQProvider.kt
+package recloudstream // Đã đổi package
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
-import org.json.JSONObject
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.getQualityFromName
 import org.jsoup.nodes.Element
-// SỬA LỖI #2: Thêm các import cần thiết cho coroutine
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.awaitAll
 
-class SpankbangProvider : MainAPI() {
-    override var mainUrl = "https://spankbang.party"
-    override var name = "SpankBang"
-    override var lang = "en"
+class PhimHHTQProvider : MainAPI() {
+    override var mainUrl = "https://phimhhtq.com"
+    override var name = "PhimHHTQ"
     override val hasMainPage = true
-    override val supportedTypes = setOf(TvType.NSFW)
+    override var lang = "vi"
+    override val hasDownloadSupport = true
 
-    private fun Element.toSearchResponse(): SearchResponse? {
-        val linkElement = this.selectFirst("a.thumb") ?: return null
-        val href = linkElement.attr("href")
-        val title = linkElement.selectFirst("img")?.attr("alt")?.trim() ?: return null
-        var posterUrl = this.selectFirst("img.cover, img.lazyload")?.attr("data-src")
-
-        if (href.isBlank() || posterUrl.isNullOrBlank()) return null
-
-        if (posterUrl.startsWith("//")) {
-            posterUrl = "https:$posterUrl"
-        }
-
-        return newMovieSearchResponse(name = title, url = fixUrl(href)) {
-            this.posterUrl = posterUrl
-        }
-    }
+    override val supportedTypes = setOf(
+        TvType.Cartoon
+    )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val sections = listOf(
-            Pair("Trending Videos", "/trending_videos/"),
-            Pair("New Videos", "/new_videos/"),
-            Pair("Popular", "/most_popular/")
-        )
+        val document = app.get(mainUrl).document
+        val homePageList = ArrayList<HomePageList>()
+
+        val mainItems = document.select("section#halim-advanced-widget-2 div.halim_box article.thumb")
+        val mainResult = mainItems.mapNotNull {
+            it.toSearchResult()
+        }
+        if (mainResult.isNotEmpty()) {
+            homePageList.add(HomePageList("Mới Cập Nhật", mainResult))
+        }
         
-        val homePageList = coroutineScope {
-            sections.map { (sectionName, sectionUrl) ->
-                // SỬA LỖI #1: Chỉ định rõ kiểu dữ liệu trả về cho async
-                async<HomePageList?> {
-                    try {
-                        val document = app.get(mainUrl + sectionUrl).document
-                        val videos = document.select("div.video-item").mapNotNull {
-                            it.toSearchResponse()
-                        }
-                        if (videos.isNotEmpty()) {
-                            HomePageList(sectionName, videos)
-                        } else {
-                            null
-                        }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                        null
-                    }
-                }
-            }.awaitAll().filterNotNull() // Bây giờ awaitAll() sẽ được nhận dạng
+        val sliderItems = document.select("div#halim-carousel-widget-2 article.thumb")
+        val sliderResult = sliderItems.mapNotNull {
+            it.toSearchResult()
+        }
+        if(sliderResult.isNotEmpty()){
+            homePageList.add(HomePageList("Phim Đề Cử", sliderResult))
         }
 
-        return newHomePageResponse(homePageList)
+        return HomePageResponse(homePageList)
+    }
+
+    private fun Element.toSearchResult(): SearchResponse? {
+        val title = this.selectFirst("h2.entry-title")?.text()?.trim() ?: return null
+        val href = this.selectFirst("a.halim-thumb")?.attr("href") ?: return null
+        val posterUrl = this.selectFirst("figure img")?.let {
+            it.attr("src").ifBlank { it.attr("data-src") }
+        }
+
+        val episodeStr = this.selectFirst("span.episode")?.text()?.trim()
+        return newAnimeSearchResponse(title, href, TvType.Cartoon) {
+            this.posterUrl = posterUrl
+            this.posterHeaders = mapOf("Referer" to mainUrl)
+            addQuality(episodeStr)
+        }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/s/${query.replace(" ", "+")}/"
+        val searchUrl = "$mainUrl/?s=$query"
         val document = app.get(searchUrl).document
-        return document.select("div.main_results div.video-item").mapNotNull {
-            it.toSearchResponse()
+
+        return document.select("div.halim_box article.thumb").mapNotNull {
+            it.toSearchResult()
         }
     }
-    
-    override suspend fun load(url: String): LoadResponse {
+
+    override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
-        val title = document.selectFirst("h1.main_content_title")?.text()?.trim()
-            ?: "Video"
-        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
-        val description = document.selectFirst("meta[name=description]")?.attr("content")
-        
-        val recommendations = document.select("div.similar div.video-item").mapNotNull {
-            it.toSearchResponse()
+
+        val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: return null
+        val poster = document.selectFirst("img.movie-thumb")?.attr("src")
+        val plot = document.selectFirst("div.entry-content article")?.text()?.trim()
+        val year = document.selectFirst("div.more-info")?.text()?.let {
+            Regex("(\\d{4})").find(it)?.value?.toIntOrNull()
         }
 
-        return newMovieLoadResponse(
-            name = title,
-            url = url,
-            dataUrl = url,
-            type = TvType.NSFW,
-        ) {
+        val episodes = document.select("ul.halim-list-eps li.halim-episode a").map {
+            val epName = it.text().trim()
+            val epHref = it.attr("href")
+            Episode(epHref, "Tập $epName")
+        }.reversed()
+        return newTvSeriesLoadResponse(title, url, TvType.Cartoon, episodes) {
             this.posterUrl = poster
-            this.plot = description
-            this.recommendations = recommendations
+            this.posterHeaders = mapOf("Referer" to mainUrl)
+            this.year = year
+            this.plot = plot
         }
     }
 
@@ -102,47 +94,49 @@ class SpankbangProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data).text
-        val streamDataRegex = Regex("""var stream_data = (\{.*?\});""")
-        val matchResult = streamDataRegex.find(document) ?: return false
-
-        val streamDataJson = matchResult.groupValues[1]
-        val streamData = JSONObject(streamDataJson)
-
-        streamData.optJSONArray("m3u8")?.let { arr ->
-            for (i in 0 until arr.length()) {
-                val m3u8Url = arr.getString(i)
-                callback(
-                    ExtractorLink(
-                        source = this.name,
-                        name = "HLS (Auto)",
-                        url = m3u8Url,
-                        referer = mainUrl,
-                        quality = Qualities.Unknown.value,
-                        type = ExtractorLinkType.M3U8
-                    )
-                )
-            }
-        }
+        val watchPageSource = app.get(data).text
         
-        val qualities = listOf("1080p", "720p", "480p", "240p")
-        qualities.forEach { quality ->
-            streamData.optJSONArray(quality)?.let { arr ->
-                if (arr.length() > 0) {
-                    val mp4Url = arr.getString(0)
-                    callback(
-                        ExtractorLink(
-                            source = this.name,
-                            name = "MP4 $quality",
-                            url = mp4Url,
-                            referer = mainUrl,
-                            quality = quality.replace("p", "").toIntOrNull() ?: Qualities.Unknown.value,
-                            type = ExtractorLinkType.VIDEO
-                        )
-                    )
-                }
-            }
+        val postId = Regex("""post_id:(\d+)""").find(watchPageSource)?.groupValues?.get(1) ?: return false
+        val nonce = Regex("""nonce":"([a-zA-Z0-9]+)"""").find(watchPageSource)?.groupValues?.get(1) ?: return false
+        
+        val epDataRegex = Regex("""-tap-(\d+)-sv-(\d+)""")
+        val matchResult = epDataRegex.find(data)
+
+        val episode = matchResult?.groupValues?.get(1) ?: "1"
+        val server = matchResult?.groupValues?.get(2) ?: "1"
+
+        val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
+        val ajaxData = mapOf(
+            "action" to "halim_ajax_player",
+            "nonce" to nonce,
+            "postid" to postId,
+            "episode" to episode,
+            "server" to server
+        )
+        
+        val ajaxResponseText = app.post(
+            ajaxUrl, 
+            data = ajaxData, 
+            headers = mapOf("Referer" to data)
+        ).text
+
+        val videoUrl = Regex("""file":"([^"]+)"""").find(ajaxResponseText)?.groupValues?.get(1)?.replace("\\", "")
+
+        if (videoUrl != null) {
+            callback(
+                ExtractorLink(
+                    source = this.name,
+                    name = "PhimHHTQ Server",
+                    url = videoUrl,
+                    referer = mainUrl,
+                    quality = getQualityFromName(""),
+                    type = ExtractorLinkType.M3U8,
+                    headers = mapOf("Referer" to mainUrl)
+                )
+            )
+            return true
         }
-        return true
+
+        return false
     }
 }
