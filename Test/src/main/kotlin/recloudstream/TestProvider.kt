@@ -18,13 +18,12 @@ class HoatHinhQQProvider : MainAPI() {
         TvType.Cartoon
     )
 
-    // FIX: Reworked pagination logic to be more robust
+    // Function to get the homepage with correct pagination
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val lists = ArrayList<HomePageList>()
         val hasNextPage: Boolean
 
         if (page <= 1) {
-            // For page 1, load all sections from the main page
             val document = app.get("$mainUrl/").document
             val sections = document.select("div.w-full.lg\\:w-3\\/4")
 
@@ -35,16 +34,13 @@ class HoatHinhQQProvider : MainAPI() {
                     lists.add(HomePageList(header, movies))
                 }
             }
-            // Check if a link to page 2 exists for the pagination button
             hasNextPage = document.select("ul.pagination a[href='/phim?page=2']").isNotEmpty()
         } else {
-            // For page > 1, load only the paginated list
             val document = app.get("$mainUrl/phim?page=$page").document
             val movies = document.select("div.grid > a").mapNotNull { it.toSearchResult() }
             if (movies.isNotEmpty()) {
                 lists.add(HomePageList("Phim Mới Cập Nhật (Trang $page)", movies))
             }
-            // Check if a link to the next page exists
             hasNextPage = document.select("ul.pagination a[href='/phim?page=${page + 1}']").isNotEmpty()
         }
 
@@ -84,27 +80,44 @@ class HoatHinhQQProvider : MainAPI() {
         
         val year = document.select("div.film-info-list-title:contains(Năm) + div")?.text()?.toIntOrNull()
 
-        // FIX: Using newEpisode helper function as seen in the HentaiHaven example
+        // FIX: Revert to direct Episode constructor for full control over name and season
         val episodes = document.selectFirst("div:has(p:contains(Tìm tập nhanh))")
             ?.select("ul > li > a")
             ?.mapNotNull { aTag ->
                 val href = aTag.attr("href")
-                // Let the helper function handle name and number parsing
-                newEpisode(data = "$mainUrl$href") {
-                    this.name = aTag.text().trim()
-                }
+                val epNumStr = aTag.text().trim() // e.g., "51"
+                val epNum = epNumStr.toIntOrNull()
+
+                // Manually construct the Episode object
+                Episode(
+                    data = "$mainUrl$href",
+                    name = "Tập $epNumStr", // Create the desired name "Tập 51"
+                    episode = epNum,
+                    season = -1 // Explicitly set season to -1 (no season) to prevent "1.51" format
+                )
             }?.reversed() ?: emptyList()
         
-        // ADD: Placeholder for recommendations
-        // When you find a page with recommendations, provide the HTML so I can update the selector below.
+        val isMovie = episodes.isEmpty()
+        
+        // Placeholder for recommendations
         // val recommendations = document.select("your_recommendations_selector_here").mapNotNull { it.toSearchResult() }
 
-        return newTvSeriesLoadResponse(title, url, TvType.Cartoon, episodes) {
-            this.posterUrl = poster
-            this.year = year
-            this.plot = description
-            this.tags = document.select("li.film-info-list:contains(Thể loại) a").map { it.text() }
-            // this.recommendations = recommendations
+        return if (isMovie) {
+             newMovieLoadResponse(title, url, TvType.Cartoon, dataUrl = url) {
+                this.posterUrl = poster
+                this.year = year
+                this.plot = description
+                this.tags = document.select("li.film-info-list:contains(Thể loại) a").map { it.text() }
+                // this.recommendations = recommendations
+            }
+        } else {
+             newTvSeriesLoadResponse(title, url, TvType.Cartoon, episodes) {
+                this.posterUrl = poster
+                this.year = year
+                this.plot = description
+                this.tags = document.select("li.film-info-list:contains(Thể loại) a").map { it.text() }
+                // this.recommendations = recommendations
+            }
         }
     }
     
