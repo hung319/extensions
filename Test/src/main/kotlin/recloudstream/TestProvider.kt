@@ -20,38 +20,40 @@ class HoatHinhQQProvider : MainAPI() {
         TvType.Cartoon
     )
 
-    // Function to get the homepage with pagination
+    // Function to get the homepage with correct pagination
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Only paginate for the main "phim" page (Newly Updated)
-        if (page > 1) {
+        val lists = ArrayList<HomePageList>()
+        var hasNextPage = false
+
+        if (page <= 1) {
+            // For the first page, load all sections from the main page
+            val document = app.get("$mainUrl/").document
+            val sections = document.select("div.w-full.lg\\:w-3\\/4")
+
+            sections.forEach { section ->
+                val header = section.selectFirst("div.gradient-title h3")?.text() ?: "Unknown Section"
+                val movies = section.select("div.grid > a").mapNotNull { it.toSearchResult() }
+                if (movies.isNotEmpty()) {
+                    lists.add(HomePageList(header, movies))
+                }
+            }
+            // The whole response has a next page if the main list has a link to page 2
+            hasNextPage = document.select("ul.flex.flex-wrap a[href='/phim?page=2']").isNotEmpty()
+        } else {
+            // For subsequent pages, only load the paginated list
             val document = app.get("$mainUrl/phim?page=$page").document
             val movies = document.select("div.grid > a").mapNotNull { it.toSearchResult() }
-            // Check if there are more movies on the next page to determine hasNextPage
-            val hasNextPage = document.select("ul.flex.flex-wrap a[href='/phim?page=${page + 1}']").isNotEmpty()
-            return newHomePageResponse(
-                HomePageList("Phim Mới Cập Nhật (Trang $page)", movies, hasNextPage = hasNextPage)
-            )
-        }
-
-        // For the first page, load all sections as before
-        val document = app.get("$mainUrl/").document
-        val homePageList = ArrayList<HomePageList>()
-
-        val sections = document.select("div.w-full.lg\\:w-3\\/4")
-        
-        sections.forEach { section ->
-            val header = section.selectFirst("div.gradient-title h3")?.text() ?: "Unknown Section"
-            // For the first section ("Mới cập nhật"), enable pagination
-            val hasNextPage = header.contains("Mới cập nhật")
-            val movies = section.select("div.grid > a").mapNotNull { it.toSearchResult() }
             if (movies.isNotEmpty()) {
-                homePageList.add(HomePageList(header, movies, hasNextPage = hasNextPage))
+                lists.add(HomePageList("Phim Mới Cập Nhật (Trang $page)", movies))
             }
+            // Determine if there's a page after the current one
+            hasNextPage = document.select("ul.flex.flex-wrap a[href='/phim?page=${page + 1}']").isNotEmpty()
         }
 
-        if (homePageList.isEmpty()) throw ErrorLoadingException("Không tìm thấy dữ liệu trang chủ")
+        if (lists.isEmpty()) throw ErrorLoadingException("Không tìm thấy dữ liệu trang chủ")
 
-        return HomePageResponse(homePageList)
+        // FIX: Changed parameter name from hasNextPage to hasNext
+        return HomePageResponse(lists, hasNext = hasNextPage)
     }
 
     // Helper function to parse search results from an element
@@ -60,7 +62,6 @@ class HoatHinhQQProvider : MainAPI() {
         if (href.isBlank()) return null
         
         val title = this.selectFirst("h3.capitalize")?.text() ?: return null
-        // Use srcset for better image quality, fallback to src
         val posterUrl = this.selectFirst("img")?.attr("srcset")?.substringBefore(" ") ?: this.selectFirst("img")?.attr("src")
         val latestEp = this.selectFirst("div.absolute.top-0.left-0 > div")?.text()
 
@@ -84,8 +85,7 @@ class HoatHinhQQProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
-        // FIX: More reliable selectors for title and poster
-        val title = document.selectFirst("div.film-info-list:contains(Tên) h1.font-semibold")?.text()
+        val title = document.selectFirst("li.film-info-list:contains(Tên) h1.font-semibold")?.text()
             ?: document.selectFirst("h1.text-lg.text-\\[\\#cf8e19\\]")?.text()
             ?: "Không tìm thấy tiêu đề"
 
@@ -104,9 +104,8 @@ class HoatHinhQQProvider : MainAPI() {
             } ?: "Tập"
             Episode("$mainUrl$epHref", epName)
         }.reversed()
-
-        // Check if it's a TV Series or Movie
-        val isMovie = episodes.isEmpty() && document.selectFirst("div:contains(Đang cập nhật…)") != null || document.select("div.ep-container").size <= 1
+        
+        val isMovie = episodes.isEmpty() && (document.selectFirst("div:contains(Đang cập nhật…)") != null || document.select("div.ep-container").size <= 1)
         
         return if (isMovie) {
              newMovieLoadResponse(title, url, TvType.Movie, dataUrl = url) {
@@ -132,13 +131,9 @@ class HoatHinhQQProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Regex to find m3u8 links in the HTML content
         val m3u8Regex = """https?://[^\s"'<>]+\.m3u8""".toRegex()
-        
-        // Fetch the HTML content of the episode page
         val document = app.get(data).document.html()
 
-        // Find the first m3u8 link using regex
         m3u8Regex.find(document)?.let { matchResult ->
             val m3u8Url = matchResult.value
             callback.invoke(
