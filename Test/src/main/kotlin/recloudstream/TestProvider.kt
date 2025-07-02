@@ -1,12 +1,12 @@
-// To test this provider, paste the code in a new file in your provider folder and rename it to "HoatHinhQQProvider.kt"
-package recloudstream // Changed package name as requested
+// To test this provider, paste the code in a new file in your provider folder and rename it to "TestProvider.kt"
+package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType // Keeping original imports
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import org.jsoup.nodes.Element
 
-class HoatHinhQQProvider : MainAPI() {
+class TestProvider : MainAPI() { // Renamed class to TestProvider as per your file name
     // Basic provider information
     override var mainUrl = "https://hoathinhqq.com"
     override var name = "HoatHinhQQ"
@@ -114,7 +114,8 @@ class HoatHinhQQProvider : MainAPI() {
                     name = this.name,
                     url = m3u8Url,
                     referer = "$mainUrl/",
-                    quality = Qualities.Unknown.value,
+                    // FIX: Changed Qualities.Unknown.value to 1 to resolve compilation error.
+                    quality = 1, 
                     type = ExtractorLinkType.M3U8
                 )
             )
