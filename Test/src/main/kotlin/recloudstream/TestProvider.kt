@@ -14,7 +14,6 @@ class HoatHinhQQProvider : MainAPI() {
     override val hasMainPage = true
     override var lang = "vi"
     override val hasDownloadSupport = true
-    // FIX: Only support Cartoon TvType
     override val supportedTypes = setOf(
         TvType.Cartoon
     )
@@ -59,7 +58,6 @@ class HoatHinhQQProvider : MainAPI() {
         val posterUrl = this.selectFirst("img")?.attr("srcset")?.substringBefore(" ") ?: this.selectFirst("img")?.attr("src")
         val latestEp = this.selectFirst("div.absolute.top-0.left-0 > div")?.text()
 
-        // FIX: Set TvType to Cartoon
         return newAnimeSearchResponse(title, "$mainUrl$href", TvType.Cartoon) {
             this.posterUrl = posterUrl
             addDubStatus(false, latestEp?.contains("Tập") == true)
@@ -80,27 +78,28 @@ class HoatHinhQQProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
-        val title = document.selectFirst("h1.font-semibold")?.text()?.trim()
+        // FIX: Use meta tags for more reliable data extraction
+        val title = document.selectFirst("meta[property=og:title]")?.attr("content")?.replace(" - HoatHinhQQ", "")
             ?: "Không tìm thấy tiêu đề"
-        val poster = document.selectFirst("img[alt=poster]")?.attr("src")
-
-        val description = document.selectFirst("div.prose")?.text()?.trim()
-        val year = document.select("div.film-info-list-title:contains(Năm) + div")?.text()?.toIntOrNull()
+        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
+        val description = document.selectFirst("meta[property=og:description]")?.attr("content")
+        
+        val year = document.select("li.film-info-list:contains(Năm) div.flex-row p.text-sm")?.text()?.toIntOrNull()
 
         val episodes = document.select("div[class*='max-h'] ul.grid li a").mapNotNull { aTag ->
             val epHref = aTag.attr("href")
-            val epName = aTag.text().trim()
+            val epName = aTag.text().trim() // e.g., "Tập 54"
             
+            // Set episode parameter to null to disable UI's number extraction
             Episode(
                 data = "$mainUrl$epHref", 
                 name = epName, 
-                episode = null
+                episode = 0 // Vô hiệu hóa epNum
             )
         }.reversed()
         
         val isMovie = episodes.isEmpty()
         
-        // FIX: Set all load responses to TvType.Cartoon
         return if (isMovie) {
              newMovieLoadResponse(title, url, TvType.Cartoon, dataUrl = url) {
                 this.posterUrl = poster
