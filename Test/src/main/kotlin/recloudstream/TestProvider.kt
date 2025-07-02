@@ -1,5 +1,6 @@
-package com.lagradost.cloudstream3
+package recloudstream
 
+import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.LoadResponse.Companion.addDuration
 import com.lagradost.cloudstream3.utils.*
@@ -27,11 +28,12 @@ import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-class AnimeVietsubProvider : MainAPI() {
+// Đổi tên class cho khớp với file của bạn
+class TestProvider : MainAPI() {
 
     private val gson = Gson()
     override var mainUrl = "https://bit.ly/animevietsubtv"
-    override var name = "AnimeVietsub"
+    override var name = "AnimeVietsub" // Tên hiển thị có thể là Test hoặc AnimeVietsub
     override val supportedTypes = setOf(
         TvType.Anime,
         TvType.Cartoon,
@@ -46,30 +48,31 @@ class AnimeVietsubProvider : MainAPI() {
     private var currentActiveUrl = bitlyResolverUrl
     private var domainResolutionAttempted = false
 
+    // =================== SỬA LỖI: ĐĂNG KÝ INTERCEPTOR ĐÚNG CÁCH ===================
+    // Ghi đè cấu hình OkHttp để thêm Interceptor. Đây là cách làm đúng.
+    override val OvrrideConfig: OkhttpConfig
+        get() = OkhttpConfig(
+            interceptors = listOf(M3u8Interceptor())
+        )
+    // ==============================================================================
+
+
     // =================== YÊU CẦU 2: INTERCEPTOR VÀ CACHE CHO M3U8 ===================
     private val m3u8Cache = ConcurrentHashMap<String, String>()
     private val localM3u8Host = "avs.local"
 
-    // Interceptor sẽ chặn các request đến host ảo và trả về nội dung M3U8 từ cache.
-    // Phiên bản này sẽ trả về M3U8 gốc (chưa qua chỉnh sửa).
     private inner class M3u8Interceptor : Interceptor {
         override fun intercept(chain: Interceptor.Chain): Response {
             val request = chain.request()
             val url = request.url
             if (url.host != localM3u8Host) {
-                // Nếu không phải host của chúng ta, bỏ qua
                 return chain.proceed(request)
             }
-
-            // Lấy key từ đường dẫn (ví dụ: /<key>.m3u8)
             val cacheKey = url.pathSegments.joinToString("/")
             val m3u8Content = m3u8Cache[cacheKey]
-
             return if (m3u8Content != null) {
                 Log.d(name, "Interceptor: Found M3U8 content for key $cacheKey")
-                // Xóa khỏi cache để tránh đầy bộ nhớ
                 m3u8Cache.remove(cacheKey)
-                // Trả về nội dung M3U8 gốc, không chỉnh sửa
                 Response.Builder()
                     .request(request)
                     .protocol(okhttp3.Protocol.HTTP_1_1)
@@ -88,11 +91,6 @@ class AnimeVietsubProvider : MainAPI() {
                     .build()
             }
         }
-    }
-
-    // Đăng ký Interceptor khi provider được khởi tạo
-    init {
-        this.interceptors.add(M3u8Interceptor())
     }
 
     // =================== YÊU CẦU 1: LOGIC GIẢI MÃ PORT TỪ JS SANG KOTLIN ===================
@@ -115,27 +113,21 @@ class AnimeVietsubProvider : MainAPI() {
         try {
             val cleanedEncDataB64 = encryptedDataB64.replace(Regex("[^A-Za-z0-9+/=]"), "")
             val encryptedBytes = Base64.getDecoder().decode(cleanedEncDataB64)
-
             if (encryptedBytes.size < 16) throw Exception("Encrypted data is too short to contain IV.")
-
             val ivBytes = encryptedBytes.copyOfRange(0, 16)
             val ciphertextBytes = encryptedBytes.copyOfRange(16, encryptedBytes.size)
-
             val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
             cipher.init(Cipher.DECRYPT_MODE, key, IvParameterSpec(ivBytes))
             val decryptedBytesPadded = cipher.doFinal(ciphertextBytes)
-
-            val inflater = Inflater(true) // 'true' for 'nowrap'
+            val inflater = Inflater(true)
             inflater.setInput(decryptedBytesPadded)
             val result = ByteArray(1024 * 1024)
             val decompressedSize = inflater.inflate(result)
             inflater.end()
             val decompressedBytes = result.copyOfRange(0, decompressedSize)
-
             return decompressedBytes.toString(Charsets.UTF_8)
                 .trim().removeSurrounding("\"")
                 .replace("\\n", "\n")
-
         } catch (error: Exception) {
             Log.e(name, "Decryption/Decompression failed: ${error.message}", error)
             return null
@@ -275,7 +267,6 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
 
-    // loadLinks đã được cập nhật để dùng logic giải mã và interceptor
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -310,29 +301,24 @@ class AnimeVietsubProvider : MainAPI() {
                 playerResponse.link.forEach { linkSource ->
                     launch {
                         val encryptedUrl = linkSource.file ?: return@launch
-                        
-                        // Bước 1: Giải mã để lấy nội dung M3U8 (Yêu cầu 1)
                         val decryptedM3u8 = decryptM3u8Content(encryptedUrl)
                         if (decryptedM3u8.isNullOrBlank()) {
                              Log.w(name, "Decryption returned null or empty M3U8")
                              return@launch
                         }
 
-                        // Bước 2: Tạo key và URL "giả" cho interceptor (Yêu cầu 2)
                         val cacheKey = "${UUID.randomUUID()}.m3u8"
                         val localUrl = "https://$localM3u8Host/$cacheKey"
                         
-                        // Bước 3: Lưu nội dung M3U8 vào cache để interceptor sử dụng
                         m3u8Cache[cacheKey] = decryptedM3u8
 
-                        // Bước 4: Trả về ExtractorLink với URL "giả"
                         newExtractorLink(
                             source = name,
                             name = name,
-                            url = localUrl, // <-- URL "giả"
+                            url = localUrl,
                             type = ExtractorLinkType.M3U8
                         ) {
-                            this.referer = episodePageUrl // Referer vẫn cần để trang nguồn biết request đến từ đâu
+                            this.referer = episodePageUrl
                             this.quality = Qualities.Unknown.value
                         }.let {
                             callback(it)
@@ -542,7 +528,7 @@ class AnimeVietsubProvider : MainAPI() {
                 val data = gson.toJson(EpisodeData(url, dataId, el.attr("data-hash").ifBlank { null }))
                 newEpisode(data) { this.name = name }
             } catch (e: Exception) {
-                Log.e(this@AnimeVietsubProvider.name, "Error parsing episode item", e)
+                Log.e(this@TestProvider.name, "Error parsing episode item", e)
                 null
             }
         }
@@ -555,7 +541,7 @@ class AnimeVietsubProvider : MainAPI() {
     private fun String?.encodeUri(): String {
         if (this == null) return ""
         return try { URLEncoder.encode(this, "UTF-8").replace("+", "%20") }
-        catch (e: Exception) { Log.e("AnimeVietsubProvider", "URL encode error: $this", e); this }
+        catch (e: Exception) { Log.e("TestProvider", "URL encode error: $this", e); this }
     }
 
     private fun fixUrl(url: String?, baseUrl: String): String? {
