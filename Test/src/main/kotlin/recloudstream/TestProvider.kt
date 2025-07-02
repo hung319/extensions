@@ -1,10 +1,10 @@
 // Provider for HoatHinhQQ
-package recloudstream 
+package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.Qualities // FIX: Changed import path to utils
+import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
 
 class HoatHinhQQProvider : MainAPI() {
@@ -25,7 +25,6 @@ class HoatHinhQQProvider : MainAPI() {
         val document = app.get("$mainUrl/phim?page=$page").document
         val homePageList = ArrayList<HomePageList>()
 
-        // Find all sections on the main page
         val sections = document.select("div.w-full.lg\\:w-3\\/4")
         
         sections.forEach { section ->
@@ -89,7 +88,8 @@ class HoatHinhQQProvider : MainAPI() {
             this.posterUrl = poster
             this.year = year
             this.plot = description
-            this.tags = document.select("li.film-info-list a.bg-\\[\\#333940\\]").map { it.text() }
+            // FIX: Using a more stable selector to get genres/tags
+            this.tags = document.select("li.film-info-list:contains(Thể loại) a").map { it.text() }
         }
     }
     
