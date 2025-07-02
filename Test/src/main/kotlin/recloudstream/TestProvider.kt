@@ -14,9 +14,8 @@ class HoatHinhQQProvider : MainAPI() {
     override val hasMainPage = true
     override var lang = "vi"
     override val hasDownloadSupport = true
+    // FIX: Only support Cartoon TvType
     override val supportedTypes = setOf(
-        TvType.Movie,
-        TvType.TvSeries,
         TvType.Cartoon
     )
 
@@ -26,7 +25,6 @@ class HoatHinhQQProvider : MainAPI() {
         var hasNextPage = false
 
         if (page <= 1) {
-            // For the first page, load all sections from the main page
             val document = app.get("$mainUrl/").document
             val sections = document.select("div.w-full.lg\\:w-3\\/4")
 
@@ -37,22 +35,18 @@ class HoatHinhQQProvider : MainAPI() {
                     lists.add(HomePageList(header, movies))
                 }
             }
-            // The whole response has a next page if the main list has a link to page 2
-            hasNextPage = document.select("ul.flex.flex-wrap a[href='/phim?page=2']").isNotEmpty()
+            hasNextPage = document.select("ul.pagination a:contains(>)").isNotEmpty()
         } else {
-            // For subsequent pages, only load the paginated list
             val document = app.get("$mainUrl/phim?page=$page").document
             val movies = document.select("div.grid > a").mapNotNull { it.toSearchResult() }
             if (movies.isNotEmpty()) {
                 lists.add(HomePageList("Phim Mới Cập Nhật (Trang $page)", movies))
             }
-            // Determine if there's a page after the current one
-            hasNextPage = document.select("ul.flex.flex-wrap a[href='/phim?page=${page + 1}']").isNotEmpty()
+            hasNextPage = document.select("ul.pagination a:contains(>)").isNotEmpty()
         }
 
         if (lists.isEmpty()) throw ErrorLoadingException("Không tìm thấy dữ liệu trang chủ")
 
-        // FIX: Changed parameter name from hasNextPage to hasNext
         return HomePageResponse(lists, hasNext = hasNextPage)
     }
 
@@ -65,7 +59,8 @@ class HoatHinhQQProvider : MainAPI() {
         val posterUrl = this.selectFirst("img")?.attr("srcset")?.substringBefore(" ") ?: this.selectFirst("img")?.attr("src")
         val latestEp = this.selectFirst("div.absolute.top-0.left-0 > div")?.text()
 
-        return newAnimeSearchResponse(title, "$mainUrl$href", TvType.TvSeries) {
+        // FIX: Set TvType to Cartoon
+        return newAnimeSearchResponse(title, "$mainUrl$href", TvType.Cartoon) {
             this.posterUrl = posterUrl
             addDubStatus(false, latestEp?.contains("Tập") == true)
         }
@@ -85,37 +80,36 @@ class HoatHinhQQProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
-        val title = document.selectFirst("li.film-info-list:contains(Tên) h1.font-semibold")?.text()
-            ?: document.selectFirst("h1.text-lg.text-\\[\\#cf8e19\\]")?.text()
+        val title = document.selectFirst("h1.font-semibold")?.text()?.trim()
             ?: "Không tìm thấy tiêu đề"
+        val poster = document.selectFirst("img[alt=poster]")?.attr("src")
 
-        val poster = document.selectFirst("div.relative.aspect-\\[3\\/4\\] img")?.attr("src")
-            ?: document.selectFirst("img[alt=poster]")?.attr("src")
-        
-        val description = document.selectFirst("div.detail-container p.prose")?.text() 
-            ?: document.selectFirst("div[class*=description] p")?.text()
+        val description = document.selectFirst("div.prose")?.text()?.trim()
+        val year = document.select("div.film-info-list-title:contains(Năm) + div")?.text()?.toIntOrNull()
 
-        val year = document.selectFirst("li.film-info-list:contains(Tập mới nhất) + li.film-info-list p.text-sm")?.text()?.toIntOrNull()
-
-        val episodes = document.select("div.max-h-\\[175px\\] ul.grid > li").mapNotNull {
-            val epHref = it.selectFirst("a")?.attr("href") ?: return@mapNotNull null
-            val epName = it.selectFirst("div.ep-container")?.text()?.let { name ->
-                if (name.contains("Tập", true)) name else "Tập $name"
-            } ?: "Tập"
-            Episode("$mainUrl$epHref", epName)
+        val episodes = document.select("div[class*='max-h'] ul.grid li a").mapNotNull { aTag ->
+            val epHref = aTag.attr("href")
+            val epName = aTag.text().trim()
+            
+            Episode(
+                data = "$mainUrl$epHref", 
+                name = epName, 
+                episode = null
+            )
         }.reversed()
         
-        val isMovie = episodes.isEmpty() && (document.selectFirst("div:contains(Đang cập nhật…)") != null || document.select("div.ep-container").size <= 1)
+        val isMovie = episodes.isEmpty()
         
+        // FIX: Set all load responses to TvType.Cartoon
         return if (isMovie) {
-             newMovieLoadResponse(title, url, TvType.Movie, dataUrl = url) {
+             newMovieLoadResponse(title, url, TvType.Cartoon, dataUrl = url) {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = description
                 this.tags = document.select("li.film-info-list:contains(Thể loại) a").map { it.text() }
             }
         } else {
-             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+             newTvSeriesLoadResponse(title, url, TvType.Cartoon, episodes) {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = description
