@@ -90,7 +90,7 @@ class HoatHinhQQProvider : MainAPI() {
 
                 // Manually construct the Episode object
                 Episode(
-                    this.data = "$mainUrl$href",
+                    data = "$mainUrl$href",
                     this.name = "Tập $epNumStr", // Create the desired name "Tập 51"
                 )
             }?.reversed() ?: emptyList()
