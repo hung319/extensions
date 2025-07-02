@@ -91,7 +91,7 @@ class HoatHinhQQProvider : MainAPI() {
                 // Manually construct the Episode object
                 Episode(
                     data = "$mainUrl$href",
-                    name = "Tập $epNumStr" // Create the desired name "Tập 51"
+                    name = "\u200BTập $epNumStr" // Create the desired name "Tập 51"
                 )
             }?.reversed() ?: emptyList()
         
