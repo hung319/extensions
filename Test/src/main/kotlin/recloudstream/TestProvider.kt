@@ -1,112 +1,126 @@
-// Chỉ đổi package ở đây theo yêu cầu
-package recloudstream
+// To test this provider, paste the code in a new file in your provider folder and rename it to "HoatHinhQQProvider.kt"
+package recloudstream // Changed package name as requested
 
-// Giữ nguyên các import từ com.lagradost.cloudstream3
-import com.lagradost.cloudstream3.plugins.CloudStreamPlugin
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.ExtractorLinkType // Keeping original imports
 import org.jsoup.nodes.Element
 
-@CloudStreamPlugin
-class HentaiSexBlogProvider : MainAPI() {
-    // --- Metadata cho plugin ---
-    override var name = "HentaiSex Blog"
-    override var mainUrl = "https://hentaisex.blog"
+class HoatHinhQQProvider : MainAPI() {
+    // Basic provider information
+    override var mainUrl = "https://hoathinhqq.com"
+    override var name = "HoatHinhQQ"
+    override val hasMainPage = true
     override var lang = "vi"
-    override val supportedTypes = setOf(TvType.NSFW)
-    override var hasMainPage = true
+    override val hasDownloadSupport = true
+    override val supportedTypes = setOf(
+        TvType.Movie,
+        TvType.TvSeries,
+        TvType.Cartoon
+    )
 
-    // --- Hàm tải trang chính ---
-    override suspend fun getMainPage(
-        page: Int,
-        request: MainPageRequest
-    ): HomePageResponse {
-        val url = if (page == 1) mainUrl else "$mainUrl/page/$page/"
-        val document = app.get(url).document
+    // Function to get the homepage
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val document = app.get("$mainUrl/phim?page=$page").document
+        val homePageList = ArrayList<HomePageList>()
 
-        val home = document.select("div.flw-item").mapNotNull {
-            it.toSearchResult()
+        // Find all sections on the main page
+        val sections = document.select("div.w-full.lg\\:w-3\\/4")
+        
+        sections.forEach { section ->
+            val header = section.selectFirst("div.gradient-title h3")?.text() ?: "Unknown Section"
+            val movies = section.select("div.grid > a").mapNotNull { it.toSearchResult() }
+            if (movies.isNotEmpty()) {
+                homePageList.add(HomePageList(header, movies))
+            }
         }
 
-        return HomePageResponse(arrayListOf(HomePageList("Mới cập nhật", home)), hasNext = home.isNotEmpty())
+        if (homePageList.isEmpty()) throw ErrorLoadingException("Không tìm thấy dữ liệu trang chủ")
+
+        return HomePageResponse(homePageList)
     }
 
-    // --- Hàm phụ trợ chuyển đổi HTML ---
+    // Helper function to parse search results from an element
     private fun Element.toSearchResult(): SearchResponse? {
-        val linkElement = this.selectFirst("h3.film-name a") ?: return null
-        val href = linkElement.attr("href")
-        val title = linkElement.attr("title")
+        val href = this.attr("href")
+        if (href.isBlank()) return null
+        
+        val title = this.selectFirst("h3.capitalize")?.text() ?: return null
+        val posterUrl = this.selectFirst("img")?.attr("srcset")?.substringBefore(" ")
+        val latestEp = this.selectFirst("div.absolute.top-0.left-0 > div")?.text()
 
-        val posterUrl = this.selectFirst("img.film-poster-img")?.attr("data-original")?.let {
-            if (it.startsWith("/")) mainUrl + it else it
-        }
-
-        if (title.isBlank() || href.isBlank()) return null
-
-        return newAnimeSearchResponse(title, href, TvType.NSFW) {
+        return newAnimeSearchResponse(title, "$mainUrl$href", TvType.TvSeries) {
             this.posterUrl = posterUrl
+            addDubStatus(false, latestEp?.contains("Tập") == true)
         }
     }
-
-    // --- Hàm tìm kiếm ---
+    
+    // Function to search for content
     override suspend fun search(query: String): List<SearchResponse> {
-        val document = app.get("$mainUrl/?search=$query").document
-        return document.select("div.flw-item").mapNotNull {
+        val url = "$mainUrl/tim-kiem/$query"
+        val document = app.get(url).document
+
+        return document.select("div.grid > a").mapNotNull {
             it.toSearchResult()
         }
     }
-
-    // --- Hàm tải chi tiết phim ---
-    override suspend fun load(url: String): LoadResponse? {
+    
+    // Function to load movie/series details
+    override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
-        val title = document.selectFirst("h1.video-title")?.text() ?: return null
-        val posterUrl = document.selectFirst("meta[property=og:image]")?.attr("content")
-        val description = document.selectFirst("div.about.mb-3")?.text()
-        val tags = document.select("div.genres.mb-4 a").map { it.text() }
+        val title = document.selectFirst("h1.text-lg.text-[#cf8e19]")?.text() ?: "Không tìm thấy tiêu đề"
+        val poster = document.selectFirst("div.relative.aspect-\\[3\\/4\\] img")?.attr("src")
+        val description = document.selectFirst("p.prose.prose-sm")?.text()
+        val year = document.select("div.flex.flex-row.items-center.gap-1 p.text-sm").getOrNull(0)?.text()?.toIntOrNull()
+        
+        val tvType = if (document.select("div.ep-container").size > 1) TvType.TvSeries else TvType.Movie
+        
+        val episodes = document.select("div.mt-4 ul.grid > li").mapNotNull {
+            val epHref = it.selectFirst("a")?.attr("href") ?: return@mapNotNull null
+            val epName = it.selectFirst("div.ep-container")?.text()?.let { name ->
+                if (name.contains("Tập")) name else "Tập $name"
+            } ?: "Tập"
+            Episode("$mainUrl$epHref", epName)
+        }.reversed()
 
-        val episodes = arrayListOf(
-            Episode(
-                data = url,
-                name = "Xem Phim"
-            )
-        )
-
-        return newTvShowLoadResponse(title, url, TvType.NSFW, episodes) {
-            this.posterUrl = posterUrl
+        return newTvSeriesLoadResponse(title, url, tvType, episodes) {
+            this.posterUrl = poster
+            this.year = year
             this.plot = description
-            this.tags = tags
+            this.tags = document.select("li.film-info-list a.bg-\\[\\#333940\\]").map { it.text() }
         }
     }
-
-    // --- Hàm lấy link video trực tiếp ---
+    
+    // Function to load video links for an episode
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data).document
+        // Regex to find m3u8 links in the HTML content
+        val m3u8Regex = """https?://[^\s"'<>]+\.m3u8""".toRegex()
+        
+        // Fetch the HTML content of the episode page
+        val document = app.get(data).document.html()
 
-        document.select("li.pu-link").forEach { serverElement ->
-            val videoUrl = serverElement.attr("data-link")
-            val serverName = serverElement.selectFirst("span.sv-name")?.text() ?: "Server"
-
-            if (videoUrl.isNotBlank()) {
-                 callback.invoke(
-                    ExtractorLink(
-                        source = this.name,
-                        name = serverName,
-                        url = videoUrl,
-                        referer = data,
-                        quality = Qualities.Unknown.value,
-                        type = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                    )
+        // Find the first m3u8 link using regex
+        m3u8Regex.find(document)?.let { matchResult ->
+            val m3u8Url = matchResult.value
+            callback.invoke(
+                ExtractorLink(
+                    source = this.name,
+                    name = this.name,
+                    url = m3u8Url,
+                    referer = "$mainUrl/",
+                    quality = Qualities.Unknown.value,
+                    type = ExtractorLinkType.M3U8
                 )
-            }
+            )
+            return true
         }
-        return true
+
+        return false
     }
 }
