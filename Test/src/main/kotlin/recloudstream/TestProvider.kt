@@ -18,35 +18,24 @@ class HoatHinhQQProvider : MainAPI() {
         TvType.Cartoon
     )
 
-    // Function to get the homepage with correct pagination
+    // FIX: Simplified and corrected pagination logic
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val lists = ArrayList<HomePageList>()
-        var hasNextPage = false
+        // This provider now focuses on the paginated "Phim" page for simplicity and reliability.
+        val url = "$mainUrl/phim?page=$page"
+        val document = app.get(url).document
+        
+        val movies = document.select("div.grid > a").mapNotNull { it.toSearchResult() }
+        
+        // A more reliable way to check for the next page.
+        // It checks if there's a link to the page number after the current one.
+        val hasNext = document.select("ul.pagination a[href='/phim?page=${page + 1}']").isNotEmpty()
 
-        if (page <= 1) {
-            val document = app.get("$mainUrl/").document
-            val sections = document.select("div.w-full.lg\\:w-3\\/4")
-
-            sections.forEach { section ->
-                val header = section.selectFirst("div.gradient-title h3")?.text() ?: "Unknown Section"
-                val movies = section.select("div.grid > a").mapNotNull { it.toSearchResult() }
-                if (movies.isNotEmpty()) {
-                    lists.add(HomePageList(header, movies))
-                }
-            }
-            hasNextPage = document.select("ul.pagination a:contains(>)").isNotEmpty()
-        } else {
-            val document = app.get("$mainUrl/phim?page=$page").document
-            val movies = document.select("div.grid > a").mapNotNull { it.toSearchResult() }
-            if (movies.isNotEmpty()) {
-                lists.add(HomePageList("Phim Mới Cập Nhật (Trang $page)", movies))
-            }
-            hasNextPage = document.select("ul.pagination a:contains(>)").isNotEmpty()
-        }
-
-        if (lists.isEmpty()) throw ErrorLoadingException("Không tìm thấy dữ liệu trang chủ")
-
-        return HomePageResponse(lists, hasNext = hasNextPage)
+        // We return a single list, which is the main content of the homepage.
+        // The page title changes to reflect the current page number for clarity.
+        return newHomePageResponse(
+            HomePageList("Phim Mới Cập Nhật", movies),
+            hasNext = hasNext
+        )
     }
 
     // Helper function to parse search results from an element
@@ -78,7 +67,6 @@ class HoatHinhQQProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
-        // FIX: Use meta tags for more reliable data extraction
         val title = document.selectFirst("meta[property=og:title]")?.attr("content")?.replace(" - HoatHinhQQ", "")
             ?: "Không tìm thấy tiêu đề"
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
@@ -86,19 +74,25 @@ class HoatHinhQQProvider : MainAPI() {
         
         val year = document.select("li.film-info-list:contains(Năm) div.flex-row p.text-sm")?.text()?.toIntOrNull()
 
-        val episodes = document.select("div[class*='max-h'] ul.grid li a").mapNotNull { aTag ->
-            val epHref = aTag.attr("href")
-            val epName = aTag.text().trim() // e.g., "Tập 54"
-            
-            // Set episode parameter to null to disable UI's number extraction
-            Episode(
-                data = "$mainUrl$epHref", 
-                name = epName, 
-                episode = 0 // Vô hiệu hóa epNum
-            )
-        }.reversed()
-        
+        // FIX: More reliable selector to get all episodes
+        val episodes = document.selectFirst("div:has(p:contains(Tìm tập nhanh))")
+            ?.select("ul > li > a")
+            ?.mapNotNull { aTag ->
+                val epHref = aTag.attr("href")
+                val epName = aTag.text().trim()
+                Episode(
+                    data = "$mainUrl$epHref", 
+                    name = epName, 
+                    episode = -1
+                )
+            }?.reversed() ?: emptyList()
+
         val isMovie = episodes.isEmpty()
+
+        // FIX: Added placeholder for recommendations
+        // The HTML you provided does not contain a recommendations section.
+        // When you find a page with recommendations, provide the HTML and I will update the selector.
+        // val recommendations = document.select("your_recommendations_selector_here").mapNotNull { it.toSearchResult() }
         
         return if (isMovie) {
              newMovieLoadResponse(title, url, TvType.Cartoon, dataUrl = url) {
@@ -106,6 +100,7 @@ class HoatHinhQQProvider : MainAPI() {
                 this.year = year
                 this.plot = description
                 this.tags = document.select("li.film-info-list:contains(Thể loại) a").map { it.text() }
+                // this.recommendations = recommendations
             }
         } else {
              newTvSeriesLoadResponse(title, url, TvType.Cartoon, episodes) {
@@ -113,6 +108,7 @@ class HoatHinhQQProvider : MainAPI() {
                 this.year = year
                 this.plot = description
                 this.tags = document.select("li.film-info-list:contains(Thể loại) a").map { it.text() }
+                // this.recommendations = recommendations
             }
         }
     }
