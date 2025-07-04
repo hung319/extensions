@@ -1,5 +1,5 @@
 // Tên file: NguonCProvider.kt
-// Phiên bản đã sửa lỗi khi tải các link phim không hợp lệ.
+// Phiên bản cuối cùng, đã bổ sung data class còn thiếu.
 
 package com.lagradost.cloudstream3.movieprovider
 
@@ -58,9 +58,13 @@ data class NguonCDetailMovie(
 )
 
 data class NguonCDetail(
-    // FIX 1: Cho phép đối tượng `movie` có thể null
     @JsonProperty("movie") val movie: NguonCDetailMovie?, 
     @JsonProperty("episodes") val episodes: List<NguonCServer>? 
+)
+
+// FIX: Bổ sung lại data class bị thiếu để parse link stream từ trang embed
+data class StreamApiResponse(
+    @JsonProperty("streamUrl") val streamUrl: String
 )
 
 
@@ -73,7 +77,6 @@ class NguonCProvider : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
-    // ... các hàm toSearchResponse, mainPage, getMainPage, search giữ nguyên ...
     private fun toSearchResponse(item: NguonCItem): SearchResponse {
         val url = "$mainUrl/api/film/${item.slug}"
         val poster = item.poster_url
@@ -109,8 +112,6 @@ class NguonCProvider : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse {
         val response = app.get(url).parsed<NguonCDetail>()
-        
-        // FIX 2: Kiểm tra nếu đối tượng `movie` không tồn tại, báo lỗi và dừng lại.
         val movie = response.movie ?: throw RuntimeException("Không thể lấy dữ liệu phim từ API. Link có thể đã hỏng.")
         
         val title = movie.name
@@ -145,8 +146,8 @@ class NguonCProvider : MainAPI() {
             }
         } ?: listOf()
 
-        return if (episodes.size > 1) {
-            TvSeriesLoadResponse(
+        return if (episodes.size > 1 || (episodes.size == 1 && showStatus == ShowStatus.Ongoing)) {
+             TvSeriesLoadResponse(
                 name = title, url = url, apiName = this.name, type = TvType.TvSeries,
                 episodes = episodes, posterUrl = poster, year = year, plot = plot,
                 tags = tags, showStatus = showStatus, actors = actors
