@@ -1,5 +1,5 @@
 // Tên file: NguonCProvider.kt
-// Phiên bản đã sửa lỗi biên dịch.
+// Phiên bản đã cập nhật logic lấy link phim mới thông qua API của trang embed.
 
 package com.lagradost.cloudstream3.movieprovider
 
@@ -7,8 +7,9 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.fasterxml.jackson.annotation.JsonProperty
 import org.jsoup.Jsoup
+import java.net.URI
 
-// --- CÁC LỚP DỮ LIỆU (DATA CLASS) VẪN GIỮ NGUYÊN ---
+// --- CÁC LỚP DỮ LIỆU (DATA CLASS) ---
 data class NguonCItem(
     @JsonProperty("name") val name: String,
     @JsonProperty("slug") val slug: String,
@@ -23,7 +24,9 @@ data class NguonCMain(
 data class NguonCEpisodeData(
     @JsonProperty("name") val name: String,
     @JsonProperty("slug") val slug: String,
-    @JsonProperty("m3u8") val m3u8: String? = null
+    @JsonProperty("m3u8") val m3u8: String? = null,
+    // FIX: Thêm trường 'embed' để lấy link
+    @JsonProperty("embed") val embed: String? = null 
 )
 
 data class NguonCServer(
@@ -57,7 +60,12 @@ data class NguonCDetailMovie(
 
 data class NguonCDetail(
     @JsonProperty("movie") val movie: NguonCDetailMovie,
-    @JsonProperty("episodes") val episodes: List<NguonCServer>
+    @JsonProperty("episodes") val episodes: List<NguonCServer>? 
+)
+
+// FIX: Data class mới để parse phản hồi từ API của trang embed
+data class StreamApiResponse(
+    @JsonProperty("streamUrl") val streamUrl: String
 )
 
 
@@ -70,6 +78,7 @@ class NguonCProvider : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
+    // ... các hàm toSearchResponse, mainPage, getMainPage, search giữ nguyên ...
     private fun toSearchResponse(item: NguonCItem): SearchResponse {
         val url = "$mainUrl/api/film/${item.slug}"
         val poster = item.poster_url
@@ -121,7 +130,6 @@ class NguonCProvider : MainAPI() {
             }
         }
         
-        // FIX: Xác định trạng thái phim (hoàn thành/đang tiến hành)
         val showStatus = if (movie.current_episode?.contains("Hoàn tất", ignoreCase = true) == true || movie.current_episode?.contains("FULL", ignoreCase = true) == true) {
             ShowStatus.Completed
         } else {
@@ -130,65 +138,78 @@ class NguonCProvider : MainAPI() {
 
         val actors = movie.casts?.split(",")?.map { ActorData(Actor(it.trim())) }
 
-        val episodes = response.episodes.flatMap { server ->
+        val episodes = response.episodes?.flatMap { server ->
             server.items.mapNotNull { ep ->
-                val episodeUrl = ep.m3u8 ?: return@mapNotNull null
+                // FIX: Ưu tiên lấy link embed, nếu không có thì mới lấy link m3u8 trực tiếp (dự phòng)
+                val episodeData = ep.embed ?: ep.m3u8 ?: return@mapNotNull null
                 Episode(
-                    data = episodeUrl,
-                    // FIX: 'displayName' không còn tồn tại, gán trực tiếp cho 'name'
+                    data = episodeData,
                     name = if (response.episodes.size > 1) "${server.server_name} - Tập ${ep.name}" else "Tập ${ep.name}"
                 )
             }
-        }.distinctBy { it.data }
+        } ?: listOf()
 
         return if (episodes.size > 1) {
-            // FIX: Sửa lại thứ tự và các tham số của TvSeriesLoadResponse cho đúng với phiên bản mới
             TvSeriesLoadResponse(
-                name = title,
-                url = url,
-                apiName = this.name,
-                type = TvType.TvSeries,
-                episodes = episodes,
-                posterUrl = poster,
-                year = year,
-                plot = plot,
-                tags = tags,
-                showStatus = showStatus,
-                actors = actors
+                name = title, url = url, apiName = this.name, type = TvType.TvSeries,
+                episodes = episodes, posterUrl = poster, year = year, plot = plot,
+                tags = tags, showStatus = showStatus, actors = actors
             )
         } else {
-            // FIX: Sửa lại các tham số của MovieLoadResponse và đảm bảo `data` không bị null
             MovieLoadResponse(
-                name = title,
-                url = url,
-                apiName = this.name,
-                type = TvType.Movie,
-                dataUrl = episodes.firstOrNull()?.data ?: "", // Cung cấp giá trị mặc định để tránh lỗi
-                posterUrl = poster,
-                year = year,
-                plot = plot,
-                tags = tags,
-                actors = actors
+                name = title, url = url, apiName = this.name, type = TvType.Movie,
+                dataUrl = episodes.firstOrNull()?.data ?: "", posterUrl = poster, year = year,
+                plot = plot, tags = tags, actors = actors
             )
         }
     }
 
+    // FIX: VIẾT LẠI HOÀN TOÀN HÀM loadLinks ĐỂ XỬ LÝ LOGIC MỚI
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+
+        // Nếu data là link m3u8 trực tiếp (trường hợp dự phòng), phát luôn
+        if (data.contains(".m3u8")) {
+            callback.invoke(
+                ExtractorLink(this.name, "Nguồn C (Dự phòng)", data, mainUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
+            )
+            return true
+        }
+
+        // Xử lý logic mới với embed URL
+        val embedUrl = data
+        
+        // Tạo API URL từ embed URL
+        val apiUrl = embedUrl.replace("?hash=", "?api=stream&hash=")
+        
+        // Lấy tên miền gốc của trang embed, ví dụ: https://embed10.streamc.xyz
+        val baseUrl = URI(embedUrl).let { "${it.scheme}://${it.host}" }
+
+        // Tạo headers, trong đó Referer là quan trọng nhất
+        val headers = mapOf("Referer" to embedUrl)
+        
+        // Gọi API và parse kết quả
+        val response = app.get(apiUrl, headers = headers).parsed<StreamApiResponse>()
+        
+        // Tạo link m3u8 cuối cùng
+        val finalM3u8Url = baseUrl + response.streamUrl
+        
         callback.invoke(
             ExtractorLink(
                 source = this.name,
                 name = "Nguồn C",
-                url = data,
-                referer = "$mainUrl/",
+                url = finalM3u8Url,
+                // Referer cho trình phát video là trang embed gốc
+                referer = embedUrl,
                 quality = Qualities.Unknown.value,
                 type = ExtractorLinkType.M3U8 
             )
         )
+        
         return true
     }
 }
