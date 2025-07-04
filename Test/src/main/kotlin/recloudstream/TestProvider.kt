@@ -1,5 +1,5 @@
 // Tên file: NguonCProvider.kt
-// Phiên bản đã cập nhật logic lấy link phim mới thông qua API của trang embed.
+// Phiên bản đã sửa lỗi khi tải các link phim không hợp lệ.
 
 package com.lagradost.cloudstream3.movieprovider
 
@@ -25,7 +25,6 @@ data class NguonCEpisodeData(
     @JsonProperty("name") val name: String,
     @JsonProperty("slug") val slug: String,
     @JsonProperty("m3u8") val m3u8: String? = null,
-    // FIX: Thêm trường 'embed' để lấy link
     @JsonProperty("embed") val embed: String? = null 
 )
 
@@ -59,13 +58,9 @@ data class NguonCDetailMovie(
 )
 
 data class NguonCDetail(
-    @JsonProperty("movie") val movie: NguonCDetailMovie,
+    // FIX 1: Cho phép đối tượng `movie` có thể null
+    @JsonProperty("movie") val movie: NguonCDetailMovie?, 
     @JsonProperty("episodes") val episodes: List<NguonCServer>? 
-)
-
-// FIX: Data class mới để parse phản hồi từ API của trang embed
-data class StreamApiResponse(
-    @JsonProperty("streamUrl") val streamUrl: String
 )
 
 
@@ -114,7 +109,9 @@ class NguonCProvider : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse {
         val response = app.get(url).parsed<NguonCDetail>()
-        val movie = response.movie
+        
+        // FIX 2: Kiểm tra nếu đối tượng `movie` không tồn tại, báo lỗi và dừng lại.
+        val movie = response.movie ?: throw RuntimeException("Không thể lấy dữ liệu phim từ API. Link có thể đã hỏng.")
         
         val title = movie.name
         val poster = movie.poster_url ?: movie.thumb_url
@@ -140,7 +137,6 @@ class NguonCProvider : MainAPI() {
 
         val episodes = response.episodes?.flatMap { server ->
             server.items.mapNotNull { ep ->
-                // FIX: Ưu tiên lấy link embed, nếu không có thì mới lấy link m3u8 trực tiếp (dự phòng)
                 val episodeData = ep.embed ?: ep.m3u8 ?: return@mapNotNull null
                 Episode(
                     data = episodeData,
@@ -164,15 +160,12 @@ class NguonCProvider : MainAPI() {
         }
     }
 
-    // FIX: VIẾT LẠI HOÀN TOÀN HÀM loadLinks ĐỂ XỬ LÝ LOGIC MỚI
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-
-        // Nếu data là link m3u8 trực tiếp (trường hợp dự phòng), phát luôn
         if (data.contains(".m3u8")) {
             callback.invoke(
                 ExtractorLink(this.name, "Nguồn C (Dự phòng)", data, mainUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
@@ -180,33 +173,18 @@ class NguonCProvider : MainAPI() {
             return true
         }
 
-        // Xử lý logic mới với embed URL
         val embedUrl = data
-        
-        // Tạo API URL từ embed URL
         val apiUrl = embedUrl.replace("?hash=", "?api=stream&hash=")
-        
-        // Lấy tên miền gốc của trang embed, ví dụ: https://embed10.streamc.xyz
         val baseUrl = URI(embedUrl).let { "${it.scheme}://${it.host}" }
-
-        // Tạo headers, trong đó Referer là quan trọng nhất
         val headers = mapOf("Referer" to embedUrl)
         
-        // Gọi API và parse kết quả
         val response = app.get(apiUrl, headers = headers).parsed<StreamApiResponse>()
-        
-        // Tạo link m3u8 cuối cùng
         val finalM3u8Url = baseUrl + response.streamUrl
         
         callback.invoke(
             ExtractorLink(
-                source = this.name,
-                name = "Nguồn C",
-                url = finalM3u8Url,
-                // Referer cho trình phát video là trang embed gốc
-                referer = embedUrl,
-                quality = Qualities.Unknown.value,
-                type = ExtractorLinkType.M3U8 
+                source = this.name, name = "Nguồn C", url = finalM3u8Url,
+                referer = embedUrl, quality = Qualities.Unknown.value, type = ExtractorLinkType.M3U8 
             )
         )
         
