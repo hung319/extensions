@@ -13,27 +13,14 @@ import java.net.URL
 import kotlin.math.roundToInt
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 
-// -- CÁC IMPORT CHO LOGIC GIẢI MÃ VÀ INTERCEPTOR --
-import okhttp3.Interceptor
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.Response
-import okhttp3.ResponseBody.Companion.toResponseBody
-import java.security.MessageDigest
-import java.util.Base64
-import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
-import java.util.zip.Inflater
-import javax.crypto.Cipher
-import javax.crypto.spec.IvParameterSpec
-import javax.crypto.spec.SecretKeySpec
-
-// Đổi tên class cho khớp với file của bạn
-class TestProvider : MainAPI() {
+class AnimeVietsubProvider : MainAPI() {
 
     private val gson = Gson()
     override var mainUrl = "https://bit.ly/animevietsubtv"
-    override var name = "AnimeVietsub" // Tên hiển thị có thể là Test hoặc AnimeVietsub
+    override var name = "AnimeVietsub"
     override val supportedTypes = setOf(
         TvType.Anime,
         TvType.Cartoon,
@@ -48,114 +35,39 @@ class TestProvider : MainAPI() {
     private var currentActiveUrl = bitlyResolverUrl
     private var domainResolutionAttempted = false
 
-    // =================== SỬA LỖI: ĐĂNG KÝ INTERCEPTOR ĐÚNG CÁCH ===================
-    // Ghi đè cấu hình OkHttp để thêm Interceptor. Đây là cách làm đúng.
-    override val OvrrideConfig: OkhttpConfig
-        get() = OkhttpConfig(
-            interceptors = listOf(M3u8Interceptor())
-        )
-    // ==============================================================================
-
-
-    // =================== YÊU CẦU 2: INTERCEPTOR VÀ CACHE CHO M3U8 ===================
-    private val m3u8Cache = ConcurrentHashMap<String, String>()
-    private val localM3u8Host = "avs.local"
-
-    private inner class M3u8Interceptor : Interceptor {
-        override fun intercept(chain: Interceptor.Chain): Response {
-            val request = chain.request()
-            val url = request.url
-            if (url.host != localM3u8Host) {
-                return chain.proceed(request)
-            }
-            val cacheKey = url.pathSegments.joinToString("/")
-            val m3u8Content = m3u8Cache[cacheKey]
-            return if (m3u8Content != null) {
-                Log.d(name, "Interceptor: Found M3U8 content for key $cacheKey")
-                m3u8Cache.remove(cacheKey)
-                Response.Builder()
-                    .request(request)
-                    .protocol(okhttp3.Protocol.HTTP_1_1)
-                    .code(200)
-                    .message("OK")
-                    .body(m3u8Content.toResponseBody("application/vnd.apple.mpegurl; charset=utf-8".toMediaType()))
-                    .build()
-            } else {
-                Log.w(name, "Interceptor: M3U8 content for key $cacheKey not found or expired")
-                Response.Builder()
-                    .request(request)
-                    .protocol(okhttp3.Protocol.HTTP_1_1)
-                    .code(404)
-                    .message("Not Found")
-                    .body("".toResponseBody(null))
-                    .build()
-            }
-        }
-    }
-
-    // =================== YÊU CẦU 1: LOGIC GIẢI MÃ PORT TỪ JS SANG KOTLIN ===================
-    private val KEY_STRING_B64 = "ZG1fdGhhbmdfc3VjX3ZhdF9nZXRfbGlua19hbl9kYnQ="
-
-    private val aesKey by lazy {
-        try {
-            val decodedKeyBytes = Base64.getDecoder().decode(KEY_STRING_B64)
-            val sha256Hasher = MessageDigest.getInstance("SHA-256")
-            val hashedKey = sha256Hasher.digest(decodedKeyBytes)
-            SecretKeySpec(hashedKey, "AES")
-        } catch (e: Exception) {
-            Log.e(name, "Failed to calculate AES key", e)
-            null
-        }
-    }
-
-    private fun decryptM3u8Content(encryptedDataB64: String): String? {
-        val key = aesKey ?: return null
-        try {
-            val cleanedEncDataB64 = encryptedDataB64.replace(Regex("[^A-Za-z0-9+/=]"), "")
-            val encryptedBytes = Base64.getDecoder().decode(cleanedEncDataB64)
-            if (encryptedBytes.size < 16) throw Exception("Encrypted data is too short to contain IV.")
-            val ivBytes = encryptedBytes.copyOfRange(0, 16)
-            val ciphertextBytes = encryptedBytes.copyOfRange(16, encryptedBytes.size)
-            val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-            cipher.init(Cipher.DECRYPT_MODE, key, IvParameterSpec(ivBytes))
-            val decryptedBytesPadded = cipher.doFinal(ciphertextBytes)
-            val inflater = Inflater(true)
-            inflater.setInput(decryptedBytesPadded)
-            val result = ByteArray(1024 * 1024)
-            val decompressedSize = inflater.inflate(result)
-            inflater.end()
-            val decompressedBytes = result.copyOfRange(0, decompressedSize)
-            return decompressedBytes.toString(Charsets.UTF_8)
-                .trim().removeSurrounding("\"")
-                .replace("\\n", "\n")
-        } catch (error: Exception) {
-            Log.e(name, "Decryption/Decompression failed: ${error.message}", error)
-            return null
-        }
-    }
-
-    // =================== CÁC HÀM GỐC (GIỮ NGUYÊN HOẶC CHỈNH SỬA NHẸ) ===================
-
+    // =================== PHẦN 1: KHAI BÁO CÁC MỤC TRANG CHỦ ===================
+    // Sử dụng cấu trúc mainPageOf để khai báo các mục một cách rõ ràng.
+    // Cặp giá trị gồm: "Đường dẫn" to "Tên hiển thị"
     override val mainPage = mainPageOf(
         "/anime-moi/" to "Mới Cập Nhật",
         "/anime-sap-chieu/" to "Sắp Chiếu",
         "/bang-xep-hang/day.html" to "Xem Nhiều Trong Ngày"
     )
 
+    // =================== PHẦN 2: HÀM getMainPage ĐA NĂNG (ĐÃ SỬA LỖI) ===================
+    // Hàm này giờ đây xử lý tất cả các mục đã khai báo ở trên và cả phân trang.
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val baseUrl = getBaseUrl()
+
+        // Xây dựng URL dựa trên yêu cầu và số trang
         val url = if (page == 1) {
             "$baseUrl${request.data}"
         } else {
+            // Trang xếp hạng không có phân trang theo kiểu /trang-X.html,
+            // nên ta chỉ xử lý phân trang cho các mục khác.
             if (request.data.contains("bang-xep-hang")) {
-                "$baseUrl${request.data}"
+                 "$baseUrl${request.data}" // Luôn là trang 1
             } else {
                 val slug = request.data.removeSuffix("/")
                 "$baseUrl$slug/trang-$page.html"
             }
         }
+
         val document = app.get(url).document
+
+        // Vì mỗi mục có thể có cấu trúc HTML khác nhau, ta cần kiểm tra để dùng đúng selector
         val home = when {
+            // SỬA LỖI: Dùng selector và logic phân tích mới cho trang "Bảng xếp hạng"
             request.data.contains("bang-xep-hang") -> {
                 document.select("ul.bxh-movie-phimletv li.group").mapNotNull { element ->
                     try {
@@ -163,26 +75,31 @@ class TestProvider : MainAPI() {
                         val title = titleElement.text().trim()
                         val href = fixUrl(titleElement.attr("href"), baseUrl) ?: return@mapNotNull null
                         val posterUrl = fixUrl(element.selectFirst("a.thumb img")?.attr("src"), baseUrl)
+
                         newMovieSearchResponse(title, href, TvType.Anime) {
                             this.posterUrl = posterUrl
                         }
                     } catch (e: Exception) {
-                        Log.e(name, "Error parsing ranking item", e)
+                        Log.e(name, "Lỗi parse item của Bảng xếp hạng", e)
                         null
                     }
                 }
             }
+            // Giữ nguyên logic cho các trang danh sách phim thông thường
             else -> {
                 document.select("ul.MovieList.Rows li.TPostMv").mapNotNull {
                     it.toSearchResponse(this, baseUrl)
                 }
             }
         }
+
+        // Kiểm tra xem có trang tiếp theo không (không áp dụng cho bảng xếp hạng)
         val hasNext = if (request.data.contains("bang-xep-hang")) {
             false
         } else {
             document.selectFirst("div.wp-pagenavi span.current + a.page, div.wp-pagenavi a.larger:contains(Trang Cuối)") != null
         }
+        
         return newHomePageResponse(
             list = HomePageList(
                 name = request.name,
@@ -191,19 +108,24 @@ class TestProvider : MainAPI() {
             hasNext = hasNext
         )
     }
-
+    
+    // =================== PHẦN 3: HÀM search ĐÚNG MỤC ĐÍCH ===================
+    // Hàm này giờ chỉ còn nhiệm vụ xử lý tìm kiếm bằng từ khóa.
     override suspend fun search(query: String): List<SearchResponse> {
         return try {
             val baseUrl = getBaseUrl()
             val requestUrl = "$baseUrl/tim-kiem/${query.encodeUri()}/"
             val document = app.get(requestUrl).document
+
             document.select("ul.MovieList.Rows li.TPostMv")
                 .mapNotNull { it.toSearchResponse(this, baseUrl) }
         } catch (e: Exception) {
-            Log.e(name, "Error in search with query '$query'", e)
+            Log.e(name, "Lỗi trong hàm search với query '$query'", e)
             emptyList()
         }
     }
+    
+    // =================== CÁC HÀM CÒN LẠI (GIỮ NGUYÊN) ===================
 
     private suspend fun getBaseUrl(): String {
         if (domainResolutionAttempted && !currentActiveUrl.contains("bit.ly")) {
@@ -243,7 +165,7 @@ class TestProvider : MainAPI() {
         }
         return currentActiveUrl
     }
-
+    
     override suspend fun load(url: String): LoadResponse? {
         val baseUrl = getBaseUrl()
         try {
@@ -292,37 +214,39 @@ class TestProvider : MainAPI() {
             val ajaxUrl = "$baseUrl/ajax/player?v=2019a"
             val ajaxResponse = app.post(ajaxUrl, data = postData, headers = headers, referer = episodePageUrl).text
             val playerResponse = gson.fromJson(ajaxResponse, AjaxPlayerResponse::class.java)
-
             if (playerResponse?.success != 1 || playerResponse.link.isNullOrEmpty()) {
                 throw ErrorLoadingException("Failed to get links from AJAX response: $ajaxResponse")
             }
-
             coroutineScope {
                 playerResponse.link.forEach { linkSource ->
                     launch {
-                        val encryptedUrl = linkSource.file ?: return@launch
-                        val decryptedM3u8 = decryptM3u8Content(encryptedUrl)
-                        if (decryptedM3u8.isNullOrBlank()) {
-                             Log.w(name, "Decryption returned null or empty M3U8")
-                             return@launch
+                        val fileUrl = linkSource.file ?: return@launch
+                        val streamUrl = if (fileUrl.startsWith("http") && (fileUrl.contains(".m3u8") || fileUrl.contains(".mp4"))) {
+                            fileUrl
+                        } else {
+                            val decryptApiUrl = "http://avs.06.dedyn.io/animevietsub/decrypt"
+                            app.post(
+                                decryptApiUrl,
+                                headers = mapOf("User-Agent" to USER_AGENT, "Referer" to episodePageUrl),
+                                requestBody = fileUrl.toRequestBody("text/plain".toMediaTypeOrNull())
+                            ).text.trim()
                         }
-
-                        val cacheKey = "${UUID.randomUUID()}.m3u8"
-                        val localUrl = "https://$localM3u8Host/$cacheKey"
-                        
-                        m3u8Cache[cacheKey] = decryptedM3u8
-
-                        newExtractorLink(
-                            source = name,
-                            name = name,
-                            url = localUrl,
-                            type = ExtractorLinkType.M3U8
-                        ) {
-                            this.referer = episodePageUrl
-                            this.quality = Qualities.Unknown.value
-                        }.let {
-                            callback(it)
-                            foundLinks = true
+                        val isMedia = streamUrl.startsWith("http") && (streamUrl.contains(".m3u8") || streamUrl.contains(".mp4"))
+                        if (isMedia) {
+                            newExtractorLink(
+                                source = name,
+                                name = "$name",
+                                url = streamUrl,
+                                type = if (streamUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                            ) {
+                                this.referer = episodePageUrl
+                                this.quality = Qualities.Unknown.value
+                            }.let { 
+                                callback(it)
+                                foundLinks = true
+                            }
+                        } else {
+                            Log.w(name, "Decrypted link is not a valid media URL: $streamUrl")
                         }
                     }
                 }
@@ -397,7 +321,7 @@ class TestProvider : MainAPI() {
                 }
             } else { // Movie
                 val duration = this.extractDuration()
-                val data = episodes.firstOrNull()?.data
+                val data = episodes.firstOrNull()?.data 
                     ?: gson.toJson(EpisodeData(infoUrl, this.getDataIdFallback(infoUrl), null))
                 provider.newMovieLoadResponse(title, infoUrl, finalTvType, data) {
                     this.posterUrl = posterUrl; this.plot = plot; this.tags = tags; this.year = year
@@ -410,7 +334,7 @@ class TestProvider : MainAPI() {
             return null
         }
     }
-
+    
     private fun Document.extractPosterUrl(baseUrl: String): String? {
         val selectors = listOf(
             "meta[property=og:image]",
@@ -452,7 +376,7 @@ class TestProvider : MainAPI() {
         }?.substringBefore("/")?.replace(",", ".")
         return ratingText?.toDoubleOrNull()?.let { (it * 10).roundToInt() }
     }
-
+    
     private fun Document.extractDuration(): Int? {
         return this.selectFirst("li:has(strong:containsOwn(Thời lượng)), li.AAIco-adjust:contains(Thời lượng)")
             ?.ownText()?.filter { it.isDigit() }?.toIntOrNull()
@@ -466,7 +390,7 @@ class TestProvider : MainAPI() {
             } else null
         }
     }
-
+    
     private fun Document.extractRecommendations(provider: MainAPI, baseUrl: String): List<SearchResponse> {
         return this.select("div.Wdgt div.MovieListRelated.owl-carousel div.TPostMv").mapNotNull { item ->
             try {
@@ -528,7 +452,7 @@ class TestProvider : MainAPI() {
                 val data = gson.toJson(EpisodeData(url, dataId, el.attr("data-hash").ifBlank { null }))
                 newEpisode(data) { this.name = name }
             } catch (e: Exception) {
-                Log.e(this@TestProvider.name, "Error parsing episode item", e)
+                Log.e(this@AnimeVietsubProvider.name, "Error parsing episode item", e)
                 null
             }
         }
@@ -537,11 +461,11 @@ class TestProvider : MainAPI() {
     data class EpisodeData(val url: String, val dataId: String?, val duHash: String?)
     data class AjaxPlayerResponse(val success: Int?, val link: List<LinkSource>?)
     data class LinkSource(val file: String?, val type: String?, val label: String?)
-
+    
     private fun String?.encodeUri(): String {
         if (this == null) return ""
         return try { URLEncoder.encode(this, "UTF-8").replace("+", "%20") }
-        catch (e: Exception) { Log.e("TestProvider", "URL encode error: $this", e); this }
+        catch (e: Exception) { Log.e("AnimeVietsubProvider", "Lỗi URL encode: $this", e); this }
     }
 
     private fun fixUrl(url: String?, baseUrl: String): String? {
