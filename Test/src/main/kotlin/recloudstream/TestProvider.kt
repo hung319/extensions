@@ -1,5 +1,5 @@
 // Tên file: NguonCProvider.kt
-// Phiên bản hoàn chỉnh, cập nhật lúc 21:24, ngày 04/07/2025
+// Phiên bản đã sửa lỗi biên dịch.
 
 package com.lagradost.cloudstream3.movieprovider
 
@@ -8,9 +8,7 @@ import com.lagradost.cloudstream3.utils.*
 import com.fasterxml.jackson.annotation.JsonProperty
 import org.jsoup.Jsoup
 
-// --- ĐỊNH NGHĨA CẤU TRÚC DỮ LIỆU JSON CHÍNH XÁC ---
-
-// Dành cho các mục trong danh sách (trang chủ, tìm kiếm)
+// --- CÁC LỚP DỮ LIỆU (DATA CLASS) VẪN GIỮ NGUYÊN ---
 data class NguonCItem(
     @JsonProperty("name") val name: String,
     @JsonProperty("slug") val slug: String,
@@ -18,12 +16,10 @@ data class NguonCItem(
     @JsonProperty("current_episode") val current_episode: String? = null
 )
 
-// Cấu trúc JSON gốc cho API trang chủ và tìm kiếm
 data class NguonCMain(
     @JsonProperty("items") val items: List<NguonCItem>
 )
 
-// Dành cho API chi tiết phim
 data class NguonCEpisodeData(
     @JsonProperty("name") val name: String,
     @JsonProperty("slug") val slug: String,
@@ -55,7 +51,8 @@ data class NguonCDetailMovie(
     @JsonProperty("thumb_url") val thumb_url: String?,
     @JsonProperty("casts") val casts: String?,
     @JsonProperty("director") val director: String?,
-    @JsonProperty("category") val category: Map<String, NguonCCategoryGroup>?
+    @JsonProperty("category") val category: Map<String, NguonCCategoryGroup>?,
+    @JsonProperty("current_episode") val current_episode: String? = null
 )
 
 data class NguonCDetail(
@@ -112,11 +109,8 @@ class NguonCProvider : MainAPI() {
         
         val title = movie.name
         val poster = movie.poster_url ?: movie.thumb_url
-        
-        // Làm sạch HTML từ mô tả
         val plot = movie.description?.let { Jsoup.parse(it).text() }
 
-        // Trích xuất dữ liệu từ đối tượng category
         var year: Int? = null
         var tags: List<String>? = null
         
@@ -126,36 +120,61 @@ class NguonCProvider : MainAPI() {
                 "Thể loại" -> tags = group.list.map { it.name }
             }
         }
+        
+        // FIX: Xác định trạng thái phim (hoàn thành/đang tiến hành)
+        val showStatus = if (movie.current_episode?.contains("Hoàn tất", ignoreCase = true) == true || movie.current_episode?.contains("FULL", ignoreCase = true) == true) {
+            ShowStatus.Completed
+        } else {
+            ShowStatus.Ongoing
+        }
 
         val actors = movie.casts?.split(",")?.map { ActorData(Actor(it.trim())) }
-        val director = movie.director?.let { listOf(it) }
 
         val episodes = response.episodes.flatMap { server ->
             server.items.mapNotNull { ep ->
                 val episodeUrl = ep.m3u8 ?: return@mapNotNull null
                 Episode(
                     data = episodeUrl,
-                    name = "Tập ${ep.name}",
-                    displayName = if (response.episodes.size > 1) "${server.server_name} - Tập ${ep.name}" else "Tập ${ep.name}"
+                    // FIX: 'displayName' không còn tồn tại, gán trực tiếp cho 'name'
+                    name = if (response.episodes.size > 1) "${server.server_name} - Tập ${ep.name}" else "Tập ${ep.name}"
                 )
             }
         }.distinctBy { it.data }
 
         return if (episodes.size > 1) {
+            // FIX: Sửa lại thứ tự và các tham số của TvSeriesLoadResponse cho đúng với phiên bản mới
             TvSeriesLoadResponse(
-                title, url, this.name, TvType.TvSeries, episodes,
-                poster, year, plot, tags, actors = actors, directors = director
+                name = title,
+                url = url,
+                apiName = this.name,
+                type = TvType.TvSeries,
+                episodes = episodes,
+                posterUrl = poster,
+                year = year,
+                plot = plot,
+                tags = tags,
+                showStatus = showStatus,
+                actors = actors
             )
         } else {
+            // FIX: Sửa lại các tham số của MovieLoadResponse và đảm bảo `data` không bị null
             MovieLoadResponse(
-                title, url, this.name, TvType.Movie, episodes.firstOrNull()?.data,
-                poster, year, plot, tags, actors = actors, directors = director
+                name = title,
+                url = url,
+                apiName = this.name,
+                type = TvType.Movie,
+                dataUrl = episodes.firstOrNull()?.data ?: "", // Cung cấp giá trị mặc định để tránh lỗi
+                posterUrl = poster,
+                year = year,
+                plot = plot,
+                tags = tags,
+                actors = actors
             )
         }
     }
 
     override suspend fun loadLinks(
-        data: String, // data là link .m3u8
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
@@ -167,7 +186,6 @@ class NguonCProvider : MainAPI() {
                 url = data,
                 referer = "$mainUrl/",
                 quality = Qualities.Unknown.value,
-                // Sử dụng ExtractorLinkType.M3U8 theo yêu cầu mới nhất
                 type = ExtractorLinkType.M3U8 
             )
         )
