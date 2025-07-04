@@ -1,5 +1,5 @@
 // Tên file: NguonCProvider.kt
-// Phiên bản cuối cùng, đã bổ sung data class còn thiếu.
+// Phiên bản nâng cấp độ ổn định với `parsedSafe`.
 
 package com.lagradost.cloudstream3.movieprovider
 
@@ -62,7 +62,6 @@ data class NguonCDetail(
     @JsonProperty("episodes") val episodes: List<NguonCServer>? 
 )
 
-// FIX: Bổ sung lại data class bị thiếu để parse link stream từ trang embed
 data class StreamApiResponse(
     @JsonProperty("streamUrl") val streamUrl: String
 )
@@ -111,8 +110,11 @@ class NguonCProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val response = app.get(url).parsed<NguonCDetail>()
-        val movie = response.movie ?: throw RuntimeException("Không thể lấy dữ liệu phim từ API. Link có thể đã hỏng.")
+        // FIX: Chuyển sang dùng `parsedSafe` để tránh crash khi API trả về lỗi (404, 500...) hoặc không phải JSON
+        val response = app.get(url).parsedSafe<NguonCDetail>() 
+                       ?: throw RuntimeException("Không thể tải hoặc phân tích dữ liệu từ: $url")
+        
+        val movie = response.movie ?: throw RuntimeException("Không có đối tượng 'movie' trong phản hồi API từ: $url")
         
         val title = movie.name
         val poster = movie.poster_url ?: movie.thumb_url
@@ -179,8 +181,14 @@ class NguonCProvider : MainAPI() {
         val baseUrl = URI(embedUrl).let { "${it.scheme}://${it.host}" }
         val headers = mapOf("Referer" to embedUrl)
         
-        val response = app.get(apiUrl, headers = headers).parsed<StreamApiResponse>()
-        val finalM3u8Url = baseUrl + response.streamUrl
+        val response = app.get(apiUrl, headers = headers).parsedSafe<StreamApiResponse>()
+            ?: throw RuntimeException("Không thể lấy streamUrl từ: $apiUrl")
+
+        val finalM3u8Url = if(response.streamUrl.startsWith("http")) {
+            response.streamUrl
+        } else {
+            baseUrl + response.streamUrl
+        }
         
         callback.invoke(
             ExtractorLink(
