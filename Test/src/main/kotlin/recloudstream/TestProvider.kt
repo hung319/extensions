@@ -1,5 +1,5 @@
 // Tên file: NguonCProvider.kt
-// Phiên bản cuối cùng, logic được đơn giản hóa tối đa.
+// Phiên bản cuối cùng với logic phân loại chính xác.
 
 package com.lagradost.cloudstream3.movieprovider
 
@@ -134,8 +134,11 @@ class NguonCProvider : MainAPI() {
 
         var year: Int? = null
         var tags: List<String>? = null
+        var isDefinitelySeries = false
+        var isDefinitelyMovie = false
         var isAnime = false
         
+        // FIX: Đọc category để lấy thông tin chính xác nhất
         movie.category?.values?.forEach { group ->
             when (group.group.name) {
                 "Năm" -> year = group.list.firstOrNull()?.name?.toIntOrNull()
@@ -143,6 +146,14 @@ class NguonCProvider : MainAPI() {
                     tags = group.list.map { it.name }
                     if (tags?.any { it.contains("Hoạt Hình", ignoreCase = true) } == true) {
                         isAnime = true
+                    }
+                }
+                "Định dạng" -> {
+                    if (group.list.any { it.name.contains("Phim bộ", ignoreCase = true) }) {
+                        isDefinitelySeries = true
+                    }
+                    if (group.list.any { it.name.contains("Phim lẻ", ignoreCase = true) }) {
+                        isDefinitelyMovie = true
                     }
                 }
             }
@@ -167,35 +178,45 @@ class NguonCProvider : MainAPI() {
                     val episodeName = if (episodeServerList.size > 1) {
                         "${server.server_name} - Tập ${ep.name}"
                     } else {
-                        "Tập ${ep.name}"
+                        // Nếu tên tập là "FULL", chỉ hiển thị tên phim
+                        if(ep.name.equals("FULL", ignoreCase = true)) title else "Tập ${ep.name}"
                     }
-                    episodes.add(
-                        Episode(
-                            data = episodeData,
-                            name = episodeName
-                        )
-                    )
+                    episodes.add(Episode(data = episodeData, name = episodeName))
                 }
             }
         }
         
-        // FIX: Loại bỏ logic if/else phức tạp, LUÔN LUÔN trả về TvSeriesLoadResponse.
-        // Đây là cách làm mạnh mẽ và ít bị lỗi nhất.
-        val finalType = if(isAnime) TvType.Anime else TvType.TvSeries
+        // FIX: Logic phân loại đa tầng thông minh
+        val baseType = if (isDefinitelyMovie) {
+            TvType.Movie
+        } else if (isDefinitelySeries) {
+            TvType.TvSeries
+        } else {
+            // Fallback logic if "Định dạng" is not present
+            val totalEpisodes = movie.total_episodes ?: episodes.size
+            if (totalEpisodes > 1 || (totalEpisodes == 1 && showStatus == ShowStatus.Ongoing)) {
+                TvType.TvSeries
+            } else {
+                TvType.Movie
+            }
+        }
         
-        return TvSeriesLoadResponse(
-            name = title,
-            url = url,
-            apiName = this.name,
-            type = finalType,
-            episodes = episodes, // `episodes` sẽ là danh sách rỗng nếu không có tập nào
-            posterUrl = poster,
-            year = year,
-            plot = plot,
-            tags = tags,
-            showStatus = showStatus,
-            actors = actors
-        )
+        // Tinh chỉnh cuối cùng cho Anime
+        val finalType = if (isAnime) TvType.Anime else baseType
+
+        return if (finalType == TvType.TvSeries || finalType == TvType.Anime) {
+             TvSeriesLoadResponse(
+                name = title, url = url, apiName = this.name, type = finalType,
+                episodes = episodes, posterUrl = poster, year = year, plot = plot,
+                tags = tags, showStatus = showStatus, actors = actors
+            )
+        } else { // finalType == TvType.Movie
+            MovieLoadResponse(
+                name = title, url = url, apiName = this.name, type = finalType,
+                dataUrl = episodes.firstOrNull()?.data ?: "", posterUrl = poster, year = year,
+                plot = plot, tags = tags, actors = actors
+            )
+        }
     }
 
     override suspend fun loadLinks(
