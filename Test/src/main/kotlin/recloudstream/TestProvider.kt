@@ -1,5 +1,5 @@
 // Tên file: NguonCProvider.kt
-// Phiên bản tái cấu trúc, sử dụng AppUtils.tryParseJson theo chuẩn mới.
+// Phiên bản cuối cùng, sử dụng lại logic `parsedSafe()` đã được chứng minh là ổn định.
 
 package com.lagradost.cloudstream3.movieprovider
 
@@ -115,26 +115,19 @@ class NguonCProvider : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = "$mainUrl${request.data}$page"
-        // FIX: Sử dụng tryParseJson
-        val responseText = app.get(url, headers = headers).text
-        val response = tryParseJson<NguonCMain>(responseText)
+        val response = app.get(url, headers = headers).parsedSafe<NguonCMain>()
         val home = response?.items?.map { toSearchResponse(it) } ?: emptyList()
         return newHomePageResponse(request.name, home)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/api/films/search?keyword=$query"
-        // FIX: Sử dụng tryParseJson
-        val responseText = app.get(url, headers = headers).text
-        val response = tryParseJson<NguonCMain>(responseText)
-        return response?.items?.map { toSearchResponse(it) } ?: listOf()
+        return app.get(url, headers = headers).parsedSafe<NguonCMain>()?.items?.map { toSearchResponse(it) } ?: listOf()
     }
 
     override suspend fun load(url: String): LoadResponse {
-        // FIX: Sử dụng tryParseJson
-        val responseText = app.get(url, headers = headers).text
-        val response = tryParseJson<NguonCDetail>(responseText) 
-                       ?: throw RuntimeException("Không thể phân tích JSON từ: $url\nNội dung: $responseText")
+        val response = app.get(url, headers = headers).parsedSafe<NguonCDetail>() 
+                       ?: throw RuntimeException("Không thể tải hoặc phân tích dữ liệu từ: $url")
         
         val movie = response.movie ?: throw RuntimeException("Không có đối tượng 'movie' trong phản hồi API từ: $url")
         
@@ -245,10 +238,8 @@ class NguonCProvider : MainAPI() {
             "User-Agent" to userAgent
         )
         
-        // FIX: Sử dụng tryParseJson
-        val responseText = app.get(apiUrl, headers = embedHeaders).text
-        val response = tryParseJson<StreamApiResponse>(responseText)
-            ?: throw RuntimeException("Không thể phân tích JSON từ stream API: $apiUrl")
+        val response = app.get(apiUrl, headers = embedHeaders).parsedSafe<StreamApiResponse>()
+            ?: throw RuntimeException("Không thể lấy streamUrl từ: $apiUrl")
 
         val finalM3u8Url = if(response.streamUrl.startsWith("http")) {
             response.streamUrl
