@@ -141,6 +141,7 @@ class NguonCProvider : MainAPI() {
         } ?: emptyList()
     }
 
+    // SỬA ĐỔI LỚN: Thay đổi hàm load để xử lý nhiều server
     override suspend fun load(url: String): LoadResponse {
         val slug = url.substringAfterLast('/')
         val apiDetailUrl = "$apiUrl/film/$slug"
@@ -158,60 +159,57 @@ class NguonCProvider : MainAPI() {
         val genres = movie.category?.values?.flatMap { it.list }?.map { it.name } ?: emptyList()
         val isAnime = genres.any { it.equals("Hoạt Hình", ignoreCase = true) }
 
-        // SỬA ĐỔI: Cải tiến logic lấy danh sách phim gợi ý
         val recommendations = mutableListOf<SearchResponse>()
-        // Lặp qua tất cả các thể loại của phim để tìm danh sách gợi ý
-        for (genreName in genres) {
+        genres.firstOrNull()?.let { primaryGenre ->
             suspendSafeApiCall {
-                val genreSlug = genreName.toUrlSlug()
+                val genreSlug = primaryGenre.toUrlSlug()
                 val recResponse = app.get("$apiUrl/films/the-loai/$genreSlug?page=1").parsedSafe<NguonCListResponse>()
-                
-                // Nếu API trả về kết quả thành công
                 recResponse?.items?.let { recItems ->
                     if (recItems.isNotEmpty()) {
                         recommendations.addAll(
                             recItems
-                                .filter { it.slug != movie.slug } // Lọc bỏ phim hiện tại
+                                .filter { it.slug != movie.slug }
                                 .mapNotNull { it.toSearchResponse() }
                         )
                     }
                 }
             }
-            // Nếu đã tìm thấy danh sách gợi ý thì không cần tìm ở các thể loại khác nữa
-            if (recommendations.isNotEmpty()) {
-                break
+            if (recommendations.isNotEmpty()) return@let // Thoát sớm nếu đã có kết quả
+        }
+
+        // Luôn tạo danh sách Episode để hiển thị các server khác nhau
+        val episodes = movie.episodes.flatMap { server ->
+            server.items.map { episodeItem ->
+                // Tạo tên hiển thị bao gồm cả tên server
+                val episodeDisplayName = if (movie.totalEpisodes <= 1) {
+                    server.serverName // Đối với phim lẻ, tên là tên server
+                } else {
+                    "Tập ${episodeItem.name} (${server.serverName})"
+                }
+                
+                Episode(
+                    data = episodeItem.m3u8 ?: "",
+                    name = episodeDisplayName,
+                    season = 1,
+                    episode = if (movie.totalEpisodes <= 1) 1 else episodeItem.name.toIntOrNull(),
+                    posterUrl = movie.thumbUrl
+                )
             }
         }
 
-        if (movie.totalEpisodes <= 1) {
-            val movieType = if (isAnime) TvType.AnimeMovie else TvType.Movie
-            return newMovieLoadResponse(title, url, movieType, movie.episodes.firstOrNull()?.items?.firstOrNull()?.m3u8) {
-                this.posterUrl = poster
-                this.plot = plot
-                this.tags = tags + genres
-                this.recommendations = recommendations
-            }
+        // Xác định loại nội dung (phim, series, anime)
+        val type = if (isAnime) {
+            if (movie.totalEpisodes <= 1) TvType.AnimeMovie else TvType.Anime
         } else {
-            val seriesType = if (isAnime) TvType.Anime else TvType.TvSeries
-            val episodes = movie.episodes.flatMap { server ->
-                server.items.map { episode ->
-                    Episode(
-                        data = episode.m3u8 ?: "",
-                        name = "Tập ${episode.name}",
-                        season = 1,
-                        episode = episode.name.toIntOrNull(),
-                        posterUrl = movie.thumbUrl,
-                        description = null,
-                        rating = null
-                    )
-                }
-            }
-            return newTvSeriesLoadResponse(title, url, seriesType, episodes) {
-                this.posterUrl = poster
-                this.plot = plot
-                this.tags = tags + genres
-                this.recommendations = recommendations
-            }
+            if (movie.totalEpisodes <= 1) TvType.Movie else TvType.TvSeries
+        }
+        
+        // Luôn trả về TvSeriesLoadResponse để có thể hiển thị danh sách server/tập phim
+        return newTvSeriesLoadResponse(title, url, type, episodes) {
+            this.posterUrl = poster
+            this.plot = plot
+            this.tags = tags + genres
+            this.recommendations = recommendations
         }
     }
 
