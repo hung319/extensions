@@ -75,6 +75,9 @@ class NguonCProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.TvSeries, TvType.Movie, TvType.Anime)
     override var lang = "vi"
 
+    // THÊM DÒNG NÀY để kích hoạt trang chủ cho plugin
+    override val hasMainPage = true
+
     private val apiUrl = "$mainUrl/api"
 
     private fun NguonCItem.toSearchResponse(): SearchResponse {
@@ -82,7 +85,6 @@ class NguonCProvider : MainAPI() {
         val isMovie = this.totalEpisodes <= 1
 
         if (isMovie) {
-            // SỬA LỖI: Đã xóa tham số 'plot' không hợp lệ
             return MovieSearchResponse(
                 name = this.name,
                 url = "$mainUrl/phim/${this.slug}",
@@ -92,7 +94,6 @@ class NguonCProvider : MainAPI() {
                 year = year
             )
         } else {
-            // SỬA LỖI: Đã xóa tham số 'plot' không hợp lệ
             return TvSeriesSearchResponse(
                 name = this.name,
                 url = "$mainUrl/phim/${this.slug}",
@@ -140,7 +141,6 @@ class NguonCProvider : MainAPI() {
 
         val title = movie.name
         val poster = movie.posterUrl ?: movie.thumbUrl
-        // Thông tin plot vẫn được xử lý ở đây và hiển thị trong trang chi tiết
         val plot = movie.description?.let { Jsoup.parse(it).text() }
         val tags = mutableListOf<String>()
         movie.language?.let { tags.add(it) }
