@@ -237,30 +237,33 @@ class NguonCProvider : MainAPI() {
                 val embedOrigin = URI(embedUrl).let { "${it.scheme}://${it.host}" }
                 val streamApiUrl = embedUrl.replace("?", "?api=stream&")
                 
-                val headers = mapOf(
-                    "referer" to embedUrl,
-                    "user-agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36"
-                )
-
-                val streamApiResponse = app.get(streamApiUrl, headers = headers).parsedSafe<StreamApiResponse>()
+                val apiHeaders = mapOf("referer" to embedUrl)
+                val streamApiResponse = app.get(streamApiUrl, headers = apiHeaders).parsedSafe<StreamApiResponse>()
                 
                 var relativeStreamUrl = streamApiResponse?.streamUrl
                 if (!relativeStreamUrl.isNullOrBlank()) {
-                    // SỬA LỖI: Dọn dẹp lại đường dẫn streamUrl nếu có ký tự thừa
                     if (relativeStreamUrl.contains("/s3/")) {
                         relativeStreamUrl = "/s3/" + relativeStreamUrl.substringAfterLast("/s3/")
                     }
 
                     val finalM3u8Url = if(relativeStreamUrl.startsWith("http")) relativeStreamUrl else "$embedOrigin$relativeStreamUrl"
                     
+                    // SỬA ĐỔI QUAN TRỌNG: Thêm header cho trình phát video
+                    val playerHeaders = mapOf(
+                        "Origin" to embedOrigin,
+                        "Referer" to "$embedOrigin/",
+                        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36"
+                    )
+
                     callback(
                         ExtractorLink(
                             source = this.name,
                             name = server.serverName,
                             url = finalM3u8Url,
-                            referer = embedUrl,
+                            referer = embedUrl, // Referer để lấy link
                             quality = Qualities.Unknown.value,
-                            type = ExtractorLinkType.M3U8
+                            type = ExtractorLinkType.M3U8,
+                            headers = playerHeaders // Headers cho trình phát video
                         )
                     )
                     foundLinks = true
