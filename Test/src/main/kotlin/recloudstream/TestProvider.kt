@@ -1,16 +1,19 @@
-// Tên file: NguonCProvider.kt
-// Phiên bản cuối cùng với logic phân loại chính xác.
+// Tên file: NguonCProvider_JsonInspector.kt
+// Phiên bản đặc biệt: In toàn bộ JSON trả về từ API ra phần mô tả phim.
 
 package com.lagradost.cloudstream3.movieprovider
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.databind.SerializationFeature
 import org.jsoup.Jsoup
 import java.net.URI
 import androidx.annotation.Keep
 
 // --- CÁC LỚP DỮ LIỆU (DATA CLASS) ---
+// (Giữ nguyên như phiên bản cuối cùng)
 @Keep
 data class NguonCItem(
     @JsonProperty("name") val name: String,
@@ -88,6 +91,7 @@ class NguonCProvider : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime)
 
+    // Các hàm khác giữ nguyên
     private fun toSearchResponse(item: NguonCItem): SearchResponse {
         val url = "$mainUrl/api/film/${item.slug}"
         val poster = item.poster_url
@@ -122,101 +126,100 @@ class NguonCProvider : MainAPI() {
         return app.get(url).parsedSafe<NguonCMain>()?.items?.map { toSearchResponse(it) } ?: listOf()
     }
 
+    // HÀM LOAD ĐÃ ĐƯỢC CHỈNH SỬA ĐỂ IN RA JSON
     override suspend fun load(url: String): LoadResponse {
-        val response = app.get(url).parsedSafe<NguonCDetail>() 
-                       ?: throw RuntimeException("Không thể tải hoặc phân tích dữ liệu từ: $url")
         
-        val movie = response.movie ?: throw RuntimeException("Không có đối tượng 'movie' trong phản hồi API từ: $url")
-        
-        val title = movie.name
-        val poster = movie.poster_url ?: movie.thumb_url
-        val plot = movie.description?.let { Jsoup.parse(it).text() }
-
+        var jsonLog = ""
+        var originalPlot = "Không thể tải thông tin phim."
+        var episodes = listOf<Episode>()
+        var finalType: TvType = TvType.Movie // Giá trị mặc định
+        var title = ""
+        var poster: String? = null
         var year: Int? = null
         var tags: List<String>? = null
-        var isDefinitelySeries = false
-        var isDefinitelyMovie = false
-        var isAnime = false
+        var showStatus: ShowStatus? = null
+        var actors: List<ActorData>? = null
         
-        // FIX: Đọc category để lấy thông tin chính xác nhất
-        movie.category?.values?.forEach { group ->
-            when (group.group.name) {
-                "Năm" -> year = group.list.firstOrNull()?.name?.toIntOrNull()
-                "Thể loại" -> {
-                    tags = group.list.map { it.name }
-                    if (tags?.any { it.contains("Hoạt Hình", ignoreCase = true) } == true) {
-                        isAnime = true
+        try {
+            // Lấy dữ liệu thô và parse
+            val rawResponse = app.get(url).text
+            val response = app.parseJson<NguonCDetail>(rawResponse)
+            
+            // Định dạng lại JSON để dễ đọc
+            val mapper = ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT)
+            val formattedJson = mapper.writeValueAsString(response)
+            jsonLog = "\n\n====================\n" +
+                      "--- RAW JSON RESPONSE ---\n" +
+                      "====================\n" +
+                      formattedJson
+
+            // Nếu parse thành công, tiếp tục xử lý như bình thường
+            val movie = response.movie ?: throw Exception("Đối tượng 'movie' là null.")
+            
+            title = movie.name
+            poster = movie.poster_url ?: movie.thumb_url
+            originalPlot = movie.description?.let { Jsoup.parse(it).text() } ?: "Không có mô tả."
+            
+            var isDefinitelySeries = false
+            var isAnime = false
+            movie.category?.values?.forEach { group ->
+                when (group.group.name) {
+                    "Năm" -> year = group.list.firstOrNull()?.name?.toIntOrNull()
+                    "Thể loại" -> {
+                        tags = group.list.map { it.name }
+                        if (tags?.any { it.contains("Hoạt Hình", ignoreCase = true) } == true) isAnime = true
                     }
-                }
-                "Định dạng" -> {
-                    if (group.list.any { it.name.contains("Phim bộ", ignoreCase = true) }) {
-                        isDefinitelySeries = true
-                    }
-                    if (group.list.any { it.name.contains("Phim lẻ", ignoreCase = true) }) {
-                        isDefinitelyMovie = true
+                    "Định dạng" -> {
+                        if (group.list.any { it.name.contains("Phim bộ", ignoreCase = true) }) isDefinitelySeries = true
                     }
                 }
             }
-        }
-        
-        val showStatus = if (movie.current_episode?.contains("Hoàn tất", ignoreCase = true) == true || movie.current_episode?.contains("FULL", ignoreCase = true) == true) {
-            ShowStatus.Completed
-        } else {
-            ShowStatus.Ongoing
-        }
+            showStatus = if (movie.current_episode?.contains("Hoàn tất", ignoreCase = true) == true || movie.current_episode?.contains("FULL", ignoreCase = true) == true) ShowStatus.Completed else ShowStatus.Ongoing
+            actors = movie.casts?.split(",")?.map { ActorData(Actor(it.trim())) }
 
-        val actors = movie.casts?.split(",")?.map { ActorData(Actor(it.trim())) }
-        
-        val episodes = mutableListOf<Episode>()
-        val episodeServerList = response.episodes ?: listOf()
-
-        for (server in episodeServerList) {
-            val itemList = server.items ?: continue
-            for (ep in itemList) {
-                val episodeData = ep.embed ?: ep.m3u8
-                if (episodeData != null) {
-                    val episodeName = if (episodeServerList.size > 1) {
-                        "${server.server_name} - Tập ${ep.name}"
-                    } else {
-                        // Nếu tên tập là "FULL", chỉ hiển thị tên phim
-                        if(ep.name.equals("FULL", ignoreCase = true)) title else "Tập ${ep.name}"
+            val tempEpisodes = mutableListOf<Episode>()
+            val episodeServerList = response.episodes ?: listOf()
+            for (server in episodeServerList) {
+                val itemList = server.items ?: continue
+                for (ep in itemList) {
+                    val episodeData = ep.embed ?: ep.m3u8
+                    if (episodeData != null) {
+                        tempEpisodes.add(Episode(data = episodeData, name = "Tập ${ep.name}"))
                     }
-                    episodes.add(Episode(data = episodeData, name = episodeName))
                 }
             }
-        }
-        
-        // FIX: Logic phân loại đa tầng thông minh
-        val baseType = if (isDefinitelyMovie) {
-            TvType.Movie
-        } else if (isDefinitelySeries) {
-            TvType.TvSeries
-        } else {
-            // Fallback logic if "Định dạng" is not present
+            episodes = tempEpisodes
+            
             val totalEpisodes = movie.total_episodes ?: episodes.size
-            if (totalEpisodes > 1 || (totalEpisodes == 1 && showStatus == ShowStatus.Ongoing)) {
-                TvType.TvSeries
-            } else {
-                TvType.Movie
-            }
-        }
-        
-        // Tinh chỉnh cuối cùng cho Anime
-        val finalType = if (isAnime) TvType.Anime else baseType
+            val baseType = if (isDefinitelySeries || totalEpisodes > 1 || (totalEpisodes == 1 && showStatus == ShowStatus.Ongoing)) TvType.TvSeries else TvType.Movie
+            finalType = if (isAnime) TvType.Anime else baseType
 
-        return if (finalType == TvType.TvSeries || finalType == TvType.Anime) {
-             TvSeriesLoadResponse(
-                name = title, url = url, apiName = this.name, type = finalType,
-                episodes = episodes, posterUrl = poster, year = year, plot = plot,
-                tags = tags, showStatus = showStatus, actors = actors
-            )
-        } else { // finalType == TvType.Movie
-            MovieLoadResponse(
-                name = title, url = url, apiName = this.name, type = finalType,
-                dataUrl = episodes.firstOrNull()?.data ?: "", posterUrl = poster, year = year,
-                plot = plot, tags = tags, actors = actors
-            )
+        } catch (e: Exception) {
+            // Nếu có lỗi, cũng in lỗi ra
+            jsonLog = "\n\n====================\n" +
+                      "--- EXCEPTION LOG ---\n" +
+                      "====================\n" +
+                      "URL: $url\n" +
+                      "Lỗi: ${e.message}\n" +
+                      "Stacktrace: ${e.stackTraceToString().take(500)}"
         }
+
+        val finalPlot = originalPlot + jsonLog
+
+        // Luôn trả về TvSeriesLoadResponse để đảm bảo hiển thị được
+        return TvSeriesLoadResponse(
+            name = title.ifBlank { url },
+            url = url,
+            apiName = this.name,
+            type = finalType,
+            episodes = episodes,
+            posterUrl = poster,
+            year = year,
+            plot = finalPlot,
+            tags = tags,
+            showStatus = showStatus,
+            actors = actors
+        )
     }
 
     override suspend fun loadLinks(
