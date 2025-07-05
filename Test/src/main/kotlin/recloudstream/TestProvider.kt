@@ -211,41 +211,20 @@ class NguonCProvider : MainAPI() {
         }
     }
 
-    // SỬA ĐỔI LỚN: Chuyển hoàn toàn sang chế độ gỡ lỗi, hiển thị log ra UI
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Danh sách để lưu trữ các dòng log
-        val debugLogs = mutableListOf<String>()
-
-        try {
-            val loadData = parseJson<NguonCLoadData>(data)
-            debugLogs.add("1. OK: Phân tích dữ liệu: slug='${loadData.slug}', tập='${loadData.episodeNum}'")
-
-            // Gọi API phim.nguonc.com
-            val movieResponse = app.get("$apiUrl/film/${loadData.slug}", timeout = 20)
-            debugLogs.add("2. API NguonC: Gọi URL '${movieResponse.url}', Status: ${movieResponse.code}")
-            
-            val movie = movieResponse.parsedSafe<NguonCDetailResponse>()?.movie
-            if (movie == null) {
-                debugLogs.add("3. LỖI: Không phân tích được chi tiết phim. Body: ${movieResponse.text.take(300)}")
-                // In ra các log đã thu thập và thoát
-                debugLogs.forEachIndexed { i, log -> callback(ExtractorLink(this.name, "LOG $i: $log", "https://debug.log/error", "", Qualities.Unknown.value, type = ExtractorLinkType.M3U8)) }
-                return true
-            }
-            debugLogs.add("3. OK: Phân tích thành công phim '${movie.name}'")
-
-            if (movie.episodes.isEmpty()) {
-                debugLogs.add("4. LỖI: Phim không có server nào (mảng 'episodes' rỗng).")
-            }
-
-            // Lặp qua các server để lấy link
-            movie.episodes.forEach { server ->
-                debugLogs.add("--- Đang xử lý Server: ${server.serverName} ---")
-                
+        val loadData = parseJson<NguonCLoadData>(data)
+        val movie = app.get("$apiUrl/film/${loadData.slug}")
+            .parsedSafe<NguonCDetailResponse>()?.movie ?: return false
+        
+        var foundLinks = false
+        
+        movie.episodes.apmap { server ->
+            try {
                 val episodeItem = if (movie.totalEpisodes <= 1) {
                     server.items.firstOrNull()
                 } else {
@@ -253,62 +232,43 @@ class NguonCProvider : MainAPI() {
                 }
                 
                 val embedUrl = episodeItem?.embed
-                if (embedUrl.isNullOrBlank()) {
-                    debugLogs.add("5. Lỗi: Không tìm thấy link embed cho server này.")
-                    return@forEach // Bỏ qua server này, tiếp tục với server khác
-                }
-                debugLogs.add("5. OK: Tìm thấy link embed: $embedUrl")
+                if (embedUrl.isNullOrBlank()) return@apmap
 
                 val embedOrigin = URI(embedUrl).let { "${it.scheme}://${it.host}" }
                 val streamApiUrl = embedUrl.replace("?", "?api=stream&")
-                debugLogs.add("6. Info: Tạo link API embed: $streamApiUrl")
                 
                 val headers = mapOf(
                     "referer" to embedUrl,
                     "user-agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36"
                 )
 
-                // Gọi API của server embed để lấy streamUrl
-                try {
-                    val streamApiResponse = app.get(streamApiUrl, headers = headers, timeout = 20)
-                    debugLogs.add("7. API Embed: Gọi URL embed, Status: ${streamApiResponse.code}")
-                    debugLogs.add("8. Embed Response Body: ${streamApiResponse.text.take(300)}")
-
-                    val parsedStreamData = streamApiResponse.parsedSafe<StreamApiResponse>()
-                    val relativeStreamUrl = parsedStreamData?.streamUrl
-
-                    if (relativeStreamUrl.isNullOrBlank()) {
-                        debugLogs.add("9. LỖI: Không tìm thấy 'streamUrl' trong response từ embed.")
-                    } else {
-                        val finalM3u8Url = if(relativeStreamUrl.startsWith("http")) relativeStreamUrl else "$embedOrigin$relativeStreamUrl"
-                        debugLogs.add("10. THÀNH CÔNG: Link M3U8 cuối cùng là: $finalM3u8Url")
+                val streamApiResponse = app.get(streamApiUrl, headers = headers).parsedSafe<StreamApiResponse>()
+                
+                var relativeStreamUrl = streamApiResponse?.streamUrl
+                if (!relativeStreamUrl.isNullOrBlank()) {
+                    // SỬA LỖI: Dọn dẹp lại đường dẫn streamUrl nếu có ký tự thừa
+                    if (relativeStreamUrl.contains("/s3/")) {
+                        relativeStreamUrl = "/s3/" + relativeStreamUrl.substringAfterLast("/s3/")
                     }
-                } catch (e: Exception) {
-                    debugLogs.add("LỖI khi gọi API embed: ${e.javaClass.simpleName} - ${e.message}")
+
+                    val finalM3u8Url = if(relativeStreamUrl.startsWith("http")) relativeStreamUrl else "$embedOrigin$relativeStreamUrl"
+                    
+                    callback(
+                        ExtractorLink(
+                            source = this.name,
+                            name = server.serverName,
+                            url = finalM3u8Url,
+                            referer = embedUrl,
+                            quality = Qualities.Unknown.value,
+                            type = ExtractorLinkType.M3U8
+                        )
+                    )
+                    foundLinks = true
                 }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
-        } catch (e: Exception) {
-            debugLogs.add("LỖI nghiêm trọng trong loadLinks: ${e.javaClass.simpleName} - ${e.message}")
         }
-        
-        // Luôn hiển thị danh sách log đã thu thập được
-        if (debugLogs.isEmpty()) {
-            debugLogs.add("Không có log nào được tạo. Lỗi xảy ra rất sớm.")
-        }
-        
-        debugLogs.forEachIndexed { index, log ->
-            callback(
-                ExtractorLink(
-                    this.name,
-                    "LOG ${index + 1}: $log", // Tên của link chính là dòng log
-                    "https://debug.log/${index + 1}", // URL giả để link có thể bấm được
-                    "",
-                    Qualities.Unknown.value,
-                    type = ExtractorLinkType.M3U8
-                )
-            )
-        }
-        
-        return true
+        return foundLinks
     }
 }
