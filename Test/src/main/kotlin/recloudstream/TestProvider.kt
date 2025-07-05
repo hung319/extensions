@@ -11,9 +11,6 @@ import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.mvvm.suspendSafeApiCall
 import java.text.Normalizer
 
-// Định nghĩa cấu trúc dữ liệu tương ứng với JSON trả về từ API
-// =========================================================
-
 // Data class để truyền dữ liệu từ load() -> loadLinks()
 data class EpisodeData(
     @JsonProperty("url") val url: String,
@@ -184,26 +181,22 @@ class NguonCProvider : MainAPI() {
             if (recommendations.isNotEmpty()) break
         }
         
-        // SỬA ĐỔI: Đóng gói URL và Tên Server vào `Episode.data`
+        // SỬA ĐỔI: Sử dụng cơ chế grouping của CloudStream
         val episodes = movie.episodes.flatMap { server ->
             server.items.map { episodeItem ->
-                val episodeDisplayName = if (movie.totalEpisodes <= 1) {
-                    server.serverName
-                } else {
-                    "Tập ${episodeItem.name} (${server.serverName})"
-                }
-                
-                // Đóng gói dữ liệu vào một đối tượng và chuyển thành chuỗi JSON
+                // Đóng gói dữ liệu để truyền cho loadLinks
                 val episodeData = EpisodeData(
                     url = episodeItem.m3u8 ?: "",
-                    serverName = server.serverName
+                    serverName = server.serverName 
                 ).toJson()
                 
                 Episode(
                     data = episodeData,
-                    name = episodeDisplayName,
+                    // Tên của lựa chọn server (VD: "Vietsub #1")
+                    name = server.serverName, 
+                    // Số tập, dùng để nhóm các server có cùng số tập lại
+                    episode = episodeItem.name.toIntOrNull() ?: 1, 
                     season = 1,
-                    episode = if (movie.totalEpisodes <= 1) 1 else episodeItem.name.toIntOrNull(),
                     posterUrl = movie.thumbUrl
                 )
             }
@@ -215,6 +208,7 @@ class NguonCProvider : MainAPI() {
             if (movie.totalEpisodes <= 1) TvType.Movie else TvType.TvSeries
         }
         
+        // Luôn trả về TvSeriesLoadResponse để có thể hiển thị danh sách server/tập phim
         return newTvSeriesLoadResponse(title, url, type, episodes) {
             this.posterUrl = poster
             this.plot = plot
@@ -223,27 +217,23 @@ class NguonCProvider : MainAPI() {
         }
     }
 
-    // SỬA ĐỔI: Giải nén dữ liệu từ `Episode.data` để lấy tên server
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Giải nén chuỗi JSON để lấy lại đối tượng EpisodeData
         val episodeData = try {
             parseJson<EpisodeData>(data)
         } catch (e: Exception) {
-            // Nếu data không phải là JSON, có thể là link trực tiếp (fallback)
             null
         }
 
-        // Nếu giải nén thành công và có url
         if (episodeData != null && episodeData.url.isNotBlank()) {
             callback(
                 ExtractorLink(
                     source = this.name,
-                    name = episodeData.serverName, // Sử dụng tên server đã được truyền qua
+                    name = episodeData.serverName,
                     url = episodeData.url,
                     referer = "$mainUrl/",
                     quality = Qualities.Unknown.value,
@@ -253,12 +243,11 @@ class NguonCProvider : MainAPI() {
             return true
         }
         
-        // Fallback cho trường hợp data là link trực tiếp (phiên bản cũ)
         if (data.isNotBlank() && data.startsWith("http")) {
              callback(
                 ExtractorLink(
                     source = this.name,
-                    name = this.name, // Không có tên server, dùng tên provider
+                    name = this.name,
                     url = data,
                     referer = "$mainUrl/",
                     quality = Qualities.Unknown.value,
