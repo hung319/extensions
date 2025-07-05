@@ -87,8 +87,6 @@ class NguonCProvider : MainAPI() {
     override val hasMainPage = true
     private val apiUrl = "$mainUrl/api"
 
-    // SỬA ĐỔI LỚN 1: Sử dụng `mainPageOf` để khai báo trang chủ
-    // Cấu trúc này sẽ tự động xử lý phân trang cho từng mục
     override val mainPage = mainPageOf(
         "phim-moi-cap-nhat" to "Phim Mới Cập Nhật",
         "danh-sach/phim-le" to "Phim Lẻ Mới",
@@ -104,7 +102,8 @@ class NguonCProvider : MainAPI() {
         return whitespace.replace(slug, "-").lowercase()
     }
 
-    private fun NguonCItem.toSearchResponse(): SearchResponse {
+    // SỬA LỖI: Viết lại hàm theo đúng cấu trúc constructor của recloudstream
+    private fun NguonCItem.toSearchResponse(): SearchResponse? {
         val year = this.created?.substringBefore("-")?.toIntOrNull()
         val isMovie = this.totalEpisodes <= 1
 
@@ -112,39 +111,37 @@ class NguonCProvider : MainAPI() {
             return newMovieSearchResponse(
                 name = this.name,
                 url = "$mainUrl/phim/${this.slug}",
-                apiName = this@NguonCProvider.name,
-                type = TvType.Movie,
-                posterUrl = this.posterUrl ?: this.thumbUrl,
-                year = year
-            )
+                type = TvType.Movie
+            ) {
+                // Gán các thuộc tính tùy chọn trong khối lambda
+                this.posterUrl = this@toSearchResponse.posterUrl ?: this@toSearchResponse.thumbUrl
+                this.year = year
+            }
         } else {
             return newTvSeriesSearchResponse(
                 name = this.name,
                 url = "$mainUrl/phim/${this.slug}",
-                apiName = this@NguonCProvider.name,
-                type = TvType.TvSeries,
-                posterUrl = this.posterUrl ?: this.thumbUrl,
-                year = year
-            )
+                type = TvType.TvSeries
+            ) {
+                // Gán các thuộc tính tùy chọn trong khối lambda
+                this.posterUrl = this@toSearchResponse.posterUrl ?: this@toSearchResponse.thumbUrl
+                this.year = year
+            }
         }
     }
 
-    // SỬA ĐỔI LỚN 2: Viết lại hàm getMainPage theo đúng cấu trúc của `mainPageOf`
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // request.data sẽ là slug của mục, vd: "phim-moi-cap-nhat"
         val url = "$apiUrl/films/${request.data}?page=$page"
-        val response = app.get(url).parsed<NguonCListResponse>()
+        val response = app.get(url).parsedSafe<NguonCListResponse>() ?: return newHomePageResponse(request.name, emptyList())
         val items = response.items.mapNotNull { it.toSearchResponse() }
-
-        // Trả về kết quả cho mục hiện tại, ứng dụng sẽ tự thêm vào danh sách
         return newHomePageResponse(request.name, items, hasNext = response.paginate.currentPage < response.paginate.totalPage)
     }
     
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$apiUrl/films/search?keyword=$query"
-        return app.get(url).parsed<NguonCListResponse>().items.mapNotNull {
+        return app.get(url).parsedSafe<NguonCListResponse>()?.items?.mapNotNull {
             it.toSearchResponse()
-        }
+        } ?: emptyList()
     }
 
     override suspend fun load(url: String): LoadResponse {
@@ -168,12 +165,13 @@ class NguonCProvider : MainAPI() {
         genres.firstOrNull()?.let { primaryGenre ->
             suspendSafeApiCall {
                 val genreSlug = primaryGenre.toUrlSlug()
-                val recResponse = app.get("$apiUrl/films/the-loai/$genreSlug?page=1").parsed<NguonCListResponse>()
-                recommendations.addAll(
-                    recResponse.items
-                        .filter { it.slug != movie.slug }
-                        .mapNotNull { it.toSearchResponse() }
-                )
+                val recResponse = app.get("$apiUrl/films/the-loai/$genreSlug?page=1").parsedSafe<NguonCListResponse>()
+                recResponse?.items?.let {
+                    recommendations.addAll(
+                        it.filter { item -> item.slug != movie.slug }
+                          .mapNotNull { item -> item.toSearchResponse() }
+                    )
+                }
             }
         }
 
