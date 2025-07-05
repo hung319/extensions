@@ -191,7 +191,6 @@ class NguonCProvider : MainAPI() {
                 this.recommendations = recommendations
             }
         } else {
-            // SỬA ĐỔI: Lấy số tập lớn nhất từ các server để tránh lỗi
             val totalEpisodes = movie.episodes.mapNotNull { it.items?.size }.maxOrNull() ?: movie.totalEpisodes
             val episodes = (1..totalEpisodes).map { epNum ->
                 val loadData = NguonCLoadData(slug = slug, episodeNum = epNum).toJson()
@@ -212,23 +211,40 @@ class NguonCProvider : MainAPI() {
         }
     }
 
+    // SỬA ĐỔI LỚN: Chuyển hoàn toàn sang chế độ gỡ lỗi, hiển thị log ra UI
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val loadData = parseJson<NguonCLoadData>(data)
-        println("NguonC - loadLinks: Bắt đầu lấy link cho slug: ${loadData.slug}, tập: ${loadData.episodeNum}")
+        // Danh sách để lưu trữ các dòng log
+        val debugLogs = mutableListOf<String>()
 
-        val movie = app.get("$apiUrl/film/${loadData.slug}")
-            .parsedSafe<NguonCDetailResponse>()?.movie ?: return false
-        
-        var foundLinks = false
-        
-        movie.episodes.apmap { server ->
-            try {
-                println("NguonC - loadLinks: Đang xử lý server: ${server.serverName}")
+        try {
+            val loadData = parseJson<NguonCLoadData>(data)
+            debugLogs.add("1. OK: Phân tích dữ liệu: slug='${loadData.slug}', tập='${loadData.episodeNum}'")
+
+            // Gọi API phim.nguonc.com
+            val movieResponse = app.get("$apiUrl/film/${loadData.slug}", timeout = 20)
+            debugLogs.add("2. API NguonC: Gọi URL '${movieResponse.url}', Status: ${movieResponse.code}")
+            
+            val movie = movieResponse.parsedSafe<NguonCDetailResponse>()?.movie
+            if (movie == null) {
+                debugLogs.add("3. LỖI: Không phân tích được chi tiết phim. Body: ${movieResponse.text.take(300)}")
+                // In ra các log đã thu thập và thoát
+                debugLogs.forEachIndexed { i, log -> callback(ExtractorLink(this.name, "LOG $i: $log", "https://debug.log/error", "", Qualities.Unknown.value, type = ExtractorLinkType.M3U8)) }
+                return true
+            }
+            debugLogs.add("3. OK: Phân tích thành công phim '${movie.name}'")
+
+            if (movie.episodes.isEmpty()) {
+                debugLogs.add("4. LỖI: Phim không có server nào (mảng 'episodes' rỗng).")
+            }
+
+            // Lặp qua các server để lấy link
+            movie.episodes.forEach { server ->
+                debugLogs.add("--- Đang xử lý Server: ${server.serverName} ---")
                 
                 val episodeItem = if (movie.totalEpisodes <= 1) {
                     server.items.firstOrNull()
@@ -237,54 +253,62 @@ class NguonCProvider : MainAPI() {
                 }
                 
                 val embedUrl = episodeItem?.embed
-                println("NguonC - loadLinks: Tìm thấy embedUrl: $embedUrl")
-                
-                if (embedUrl.isNullOrBlank()) return@apmap
+                if (embedUrl.isNullOrBlank()) {
+                    debugLogs.add("5. Lỗi: Không tìm thấy link embed cho server này.")
+                    return@forEach // Bỏ qua server này, tiếp tục với server khác
+                }
+                debugLogs.add("5. OK: Tìm thấy link embed: $embedUrl")
 
                 val embedOrigin = URI(embedUrl).let { "${it.scheme}://${it.host}" }
                 val streamApiUrl = embedUrl.replace("?", "?api=stream&")
-                println("NguonC - loadLinks: Gọi đến API của embed: $streamApiUrl")
+                debugLogs.add("6. Info: Tạo link API embed: $streamApiUrl")
                 
                 val headers = mapOf(
-                    "accept" to "*/*",
                     "referer" to embedUrl,
-                    "sec-ch-ua" to """"Chromium";v="127", "Not)A;Brand";v="99", "Microsoft Edge Simulate";v="127", "Lemur";v="127"""",
-                    "sec-ch-ua-mobile" to "?1",
-                    "sec-ch-ua-platform" to """"Android"""",
                     "user-agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36"
                 )
 
-                val streamApiResponseText = app.get(streamApiUrl, headers = headers).text
-                println("NguonC - loadLinks: Dữ liệu trả về từ API embed: $streamApiResponseText")
-                val streamApiResponse = parseJson<StreamApiResponse>(streamApiResponseText)
-                
-                val relativeStreamUrl = streamApiResponse.streamUrl
-                if (!relativeStreamUrl.isNullOrBlank()) {
-                    val finalM3u8Url = if(relativeStreamUrl.startsWith("http")) relativeStreamUrl else "$embedOrigin$relativeStreamUrl"
-                    
-                    val extractorLink = ExtractorLink(
-                        source = this.name,
-                        name = server.serverName,
-                        url = finalM3u8Url,
-                        referer = embedUrl,
-                        quality = Qualities.Unknown.value,
-                        type = ExtractorLinkType.M3U8
-                    )
-                    
-                    // SỬA ĐỔI: Thêm log chi tiết trước khi callback
-                    println("NguonC - loadLinks: Gọi callback với ExtractorLink: name='${extractorLink.name}', url='${extractorLink.url}'")
-                    
-                    callback(extractorLink)
-                    foundLinks = true
-                } else {
-                    println("NguonC - loadLinks: Không tìm thấy streamUrl trong JSON response.")
+                // Gọi API của server embed để lấy streamUrl
+                try {
+                    val streamApiResponse = app.get(streamApiUrl, headers = headers, timeout = 20)
+                    debugLogs.add("7. API Embed: Gọi URL embed, Status: ${streamApiResponse.code}")
+                    debugLogs.add("8. Embed Response Body: ${streamApiResponse.text.take(300)}")
+
+                    val parsedStreamData = streamApiResponse.parsedSafe<StreamApiResponse>()
+                    val relativeStreamUrl = parsedStreamData?.streamUrl
+
+                    if (relativeStreamUrl.isNullOrBlank()) {
+                        debugLogs.add("9. LỖI: Không tìm thấy 'streamUrl' trong response từ embed.")
+                    } else {
+                        val finalM3u8Url = if(relativeStreamUrl.startsWith("http")) relativeStreamUrl else "$embedOrigin$relativeStreamUrl"
+                        debugLogs.add("10. THÀNH CÔNG: Link M3U8 cuối cùng là: $finalM3u8Url")
+                    }
+                } catch (e: Exception) {
+                    debugLogs.add("LỖI khi gọi API embed: ${e.javaClass.simpleName} - ${e.message}")
                 }
-            } catch (e: Exception) {
-                println("NguonC - loadLinks: Lỗi khi xử lý server ${server.serverName}: ${e.message}")
-                e.printStackTrace()
             }
+        } catch (e: Exception) {
+            debugLogs.add("LỖI nghiêm trọng trong loadLinks: ${e.javaClass.simpleName} - ${e.message}")
         }
-        println("NguonC - loadLinks: Hoàn tất. Tìm thấy link: $foundLinks")
-        return foundLinks
+        
+        // Luôn hiển thị danh sách log đã thu thập được
+        if (debugLogs.isEmpty()) {
+            debugLogs.add("Không có log nào được tạo. Lỗi xảy ra rất sớm.")
+        }
+        
+        debugLogs.forEachIndexed { index, log ->
+            callback(
+                ExtractorLink(
+                    this.name,
+                    "LOG ${index + 1}: $log", // Tên của link chính là dòng log
+                    "https://debug.log/${index + 1}", // URL giả để link có thể bấm được
+                    "",
+                    Qualities.Unknown.value,
+                    type = ExtractorLinkType.M3U8
+                )
+            )
+        }
+        
+        return true
     }
 }
