@@ -87,7 +87,6 @@ class NguonCProvider : MainAPI() {
     override val hasMainPage = true
     private val apiUrl = "$mainUrl/api"
 
-    // Hàm tiện ích để chuyển đổi chuỗi thành slug URL
     private val nonLatin = "[^\\w-]".toRegex()
     private val whitespace = "\\s+".toRegex()
     private fun String.toUrlSlug(): String {
@@ -121,27 +120,9 @@ class NguonCProvider : MainAPI() {
         }
     }
 
-    // SỬA ĐỔI: Thêm logic phân trang và sắp xếp lại grid
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Nếu đang cuộn để tải trang tiếp theo của một mục
-        if (page > 1) {
-            val slug = request.data
-            if (slug.isNotEmpty()) {
-                val response = app.get("$apiUrl/films/$slug?page=$page").parsed<NguonCListResponse>()
-                return HomePageResponse(listOf(HomePageList(
-                    name = request.name,
-                    list = response.items.map { it.toSearchResponse() },
-                    isHorizontal = true,
-                    data = slug // Truyền lại data để phân trang tiếp
-                )))
-            } else {
-                return HomePageResponse(emptyList())
-            }
-        }
-        
-        // Tải lần đầu (page = 1)
         val lists = mutableListOf<HomePageList>()
-        // Sắp xếp lại grid theo yêu cầu và bỏ "Phim Đang Chiếu"
+        // Các mục trên trang chủ, hàm này sẽ chỉ tải trang 1
         val homePageItems = listOf(
             Pair("Phim Mới Cập Nhật", "phim-moi-cap-nhat"),
             Pair("Phim Lẻ Mới", "danh-sach/phim-le"),
@@ -153,12 +134,12 @@ class NguonCProvider : MainAPI() {
              suspendSafeApiCall {
                 val response = app.get("$apiUrl/films/$slug?page=1").parsed<NguonCListResponse>()
                 if (response.items.isNotEmpty()) {
-                    // Thêm 'data = slug' để app biết cần tải trang tiếp theo cho mục nào
-                    lists.add(HomePageList(title, response.items.map { it.toSearchResponse() }, data = slug))
+                    lists.add(HomePageList(title, response.items.map { it.toSearchResponse() }))
                 }
             }
         }
-        return HomePageResponse(lists)
+        // Trả về hasNext = false vì không thể phân trang trên trang chủ
+        return HomePageResponse(lists, hasNext = false)
     }
     
     override suspend fun search(query: String): List<SearchResponse> {
@@ -168,7 +149,6 @@ class NguonCProvider : MainAPI() {
         }
     }
 
-    // SỬA ĐỔI: Thêm danh sách gợi ý (recommendations)
     override suspend fun load(url: String): LoadResponse {
         val slug = url.substringAfterLast('/')
         val apiDetailUrl = "$apiUrl/film/$slug"
@@ -186,7 +166,6 @@ class NguonCProvider : MainAPI() {
         val genres = movie.category?.values?.flatMap { it.list }?.map { it.name } ?: emptyList()
         val isAnime = genres.any { it.equals("Hoạt Hình", ignoreCase = true) }
 
-        // Tải danh sách gợi ý dựa trên thể loại đầu tiên
         val recommendations = mutableListOf<SearchResponse>()
         genres.firstOrNull()?.let { primaryGenre ->
             suspendSafeApiCall {
@@ -194,7 +173,7 @@ class NguonCProvider : MainAPI() {
                 val recResponse = app.get("$apiUrl/films/the-loai/$genreSlug?page=1").parsed<NguonCListResponse>()
                 recommendations.addAll(
                     recResponse.items
-                        .filter { it.slug != movie.slug } // Lọc bỏ phim hiện tại
+                        .filter { it.slug != movie.slug }
                         .map { it.toSearchResponse() }
                 )
             }
