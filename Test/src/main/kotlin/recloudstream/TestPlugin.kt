@@ -1,4 +1,4 @@
-package com.lagradost.cloudstream3.movieprovider 
+package recloudstream 
 
 import android.content.Context
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
