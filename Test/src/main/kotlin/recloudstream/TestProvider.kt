@@ -1,5 +1,5 @@
 // Tên file: NguonCProvider.kt
-// Phiên bản nâng cấp độ ổn định với `parsedSafe`.
+// Phiên bản hoàn thiện nhất, kết hợp nhiều phương pháp nhận diện loại phim.
 
 package com.lagradost.cloudstream3.movieprovider
 
@@ -54,7 +54,8 @@ data class NguonCDetailMovie(
     @JsonProperty("casts") val casts: String?,
     @JsonProperty("director") val director: String?,
     @JsonProperty("category") val category: Map<String, NguonCCategoryGroup>?,
-    @JsonProperty("current_episode") val current_episode: String? = null
+    @JsonProperty("current_episode") val current_episode: String? = null,
+    @JsonProperty("total_episodes") val total_episodes: Int? = null 
 )
 
 data class NguonCDetail(
@@ -110,7 +111,6 @@ class NguonCProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        // FIX: Chuyển sang dùng `parsedSafe` để tránh crash khi API trả về lỗi (404, 500...) hoặc không phải JSON
         val response = app.get(url).parsedSafe<NguonCDetail>() 
                        ?: throw RuntimeException("Không thể tải hoặc phân tích dữ liệu từ: $url")
         
@@ -122,11 +122,19 @@ class NguonCProvider : MainAPI() {
 
         var year: Int? = null
         var tags: List<String>? = null
+        // FIX: Thêm biến để kiểm tra định dạng phim từ category
+        var isDefinitelySeries = false
         
         movie.category?.values?.forEach { group ->
             when (group.group.name) {
                 "Năm" -> year = group.list.firstOrNull()?.name?.toIntOrNull()
                 "Thể loại" -> tags = group.list.map { it.name }
+                // Kiểm tra định dạng phim, nếu là "Phim bộ" thì đánh dấu
+                "Định dạng" -> {
+                    if (group.list.any { it.name.contains("Phim bộ", ignoreCase = true) }) {
+                        isDefinitelySeries = true
+                    }
+                }
             }
         }
         
@@ -137,18 +145,22 @@ class NguonCProvider : MainAPI() {
         }
 
         val actors = movie.casts?.split(",")?.map { ActorData(Actor(it.trim())) }
-
-        val episodes = response.episodes?.flatMap { server ->
+        
+        val episodeServerList = response.episodes ?: listOf()
+        val episodes = episodeServerList.flatMap { server ->
             server.items.mapNotNull { ep ->
                 val episodeData = ep.embed ?: ep.m3u8 ?: return@mapNotNull null
                 Episode(
                     data = episodeData,
-                    name = if (response.episodes.size > 1) "${server.server_name} - Tập ${ep.name}" else "Tập ${ep.name}"
+                    name = if (episodeServerList.size > 1) "${server.server_name} - Tập ${ep.name}" else "Tập ${ep.name}"
                 )
             }
-        } ?: listOf()
+        }
 
-        return if (episodes.size > 1 || (episodes.size == 1 && showStatus == ShowStatus.Ongoing)) {
+        val totalEpisodes = movie.total_episodes ?: episodes.size
+
+        // FIX: Kết hợp nhiều điều kiện để nhận diện phim bộ một cách chính xác nhất
+        return if (isDefinitelySeries || totalEpisodes > 1 || (totalEpisodes == 1 && showStatus == ShowStatus.Ongoing)) {
              TvSeriesLoadResponse(
                 name = title, url = url, apiName = this.name, type = TvType.TvSeries,
                 episodes = episodes, posterUrl = poster, year = year, plot = plot,
