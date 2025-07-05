@@ -191,7 +191,8 @@ class NguonCProvider : MainAPI() {
                 this.recommendations = recommendations
             }
         } else {
-            val totalEpisodes = movie.episodes.firstOrNull()?.items?.size ?: movie.totalEpisodes
+            // SỬA ĐỔI: Lấy số tập lớn nhất từ các server để tránh lỗi
+            val totalEpisodes = movie.episodes.mapNotNull { it.items?.size }.maxOrNull() ?: movie.totalEpisodes
             val episodes = (1..totalEpisodes).map { epNum ->
                 val loadData = NguonCLoadData(slug = slug, episodeNum = epNum).toJson()
                 Episode(
@@ -218,6 +219,8 @@ class NguonCProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val loadData = parseJson<NguonCLoadData>(data)
+        println("NguonC - loadLinks: Bắt đầu lấy link cho slug: ${loadData.slug}, tập: ${loadData.episodeNum}")
+
         val movie = app.get("$apiUrl/film/${loadData.slug}")
             .parsedSafe<NguonCDetailResponse>()?.movie ?: return false
         
@@ -225,13 +228,22 @@ class NguonCProvider : MainAPI() {
         
         movie.episodes.apmap { server ->
             try {
-                val episodeItem = server.items.find { it.name.toIntOrNull() == loadData.episodeNum }
+                println("NguonC - loadLinks: Đang xử lý server: ${server.serverName}")
+                
+                val episodeItem = if (movie.totalEpisodes <= 1) {
+                    server.items.firstOrNull()
+                } else {
+                    server.items.find { it.name.toIntOrNull() == loadData.episodeNum }
+                }
+                
                 val embedUrl = episodeItem?.embed
+                println("NguonC - loadLinks: Tìm thấy embedUrl: $embedUrl")
                 
                 if (embedUrl.isNullOrBlank()) return@apmap
 
                 val embedOrigin = URI(embedUrl).let { "${it.scheme}://${it.host}" }
                 val streamApiUrl = embedUrl.replace("?", "?api=stream&")
+                println("NguonC - loadLinks: Gọi đến API của embed: $streamApiUrl")
                 
                 val headers = mapOf(
                     "accept" to "*/*",
@@ -242,29 +254,37 @@ class NguonCProvider : MainAPI() {
                     "user-agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36"
                 )
 
-                val streamApiResponse = app.get(streamApiUrl, headers = headers).parsedSafe<StreamApiResponse>()
+                val streamApiResponseText = app.get(streamApiUrl, headers = headers).text
+                println("NguonC - loadLinks: Dữ liệu trả về từ API embed: $streamApiResponseText")
+                val streamApiResponse = parseJson<StreamApiResponse>(streamApiResponseText)
                 
-                val relativeStreamUrl = streamApiResponse?.streamUrl
+                val relativeStreamUrl = streamApiResponse.streamUrl
                 if (!relativeStreamUrl.isNullOrBlank()) {
                     val finalM3u8Url = if(relativeStreamUrl.startsWith("http")) relativeStreamUrl else "$embedOrigin$relativeStreamUrl"
                     
-                    callback(
-                        ExtractorLink(
-                            source = this.name,
-                            name = server.serverName,
-                            url = finalM3u8Url,
-                            // SỬA LỖI: Cập nhật referer thành link embed đầy đủ
-                            referer = embedUrl,
-                            quality = Qualities.Unknown.value,
-                            type = ExtractorLinkType.M3U8
-                        )
+                    val extractorLink = ExtractorLink(
+                        source = this.name,
+                        name = server.serverName,
+                        url = finalM3u8Url,
+                        referer = embedUrl,
+                        quality = Qualities.Unknown.value,
+                        type = ExtractorLinkType.M3U8
                     )
+                    
+                    // SỬA ĐỔI: Thêm log chi tiết trước khi callback
+                    println("NguonC - loadLinks: Gọi callback với ExtractorLink: name='${extractorLink.name}', url='${extractorLink.url}'")
+                    
+                    callback(extractorLink)
                     foundLinks = true
+                } else {
+                    println("NguonC - loadLinks: Không tìm thấy streamUrl trong JSON response.")
                 }
             } catch (e: Exception) {
+                println("NguonC - loadLinks: Lỗi khi xử lý server ${server.serverName}: ${e.message}")
                 e.printStackTrace()
             }
         }
+        println("NguonC - loadLinks: Hoàn tất. Tìm thấy link: $foundLinks")
         return foundLinks
     }
 }
