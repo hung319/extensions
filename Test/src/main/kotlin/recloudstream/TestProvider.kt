@@ -9,12 +9,18 @@ import org.jsoup.Jsoup
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.mvvm.suspendSafeApiCall
+import java.net.URI
 import java.text.Normalizer
 
 // Data class để truyền dữ liệu từ load() -> loadLinks()
 data class NguonCLoadData(
     @JsonProperty("slug") val slug: String,
     @JsonProperty("episodeNum") val episodeNum: Int
+)
+
+// Data class cho phản hồi từ API của server embed
+data class StreamApiResponse(
+    @JsonProperty("streamUrl") val streamUrl: String?
 )
 
 data class NguonCItem(
@@ -40,10 +46,12 @@ data class NguonCListResponse(
     @JsonProperty("paginate") val paginate: NguonCPaginate
 )
 
+// Cần thêm trường `embed` vào đây
 data class NguonCEpisodeItem(
     @JsonProperty("name") val name: String,
     @JsonProperty("slug") val slug: String,
-    @JsonProperty("m3u8") val m3u8: String?
+    @JsonProperty("embed") val embed: String?,
+    @JsonProperty("m3u8") val m3u8: String? // Giữ lại để phòng trường hợp API thay đổi
 )
 
 data class NguonCServer(
@@ -80,6 +88,7 @@ data class NguonCDetailResponse(
     @JsonProperty("movie") val movie: NguonCDetailMovie
 )
 
+
 // Lớp chính của Plugin
 // ====================
 
@@ -108,9 +117,7 @@ class NguonCProvider : MainAPI() {
 
     private fun NguonCItem.toSearchResponse(): SearchResponse? {
         val year = this.created?.substringBefore("-")?.toIntOrNull()
-        val isMovie = this.totalEpisodes <= 1
-
-        if (isMovie) {
+        if (this.totalEpisodes <= 1) {
             return newMovieSearchResponse(
                 name = this.name,
                 url = "$mainUrl/phim/${this.slug}",
@@ -147,9 +154,8 @@ class NguonCProvider : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse {
         val slug = url.substringAfterLast('/')
-        // Hàm load chỉ cần gọi API một lần để lấy thông tin hiển thị và tổng số tập
         val res = app.get("$apiUrl/film/$slug").parsedSafe<NguonCDetailResponse>()
-            ?: return newMovieLoadResponse(url.substringAfterLast("-"), url, TvType.Movie, url) // Fallback
+            ?: return newMovieLoadResponse(url.substringAfterLast("-"), url, TvType.Movie, url)
 
         val movie = res.movie
         val title = movie.name
@@ -164,7 +170,6 @@ class NguonCProvider : MainAPI() {
             if (movie.totalEpisodes <= 1) TvType.Movie else TvType.TvSeries
         }
 
-        // Tạo danh sách gợi ý
         val recommendations = mutableListOf<SearchResponse>()
         genres.firstOrNull()?.let { primaryGenre ->
             suspendSafeApiCall {
@@ -178,9 +183,7 @@ class NguonCProvider : MainAPI() {
             }
         }
         
-        // SỬA ĐỔI: Phân biệt cách xử lý cho phim lẻ và phim bộ
         if (movie.totalEpisodes <= 1) {
-            // Đối với phim lẻ, chỉ cần 1 nút Play. Dữ liệu chứa slug và số tập là 1.
             val loadData = NguonCLoadData(slug = slug, episodeNum = 1).toJson()
             return newMovieLoadResponse(title, url, type, loadData) {
                 this.posterUrl = poster
@@ -189,12 +192,12 @@ class NguonCProvider : MainAPI() {
                 this.recommendations = recommendations
             }
         } else {
-            // Đối với phim bộ, tạo danh sách các tập đơn giản.
-            val episodes = (1..movie.totalEpisodes).map { epNum ->
+            val totalEpisodes = movie.episodes.firstOrNull()?.items?.size ?: movie.totalEpisodes
+            val episodes = (1..totalEpisodes).map { epNum ->
                 val loadData = NguonCLoadData(slug = slug, episodeNum = epNum).toJson()
                 Episode(
                     data = loadData,
-                    name = "Tập $epNum", // Giữ nguyên tên "Tập X" theo yêu cầu
+                    name = "Tập $epNum",
                     episode = epNum,
                     season = 1,
                     posterUrl = movie.thumbUrl
@@ -209,42 +212,62 @@ class NguonCProvider : MainAPI() {
         }
     }
 
-    // SỬA ĐỔI LỚN: Toàn bộ logic lấy link được chuyển xuống đây
+    // SỬA ĐỔI LỚN: Cập nhật hoàn toàn logic lấy link
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Giải mã dữ liệu được truyền từ hàm load()
         val loadData = parseJson<NguonCLoadData>(data)
-
-        // Gọi lại API để lấy thông tin chi tiết các server
         val movie = app.get("$apiUrl/film/${loadData.slug}")
             .parsedSafe<NguonCDetailResponse>()?.movie ?: return false
         
         var foundLinks = false
-        // Lặp qua tất cả các server có trong API (Vietsub, Lồng Tiếng, Thuyết Minh...)
-        movie.episodes.forEach { server ->
-            // Tìm đúng tập phim tương ứng với số thứ tự đã chọn
-            val episodeItem = server.items.find {
-                it.name.toIntOrNull() == loadData.episodeNum
-            }
-            
-            val link = episodeItem?.m3u8
-            if (link != null) {
-                // Tạo một link lựa chọn cho mỗi server tìm thấy
-                callback(
-                    ExtractorLink(
-                        source = this.name,
-                        name = server.serverName, // Tên link là tên của server
-                        url = link,
-                        referer = "$mainUrl/",
-                        quality = Qualities.Unknown.value,
-                        type = ExtractorLinkType.M3U8
-                    )
+        
+        // Lấy link song song từ các server để tăng tốc độ
+        movie.episodes.apmap { server ->
+            try {
+                val episodeItem = server.items.find { it.name.toIntOrNull() == loadData.episodeNum }
+                val embedUrl = episodeItem?.embed
+                
+                if (embedUrl.isNullOrBlank()) return@apmap
+
+                val embedOrigin = URI(embedUrl).let { "${it.scheme}://${it.host}" }
+                // Tạo link API để lấy stream data
+                val streamApiUrl = embedUrl.replace("?", "?api=stream&")
+                
+                // Các header cần thiết để giả lập request từ trình duyệt
+                val headers = mapOf(
+                    "accept" to "*/*",
+                    "referer" to embedUrl,
+                    "sec-ch-ua" to """"Chromium";v="127", "Not)A;Brand";v="99", "Microsoft Edge Simulate";v="127", "Lemur";v="127"""",
+                    "sec-ch-ua-mobile" to "?1",
+                    "sec-ch-ua-platform" to """"Android"""",
+                    "user-agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36"
                 )
-                foundLinks = true
+
+                val streamApiResponse = app.get(streamApiUrl, headers = headers).parsedSafe<StreamApiResponse>()
+                
+                val relativeStreamUrl = streamApiResponse?.streamUrl
+                if (!relativeStreamUrl.isNullOrBlank()) {
+                    // Nối tên miền với đường dẫn tương đối để có link m3u8 hoàn chỉnh
+                    val finalM3u8Url = if(relativeStreamUrl.startsWith("http")) relativeStreamUrl else "$embedOrigin$relativeStreamUrl"
+                    
+                    callback(
+                        ExtractorLink(
+                            source = this.name,
+                            name = server.serverName,
+                            url = finalM3u8Url,
+                            referer = embedOrigin,
+                            quality = Qualities.Unknown.value,
+                            type = ExtractorLinkType.M3U8
+                        )
+                    )
+                    foundLinks = true
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
         }
         return foundLinks
