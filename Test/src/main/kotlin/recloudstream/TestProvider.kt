@@ -11,7 +11,7 @@ import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.mvvm.suspendSafeApiCall
 import java.text.Normalizer
 
-// Data class để truyền dữ liệu từ load() -> loadLinks()
+// Data class để truyền dữ liệu cho một tập phim của TV Series
 data class EpisodeData(
     @JsonProperty("url") val url: String,
     @JsonProperty("serverName") val serverName: String
@@ -181,39 +181,45 @@ class NguonCProvider : MainAPI() {
             if (recommendations.isNotEmpty()) break
         }
         
-        // SỬA ĐỔI: Sử dụng cơ chế grouping của CloudStream
-        val episodes = movie.episodes.flatMap { server ->
-            server.items.map { episodeItem ->
-                // Đóng gói dữ liệu để truyền cho loadLinks
-                val episodeData = EpisodeData(
-                    url = episodeItem.m3u8 ?: "",
-                    serverName = server.serverName 
-                ).toJson()
-                
-                Episode(
-                    data = episodeData,
-                    // Tên của lựa chọn server (VD: "Vietsub #1")
-                    name = server.serverName, 
-                    // Số tập, dùng để nhóm các server có cùng số tập lại
-                    episode = episodeItem.name.toIntOrNull() ?: 1, 
-                    season = 1,
-                    posterUrl = movie.thumbUrl
-                )
-            }
-        }
-
         val type = if (isAnime) {
             if (movie.totalEpisodes <= 1) TvType.AnimeMovie else TvType.Anime
         } else {
             if (movie.totalEpisodes <= 1) TvType.Movie else TvType.TvSeries
         }
-        
-        // Luôn trả về TvSeriesLoadResponse để có thể hiển thị danh sách server/tập phim
-        return newTvSeriesLoadResponse(title, url, type, episodes) {
-            this.posterUrl = poster
-            this.plot = plot
-            this.tags = tags + genres
-            this.recommendations = recommendations
+
+        // SỬA ĐỔI: Phân biệt cách xử lý cho phim lẻ và phim bộ
+        if (movie.totalEpisodes <= 1) {
+            // Đối với phim lẻ, truyền toàn bộ thông tin phim cho loadLinks
+            return newMovieLoadResponse(title, url, type, movie.toJson()) {
+                this.posterUrl = poster
+                this.plot = plot
+                this.tags = tags + genres
+                this.recommendations = recommendations
+            }
+        } else {
+            // Đối với phim bộ, tạo danh sách tập để người dùng chọn server
+            val episodes = movie.episodes.flatMap { server ->
+                server.items.map { episodeItem ->
+                    val episodeData = EpisodeData(
+                        url = episodeItem.m3u8 ?: "",
+                        serverName = server.serverName 
+                    ).toJson()
+                    
+                    Episode(
+                        data = episodeData,
+                        name = server.serverName, // Tên server để chọn
+                        episode = episodeItem.name.toIntOrNull() ?: 1, // Số tập để gom nhóm
+                        season = 1,
+                        posterUrl = movie.thumbUrl
+                    )
+                }
+            }
+            return newTvSeriesLoadResponse(title, url, type, episodes) {
+                this.posterUrl = poster
+                this.plot = plot
+                this.tags = tags + genres
+                this.recommendations = recommendations
+            }
         }
     }
 
@@ -223,40 +229,43 @@ class NguonCProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val episodeData = try {
-            parseJson<EpisodeData>(data)
-        } catch (e: Exception) {
-            null
-        }
-
-        if (episodeData != null && episodeData.url.isNotBlank()) {
-            callback(
-                ExtractorLink(
-                    source = this.name,
-                    name = episodeData.serverName,
-                    url = episodeData.url,
-                    referer = "$mainUrl/",
-                    quality = Qualities.Unknown.value,
-                    type = ExtractorLinkType.M3U8
-                )
-            )
+        // Kiểm tra xem data là JSON của cả bộ phim hay chỉ một tập
+        if (data.contains(""""total_episodes"""") && data.contains(""""server_name"""")) {
+            // TRƯỜNG HỢP 1: Đây là phim lẻ, data chứa thông tin tất cả server
+            val movie = parseJson<NguonCDetailMovie>(data)
+            movie.episodes.forEach { server ->
+                val link = server.items.firstOrNull()?.m3u8
+                if (link != null) {
+                    callback(
+                        ExtractorLink(
+                            source = this.name,
+                            name = server.serverName, // Hiển thị tên server (Vietsub, Lồng Tiếng)
+                            url = link,
+                            referer = "$mainUrl/",
+                            quality = Qualities.Unknown.value,
+                            type = ExtractorLinkType.M3U8
+                        )
+                    )
+                }
+            }
             return true
-        }
-        
-        if (data.isNotBlank() && data.startsWith("http")) {
-             callback(
-                ExtractorLink(
-                    source = this.name,
-                    name = this.name,
-                    url = data,
-                    referer = "$mainUrl/",
-                    quality = Qualities.Unknown.value,
-                    type = ExtractorLinkType.M3U8
+        } else {
+            // TRƯỜNG HỢP 2: Đây là phim bộ, data chứa thông tin của 1 tập đã chọn
+            val episodeData = try { parseJson<EpisodeData>(data) } catch (e: Exception) { null }
+            if (episodeData != null && episodeData.url.isNotBlank()) {
+                callback(
+                    ExtractorLink(
+                        source = this.name,
+                        name = episodeData.serverName,
+                        url = episodeData.url,
+                        referer = "$mainUrl/",
+                        quality = Qualities.Unknown.value,
+                        type = ExtractorLinkType.M3U8
+                    )
                 )
-            )
-            return true
+                return true
+            }
         }
-
         return false
     }
 }
