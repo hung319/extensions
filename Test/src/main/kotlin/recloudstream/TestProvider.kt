@@ -102,7 +102,6 @@ class NguonCProvider : MainAPI() {
         return whitespace.replace(slug, "-").lowercase()
     }
 
-    // SỬA LỖI: Viết lại hàm theo đúng cấu trúc constructor của recloudstream
     private fun NguonCItem.toSearchResponse(): SearchResponse? {
         val year = this.created?.substringBefore("-")?.toIntOrNull()
         val isMovie = this.totalEpisodes <= 1
@@ -113,7 +112,6 @@ class NguonCProvider : MainAPI() {
                 url = "$mainUrl/phim/${this.slug}",
                 type = TvType.Movie
             ) {
-                // Gán các thuộc tính tùy chọn trong khối lambda
                 this.posterUrl = this@toSearchResponse.posterUrl ?: this@toSearchResponse.thumbUrl
                 this.year = year
             }
@@ -123,7 +121,6 @@ class NguonCProvider : MainAPI() {
                 url = "$mainUrl/phim/${this.slug}",
                 type = TvType.TvSeries
             ) {
-                // Gán các thuộc tính tùy chọn trong khối lambda
                 this.posterUrl = this@toSearchResponse.posterUrl ?: this@toSearchResponse.thumbUrl
                 this.year = year
             }
@@ -161,17 +158,28 @@ class NguonCProvider : MainAPI() {
         val genres = movie.category?.values?.flatMap { it.list }?.map { it.name } ?: emptyList()
         val isAnime = genres.any { it.equals("Hoạt Hình", ignoreCase = true) }
 
+        // SỬA ĐỔI: Cải tiến logic lấy danh sách phim gợi ý
         val recommendations = mutableListOf<SearchResponse>()
-        genres.firstOrNull()?.let { primaryGenre ->
+        // Lặp qua tất cả các thể loại của phim để tìm danh sách gợi ý
+        for (genreName in genres) {
             suspendSafeApiCall {
-                val genreSlug = primaryGenre.toUrlSlug()
+                val genreSlug = genreName.toUrlSlug()
                 val recResponse = app.get("$apiUrl/films/the-loai/$genreSlug?page=1").parsedSafe<NguonCListResponse>()
-                recResponse?.items?.let {
-                    recommendations.addAll(
-                        it.filter { item -> item.slug != movie.slug }
-                          .mapNotNull { item -> item.toSearchResponse() }
-                    )
+                
+                // Nếu API trả về kết quả thành công
+                recResponse?.items?.let { recItems ->
+                    if (recItems.isNotEmpty()) {
+                        recommendations.addAll(
+                            recItems
+                                .filter { it.slug != movie.slug } // Lọc bỏ phim hiện tại
+                                .mapNotNull { it.toSearchResponse() }
+                        )
+                    }
                 }
+            }
+            // Nếu đã tìm thấy danh sách gợi ý thì không cần tìm ở các thể loại khác nữa
+            if (recommendations.isNotEmpty()) {
+                break
             }
         }
 
