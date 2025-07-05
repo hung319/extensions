@@ -3,6 +3,8 @@
 package recloudstream
 
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import org.jsoup.Jsoup
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
@@ -11,6 +13,12 @@ import java.text.Normalizer
 
 // Định nghĩa cấu trúc dữ liệu tương ứng với JSON trả về từ API
 // =========================================================
+
+// Data class để truyền dữ liệu từ load() -> loadLinks()
+data class EpisodeData(
+    @JsonProperty("url") val url: String,
+    @JsonProperty("serverName") val serverName: String
+)
 
 data class NguonCItem(
     @JsonProperty("name") val name: String,
@@ -141,7 +149,6 @@ class NguonCProvider : MainAPI() {
         } ?: emptyList()
     }
 
-    // SỬA ĐỔI LỚN: Thay đổi hàm load để xử lý nhiều server
     override suspend fun load(url: String): LoadResponse {
         val slug = url.substringAfterLast('/')
         val apiDetailUrl = "$apiUrl/film/$slug"
@@ -160,9 +167,9 @@ class NguonCProvider : MainAPI() {
         val isAnime = genres.any { it.equals("Hoạt Hình", ignoreCase = true) }
 
         val recommendations = mutableListOf<SearchResponse>()
-        genres.firstOrNull()?.let { primaryGenre ->
+        for (genreName in genres) {
             suspendSafeApiCall {
-                val genreSlug = primaryGenre.toUrlSlug()
+                val genreSlug = genreName.toUrlSlug()
                 val recResponse = app.get("$apiUrl/films/the-loai/$genreSlug?page=1").parsedSafe<NguonCListResponse>()
                 recResponse?.items?.let { recItems ->
                     if (recItems.isNotEmpty()) {
@@ -174,21 +181,26 @@ class NguonCProvider : MainAPI() {
                     }
                 }
             }
-            if (recommendations.isNotEmpty()) return@let // Thoát sớm nếu đã có kết quả
+            if (recommendations.isNotEmpty()) break
         }
-
-        // Luôn tạo danh sách Episode để hiển thị các server khác nhau
+        
+        // SỬA ĐỔI: Đóng gói URL và Tên Server vào `Episode.data`
         val episodes = movie.episodes.flatMap { server ->
             server.items.map { episodeItem ->
-                // Tạo tên hiển thị bao gồm cả tên server
                 val episodeDisplayName = if (movie.totalEpisodes <= 1) {
-                    server.serverName // Đối với phim lẻ, tên là tên server
+                    server.serverName
                 } else {
                     "Tập ${episodeItem.name} (${server.serverName})"
                 }
                 
+                // Đóng gói dữ liệu vào một đối tượng và chuyển thành chuỗi JSON
+                val episodeData = EpisodeData(
+                    url = episodeItem.m3u8 ?: "",
+                    serverName = server.serverName
+                ).toJson()
+                
                 Episode(
-                    data = episodeItem.m3u8 ?: "",
+                    data = episodeData,
                     name = episodeDisplayName,
                     season = 1,
                     episode = if (movie.totalEpisodes <= 1) 1 else episodeItem.name.toIntOrNull(),
@@ -197,14 +209,12 @@ class NguonCProvider : MainAPI() {
             }
         }
 
-        // Xác định loại nội dung (phim, series, anime)
         val type = if (isAnime) {
             if (movie.totalEpisodes <= 1) TvType.AnimeMovie else TvType.Anime
         } else {
             if (movie.totalEpisodes <= 1) TvType.Movie else TvType.TvSeries
         }
         
-        // Luôn trả về TvSeriesLoadResponse để có thể hiển thị danh sách server/tập phim
         return newTvSeriesLoadResponse(title, url, type, episodes) {
             this.posterUrl = poster
             this.plot = plot
@@ -213,23 +223,51 @@ class NguonCProvider : MainAPI() {
         }
     }
 
+    // SỬA ĐỔI: Giải nén dữ liệu từ `Episode.data` để lấy tên server
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        if (data.isBlank()) return false
-        callback(
-            ExtractorLink(
-                source = this.name,
-                name = this.name,
-                url = data,
-                referer = "$mainUrl/",
-                quality = Qualities.Unknown.value,
-                type = ExtractorLinkType.M3U8
+        // Giải nén chuỗi JSON để lấy lại đối tượng EpisodeData
+        val episodeData = try {
+            parseJson<EpisodeData>(data)
+        } catch (e: Exception) {
+            // Nếu data không phải là JSON, có thể là link trực tiếp (fallback)
+            null
+        }
+
+        // Nếu giải nén thành công và có url
+        if (episodeData != null && episodeData.url.isNotBlank()) {
+            callback(
+                ExtractorLink(
+                    source = this.name,
+                    name = episodeData.serverName, // Sử dụng tên server đã được truyền qua
+                    url = episodeData.url,
+                    referer = "$mainUrl/",
+                    quality = Qualities.Unknown.value,
+                    type = ExtractorLinkType.M3U8
+                )
             )
-        )
-        return true
+            return true
+        }
+        
+        // Fallback cho trường hợp data là link trực tiếp (phiên bản cũ)
+        if (data.isNotBlank() && data.startsWith("http")) {
+             callback(
+                ExtractorLink(
+                    source = this.name,
+                    name = this.name, // Không có tên server, dùng tên provider
+                    url = data,
+                    referer = "$mainUrl/",
+                    quality = Qualities.Unknown.value,
+                    type = ExtractorLinkType.M3U8
+                )
+            )
+            return true
+        }
+
+        return false
     }
 }
