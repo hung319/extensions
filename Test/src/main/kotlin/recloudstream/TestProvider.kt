@@ -1,5 +1,5 @@
 // Tên file: NguonCProvider.kt
-// Phiên bản hoàn thiện nhất, kết hợp nhiều phương pháp nhận diện loại phim.
+// Phiên bản cuối cùng, tái cấu trúc phần lấy tập phim bằng vòng lặp for đơn giản.
 
 package com.lagradost.cloudstream3.movieprovider
 
@@ -30,7 +30,7 @@ data class NguonCEpisodeData(
 
 data class NguonCServer(
     @JsonProperty("server_name") val server_name: String,
-    @JsonProperty("items") val items: List<NguonCEpisodeData>
+    @JsonProperty("items") val items: List<NguonCEpisodeData>? 
 )
 
 data class NguonCCategoryItem(
@@ -75,7 +75,7 @@ class NguonCProvider : MainAPI() {
     override var name = "Nguồn C"
     override var lang = "vi"
     override val hasMainPage = true
-    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
+    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime)
 
     private fun toSearchResponse(item: NguonCItem): SearchResponse {
         val url = "$mainUrl/api/film/${item.slug}"
@@ -96,6 +96,7 @@ class NguonCProvider : MainAPI() {
         "/api/films/danh-sach/phim-dang-chieu?page=" to "Phim Đang Chiếu",
         "/api/films/danh-sach/phim-le?page=" to "Phim Lẻ",
         "/api/films/danh-sach/phim-bo?page=" to "Phim Bộ",
+        "/api/films/the-loai/hoat-hinh?page=" to "Phim Hoạt Hình",
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -122,14 +123,18 @@ class NguonCProvider : MainAPI() {
 
         var year: Int? = null
         var tags: List<String>? = null
-        // FIX: Thêm biến để kiểm tra định dạng phim từ category
         var isDefinitelySeries = false
+        var isAnime = false
         
         movie.category?.values?.forEach { group ->
             when (group.group.name) {
                 "Năm" -> year = group.list.firstOrNull()?.name?.toIntOrNull()
-                "Thể loại" -> tags = group.list.map { it.name }
-                // Kiểm tra định dạng phim, nếu là "Phim bộ" thì đánh dấu
+                "Thể loại" -> {
+                    tags = group.list.map { it.name }
+                    if (tags?.any { it.contains("Hoạt Hình", ignoreCase = true) } == true) {
+                        isAnime = true
+                    }
+                }
                 "Định dạng" -> {
                     if (group.list.any { it.name.contains("Phim bộ", ignoreCase = true) }) {
                         isDefinitelySeries = true
@@ -146,29 +151,43 @@ class NguonCProvider : MainAPI() {
 
         val actors = movie.casts?.split(",")?.map { ActorData(Actor(it.trim())) }
         
+        // FIX: Tái cấu trúc hoàn toàn phần lấy tập phim bằng vòng lặp `for` đơn giản để đảm bảo tính ổn định.
+        val episodes = mutableListOf<Episode>()
         val episodeServerList = response.episodes ?: listOf()
-        val episodes = episodeServerList.flatMap { server ->
-            server.items.mapNotNull { ep ->
-                val episodeData = ep.embed ?: ep.m3u8 ?: return@mapNotNull null
-                Episode(
-                    data = episodeData,
-                    name = if (episodeServerList.size > 1) "${server.server_name} - Tập ${ep.name}" else "Tập ${ep.name}"
-                )
+
+        for (server in episodeServerList) {
+            val itemList = server.items ?: continue // Nếu server không có `items`, bỏ qua và xét server tiếp theo
+            for (ep in itemList) {
+                val episodeData = ep.embed ?: ep.m3u8
+                if (episodeData != null) {
+                    val episodeName = if (episodeServerList.size > 1) {
+                        "${server.server_name} - Tập ${ep.name}"
+                    } else {
+                        "Tập ${ep.name}"
+                    }
+                    episodes.add(
+                        Episode(
+                            data = episodeData,
+                            name = episodeName
+                        )
+                    )
+                }
             }
         }
 
         val totalEpisodes = movie.total_episodes ?: episodes.size
+        
+        val finalType = if (isAnime) TvType.Anime else if (isDefinitelySeries || totalEpisodes > 1 || (totalEpisodes == 1 && showStatus == ShowStatus.Ongoing)) TvType.TvSeries else TvType.Movie
 
-        // FIX: Kết hợp nhiều điều kiện để nhận diện phim bộ một cách chính xác nhất
-        return if (isDefinitelySeries || totalEpisodes > 1 || (totalEpisodes == 1 && showStatus == ShowStatus.Ongoing)) {
+        return if (finalType == TvType.TvSeries || finalType == TvType.Anime) {
              TvSeriesLoadResponse(
-                name = title, url = url, apiName = this.name, type = TvType.TvSeries,
+                name = title, url = url, apiName = this.name, type = finalType,
                 episodes = episodes, posterUrl = poster, year = year, plot = plot,
                 tags = tags, showStatus = showStatus, actors = actors
             )
         } else {
             MovieLoadResponse(
-                name = title, url = url, apiName = this.name, type = TvType.Movie,
+                name = title, url = url, apiName = this.name, type = finalType,
                 dataUrl = episodes.firstOrNull()?.data ?: "", posterUrl = poster, year = year,
                 plot = plot, tags = tags, actors = actors
             )
