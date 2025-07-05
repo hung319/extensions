@@ -45,6 +45,15 @@ data class NguonCServer(
     @JsonProperty("items") val items: List<NguonCEpisodeItem>
 )
 
+// Cấu trúc cho Category để phân loại Anime
+data class NguonCCategoryInfo(
+    @JsonProperty("name") val name: String
+)
+
+data class NguonCCategoryGroup(
+    @JsonProperty("list") val list: List<NguonCCategoryInfo>
+)
+
 data class NguonCDetailMovie(
     @JsonProperty("name") val name: String,
     @JsonProperty("slug") val slug: String,
@@ -58,7 +67,9 @@ data class NguonCDetailMovie(
     @JsonProperty("language") val language: String?,
     @JsonProperty("director") val director: String?,
     @JsonProperty("casts") val casts: String?,
-    @JsonProperty("episodes") val episodes: List<NguonCServer>
+    @JsonProperty("episodes") val episodes: List<NguonCServer>,
+    // Thêm category vào data class
+    @JsonProperty("category") val category: Map<String, NguonCCategoryGroup>?
 )
 
 data class NguonCDetailResponse(
@@ -74,10 +85,7 @@ class NguonCProvider : MainAPI() {
     override var name = "Nguồn C"
     override val supportedTypes = setOf(TvType.TvSeries, TvType.Movie, TvType.Anime)
     override var lang = "vi"
-
-    // THÊM DÒNG NÀY để kích hoạt trang chủ cho plugin
     override val hasMainPage = true
-
     private val apiUrl = "$mainUrl/api"
 
     private fun NguonCItem.toSearchResponse(): SearchResponse {
@@ -89,7 +97,7 @@ class NguonCProvider : MainAPI() {
                 name = this.name,
                 url = "$mainUrl/phim/${this.slug}",
                 apiName = this@NguonCProvider.name,
-                type = TvType.Movie,
+                type = TvType.Movie, // Không thể xác định Anime ở đây, sẽ xác định lại trong hàm load()
                 posterUrl = this.posterUrl ?: this.thumbUrl,
                 year = year
             )
@@ -98,7 +106,7 @@ class NguonCProvider : MainAPI() {
                 name = this.name,
                 url = "$mainUrl/phim/${this.slug}",
                 apiName = this@NguonCProvider.name,
-                type = TvType.TvSeries,
+                type = TvType.TvSeries, // Không thể xác định Anime ở đây, sẽ xác định lại trong hàm load()
                 posterUrl = this.posterUrl ?: this.thumbUrl,
                 year = year
             )
@@ -110,6 +118,7 @@ class NguonCProvider : MainAPI() {
         val homePageItems = listOf(
             Pair("Phim Mới Cập Nhật", "phim-moi-cap-nhat"),
             Pair("Phim Đang Chiếu", "danh-sach/phim-dang-chieu"),
+            Pair("Anime Mới", "the-loai/hoat-hinh"), // Thêm mục Anime
             Pair("Phim Lẻ Mới", "danh-sach/phim-le"),
             Pair("Phim Bộ Mới", "danh-sach/phim-bo")
         )
@@ -145,14 +154,23 @@ class NguonCProvider : MainAPI() {
         val tags = mutableListOf<String>()
         movie.language?.let { tags.add(it) }
         movie.quality?.let { tags.add(it) }
-        
+
+        // SỬA ĐỔI: Kiểm tra thể loại để xác định loại phim
+        val genres = movie.category?.values?.flatMap { it.list }?.map { it.name } ?: emptyList()
+        val isAnime = genres.any { it.equals("Hoạt Hình", ignoreCase = true) }
+
         if (movie.totalEpisodes <= 1) {
-            return newMovieLoadResponse(title, url, TvType.Movie, movie.episodes.firstOrNull()?.items?.firstOrNull()?.m3u8) {
+            // Nếu là phim lẻ, kiểm tra xem có phải Anime Movie không
+            val movieType = if (isAnime) TvType.AnimeMovie else TvType.Movie
+            return newMovieLoadResponse(title, url, movieType, movie.episodes.firstOrNull()?.items?.firstOrNull()?.m3u8) {
                 this.posterUrl = poster
                 this.plot = plot
                 this.tags = tags
+                this.tags.addAll(genres) // Thêm các thể loại vào tag
             }
         } else {
+            // Nếu là phim bộ, kiểm tra xem có phải Anime Series không
+            val seriesType = if (isAnime) TvType.Anime else TvType.TvSeries
             val episodes = movie.episodes.flatMap { server ->
                 server.items.map { episode ->
                     Episode(
@@ -166,10 +184,11 @@ class NguonCProvider : MainAPI() {
                     )
                 }
             }
-            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+            return newTvSeriesLoadResponse(title, url, seriesType, episodes) {
                 this.posterUrl = poster
                 this.plot = plot
                 this.tags = tags
+                this.tags.addAll(genres) // Thêm các thể loại vào tag
             }
         }
     }
