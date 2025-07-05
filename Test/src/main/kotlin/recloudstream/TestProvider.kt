@@ -1,5 +1,5 @@
-// Tên file: NguonCProvider_JsonInspector.kt
-// Phiên bản đặc biệt: In toàn bộ JSON trả về từ API ra phần mô tả phim.
+// Tên file: NguonCProvider.kt
+// Phiên bản JSON Inspector - ĐÃ SỬA LỖI BIÊN DỊCH.
 
 package com.lagradost.cloudstream3.movieprovider
 
@@ -13,7 +13,6 @@ import java.net.URI
 import androidx.annotation.Keep
 
 // --- CÁC LỚP DỮ LIỆU (DATA CLASS) ---
-// (Giữ nguyên như phiên bản cuối cùng)
 @Keep
 data class NguonCItem(
     @JsonProperty("name") val name: String,
@@ -91,7 +90,6 @@ class NguonCProvider : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime)
 
-    // Các hàm khác giữ nguyên
     private fun toSearchResponse(item: NguonCItem): SearchResponse {
         val url = "$mainUrl/api/film/${item.slug}"
         val poster = item.poster_url
@@ -126,42 +124,29 @@ class NguonCProvider : MainAPI() {
         return app.get(url).parsedSafe<NguonCMain>()?.items?.map { toSearchResponse(it) } ?: listOf()
     }
 
-    // HÀM LOAD ĐÃ ĐƯỢC CHỈNH SỬA ĐỂ IN RA JSON
     override suspend fun load(url: String): LoadResponse {
+        // FIX: Tái cấu trúc lại toàn bộ hàm để sửa lỗi scoping và vẫn giữ tính năng ghi log
         
-        var jsonLog = ""
-        var originalPlot = "Không thể tải thông tin phim."
-        var episodes = listOf<Episode>()
-        var finalType: TvType = TvType.Movie // Giá trị mặc định
-        var title = ""
-        var poster: String? = null
-        var year: Int? = null
-        var tags: List<String>? = null
-        var showStatus: ShowStatus? = null
-        var actors: List<ActorData>? = null
-        
+        var rawJsonForLogging = "Không thể tải dữ liệu thô."
         try {
-            // Lấy dữ liệu thô và parse
+            // Bước 1: Lấy dữ liệu thô và parse
             val rawResponse = app.get(url).text
-            val response = app.parseJson<NguonCDetail>(rawResponse)
+            rawJsonForLogging = rawResponse // Lưu lại để in ra sau
+            val response = parseJson<NguonCDetail>(rawResponse)
             
-            // Định dạng lại JSON để dễ đọc
-            val mapper = ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT)
-            val formattedJson = mapper.writeValueAsString(response)
-            jsonLog = "\n\n====================\n" +
-                      "--- RAW JSON RESPONSE ---\n" +
-                      "====================\n" +
-                      formattedJson
+            val movie = response.movie ?: throw Exception("Đối tượng 'movie' trong JSON là null.")
+            
+            // Bước 2: Xử lý dữ liệu như bình thường
+            val title = movie.name
+            val poster = movie.poster_url ?: movie.thumb_url
+            val originalPlot = movie.description?.let { Jsoup.parse(it).text() } ?: "Không có mô tả."
 
-            // Nếu parse thành công, tiếp tục xử lý như bình thường
-            val movie = response.movie ?: throw Exception("Đối tượng 'movie' là null.")
-            
-            title = movie.name
-            poster = movie.poster_url ?: movie.thumb_url
-            originalPlot = movie.description?.let { Jsoup.parse(it).text() } ?: "Không có mô tả."
-            
+            var year: Int? = null
+            var tags: List<String>? = null
             var isDefinitelySeries = false
+            var isDefinitelyMovie = false
             var isAnime = false
+            
             movie.category?.values?.forEach { group ->
                 when (group.group.name) {
                     "Năm" -> year = group.list.firstOrNull()?.name?.toIntOrNull()
@@ -171,55 +156,64 @@ class NguonCProvider : MainAPI() {
                     }
                     "Định dạng" -> {
                         if (group.list.any { it.name.contains("Phim bộ", ignoreCase = true) }) isDefinitelySeries = true
+                        if (group.list.any { it.name.contains("Phim lẻ", ignoreCase = true) }) isDefinitelyMovie = true
                     }
                 }
             }
-            showStatus = if (movie.current_episode?.contains("Hoàn tất", ignoreCase = true) == true || movie.current_episode?.contains("FULL", ignoreCase = true) == true) ShowStatus.Completed else ShowStatus.Ongoing
-            actors = movie.casts?.split(",")?.map { ActorData(Actor(it.trim())) }
-
-            val tempEpisodes = mutableListOf<Episode>()
+            
+            val showStatus = if (movie.current_episode?.contains("Hoàn tất", ignoreCase = true) == true || movie.current_episode?.contains("FULL", ignoreCase = true) == true) ShowStatus.Completed else ShowStatus.Ongoing
+            val actors = movie.casts?.split(",")?.map { ActorData(Actor(it.trim())) }
+            
+            val episodes = mutableListOf<Episode>()
             val episodeServerList = response.episodes ?: listOf()
             for (server in episodeServerList) {
                 val itemList = server.items ?: continue
                 for (ep in itemList) {
                     val episodeData = ep.embed ?: ep.m3u8
                     if (episodeData != null) {
-                        tempEpisodes.add(Episode(data = episodeData, name = "Tập ${ep.name}"))
+                        val episodeName = if (episodeServerList.size > 1) "${server.server_name} - Tập ${ep.name}" else if(ep.name.equals("FULL", ignoreCase = true)) title else "Tập ${ep.name}"
+                        episodes.add(Episode(data = episodeData, name = episodeName))
                     }
                 }
             }
-            episodes = tempEpisodes
-            
-            val totalEpisodes = movie.total_episodes ?: episodes.size
-            val baseType = if (isDefinitelySeries || totalEpisodes > 1 || (totalEpisodes == 1 && showStatus == ShowStatus.Ongoing)) TvType.TvSeries else TvType.Movie
-            finalType = if (isAnime) TvType.Anime else baseType
 
+            // Định dạng lại JSON để dễ đọc và nối vào plot
+            val mapper = ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT)
+            val formattedJson = mapper.writeValueAsString(response)
+            val finalPlot = originalPlot + "\n\n====================\n" +
+                            "--- RAW JSON RESPONSE ---\n" +
+                            "====================\n" +
+                            formattedJson
+
+            val baseType = if (isDefinitelyMovie) TvType.Movie else if (isDefinitelySeries) TvType.TvSeries else {
+                val totalEpisodes = movie.total_episodes ?: episodes.size
+                if (totalEpisodes > 1 || (totalEpisodes == 1 && showStatus == ShowStatus.Ongoing)) TvType.TvSeries else TvType.Movie
+            }
+            val finalType = if (isAnime) TvType.Anime else baseType
+
+            return if (finalType == TvType.TvSeries || finalType == TvType.Anime) {
+                 TvSeriesLoadResponse(
+                    name = title, url = url, apiName = this.name, type = finalType,
+                    episodes = episodes, posterUrl = poster, year = year, plot = finalPlot,
+                    tags = tags, showStatus = showStatus, actors = actors
+                )
+            } else {
+                MovieLoadResponse(
+                    name = title, url = url, apiName = this.name, type = finalType,
+                    dataUrl = episodes.firstOrNull()?.data ?: "", posterUrl = poster, year = year,
+                    plot = finalPlot, tags = tags, actors = actors
+                )
+            }
         } catch (e: Exception) {
-            // Nếu có lỗi, cũng in lỗi ra
-            jsonLog = "\n\n====================\n" +
-                      "--- EXCEPTION LOG ---\n" +
-                      "====================\n" +
-                      "URL: $url\n" +
-                      "Lỗi: ${e.message}\n" +
-                      "Stacktrace: ${e.stackTraceToString().take(500)}"
+            // Nếu có bất kỳ lỗi nào, trả về một LoadResponse với thông tin lỗi trong plot
+            val errorPlot = "!!! ĐÃ XẢY RA LỖI KHI XỬ LÝ !!!\n" +
+                            "Lỗi: ${e.message}\n\n" +
+                            "====================\n" +
+                            "--- RAW JSON RESPONSE (CÓ THỂ GÂY LỖI) ---\n" +
+                            "====================\n" +
+                            rawJsonForLogging.take(2000) // Giới hạn độ dài để không làm crash UI
+            return TvSeriesLoadResponse(url, url, this.name, TvType.TvSeries, emptyList(), null, null, errorPlot)
         }
-
-        val finalPlot = originalPlot + jsonLog
-
-        // Luôn trả về TvSeriesLoadResponse để đảm bảo hiển thị được
-        return TvSeriesLoadResponse(
-            name = title.ifBlank { url },
-            url = url,
-            apiName = this.name,
-            type = finalType,
-            episodes = episodes,
-            posterUrl = poster,
-            year = year,
-            plot = finalPlot,
-            tags = tags,
-            showStatus = showStatus,
-            actors = actors
-        )
     }
 
     override suspend fun loadLinks(
