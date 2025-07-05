@@ -69,7 +69,7 @@ data class NguonCDetailResponse(
 // Lớp chính của Plugin
 // ====================
 
-class NguonCProvider : MainAPI() { // <<<< ĐÃ ĐỔI LẠI TÊN CLASS GỐC
+class NguonCProvider : MainAPI() {
     override var mainUrl = "https://phim.nguonc.com"
     override var name = "Nguồn C"
     override val supportedTypes = setOf(TvType.TvSeries, TvType.Movie, TvType.Anime)
@@ -78,29 +78,28 @@ class NguonCProvider : MainAPI() { // <<<< ĐÃ ĐỔI LẠI TÊN CLASS GỐC
     private val apiUrl = "$mainUrl/api"
 
     private fun NguonCItem.toSearchResponse(): SearchResponse {
-        val plot = this.description?.let { Jsoup.parse(it).text() }
         val year = this.created?.substringBefore("-")?.toIntOrNull()
         val isMovie = this.totalEpisodes <= 1
 
         if (isMovie) {
+            // SỬA LỖI: Đã xóa tham số 'plot' không hợp lệ
             return MovieSearchResponse(
                 name = this.name,
                 url = "$mainUrl/phim/${this.slug}",
-                apiName = this@NguonCProvider.name, // <<<< Đã sửa lại tên class ở đây
+                apiName = this@NguonCProvider.name,
                 type = TvType.Movie,
                 posterUrl = this.posterUrl ?: this.thumbUrl,
-                year = year,
-                plot = plot
+                year = year
             )
         } else {
+            // SỬA LỖI: Đã xóa tham số 'plot' không hợp lệ
             return TvSeriesSearchResponse(
                 name = this.name,
                 url = "$mainUrl/phim/${this.slug}",
-                apiName = this@NguonCProvider.name, // <<<< Đã sửa lại tên class ở đây
+                apiName = this@NguonCProvider.name,
                 type = TvType.TvSeries,
                 posterUrl = this.posterUrl ?: this.thumbUrl,
-                year = year,
-                plot = plot
+                year = year
             )
         }
     }
@@ -141,6 +140,7 @@ class NguonCProvider : MainAPI() { // <<<< ĐÃ ĐỔI LẠI TÊN CLASS GỐC
 
         val title = movie.name
         val poster = movie.posterUrl ?: movie.thumbUrl
+        // Thông tin plot vẫn được xử lý ở đây và hiển thị trong trang chi tiết
         val plot = movie.description?.let { Jsoup.parse(it).text() }
         val tags = mutableListOf<String>()
         movie.language?.let { tags.add(it) }
