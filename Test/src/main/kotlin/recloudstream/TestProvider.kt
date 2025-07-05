@@ -1,5 +1,5 @@
 // Tên file: NguonCProvider.kt
-// Phiên bản cuối cùng, tái cấu trúc phần lấy tập phim bằng vòng lặp for đơn giản.
+// Phiên bản cuối cùng, thêm @Keep để chống lỗi từ ProGuard/R8.
 
 package com.lagradost.cloudstream3.movieprovider
 
@@ -8,8 +8,11 @@ import com.lagradost.cloudstream3.utils.*
 import com.fasterxml.jackson.annotation.JsonProperty
 import org.jsoup.Jsoup
 import java.net.URI
+import androidx.annotation.Keep // THÊM IMPORT QUAN TRỌNG
 
 // --- CÁC LỚP DỮ LIỆU (DATA CLASS) ---
+// FIX: Thêm @Keep vào tất cả các data class để chống ProGuard/R8
+@Keep
 data class NguonCItem(
     @JsonProperty("name") val name: String,
     @JsonProperty("slug") val slug: String,
@@ -17,10 +20,12 @@ data class NguonCItem(
     @JsonProperty("current_episode") val current_episode: String? = null
 )
 
+@Keep
 data class NguonCMain(
     @JsonProperty("items") val items: List<NguonCItem>
 )
 
+@Keep
 data class NguonCEpisodeData(
     @JsonProperty("name") val name: String,
     @JsonProperty("slug") val slug: String,
@@ -28,24 +33,29 @@ data class NguonCEpisodeData(
     @JsonProperty("embed") val embed: String? = null 
 )
 
+@Keep
 data class NguonCServer(
     @JsonProperty("server_name") val server_name: String,
     @JsonProperty("items") val items: List<NguonCEpisodeData>? 
 )
 
+@Keep
 data class NguonCCategoryItem(
     @JsonProperty("name") val name: String
 )
 
+@Keep
 data class NguonCCategoryGroupInfo(
     @JsonProperty("name") val name: String
 )
 
+@Keep
 data class NguonCCategoryGroup(
     @JsonProperty("group") val group: NguonCCategoryGroupInfo,
     @JsonProperty("list") val list: List<NguonCCategoryItem>
 )
 
+@Keep
 data class NguonCDetailMovie(
     @JsonProperty("name") val name: String,
     @JsonProperty("description") val description: String?,
@@ -58,11 +68,13 @@ data class NguonCDetailMovie(
     @JsonProperty("total_episodes") val total_episodes: Int? = null 
 )
 
+@Keep
 data class NguonCDetail(
     @JsonProperty("movie") val movie: NguonCDetailMovie?, 
     @JsonProperty("episodes") val episodes: List<NguonCServer>? 
 )
 
+@Keep
 data class StreamApiResponse(
     @JsonProperty("streamUrl") val streamUrl: String
 )
@@ -151,12 +163,11 @@ class NguonCProvider : MainAPI() {
 
         val actors = movie.casts?.split(",")?.map { ActorData(Actor(it.trim())) }
         
-        // FIX: Tái cấu trúc hoàn toàn phần lấy tập phim bằng vòng lặp `for` đơn giản để đảm bảo tính ổn định.
         val episodes = mutableListOf<Episode>()
         val episodeServerList = response.episodes ?: listOf()
 
         for (server in episodeServerList) {
-            val itemList = server.items ?: continue // Nếu server không có `items`, bỏ qua và xét server tiếp theo
+            val itemList = server.items ?: continue
             for (ep in itemList) {
                 val episodeData = ep.embed ?: ep.m3u8
                 if (episodeData != null) {
