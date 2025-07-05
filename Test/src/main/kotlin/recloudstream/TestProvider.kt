@@ -46,12 +46,11 @@ data class NguonCListResponse(
     @JsonProperty("paginate") val paginate: NguonCPaginate
 )
 
-// Cần thêm trường `embed` vào đây
 data class NguonCEpisodeItem(
     @JsonProperty("name") val name: String,
     @JsonProperty("slug") val slug: String,
     @JsonProperty("embed") val embed: String?,
-    @JsonProperty("m3u8") val m3u8: String? // Giữ lại để phòng trường hợp API thay đổi
+    @JsonProperty("m3u8") val m3u8: String?
 )
 
 data class NguonCServer(
@@ -212,7 +211,6 @@ class NguonCProvider : MainAPI() {
         }
     }
 
-    // SỬA ĐỔI LỚN: Cập nhật hoàn toàn logic lấy link
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -225,7 +223,6 @@ class NguonCProvider : MainAPI() {
         
         var foundLinks = false
         
-        // Lấy link song song từ các server để tăng tốc độ
         movie.episodes.apmap { server ->
             try {
                 val episodeItem = server.items.find { it.name.toIntOrNull() == loadData.episodeNum }
@@ -234,10 +231,8 @@ class NguonCProvider : MainAPI() {
                 if (embedUrl.isNullOrBlank()) return@apmap
 
                 val embedOrigin = URI(embedUrl).let { "${it.scheme}://${it.host}" }
-                // Tạo link API để lấy stream data
                 val streamApiUrl = embedUrl.replace("?", "?api=stream&")
                 
-                // Các header cần thiết để giả lập request từ trình duyệt
                 val headers = mapOf(
                     "accept" to "*/*",
                     "referer" to embedUrl,
@@ -251,7 +246,6 @@ class NguonCProvider : MainAPI() {
                 
                 val relativeStreamUrl = streamApiResponse?.streamUrl
                 if (!relativeStreamUrl.isNullOrBlank()) {
-                    // Nối tên miền với đường dẫn tương đối để có link m3u8 hoàn chỉnh
                     val finalM3u8Url = if(relativeStreamUrl.startsWith("http")) relativeStreamUrl else "$embedOrigin$relativeStreamUrl"
                     
                     callback(
@@ -259,7 +253,8 @@ class NguonCProvider : MainAPI() {
                             source = this.name,
                             name = server.serverName,
                             url = finalM3u8Url,
-                            referer = embedOrigin,
+                            // SỬA LỖI: Cập nhật referer thành link embed đầy đủ
+                            referer = embedUrl,
                             quality = Qualities.Unknown.value,
                             type = ExtractorLinkType.M3U8
                         )
