@@ -45,7 +45,6 @@ data class NguonCServer(
     @JsonProperty("items") val items: List<NguonCEpisodeItem>
 )
 
-// Cấu trúc cho Category để phân loại Anime
 data class NguonCCategoryInfo(
     @JsonProperty("name") val name: String
 )
@@ -68,7 +67,6 @@ data class NguonCDetailMovie(
     @JsonProperty("director") val director: String?,
     @JsonProperty("casts") val casts: String?,
     @JsonProperty("episodes") val episodes: List<NguonCServer>,
-    // Thêm category vào data class
     @JsonProperty("category") val category: Map<String, NguonCCategoryGroup>?
 )
 
@@ -97,7 +95,7 @@ class NguonCProvider : MainAPI() {
                 name = this.name,
                 url = "$mainUrl/phim/${this.slug}",
                 apiName = this@NguonCProvider.name,
-                type = TvType.Movie, // Không thể xác định Anime ở đây, sẽ xác định lại trong hàm load()
+                type = TvType.Movie,
                 posterUrl = this.posterUrl ?: this.thumbUrl,
                 year = year
             )
@@ -106,7 +104,7 @@ class NguonCProvider : MainAPI() {
                 name = this.name,
                 url = "$mainUrl/phim/${this.slug}",
                 apiName = this@NguonCProvider.name,
-                type = TvType.TvSeries, // Không thể xác định Anime ở đây, sẽ xác định lại trong hàm load()
+                type = TvType.TvSeries,
                 posterUrl = this.posterUrl ?: this.thumbUrl,
                 year = year
             )
@@ -118,7 +116,7 @@ class NguonCProvider : MainAPI() {
         val homePageItems = listOf(
             Pair("Phim Mới Cập Nhật", "phim-moi-cap-nhat"),
             Pair("Phim Đang Chiếu", "danh-sach/phim-dang-chieu"),
-            Pair("Anime Mới", "the-loai/hoat-hinh"), // Thêm mục Anime
+            Pair("Anime Mới", "the-loai/hoat-hinh"),
             Pair("Phim Lẻ Mới", "danh-sach/phim-le"),
             Pair("Phim Bộ Mới", "danh-sach/phim-bo")
         )
@@ -155,21 +153,18 @@ class NguonCProvider : MainAPI() {
         movie.language?.let { tags.add(it) }
         movie.quality?.let { tags.add(it) }
 
-        // SỬA ĐỔI: Kiểm tra thể loại để xác định loại phim
         val genres = movie.category?.values?.flatMap { it.list }?.map { it.name } ?: emptyList()
         val isAnime = genres.any { it.equals("Hoạt Hình", ignoreCase = true) }
 
         if (movie.totalEpisodes <= 1) {
-            // Nếu là phim lẻ, kiểm tra xem có phải Anime Movie không
             val movieType = if (isAnime) TvType.AnimeMovie else TvType.Movie
             return newMovieLoadResponse(title, url, movieType, movie.episodes.firstOrNull()?.items?.firstOrNull()?.m3u8) {
                 this.posterUrl = poster
                 this.plot = plot
-                this.tags = tags
-                this.tags.addAll(genres) // Thêm các thể loại vào tag
+                // SỬA LỖI: Gộp 2 danh sách lại và gán một lần duy nhất
+                this.tags = tags + genres
             }
         } else {
-            // Nếu là phim bộ, kiểm tra xem có phải Anime Series không
             val seriesType = if (isAnime) TvType.Anime else TvType.TvSeries
             val episodes = movie.episodes.flatMap { server ->
                 server.items.map { episode ->
@@ -187,8 +182,8 @@ class NguonCProvider : MainAPI() {
             return newTvSeriesLoadResponse(title, url, seriesType, episodes) {
                 this.posterUrl = poster
                 this.plot = plot
-                this.tags = tags
-                this.tags.addAll(genres) // Thêm các thể loại vào tag
+                // SỬA LỖI: Gộp 2 danh sách lại và gán một lần duy nhất
+                this.tags = tags + genres
             }
         }
     }
