@@ -11,6 +11,7 @@ import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.mvvm.suspendSafeApiCall
 import java.net.URI
 import java.text.Normalizer
+import java.util.Base64
 
 // Data class để truyền dữ liệu từ load() -> loadLinks()
 data class NguonCLoadData(
@@ -98,6 +99,7 @@ class NguonCProvider : MainAPI() {
     override var lang = "vi"
     override val hasMainPage = true
     private val apiUrl = "$mainUrl/api"
+    private val proxyUrl = "https://proxy.h4rs.io.vn"
 
     override val mainPage = mainPageOf(
         "phim-moi-cap-nhat" to "Phim Mới Cập Nhật",
@@ -248,22 +250,20 @@ class NguonCProvider : MainAPI() {
 
                     val finalM3u8Url = if(relativeStreamUrl.startsWith("http")) relativeStreamUrl else "$embedOrigin$relativeStreamUrl"
                     
-                    // SỬA ĐỔI QUAN TRỌNG: Thêm header cho trình phát video
-                    val playerHeaders = mapOf(
-                        "Origin" to embedOrigin,
-                        "Referer" to "$embedOrigin/",
-                        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36"
-                    )
+                    // SỬA ĐỔI: Chuyển sang dùng &ref cho proxy
+                    val encodedUrl = Base64.getUrlEncoder().encodeToString(finalM3u8Url.toByteArray())
+                    val proxyReferer = embedOrigin // Referer chính là domain của trang embed
 
+                    val proxiedUrl = "$proxyUrl/proxy?url=$encodedUrl&ref=$proxyReferer"
+                    
                     callback(
                         ExtractorLink(
                             source = this.name,
                             name = server.serverName,
-                            url = finalM3u8Url,
-                            referer = embedUrl, // Referer để lấy link
+                            url = proxiedUrl, // Sử dụng URL đã được bọc qua proxy
+                            referer = proxyUrl, // Referer cho player là trang proxy
                             quality = Qualities.Unknown.value,
-                            type = ExtractorLinkType.M3U8,
-                            headers = playerHeaders // Headers cho trình phát video
+                            type = ExtractorLinkType.M3U8
                         )
                     )
                     foundLinks = true
