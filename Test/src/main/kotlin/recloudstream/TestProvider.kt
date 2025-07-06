@@ -102,6 +102,10 @@ class NguonCProvider : MainAPI() {
     private val apiUrl = "$mainUrl/api"
     private val proxyUrl = "https://proxy.h4rs.io.vn"
 
+    // SỬA ĐỔI: Thêm User-Agent chuẩn của trình duyệt
+    private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36"
+    private val headers = mapOf("User-Agent" to userAgent)
+
     override val mainPage = mainPageOf(
         "phim-moi-cap-nhat" to "Phim Mới Cập Nhật",
         "danh-sach/phim-le" to "Phim Lẻ Mới",
@@ -142,21 +146,24 @@ class NguonCProvider : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = "$apiUrl/films/${request.data}?page=$page"
-        val response = app.get(url).parsedSafe<NguonCListResponse>() ?: return newHomePageResponse(request.name, emptyList())
+        // Thêm header
+        val response = app.get(url, headers = headers).parsedSafe<NguonCListResponse>() ?: return newHomePageResponse(request.name, emptyList())
         val items = response.items.mapNotNull { it.toSearchResponse() }
         return newHomePageResponse(request.name, items, hasNext = response.paginate.currentPage < response.paginate.totalPage)
     }
     
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$apiUrl/films/search?keyword=$query"
-        return app.get(url).parsedSafe<NguonCListResponse>()?.items?.mapNotNull {
+        // Thêm header
+        return app.get(url, headers = headers).parsedSafe<NguonCListResponse>()?.items?.mapNotNull {
             it.toSearchResponse()
         } ?: emptyList()
     }
 
     override suspend fun load(url: String): LoadResponse {
         val slug = url.substringAfterLast('/')
-        val res = app.get("$apiUrl/film/$slug").parsedSafe<NguonCDetailResponse>()
+        // Thêm header
+        val res = app.get("$apiUrl/film/$slug", headers = headers).parsedSafe<NguonCDetailResponse>()
             ?: return newMovieLoadResponse(url.substringAfterLast("-"), url, TvType.Movie, url)
 
         val movie = res.movie
@@ -176,7 +183,8 @@ class NguonCProvider : MainAPI() {
         genres.firstOrNull()?.let { primaryGenre ->
             suspendSafeApiCall {
                 val genreSlug = primaryGenre.toUrlSlug()
-                app.get("$apiUrl/films/the-loai/$genreSlug?page=1").parsedSafe<NguonCListResponse>()
+                // Thêm header
+                app.get("$apiUrl/films/the-loai/$genreSlug?page=1", headers = headers).parsedSafe<NguonCListResponse>()
                     ?.items?.let { recItems ->
                         recommendations.addAll(
                             recItems.filter { it.slug != movie.slug }.mapNotNull { it.toSearchResponse() }
@@ -221,7 +229,8 @@ class NguonCProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val loadData = parseJson<NguonCLoadData>(data)
-        val movie = app.get("$apiUrl/film/${loadData.slug}")
+        // Thêm header
+        val movie = app.get("$apiUrl/film/${loadData.slug}", headers = headers)
             .parsedSafe<NguonCDetailResponse>()?.movie ?: return false
         
         var foundLinks = false
@@ -240,7 +249,11 @@ class NguonCProvider : MainAPI() {
                 val embedOrigin = URI(embedUrl).let { "${it.scheme}://${it.host}" }
                 val streamApiUrl = embedUrl.replace("?", "?api=stream&")
                 
-                val apiHeaders = mapOf("referer" to embedUrl)
+                // SỬA ĐỔI: Thêm User-Agent vào header khi gọi API của embed
+                val apiHeaders = mapOf(
+                    "referer" to embedUrl,
+                    "User-Agent" to userAgent
+                )
                 val streamApiResponse = app.get(streamApiUrl, headers = apiHeaders).parsedSafe<StreamApiResponse>()
                 
                 var relativeStreamUrl = streamApiResponse?.streamUrl
@@ -256,10 +269,8 @@ class NguonCProvider : MainAPI() {
                     val proxyHeaders = mapOf(
                         "Origin" to embedOrigin,
                         "Referer" to embedUrl,
-                        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36"
+                        "User-Agent" to userAgent
                     )
-
-                    // SỬA LỖI: Gọi hàm toJson() đúng cú pháp
                     val encodedHeaders = Base64.getUrlEncoder().encodeToString(proxyHeaders.toJson().toByteArray())
 
                     val proxiedUrl = "$proxyUrl/proxy?url=$encodedUrl&headers=$encodedHeaders"
