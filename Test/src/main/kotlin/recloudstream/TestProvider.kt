@@ -101,8 +101,6 @@ class NguonCProvider : MainAPI() {
     override val hasMainPage = true
     private val apiUrl = "$mainUrl/api"
     private val proxyUrl = "https://proxy.h4rs.io.vn"
-
-    // SỬA ĐỔI: Thêm User-Agent chuẩn của trình duyệt
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36"
     private val headers = mapOf("User-Agent" to userAgent)
 
@@ -146,7 +144,6 @@ class NguonCProvider : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = "$apiUrl/films/${request.data}?page=$page"
-        // Thêm header
         val response = app.get(url, headers = headers).parsedSafe<NguonCListResponse>() ?: return newHomePageResponse(request.name, emptyList())
         val items = response.items.mapNotNull { it.toSearchResponse() }
         return newHomePageResponse(request.name, items, hasNext = response.paginate.currentPage < response.paginate.totalPage)
@@ -154,7 +151,6 @@ class NguonCProvider : MainAPI() {
     
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$apiUrl/films/search?keyword=$query"
-        // Thêm header
         return app.get(url, headers = headers).parsedSafe<NguonCListResponse>()?.items?.mapNotNull {
             it.toSearchResponse()
         } ?: emptyList()
@@ -162,7 +158,6 @@ class NguonCProvider : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse {
         val slug = url.substringAfterLast('/')
-        // Thêm header
         val res = app.get("$apiUrl/film/$slug", headers = headers).parsedSafe<NguonCDetailResponse>()
             ?: return newMovieLoadResponse(url.substringAfterLast("-"), url, TvType.Movie, url)
 
@@ -183,7 +178,6 @@ class NguonCProvider : MainAPI() {
         genres.firstOrNull()?.let { primaryGenre ->
             suspendSafeApiCall {
                 val genreSlug = primaryGenre.toUrlSlug()
-                // Thêm header
                 app.get("$apiUrl/films/the-loai/$genreSlug?page=1", headers = headers).parsedSafe<NguonCListResponse>()
                     ?.items?.let { recItems ->
                         recommendations.addAll(
@@ -229,7 +223,6 @@ class NguonCProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val loadData = parseJson<NguonCLoadData>(data)
-        // Thêm header
         val movie = app.get("$apiUrl/film/${loadData.slug}", headers = headers)
             .parsedSafe<NguonCDetailResponse>()?.movie ?: return false
         
@@ -246,10 +239,12 @@ class NguonCProvider : MainAPI() {
                 val embedUrl = episodeItem?.embed
                 if (embedUrl.isNullOrBlank()) return@apmap
 
+                // SỬA ĐỔI QUAN TRỌNG: Truy cập trang embed trước để lấy cookie
+                app.get(embedUrl, headers = headers)
+
                 val embedOrigin = URI(embedUrl).let { "${it.scheme}://${it.host}" }
                 val streamApiUrl = embedUrl.replace("?", "?api=stream&")
                 
-                // SỬA ĐỔI: Thêm User-Agent vào header khi gọi API của embed
                 val apiHeaders = mapOf(
                     "referer" to embedUrl,
                     "User-Agent" to userAgent
