@@ -10,8 +10,8 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.mvvm.suspendSafeApiCall
 import java.net.URI
+import java.net.URLEncoder
 import java.text.Normalizer
-import java.util.Base64
 
 // Data class để truyền dữ liệu từ load() -> loadLinks()
 data class NguonCLoadData(
@@ -250,9 +250,9 @@ class NguonCProvider : MainAPI() {
 
                     val finalM3u8Url = if(relativeStreamUrl.startsWith("http")) relativeStreamUrl else "$embedOrigin$relativeStreamUrl"
                     
-                    // SỬA ĐỔI: Chuyển sang dùng &ref cho proxy
-                    val encodedUrl = Base64.getUrlEncoder().encodeToString(finalM3u8Url.toByteArray())
-                    val proxyReferer = embedOrigin // Referer chính là domain của trang embed
+                    // SỬA LỖI: Chuyển sang mã hóa URL thay vì Base64
+                    val encodedUrl = URLEncoder.encode(finalM3u8Url, "UTF-8")
+                    val proxyReferer = embedOrigin
 
                     val proxiedUrl = "$proxyUrl/proxy?url=$encodedUrl&ref=$proxyReferer"
                     
@@ -260,8 +260,8 @@ class NguonCProvider : MainAPI() {
                         ExtractorLink(
                             source = this.name,
                             name = server.serverName,
-                            url = proxiedUrl, // Sử dụng URL đã được bọc qua proxy
-                            referer = proxyUrl, // Referer cho player là trang proxy
+                            url = proxiedUrl,
+                            referer = proxyUrl,
                             quality = Qualities.Unknown.value,
                             type = ExtractorLinkType.M3U8
                         )
