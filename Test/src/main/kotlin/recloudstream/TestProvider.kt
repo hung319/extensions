@@ -100,7 +100,6 @@ class NguonCProvider : MainAPI() {
     override var lang = "vi"
     override val hasMainPage = true
     private val apiUrl = "$mainUrl/api"
-    private val proxyUrl = "https://proxy.h4rs.io.vn"
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36"
     private val headers = mapOf("User-Agent" to userAgent)
 
@@ -239,7 +238,6 @@ class NguonCProvider : MainAPI() {
                 val embedUrl = episodeItem?.embed
                 if (embedUrl.isNullOrBlank()) return@apmap
 
-                // SỬA ĐỔI QUAN TRỌNG: Truy cập trang embed trước để lấy cookie
                 app.get(embedUrl, headers = headers)
 
                 val embedOrigin = URI(embedUrl).let { "${it.scheme}://${it.host}" }
@@ -259,25 +257,22 @@ class NguonCProvider : MainAPI() {
 
                     val finalM3u8Url = if(relativeStreamUrl.startsWith("http")) relativeStreamUrl else "$embedOrigin$relativeStreamUrl"
                     
-                    val encodedUrl = URLEncoder.encode(finalM3u8Url, "UTF-8")
-                    
-                    val proxyHeaders = mapOf(
+                    // SỬA ĐỔI: Loại bỏ proxy và truyền header trực tiếp cho player
+                    val playerHeaders = mapOf(
                         "Origin" to embedOrigin,
-                        "Referer" to embedUrl,
+                        "Referer" to embedUrl, // Dùng link embed đầy đủ làm referer cho M3U8
                         "User-Agent" to userAgent
                     )
-                    val encodedHeaders = Base64.getUrlEncoder().encodeToString(proxyHeaders.toJson().toByteArray())
 
-                    val proxiedUrl = "$proxyUrl/proxy?url=$encodedUrl&headers=$encodedHeaders"
-                    
                     callback(
                         ExtractorLink(
                             source = this.name,
                             name = server.serverName,
-                            url = proxiedUrl,
-                            referer = proxyUrl,
+                            url = finalM3u8Url, // Trả về link M3U8 trực tiếp
+                            referer = embedUrl, // Referer chính cho yêu cầu
                             quality = Qualities.Unknown.value,
-                            type = ExtractorLinkType.M3U8
+                            type = ExtractorLinkType.M3U8,
+                            headers = playerHeaders // Gửi kèm header cho trình phát video
                         )
                     )
                     foundLinks = true
