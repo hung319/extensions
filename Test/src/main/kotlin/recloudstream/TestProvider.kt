@@ -251,17 +251,16 @@ class NguonCProvider : MainAPI() {
 
                     val finalM3u8Url = if(relativeStreamUrl.startsWith("http")) relativeStreamUrl else "$embedOrigin$relativeStreamUrl"
                     
-                    // SỬA LỖI 403: Quay lại dùng &headers= để gửi đủ thông tin cho proxy
                     val encodedUrl = URLEncoder.encode(finalM3u8Url, "UTF-8")
                     
-                    // Headers mà proxy cần để gửi đến server video
                     val proxyHeaders = mapOf(
                         "Origin" to embedOrigin,
-                        "Referer" to embedUrl, // Referer phải là link embed đầy đủ
+                        "Referer" to embedUrl,
                         "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36"
                     )
-                    // Mã hóa object header thành chuỗi JSON, sau đó mã hóa Base64
-                    val encodedHeaders = Base64.getUrlEncoder().encodeToString(toJson(proxyHeaders).toByteArray())
+
+                    // SỬA LỖI: Gọi hàm toJson() đúng cú pháp
+                    val encodedHeaders = Base64.getUrlEncoder().encodeToString(proxyHeaders.toJson().toByteArray())
 
                     val proxiedUrl = "$proxyUrl/proxy?url=$encodedUrl&headers=$encodedHeaders"
                     
