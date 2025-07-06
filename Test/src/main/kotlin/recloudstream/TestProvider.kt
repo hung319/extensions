@@ -12,6 +12,7 @@ import com.lagradost.cloudstream3.mvvm.suspendSafeApiCall
 import java.net.URI
 import java.net.URLEncoder
 import java.text.Normalizer
+import java.util.Base64
 
 // Data class để truyền dữ liệu từ load() -> loadLinks()
 data class NguonCLoadData(
@@ -250,11 +251,19 @@ class NguonCProvider : MainAPI() {
 
                     val finalM3u8Url = if(relativeStreamUrl.startsWith("http")) relativeStreamUrl else "$embedOrigin$relativeStreamUrl"
                     
-                    // SỬA LỖI: Chuyển sang mã hóa URL thay vì Base64
+                    // SỬA LỖI 403: Quay lại dùng &headers= để gửi đủ thông tin cho proxy
                     val encodedUrl = URLEncoder.encode(finalM3u8Url, "UTF-8")
-                    val proxyReferer = embedOrigin
+                    
+                    // Headers mà proxy cần để gửi đến server video
+                    val proxyHeaders = mapOf(
+                        "Origin" to embedOrigin,
+                        "Referer" to embedUrl, // Referer phải là link embed đầy đủ
+                        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36"
+                    )
+                    // Mã hóa object header thành chuỗi JSON, sau đó mã hóa Base64
+                    val encodedHeaders = Base64.getUrlEncoder().encodeToString(toJson(proxyHeaders).toByteArray())
 
-                    val proxiedUrl = "$proxyUrl/proxy?url=$encodedUrl&ref=$proxyReferer"
+                    val proxiedUrl = "$proxyUrl/proxy?url=$encodedUrl&headers=$encodedHeaders"
                     
                     callback(
                         ExtractorLink(
