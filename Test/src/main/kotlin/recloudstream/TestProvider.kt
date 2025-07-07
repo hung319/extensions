@@ -26,9 +26,6 @@ class JavSubIdnProvider : MainAPI() {
         TvType.NSFW
     )
 
-    // =================================================================
-    // CẬP NHẬT: Sửa cảnh báo "deprecated"
-    // =================================================================
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page == 1) mainUrl else "$mainUrl/page/$page"
         val document = app.get(url).document
@@ -36,8 +33,10 @@ class JavSubIdnProvider : MainAPI() {
         val homePageList = HomePageList(name = "Video Jav Terbaru", list = home)
         val hasNext = document.selectFirst("div.pagination a:contains(Next)") != null
         
-        // Sử dụng hàm newHomePageResponse thay vì gọi trực tiếp constructor
-        return newHomePageResponse(items = listOf(homePageList), hasNext = hasNext)
+        // =================================================================
+        // SỬA LỖI: Dùng đúng tên tham số `list` thay vì `items`
+        // =================================================================
+        return newHomePageResponse(list = listOf(homePageList), hasNext = hasNext)
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
