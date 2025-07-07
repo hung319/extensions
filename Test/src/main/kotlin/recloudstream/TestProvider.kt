@@ -67,12 +67,14 @@ class SupJav : MainAPI() {
         }
     }
 
+    // UPDATED loadLinks with UI-based logging
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // We still log to Logcat for completeness
         Log.d(name, "loadLinks called with data: $data")
         
         data.split("\n").forEach { link ->
@@ -86,44 +88,51 @@ class SupJav : MainAPI() {
                         referer = "$mainUrl/"
                     ).document
 
-                    val finalPlayerUrl = intermediatePage1Doc.selectFirst("iframe")?.attr("src")
-                    
-                    if (finalPlayerUrl == null) {
-                        // ADDED LOGGING FOR SILENT FAIL
-                        Log.e(name, "Could not find iframe in intermediate page: $intermediatePageUrl1")
-                        return@forEach // Skip to the next server link
-                    }
+                    val finalPlayerUrl = intermediatePage1Doc.selectFirst("iframe")?.attr("src") 
+                        ?: throw Exception("Could not find iframe in intermediate page") // Throw exception if iframe is missing
 
                     Log.d(name, "Extracted player URL: $finalPlayerUrl")
 
                     if (finalPlayerUrl.contains("emturbovid.com")) {
                         val playerDoc = app.get(finalPlayerUrl, referer = intermediatePageUrl1).document
                         val scriptContent = playerDoc.select("script").find { it.data().contains("var urlPlay") }?.data()
+                            ?: throw Exception("Could not find script with 'urlPlay' in EmturboVid")
 
-                        if (scriptContent != null) {
-                            val videoUrlRegex = Regex("""var urlPlay = '(?<url>https?://[^']+\.m3u8[^']*)'""")
-                            val videoUrl = videoUrlRegex.find(scriptContent)?.groups?.get("url")?.value
-                            
-                            if (videoUrl != null) {
-                                Log.d(name, "Found M3U8 link: $videoUrl")
-                                callback.invoke(
-                                    ExtractorLink(
-                                        source = this.name,
-                                        name = "EmturboVid",
-                                        url = videoUrl,
-                                        referer = finalPlayerUrl,
-                                        quality = Qualities.Unknown.value,
-                                        type = ExtractorLinkType.M3U8
-                                    )
-                                )
-                            }
-                        }
+                        val videoUrlRegex = Regex("""var urlPlay = '(?<url>https?://[^']+\.m3u8[^']*)'""")
+                        val videoUrl = videoUrlRegex.find(scriptContent)?.groups?.get("url")?.value
+                            ?: throw Exception("Could not extract M3U8 URL from EmturboVid script")
+                        
+                        Log.d(name, "Found M3U8 link: $videoUrl")
+                        callback.invoke(
+                            ExtractorLink(
+                                source = this.name,
+                                name = "EmturboVid - OK", // Descriptive name for success
+                                url = videoUrl,
+                                referer = finalPlayerUrl,
+                                quality = Qualities.Unknown.value,
+                                type = ExtractorLinkType.M3U8
+                            )
+                        )
                     } else {
-                        loadExtractor(finalPlayerUrl, intermediatePageUrl1, subtitleCallback, callback)
+                        // For other players, we use loadExtractor but add a more descriptive name
+                        loadExtractor(finalPlayerUrl, intermediatePageUrl1, subtitleCallback) { link ->
+                            link.name = "${link.name} - Extractor"
+                            callback.invoke(link)
+                        }
                     }
 
                 } catch (e: Exception) {
-                    throw Exception("Failed to load link: $link | Error: ${e.message}")
+                    // CATCH THE ERROR AND DISPLAY IT IN THE UI
+                    callback.invoke(
+                        ExtractorLink(
+                            source = this.name,
+                            name = "Server ERROR: ${e.message?.take(50)}...", // Use the error message as the link name
+                            url = "https://error.com/error", // Dummy URL
+                            referer = "",
+                            quality = Qualities.Unknown.value,
+                            type = ExtractorLinkType.M3U8
+                        )
+                    )
                 }
             }
         }
