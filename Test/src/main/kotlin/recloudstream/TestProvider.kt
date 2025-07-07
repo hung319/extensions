@@ -4,7 +4,7 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-import com.lagradost.cloudstream3.network.CloudflareKiller
+// Không cần import CloudflareKiller nữa
 
 class XpornTvProvider : MainAPI() {
     override var mainUrl = "https://www.xporn.tv"
@@ -15,9 +15,9 @@ class XpornTvProvider : MainAPI() {
     override val supportedTypes = setOf(
         TvType.NSFW
     )
-    
-    // BẮT BUỘC: Thêm interceptor để vượt qua Cloudflare như đã xác định từ cURL
-    override val interceptor = CloudflareKiller()
+
+    // ĐÃ XÓA DÒNG NÀY VÌ PHIÊN BẢN API CỦA BẠN KHÔNG HỖ TRỢ
+    // override val interceptor = CloudflareKiller() 
 
     override val mainPage = mainPageOf(
         "$mainUrl/latest-updates/" to "Latest Videos",
@@ -43,8 +43,7 @@ class XpornTvProvider : MainAPI() {
         val href = this.selectFirst("a")?.attr("href") ?: return null
         val posterUrl = this.selectFirst("img.thumb")?.attr("src")
 
-        // Sử dụng newMovieSearchResponse và không thêm thông tin phụ
-        // vì phiên bản API của bạn không hỗ trợ
+        // Sử dụng phiên bản MovieSearchResponse không có tags/qualityData
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
         }
@@ -66,52 +65,43 @@ class XpornTvProvider : MainAPI() {
         
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         val description = document.selectFirst("meta[name=description]")?.attr("content")
-        val tags = document.select("div.item:contains(Tags) a").map { it.text() }
         
         val recommendations = document.select("div.related-videos div.item").mapNotNull {
             it.toSearchResult()
         }
         
-        // Trả về thông tin phim và truyền `url` của trang cho `loadLinks`
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
             this.plot = description
-            this.tags = tags
             this.recommendations = recommendations
         }
     }
     
-    // ================= HÀM LOADLINKS ĐÃ HOÀN THIỆN =================
     override suspend fun loadLinks(
-        data: String, // `data` là URL của trang video, ví dụ: "https://www.xporn.tv/videos/23672/..."
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Tải nội dung của trang video
         val document = app.get(data).document
-
-        // Tìm đoạn script có chứa 'flashvars'
+        
         val script = document.select("script").find { it.data().contains("flashvars") }?.data()
             ?: throw ErrorLoadingException("Không tìm thấy script chứa thông tin video")
 
-        // Dùng Regex để trích xuất URL động từ trong script
-        // Cấu trúc URL được lấy từ việc phân tích cURL và HTML
         val videoUrlRegex = Regex("""video_url'\s*:\s*'.*?/(get_file/.+?\.mp4/\S*)'""")
         val videoUrl = videoUrlRegex.find(script)?.groups?.get(1)?.value
             ?: throw ErrorLoadingException("Không thể trích xuất link video từ script")
 
-        // Tạo link đầy đủ
         val fullVideoUrl = "$mainUrl/$videoUrl"
 
         callback.invoke(
             ExtractorLink(
                 source = this.name,
                 name = this.name,
-                url = fullVideoUrl, // Link .mp4 đầy đủ và động
-                referer = data, // Referer phải là trang video, như trong cURL
+                url = fullVideoUrl,
+                referer = data,
                 quality = Qualities.Unknown.value,
-                type = ExtractorLinkType.VIDEO
+                type = ExtractorLinkType.VIDEO 
             )
         )
         return true
