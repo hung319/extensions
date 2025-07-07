@@ -1,89 +1,106 @@
-package recloudstream
+// Bấm vào "Copy" ở góc trên bên phải để sao chép mã
+package recloudstream // Đã thêm package theo yêu cầu
 
-import com.lagradost.cloudstream3.MainAPI
-import com.lagradost.cloudstream3.TvType
-import com.lagradost.cloudstream3.LoadResponse
-import com.lagradost.cloudstream3.HomePageResponse
-import com.lagradost.cloudstream3.SearchResponse
-import com.lagradost.cloudstream3.SubtitleFile
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.MainPageRequest
-import com.lagradost.cloudstream3.HomePageList
-import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.newHomePageResponse
-import com.lagradost.cloudstream3.newMovieLoadResponse
-import com.lagradost.cloudstream3.newMovieSearchResponse
-import com.lagradost.cloudstream3.utils.loadExtractor
+import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 
-class JavSubIdnProvider : MainAPI() {
-    override var mainUrl = "https://javsubidn.vip"
-    override var name = "JavSubIdn"
+class XpornTvProvider : MainAPI() {
+    override var mainUrl = "https://www.xporn.tv"
+    override var name = "Xporn.tv"
     override val hasMainPage = true
-    override var lang = "id" 
+    override var lang = "en"
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(
         TvType.NSFW
     )
 
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = if (page == 1) mainUrl else "$mainUrl/page/$page"
-        val document = app.get(url).document
-        val home = document.select("article.thumb-block").mapNotNull { it.toSearchResult() }
-        val homePageList = HomePageList(name = "Video Jav Terbaru", list = home)
-        val hasNext = document.selectFirst("div.pagination a:contains(Next)") != null
-        return newHomePageResponse(list = listOf(homePageList), hasNext = hasNext)
+    override val mainPage = mainPageOf(
+        "$mainUrl/latest-updates/" to "Latest Videos",
+        "$mainUrl/most-popular/" to "Most Popular",
+        "$mainUrl/top-rated/" to "Top Rated",
+    )
+
+    override suspend fun getMainPage(
+        page: Int,
+        request: MainPageRequest
+    ): HomePageResponse {
+        val document = app.get(request.data + page).document
+        val home = document.select("div.item").mapNotNull {
+            it.toSearchResult()
+        }
+        return newHomePageResponse(request.name, home)
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
+        val title = this.selectFirst("strong.title")?.text()?.trim() ?: return null
         val href = this.selectFirst("a")?.attr("href") ?: return null
-        val title = this.selectFirst("header.entry-header span")?.text() ?: "No title"
-        val posterUrl = this.selectFirst("img")?.attr("data-src")
+        val posterUrl = this.selectFirst("img.thumb")?.attr("src")
+        val duration = this.selectFirst("div.wrap > div:last-child")?.text()?.trim()
+
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
+            this.otherVimeStuff = listOf(duration)
         }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/?s=$query"
-        val document = app.get(searchUrl).document
-        return document.select("article.thumb-block").mapNotNull { it.toSearchResult() }
-    }
-
-    override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url).document
-        val title = document.selectFirst("header.entry-header h1")?.text()?.trim() ?: return null
-        val poster = document.selectFirst("meta[property='og:image']")?.attr("content")
-        val description = document.selectFirst("div.video-description .desc")?.text()?.trim()
-        val recommendations = document.select("div.under-video-block article.thumb-block").mapNotNull { it.toSearchResult() }
-        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
-            this.posterUrl = poster
-            this.plot = description
-            this.recommendations = recommendations
+        val searchResponse = app.get("$mainUrl/search/$query/").document
+        return searchResponse.select("div.item").mapNotNull {
+            it.toSearchResult()
         }
     }
 
+    override suspend fun load(url: String): LoadResponse {
+        val document = app.get(url).document
+
+        val title = document.selectFirst("h1")?.text()?.trim()
+            ?: document.selectFirst("meta[property=og:title]")?.attr("content")
+            ?: "Video"
+        
+        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
+        val description = document.selectFirst("meta[name=description]")?.attr("content")
+        val tags = document.select("div.item:contains(Tags) a").map { it.text() }
+        
+        // Tìm đoạn script chứa flashvars
+        val script = document.select("script").find { it.data().contains("flashvars") }?.data()
+
+        if (script != null) {
+            // Sử dụng regex để trích xuất video_url
+            val videoUrlRegex = Regex("""'video_url'\s*:\s*'function/0/(.+?\.mp4/)'""")
+            val videoUrlMatch = videoUrlRegex.find(script)
+            val finalVideoUrl = videoUrlMatch?.groups?.get(1)?.value
+
+            if (finalVideoUrl != null) {
+                return newMovieLoadResponse(title, url, TvType.NSFW, finalVideoUrl) {
+                    this.posterUrl = poster
+                    this.plot = description
+                    this.tags = tags
+                }
+            }
+        }
+        
+        throw ErrorLoadingException("Could not find video link")
+    }
+    
     override suspend fun loadLinks(
-        data: String, 
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data).document
-        val urlRegex = Regex("""(https?://[^\'"]+)""")
-
-        document.select("div.box-server a").forEach { element ->
-            // Bọc mỗi lần gọi trong try-catch để một server lỗi không ảnh hưởng đến các server khác
-            try {
-                val onclickAttribute = element.attr("onclick")
-                val serverUrl = urlRegex.find(onclickAttribute)?.value ?: return@forEach
-                // Gọi hàm chung của CloudStream để xử lý link
-                loadExtractor(serverUrl, data, subtitleCallback, callback)
-            } catch (t: Throwable) {
-                // Nếu có lỗi xảy ra với server này, lặng lẽ bỏ qua và tiếp tục với server tiếp theo
-            }
-        }
-        
+        // data ở đây chính là URL của video đã được trả về từ load()
+        callback.invoke(
+            ExtractorLink(
+                source = this.name,
+                name = this.name,
+                url = data,
+                referer = mainUrl,
+                quality = Qualities.Unknown.value,
+                // Đã cập nhật type, vì link là file .mp4 trực tiếp
+                type = ExtractorLinkType.VIDEO 
+            )
+        )
         return true
     }
 }
