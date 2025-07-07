@@ -12,7 +12,7 @@ class SupJav : MainAPI() {
     override var mainUrl = "https://supjav.com"
     override var lang = "en"
     override val hasMainPage = true
-    override val supportedTypes = setOf(TvType.NSFW)
+    override val supportedTypes = setOf(TvType.NSFW) // Changed back to NSFW
 
     private fun parseVideoList(element: Element): List<SearchResponse> {
         return element.select("div.post").mapNotNull {
@@ -22,7 +22,8 @@ class SupJav : MainAPI() {
             val posterUrl = it.selectFirst("a.img img.thumb")?.let { img ->
                 img.attr("data-original").ifBlank { img.attr("src") }
             }
-            newTvShowSearchResponse(title, href, TvType.NSFW) {
+            // Changed back to NSFW, still using MovieSearchResponse for structure
+            newMovieSearchResponse(title, href, TvType.NSFW) {
                 this.posterUrl = posterUrl
             }
         }
@@ -47,7 +48,6 @@ class SupJav : MainAPI() {
         return parseVideoList(document)
     }
 
-    // Updated 'load' function to use newMovieLoadResponse
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
         val title = document.selectFirst("div.archive-title h1")?.text()?.trim() ?: "No title found"
@@ -55,28 +55,24 @@ class SupJav : MainAPI() {
         val plot = "Watch ${title} on SupJav"
         val tags = document.select("div.tags a").map { it.text() }
 
-        // Since this is a movie, we don't have episodes.
-        // We will pass all server links as a single string, separated by a newline.
-        // The loadLinks function will then try them one by one.
         val dataLinks = document.select("div.btns a.btn-server")
             .mapNotNull { it.attr("data-link") }
-            .joinToString("\n") // Join all links into one string
+            .joinToString("\n")
 
-        return newMovieLoadResponse(title, url, TvType.Movie, dataLinks) {
+        // Changed back to NSFW
+        return newMovieLoadResponse(title, url, TvType.NSFW, dataLinks) {
             this.posterUrl = poster
             this.plot = plot
             this.tags = tags
         }
     }
 
-    // Updated 'loadLinks' to handle multiple data-links
     override suspend fun loadLinks(
-        data: String, // This 'data' now contains all server links, separated by newlines
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Split the data string into individual links and try each one
         data.split("\n").forEach { link ->
             if (link.isNotBlank()) {
                 try {
@@ -88,12 +84,10 @@ class SupJav : MainAPI() {
                         referer = "$mainUrl/"
                     ).document
 
-                    val finalPlayerUrl = intermediatePage1Doc.selectFirst("iframe")?.attr("src") ?: return@forEach // Continue to next link if not found
+                    val finalPlayerUrl = intermediatePage1Doc.selectFirst("iframe")?.attr("src") ?: return@forEach
 
-                    // Use loadExtractor for the found player URL
                     loadExtractor(finalPlayerUrl, intermediatePageUrl1, subtitleCallback, callback)
                 } catch (e: Exception) {
-                    // If one link fails, continue to the next one
                     e.printStackTrace()
                 }
             }
