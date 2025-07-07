@@ -16,6 +16,7 @@ class SupJav : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
 
+    // parseVideoList, getMainPage, search, load functions remain unchanged...
     private fun parseVideoList(element: Element): List<SearchResponse> {
         return element.select("div.post").mapNotNull {
             val titleElement = it.selectFirst("div.con h3 a")
@@ -55,11 +56,9 @@ class SupJav : MainAPI() {
         val poster = document.selectFirst("div.post-meta img")?.attr("src")
         val plot = "Watch ${title} on SupJav"
         val tags = document.select("div.tags a").map { it.text() }
-
         val dataLinks = document.select("div.btns a.btn-server")
             .mapNotNull { it.attr("data-link") }
             .joinToString("\n")
-
         return newMovieLoadResponse(title, url, TvType.NSFW, dataLinks) {
             this.posterUrl = poster
             this.plot = plot
@@ -67,6 +66,7 @@ class SupJav : MainAPI() {
         }
     }
 
+    // Rewritten loadLinks to be more robust and prevent silent fails
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -74,33 +74,28 @@ class SupJav : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         Log.d(name, "loadLinks called with data: $data")
-        
+        var isLinkLoaded = false
+
         data.split("\n").forEach { link ->
             if (link.isNotBlank()) {
                 try {
                     val reversedData = link.reversed()
                     val intermediatePageUrl1 = "https://lk1.supremejav.com/supjav.php?c=$reversedData"
-                    
-                    val intermediatePage1Doc = app.get(
-                        intermediatePageUrl1,
-                        referer = "$mainUrl/"
-                    ).document
-
+                    val intermediatePage1Doc = app.get(intermediatePageUrl1, referer = "$mainUrl/").document
                     val finalPlayerUrl = intermediatePage1Doc.selectFirst("iframe")?.attr("src") 
-                        ?: throw Exception("Could not find iframe in intermediate page")
+                        ?: throw Exception("L1: Could not find iframe")
 
                     Log.d(name, "Extracted player URL: $finalPlayerUrl")
 
                     if (finalPlayerUrl.contains("emturbovid.com")) {
                         val playerDoc = app.get(finalPlayerUrl, referer = intermediatePageUrl1).document
                         val scriptContent = playerDoc.select("script").find { it.data().contains("var urlPlay") }?.data()
-                            ?: throw Exception("Could not find script with 'urlPlay' in EmturboVid")
-
+                            ?: throw Exception("L2: Could not find script in EmturboVid")
+                        
                         val videoUrlRegex = Regex("""var urlPlay = '(?<url>https?://[^']+\.m3u8[^']*)'""")
                         val videoUrl = videoUrlRegex.find(scriptContent)?.groups?.get("url")?.value
-                            ?: throw Exception("Could not extract M3U8 URL from EmturboVid script")
+                            ?: throw Exception("L3: Could not extract M3U8 from EmturboVid")
                         
-                        Log.d(name, "Found M3U8 link: $videoUrl")
                         callback.invoke(
                             ExtractorLink(
                                 source = this.name,
@@ -111,37 +106,25 @@ class SupJav : MainAPI() {
                                 type = ExtractorLinkType.M3U8
                             )
                         )
+                        isLinkLoaded = true
                     } else {
-                        loadExtractor(finalPlayerUrl, intermediatePageUrl1, subtitleCallback) { link ->
-                            callback.invoke(
-                                ExtractorLink(
-                                    source = link.source,
-                                    name = "${link.name} - Extractor",
-                                    url = link.url,
-                                    referer = link.referer,
-                                    quality = link.quality,
-                                    type = link.type, // We only keep the 'type' parameter
-                                    headers = link.headers
-                                    // Removed the redundant 'isM3u8' parameter
-                                )
-                            )
+                        // For other players, check the return value of loadExtractor
+                        if (loadExtractor(finalPlayerUrl, intermediatePageUrl1, subtitleCallback, callback)) {
+                            isLinkLoaded = true
                         }
                     }
-
                 } catch (e: Exception) {
-                    callback.invoke(
-                        ExtractorLink(
-                            source = this.name,
-                            name = "Server ERROR: ${e.message?.take(50)}...",
-                            url = "https://error.com/error",
-                            referer = "",
-                            quality = Qualities.Unknown.value,
-                            type = ExtractorLinkType.M3U8
-                        )
-                    )
+                    // We don't throw here, just log it. We will throw a final error if nothing works.
+                    Log.e(name, "A server failed: ${e.message}")
                 }
             }
         }
+        
+        // If after trying all servers, no link was loaded, throw an exception.
+        if (!isLinkLoaded) {
+            throw Exception("All servers failed to return a valid video link.")
+        }
+
         return true
     }
 }
