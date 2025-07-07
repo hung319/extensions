@@ -112,11 +112,20 @@ class SupJav : MainAPI() {
                             )
                         )
                     } else {
-                        // For other players, use loadExtractor
                         loadExtractor(finalPlayerUrl, intermediatePageUrl1, subtitleCallback) { link ->
-                            // FIX: Create a new link with a modified name using copy()
-                            val newLink = link.copy(name = "${link.name} - Extractor")
-                            callback.invoke(newLink)
+                            // FIX: Manually create a new ExtractorLink since copy() is not available
+                            callback.invoke(
+                                ExtractorLink(
+                                    source = link.source,
+                                    name = "${link.name} - Extractor", // Set the new name
+                                    url = link.url,
+                                    referer = link.referer,
+                                    quality = link.quality,
+                                    type = link.type,
+                                    headers = link.headers,
+                                    type = ExtractorLinkType.M3U8
+                                )
+                            )
                         }
                     }
 
