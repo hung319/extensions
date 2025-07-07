@@ -113,17 +113,16 @@ class SupJav : MainAPI() {
                         )
                     } else {
                         loadExtractor(finalPlayerUrl, intermediatePageUrl1, subtitleCallback) { link ->
-                            // FIX: Manually create a new ExtractorLink since copy() is not available
                             callback.invoke(
                                 ExtractorLink(
                                     source = link.source,
-                                    name = "${link.name} - Extractor", // Set the new name
+                                    name = "${link.name} - Extractor",
                                     url = link.url,
                                     referer = link.referer,
                                     quality = link.quality,
-                                    type = link.type,
-                                    headers = link.headers,
-                                    type = ExtractorLinkType.M3U8
+                                    type = link.type, // We only keep the 'type' parameter
+                                    headers = link.headers
+                                    // Removed the redundant 'isM3u8' parameter
                                 )
                             )
                         }
