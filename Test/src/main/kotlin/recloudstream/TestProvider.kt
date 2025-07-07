@@ -8,23 +8,21 @@ import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.MainPageRequest
+import com.lagradost.cloudstream3.HomePageList
 import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.async
 
 class JavSubIdnProvider : MainAPI() {
     override var mainUrl = "https://javsubidn.vip"
     override var name = "JavSubIdn"
     override val hasMainPage = true
-    
-    // Đã thay đổi mã ngôn ngữ thành Indonesia
     override var lang = "id" 
     override val hasDownloadSupport = true
-
-    // Đã thay đổi loại TVType thành NSFW
     override val supportedTypes = setOf(
         TvType.NSFW
     )
@@ -38,7 +36,18 @@ class JavSubIdnProvider : MainAPI() {
             it.toSearchResult()
         }
         
-        return newHomePageResponse(request.name, home)
+        // =================================================================
+        // THAY ĐỔI 1: Thêm tiêu đề cho danh sách phim ở trang chủ
+        // =================================================================
+        val homePageList = HomePageList(
+            name = "Video Jav Terbaru", // Tiêu đề bạn yêu cầu
+            list = home
+        )
+
+        // Kiểm tra xem có trang kế tiếp hay không để bật/tắt nút "Next"
+        val hasNextPage = document.selectFirst("div.pagination a:contains(Next)") != null
+        
+        return HomePageResponse(listOf(homePageList), hasNextPage = hasNextPage)
     }
 
     // Hàm chuyển đổi một phần tử HTML thành đối tượng SearchResponse
@@ -47,7 +56,6 @@ class JavSubIdnProvider : MainAPI() {
         val title = this.selectFirst("header.entry-header span")?.text() ?: "No title"
         val posterUrl = this.selectFirst("img")?.attr("data-src")
 
-        // Sử dụng TvType.NSFW
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
         }
@@ -75,7 +83,6 @@ class JavSubIdnProvider : MainAPI() {
             it.toSearchResult()
         }
         
-        // Sử dụng TvType.NSFW
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
             this.plot = description
@@ -92,9 +99,20 @@ class JavSubIdnProvider : MainAPI() {
     ): Boolean {
         val document = app.get(data).document
 
-        document.select("div.box-server a").forEach { element ->
-            val serverUrl = element.attr("onclick").substringAfter("'").substringBefore("'")
-            loadExtractor(serverUrl, data, subtitleCallback, callback)
+        // =================================================================
+        // THAY ĐỔI 2: Tải các server song song để tăng tốc và độ ổn định
+        // =================================================================
+        coroutineScope {
+            document.select("div.box-server a").map { element ->
+                async { // Chạy mỗi lần gọi extractor trong một tiến trình riêng
+                    try {
+                        val serverUrl = element.attr("onclick").substringAfter("'").substringBefore("'")
+                        loadExtractor(serverUrl, data, subtitleCallback, callback)
+                    } catch (e: Exception) {
+                        // Bỏ qua lỗi nếu một server nào đó không hoạt động
+                    }
+                }
+            }
         }
         
         return true
