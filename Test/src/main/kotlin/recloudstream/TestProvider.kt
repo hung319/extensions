@@ -81,8 +81,27 @@ class XpornTvProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val videoId = data
-        val videoFolder = (videoId.toInt() / 1000) * 1000
-        val finalUrl = "https://vid.xporn.tv/videos/$videoFolder/$videoId/$videoId.mp4"
+        val videoIdInt = videoId.toIntOrNull() ?: return false
+
+        val subdomain: String
+        val pathSegment: String
+
+        // ================== LOGIC THÔNG MINH Ở ĐÂY ==================
+        // Dựa vào ID để chọn đúng cấu trúc server và đường dẫn
+        if (videoIdInt >= 290000) {
+            // Cấu trúc cho video mới
+            subdomain = "vid2"
+            pathSegment = "videos1X"
+        } else {
+            // Cấu trúc cho video cũ
+            subdomain = "vid"
+            pathSegment = "videos"
+        }
+        // =========================================================
+
+        val videoFolder = (videoIdInt / 1000) * 1000
+        
+        val finalUrl = "https://$subdomain.xporn.tv/$pathSegment/$videoFolder/$videoId/$videoId.mp4"
 
         callback.invoke(
             ExtractorLink(
@@ -91,10 +110,7 @@ class XpornTvProvider : MainAPI() {
                 url = finalUrl,
                 referer = "$mainUrl/videos/$videoId/",
                 quality = Qualities.Unknown.value,
-                // ================== THAY ĐỔI THEO YÊU CẦU ==================
-                // Đổi lại type thành VIDEO
                 type = ExtractorLinkType.VIDEO 
-                // =======================================================
             )
         )
         return true
