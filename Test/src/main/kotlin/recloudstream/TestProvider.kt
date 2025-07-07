@@ -1,16 +1,16 @@
 // File: SupJav.kt
 package recloudstream
 
-// Bổ sung đầy đủ các import cần thiết
+import android.util.Log // UPDATED: Using the standard Android Log class
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
-import com.lagradost.cloudstream3.utils.log.Log // <--- THÊM DÒNG NÀY ĐỂ SỬA LỖI
 import org.jsoup.nodes.Element
 
 class SupJav : MainAPI() {
+    // The 'name' property will be used as the TAG for logging
     override var name = "SupJav"
     override var mainUrl = "https://supjav.com"
     override var lang = "en"
@@ -74,6 +74,7 @@ class SupJav : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // Using Android's Log. The 'name' property ("SupJav") acts as the tag.
         Log.d(name, "loadLinks called with data: $data")
         
         data.split("\n").forEach { link ->
@@ -117,8 +118,7 @@ class SupJav : MainAPI() {
                     }
 
                 } catch (e: Exception) {
-                    Log.e(name, "Error in loadLinks for link: $link", e)
-                    throw e 
+                    throw Exception("Failed to load link: $link | Error: ${e.message}")
                 }
             }
         }
