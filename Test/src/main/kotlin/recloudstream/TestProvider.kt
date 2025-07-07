@@ -67,14 +67,12 @@ class SupJav : MainAPI() {
         }
     }
 
-    // UPDATED loadLinks with UI-based logging
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // We still log to Logcat for completeness
         Log.d(name, "loadLinks called with data: $data")
         
         data.split("\n").forEach { link ->
@@ -89,7 +87,7 @@ class SupJav : MainAPI() {
                     ).document
 
                     val finalPlayerUrl = intermediatePage1Doc.selectFirst("iframe")?.attr("src") 
-                        ?: throw Exception("Could not find iframe in intermediate page") // Throw exception if iframe is missing
+                        ?: throw Exception("Could not find iframe in intermediate page")
 
                     Log.d(name, "Extracted player URL: $finalPlayerUrl")
 
@@ -106,7 +104,7 @@ class SupJav : MainAPI() {
                         callback.invoke(
                             ExtractorLink(
                                 source = this.name,
-                                name = "EmturboVid - OK", // Descriptive name for success
+                                name = "EmturboVid - OK",
                                 url = videoUrl,
                                 referer = finalPlayerUrl,
                                 quality = Qualities.Unknown.value,
@@ -114,20 +112,20 @@ class SupJav : MainAPI() {
                             )
                         )
                     } else {
-                        // For other players, we use loadExtractor but add a more descriptive name
+                        // For other players, use loadExtractor
                         loadExtractor(finalPlayerUrl, intermediatePageUrl1, subtitleCallback) { link ->
-                            link.name = "${link.name} - Extractor"
-                            callback.invoke(link)
+                            // FIX: Create a new link with a modified name using copy()
+                            val newLink = link.copy(name = "${link.name} - Extractor")
+                            callback.invoke(newLink)
                         }
                     }
 
                 } catch (e: Exception) {
-                    // CATCH THE ERROR AND DISPLAY IT IN THE UI
                     callback.invoke(
                         ExtractorLink(
                             source = this.name,
-                            name = "Server ERROR: ${e.message?.take(50)}...", // Use the error message as the link name
-                            url = "https://error.com/error", // Dummy URL
+                            name = "Server ERROR: ${e.message?.take(50)}...",
+                            url = "https://error.com/error",
                             referer = "",
                             quality = Qualities.Unknown.value,
                             type = ExtractorLinkType.M3U8
