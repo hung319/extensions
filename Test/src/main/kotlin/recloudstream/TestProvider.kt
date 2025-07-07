@@ -35,18 +35,15 @@ class XpornTvProvider : MainAPI() {
     }
 
     // ================= SỬA LỖI Ở ĐÂY =================
+    // Đã dọn dẹp hàm này để chỉ sử dụng các thuộc tính có sẵn
     private fun Element.toSearchResult(): SearchResponse? {
         val title = this.selectFirst("strong.title")?.text()?.trim() ?: return null
         val href = this.selectFirst("a")?.attr("href") ?: return null
         val posterUrl = this.selectFirst("img.thumb")?.attr("src")
-        val durationText = this.selectFirst("div.wrap > div:last-child")?.text()?.trim()
 
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
-            // Sửa lỗi: Thêm thông tin thời lượng vào qualityData
-            if (durationText != null) {
-                this.qualityData.add(durationText)
-            }
+            // Không thêm thông tin phụ vì không có thuộc tính hỗ trợ
         }
     }
     // =================================================
@@ -67,7 +64,6 @@ class XpornTvProvider : MainAPI() {
         
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         val description = document.selectFirst("meta[name=description]")?.attr("content")
-        val tags = document.select("div.item:contains(Tags) a").map { it.text() }
         
         val script = document.select("script").find { it.data().contains("flashvars") }?.data()
 
@@ -80,7 +76,6 @@ class XpornTvProvider : MainAPI() {
                 return newMovieLoadResponse(title, url, TvType.NSFW, finalVideoUrl) {
                     this.posterUrl = poster
                     this.plot = description
-                    this.tags = tags
                 }
             }
         }
