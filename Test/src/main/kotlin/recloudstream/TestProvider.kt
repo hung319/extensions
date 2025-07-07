@@ -1,15 +1,24 @@
 package recloudstream
 
-// Các import đã có
-import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.MainAPI
+import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream3.LoadResponse
+import com.lagradost.cloudstream3.HomePageResponse
+import com.lagradost.cloudstream3.SearchResponse
+import com.lagradost.cloudstream3.SubtitleFile
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.MainPageRequest
+import com.lagradost.cloudstream3.HomePageList
 import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.newMovieLoadResponse
+import com.lagradost.cloudstream3.newMovieSearchResponse
+import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.async
 
-// THÊM IMPORT MỚI cho extractor Smoothpre
-import com.lagradost.cloudstream3.extractors.Smoothpre
+// Đã loại bỏ import không cần thiết và gây lỗi
+// import com.lagradost.cloudstream3.extractors.Smoothpre
 
 class JavSubIdnProvider : MainAPI() {
     override var mainUrl = "https://javsubidn.vip"
@@ -59,7 +68,7 @@ class JavSubIdnProvider : MainAPI() {
     }
 
     // =================================================================
-    // CẬP NHẬT HÀM LOADLINKS
+    // CẬP NHẬT HÀM LOADLINKS (PHIÊN BẢN AN TOÀN HƠN)
     // =================================================================
     override suspend fun loadLinks(
         data: String, 
@@ -75,16 +84,15 @@ class JavSubIdnProvider : MainAPI() {
                     try {
                         var serverUrl = element.attr("onclick").substringAfter("'").substringBefore("'")
                         
-                        // Kiểm tra nếu là link smoothpre
+                        // Nếu là link smoothpre, thử đổi /v/ thành /e/.
+                        // Đây là "mẹo" phổ biến để sửa link embed.
                         if (serverUrl.contains("smoothpre.com", true)) {
-                            // Mẹo: Đổi /v/ thành /e/ (embed)
                             serverUrl = serverUrl.replace("/v/", "/e/")
-                            // Gọi thẳng extractor Smoothpre để đảm bảo hoạt động
-                            Smoothpre().getSafeUrl(serverUrl, data, subtitleCallback, callback)
-                        } else {
-                            // Với các server khác, vẫn dùng loadExtractor chung
-                            loadExtractor(serverUrl, data, subtitleCallback, callback)
                         }
+
+                        // Luôn sử dụng hàm loadExtractor chung để tương thích với mọi phiên bản CloudStream.
+                        loadExtractor(serverUrl, data, subtitleCallback, callback)
+                        
                     } catch (e: Exception) {
                         // Bỏ qua lỗi nếu một server nào đó không hoạt động
                     }
