@@ -10,6 +10,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.MainPageRequest
 import com.lagradost.cloudstream3.HomePageList
 import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.utils.loadExtractor
@@ -25,13 +26,18 @@ class JavSubIdnProvider : MainAPI() {
         TvType.NSFW
     )
 
+    // =================================================================
+    // CẬP NHẬT: Sửa cảnh báo "deprecated"
+    // =================================================================
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page == 1) mainUrl else "$mainUrl/page/$page"
         val document = app.get(url).document
         val home = document.select("article.thumb-block").mapNotNull { it.toSearchResult() }
         val homePageList = HomePageList(name = "Video Jav Terbaru", list = home)
         val hasNext = document.selectFirst("div.pagination a:contains(Next)") != null
-        return HomePageResponse(items = listOf(homePageList), hasNext = hasNext)
+        
+        // Sử dụng hàm newHomePageResponse thay vì gọi trực tiếp constructor
+        return newHomePageResponse(items = listOf(homePageList), hasNext = hasNext)
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
@@ -72,15 +78,12 @@ class JavSubIdnProvider : MainAPI() {
         val urlRegex = Regex("""(https?://[^\'"]+)""")
 
         document.select("div.box-server a").forEach { element ->
-            // Bọc mỗi lần gọi trong try-catch để một server lỗi không ảnh hưởng đến các server khác
             try {
                 val onclickAttribute = element.attr("onclick")
                 val serverUrl = urlRegex.find(onclickAttribute)?.value ?: return@forEach
-
-                // Gọi hàm chung của CloudStream để xử lý link
                 loadExtractor(serverUrl, data, subtitleCallback, callback)
             } catch (t: Throwable) {
-                // Nếu có lỗi xảy ra với server này, lặng lẽ bỏ qua và tiếp tục với server tiếp theo
+                // Lặng lẽ bỏ qua lỗi của một server và tiếp tục
             }
         }
         
