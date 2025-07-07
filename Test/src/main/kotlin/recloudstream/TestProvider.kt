@@ -58,6 +58,9 @@ class XpornTvProvider : MainAPI() {
             ?: document.selectFirst("meta[property=og:title]")?.attr("content")
             ?: "Video"
         
+        // Trích xuất videoId trực tiếp từ URL của trang
+        val videoId = url.split("/")[4]
+        
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         val description = document.selectFirst("meta[name=description]")?.attr("content")
         
@@ -65,7 +68,8 @@ class XpornTvProvider : MainAPI() {
             it.toSearchResult()
         }
         
-        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
+        // Truyền videoId cho hàm `loadLinks` để sử dụng
+        return newMovieLoadResponse(title, url, TvType.NSFW, videoId) {
             this.posterUrl = poster
             this.plot = description
             this.recommendations = recommendations
@@ -73,31 +77,41 @@ class XpornTvProvider : MainAPI() {
     }
     
     override suspend fun loadLinks(
-        data: String,
+        data: String, // `data` bây giờ là videoId (ví dụ: "182086")
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data).document
-        
-        val script = document.select("script").find { it.data().contains("flashvars") }?.data()
-            ?: throw ErrorLoadingException("Không tìm thấy script chứa thông tin video")
+        val videoId = data
 
-        val videoUrlRegex = Regex("""video_url:\s*'.*?(https?://[^']+)""")
-        val videoUrl = videoUrlRegex.find(script)?.groups?.get(1)?.value
-            ?: throw ErrorLoadingException("Không thể trích xuất link video từ script")
+        // Lấy nội dung trang để tìm script chứa thông tin cần thiết
+        val document = app.get("$mainUrl/videos/$videoId/").document
+        
+        val scriptText = document.select("script").find { it.data().contains("flashvars") }?.data()
+            ?: throw ErrorLoadingException("Không thể tìm thấy script chứa thông tin video")
+
+        // Trích xuất mã hash động và các thông tin khác từ `flashvars`
+        val videoUrlMatch = Regex("""video_url:\s*'.*?/get_file/(\d+)/([^/]+)/""").find(scriptText)
+            ?: throw ErrorLoadingException("Không thể trích xuất thông tin cần thiết từ video_url")
+        
+        val quality = videoUrlMatch.groupValues[1]
+        val hash = videoUrlMatch.groupValues[2]
+        
+        val rnd = Regex("""rnd:\s*'([^']+)""").find(scriptText)?.groupValues?.get(1)
+            ?: System.currentTimeMillis()
+
+        // Xây dựng URL API cuối cùng, hợp lệ
+        val videoFolder = (videoId.toInt() / 1000) * 1000
+        val finalUrl = "$mainUrl/get_file/$quality/$hash/$videoFolder/$videoId/$videoId.mp4/?rnd=$rnd"
 
         callback.invoke(
             ExtractorLink(
                 source = this.name,
                 name = this.name,
-                url = videoUrl,
-                referer = data,
+                url = finalUrl,
+                referer = "$mainUrl/videos/$videoId/", // Referer là trang chứa video
                 quality = Qualities.Unknown.value,
-                // ================== SỬA LỖI Ở ĐÂY ==================
-                // Đổi type thành HLS để trình phát xử lý đúng luồng m3u8
-                type = ExtractorLinkType.M3U8
-                // ==================================================
+                type = ExtractorLinkType.M3U8 // Trang này dùng M3U8 trá hình
             )
         )
         return true
