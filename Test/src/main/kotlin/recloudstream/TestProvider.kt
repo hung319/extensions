@@ -14,10 +14,6 @@ import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.async
-// Import lại lớp Smoothpre vì giờ chúng ta biết nó tồn tại
-import com.lagradost.cloudstream3.extractors.Smoothpre
 
 class JavSubIdnProvider : MainAPI() {
     override var mainUrl = "https://javsubidn.vip"
@@ -66,9 +62,6 @@ class JavSubIdnProvider : MainAPI() {
         }
     }
 
-    // =================================================================
-    // CẬP NHẬT: Quay lại phương pháp gọi trực tiếp Extractor
-    // =================================================================
     override suspend fun loadLinks(
         data: String, 
         isCasting: Boolean,
@@ -78,24 +71,16 @@ class JavSubIdnProvider : MainAPI() {
         val document = app.get(data).document
         val urlRegex = Regex("""(https?://[^\'"]+)""")
 
-        coroutineScope {
-            document.select("div.box-server a").map { element ->
-                async {
-                    try {
-                        val onclickAttribute = element.attr("onclick")
-                        val serverUrl = urlRegex.find(onclickAttribute)?.value ?: return@async
+        document.select("div.box-server a").forEach { element ->
+            // Bọc mỗi lần gọi trong try-catch để một server lỗi không ảnh hưởng đến các server khác
+            try {
+                val onclickAttribute = element.attr("onclick")
+                val serverUrl = urlRegex.find(onclickAttribute)?.value ?: return@forEach
 
-                        if (serverUrl.contains("smoothpre.com", true)) {
-                            // Gọi thẳng extractor Smoothpre vì giờ chúng ta biết nó tồn tại
-                            Smoothpre().getSafeUrl(serverUrl, data, subtitleCallback, callback)
-                        } else {
-                            // Với các server khác, vẫn dùng loadExtractor chung
-                            loadExtractor(serverUrl, data, subtitleCallback, callback)
-                        }
-                    } catch (e: Exception) {
-                        // Bỏ qua lỗi
-                    }
-                }
+                // Gọi hàm chung của CloudStream để xử lý link
+                loadExtractor(serverUrl, data, subtitleCallback, callback)
+            } catch (t: Throwable) {
+                // Nếu có lỗi xảy ra với server này, lặng lẽ bỏ qua và tiếp tục với server tiếp theo
             }
         }
         
