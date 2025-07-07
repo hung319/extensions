@@ -1,13 +1,12 @@
-// File: SupJav.kt
 package recloudstream
 
 import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 
 class SupJav : MainAPI() {
     override var name = "SupJav"
@@ -38,9 +37,13 @@ class SupJav : MainAPI() {
         }
 
         val document = app.get(url).document
-        val home = parseVideoList(document.selectFirst("div.posts") ?: return HomePageResponse(emptyList()))
+        // Sử dụng let để xử lý trường hợp không tìm thấy element, trả về list rỗng
+        val home = document.selectFirst("div.posts")?.let {
+            parseVideoList(it)
+        } ?: emptyList()
 
-        return newHomePageResponse(request, home, hasNext = home.isNotEmpty())
+        // Sử dụng newHomePageResponse để tạo response, không còn cảnh báo
+        return newHomePageResponse(request.name, home, hasNext = home.isNotEmpty())
     }
 
     private fun parseVideoList(element: Element): List<SearchResponse> {
@@ -69,9 +72,12 @@ class SupJav : MainAPI() {
         val poster = document.selectFirst("div.post-meta img")?.attr("src")
         val plot = "Watch ${title} on SupJav"
         val tags = document.select("div.tags a").map { it.text() }
+        
+        // Lấy tất cả các link server và gộp chúng lại, phân tách bằng dấu xuống dòng
         val dataLinks = document.select("div.btns a.btn-server")
             .mapNotNull { it.attr("data-link") }
             .joinToString("\n")
+
         return newMovieLoadResponse(title, url, TvType.NSFW, dataLinks) {
             this.posterUrl = poster
             this.plot = plot
@@ -88,25 +94,33 @@ class SupJav : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Use apmap (async parallel map) to process all server links concurrently
-        data.split("\n").apmap { link ->
-            if (link.isNotBlank()) {
-                try {
-                    val reversedData = link.reversed()
-                    val intermediatePageUrl1 = "https://lk1.supremejav.com/supjav.php?c=$reversedData"
-                    val response = app.get(intermediatePageUrl1, referer = "$mainUrl/", allowRedirects = false)
+        // Sử dụng coroutineScope để chạy song song các tác vụ và đợi tất cả hoàn thành
+        coroutineScope {
+            // Tách các link server và duyệt qua từng link
+            data.split("\n").forEach { link ->
+                if (link.isNotBlank()) {
+                    // launch một coroutine mới cho mỗi link, không block luồng chính
+                    launch {
+                        try {
+                            val reversedData = link.reversed()
+                            val intermediatePageUrl1 = "https://lk1.supremejav.com/supjav.php?c=$reversedData"
+                            val response = app.get(intermediatePageUrl1, referer = "$mainUrl/", allowRedirects = false)
 
-                    val finalPlayerUrl = if (response.code == 302) {
-                        response.headers["Location"]
-                    } else {
-                        response.document.selectFirst("iframe")?.attr("src")
-                    } ?: return@apmap // Exit this iteration if no player URL is found
+                            val finalPlayerUrl = if (response.code == 302) {
+                                response.headers["Location"]
+                            } else {
+                                response.document.selectFirst("iframe")?.attr("src")
+                            }
 
-                    Log.d(name, "Passing to loadExtractor: $finalPlayerUrl")
-                    
-                    loadExtractor(finalPlayerUrl, intermediatePageUrl1, subtitleCallback, callback)
-                } catch (e: Exception) {
-                    Log.e(name, "A server failed: ${e.message}")
+                            if (finalPlayerUrl != null) {
+                                Log.d(name, "Passing to loadExtractor: $finalPlayerUrl")
+                                // Gọi loadExtractor cho mỗi link player hợp lệ
+                                loadExtractor(finalPlayerUrl, intermediatePageUrl1, subtitleCallback, callback)
+                            }
+                        } catch (e: Exception) {
+                            Log.e(name, "Server failed to load: ${e.message}")
+                        }
+                    }
                 }
             }
         }
