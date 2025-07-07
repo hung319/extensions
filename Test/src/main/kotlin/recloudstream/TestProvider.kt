@@ -3,8 +3,10 @@ package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType // ADDED for the new constructor
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
+import com.lagradost.cloudstream3.utils.log.Log // ADDED for logging
 import org.jsoup.nodes.Element
 
 class SupJav : MainAPI() {
@@ -12,8 +14,9 @@ class SupJav : MainAPI() {
     override var mainUrl = "https://supjav.com"
     override var lang = "en"
     override val hasMainPage = true
-    override val supportedTypes = setOf(TvType.NSFW) // Changed back to NSFW
+    override val supportedTypes = setOf(TvType.NSFW)
 
+    // parseVideoList, getMainPage, search, and load functions remain the same...
     private fun parseVideoList(element: Element): List<SearchResponse> {
         return element.select("div.post").mapNotNull {
             val titleElement = it.selectFirst("div.con h3 a")
@@ -22,7 +25,6 @@ class SupJav : MainAPI() {
             val posterUrl = it.selectFirst("a.img img.thumb")?.let { img ->
                 img.attr("data-original").ifBlank { img.attr("src") }
             }
-            // Changed back to NSFW, still using MovieSearchResponse for structure
             newMovieSearchResponse(title, href, TvType.NSFW) {
                 this.posterUrl = posterUrl
             }
@@ -59,7 +61,6 @@ class SupJav : MainAPI() {
             .mapNotNull { it.attr("data-link") }
             .joinToString("\n")
 
-        // Changed back to NSFW
         return newMovieLoadResponse(title, url, TvType.NSFW, dataLinks) {
             this.posterUrl = poster
             this.plot = plot
@@ -67,12 +68,16 @@ class SupJav : MainAPI() {
         }
     }
 
+    // loadLinks function updated with logging, throw, and new ExtractorLinkType
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // LOGGING: Log the input data
+        Log.d(name, "loadLinks called with data: $data")
+        
         data.split("\n").forEach { link ->
             if (link.isNotBlank()) {
                 try {
@@ -85,10 +90,42 @@ class SupJav : MainAPI() {
                     ).document
 
                     val finalPlayerUrl = intermediatePage1Doc.selectFirst("iframe")?.attr("src") ?: return@forEach
+                    // LOGGING: Log the extracted player URL
+                    Log.d(name, "Extracted player URL: $finalPlayerUrl")
 
-                    loadExtractor(finalPlayerUrl, intermediatePageUrl1, subtitleCallback, callback)
+                    if (finalPlayerUrl.contains("emturbovid.com")) {
+                        val playerDoc = app.get(finalPlayerUrl, referer = intermediatePageUrl1).document
+                        val scriptContent = playerDoc.select("script").find { it.data().contains("var urlPlay") }?.data()
+
+                        if (scriptContent != null) {
+                            val videoUrlRegex = Regex("""var urlPlay = '(?<url>https?://[^']+\.m3u8[^']*)'""")
+                            val videoUrl = videoUrlRegex.find(scriptContent)?.groups?.get("url")?.value
+                            
+                            if (videoUrl != null) {
+                                // LOGGING: Log the final video URL
+                                Log.d(name, "Found M3U8 link: $videoUrl")
+                                callback.invoke(
+                                    ExtractorLink(
+                                        source = this.name,
+                                        name = "EmturboVid",
+                                        url = videoUrl,
+                                        referer = finalPlayerUrl,
+                                        quality = Qualities.Unknown.value,
+                                        // UPDATED to use ExtractorLinkType.M3U8
+                                        type = ExtractorLinkType.M3U8 
+                                    )
+                                )
+                            }
+                        }
+                    } else {
+                        loadExtractor(finalPlayerUrl, intermediatePageUrl1, subtitleCallback, callback)
+                    }
+
                 } catch (e: Exception) {
-                    e.printStackTrace()
+                    // LOGGING: Log the error
+                    Log.e(name, "Error in loadLinks for link: $link", e)
+                    // RE-THROW the exception to see it in the app's crash logs
+                    throw e 
                 }
             }
         }
