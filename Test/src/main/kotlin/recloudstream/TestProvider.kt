@@ -14,11 +14,6 @@ import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.async
-
-// Đã loại bỏ import không cần thiết và gây lỗi
-// import com.lagradost.cloudstream3.extractors.Smoothpre
 
 class JavSubIdnProvider : MainAPI() {
     override var mainUrl = "https://javsubidn.vip"
@@ -68,7 +63,7 @@ class JavSubIdnProvider : MainAPI() {
     }
 
     // =================================================================
-    // CẬP NHẬT HÀM LOADLINKS (PHIÊN BẢN AN TOÀN HƠN)
+    // CẬP NHẬT: Quay lại phiên bản loadLinks đơn giản nhất
     // =================================================================
     override suspend fun loadLinks(
         data: String, 
@@ -77,26 +72,15 @@ class JavSubIdnProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val document = app.get(data).document
-
-        coroutineScope {
-            document.select("div.box-server a").map { element ->
-                async {
-                    try {
-                        var serverUrl = element.attr("onclick").substringAfter("'").substringBefore("'")
-                        
-                        // Nếu là link smoothpre, thử đổi /v/ thành /e/.
-                        // Đây là "mẹo" phổ biến để sửa link embed.
-                        if (serverUrl.contains("smoothpre.com", true)) {
-                            serverUrl = serverUrl.replace("/v/", "/e/")
-                        }
-
-                        // Luôn sử dụng hàm loadExtractor chung để tương thích với mọi phiên bản CloudStream.
-                        loadExtractor(serverUrl, data, subtitleCallback, callback)
-                        
-                    } catch (e: Exception) {
-                        // Bỏ qua lỗi nếu một server nào đó không hoạt động
-                    }
-                }
+        
+        // Dùng vòng lặp forEach đơn giản, không sửa đổi link
+        document.select("div.box-server a").forEach { element ->
+            try {
+                val serverUrl = element.attr("onclick").substringAfter("'").substringBefore("'")
+                // Gọi thẳng loadExtractor với link gốc
+                loadExtractor(serverUrl, data, subtitleCallback, callback)
+            } catch (e: Exception) {
+                // Bỏ qua lỗi nếu có
             }
         }
         
