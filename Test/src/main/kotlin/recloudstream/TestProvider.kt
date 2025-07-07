@@ -58,7 +58,7 @@ class XpornTvProvider : MainAPI() {
             ?: document.selectFirst("meta[property=og:title]")?.attr("content")
             ?: "Video"
         
-        // Trích xuất videoId trực tiếp từ URL của trang
+        // Trích xuất videoId trực tiếp từ URL của trang. Ví dụ: ".../videos/23672/..." -> "23672"
         val videoId = url.split("/")[4]
         
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
@@ -68,7 +68,7 @@ class XpornTvProvider : MainAPI() {
             it.toSearchResult()
         }
         
-        // Truyền videoId cho hàm `loadLinks` để sử dụng
+        // Truyền videoId cho hàm `loadLinks` để nó xây dựng link cuối cùng
         return newMovieLoadResponse(title, url, TvType.NSFW, videoId) {
             this.posterUrl = poster
             this.plot = description
@@ -77,41 +77,28 @@ class XpornTvProvider : MainAPI() {
     }
     
     override suspend fun loadLinks(
-        data: String, // `data` bây giờ là videoId (ví dụ: "182086")
+        data: String, // `data` bây giờ là videoId (ví dụ: "23672")
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val videoId = data
 
-        // Lấy nội dung trang để tìm script chứa thông tin cần thiết
-        val document = app.get("$mainUrl/videos/$videoId/").document
-        
-        val scriptText = document.select("script").find { it.data().contains("flashvars") }?.data()
-            ?: throw ErrorLoadingException("Không thể tìm thấy script chứa thông tin video")
-
-        // Trích xuất mã hash động và các thông tin khác từ `flashvars`
-        val videoUrlMatch = Regex("""video_url:\s*'.*?/get_file/(\d+)/([^/]+)/""").find(scriptText)
-            ?: throw ErrorLoadingException("Không thể trích xuất thông tin cần thiết từ video_url")
-        
-        val quality = videoUrlMatch.groupValues[1]
-        val hash = videoUrlMatch.groupValues[2]
-        
-        val rnd = Regex("""rnd:\s*'([^']+)""").find(scriptText)?.groupValues?.get(1)
-            ?: System.currentTimeMillis()
-
-        // Xây dựng URL API cuối cùng, hợp lệ
+        // Tính toán thư mục chứa video dựa trên ID
+        // Ví dụ: ID 23672 -> thư mục 23000. ID 62 -> thư mục 0.
         val videoFolder = (videoId.toInt() / 1000) * 1000
-        val finalUrl = "$mainUrl/get_file/$quality/$hash/$videoFolder/$videoId/$videoId.mp4/?rnd=$rnd"
+        
+        // Xây dựng URL cuối cùng với tên miền phụ `vid.` và cấu trúc đường dẫn đã biết
+        val finalUrl = "https://vid.xporn.tv/videos/$videoFolder/$videoId/$videoId.mp4"
 
         callback.invoke(
             ExtractorLink(
                 source = this.name,
                 name = this.name,
                 url = finalUrl,
-                referer = "$mainUrl/videos/$videoId/", // Referer là trang chứa video
+                referer = "$mainUrl/videos/$videoId/", // Gửi referer để đảm bảo link hoạt động
                 quality = Qualities.Unknown.value,
-                type = ExtractorLinkType.M3U8 // Trang này dùng M3U8 trá hình
+                type = ExtractorLinkType.VIDEO // Vẫn để HLS cho linh hoạt
             )
         )
         return true
