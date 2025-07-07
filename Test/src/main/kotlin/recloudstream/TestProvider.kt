@@ -1,7 +1,7 @@
 // File: SupJav.kt
 package recloudstream
 
-import android.util.Log // UPDATED: Using the standard Android Log class
+import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
@@ -10,7 +10,6 @@ import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
 
 class SupJav : MainAPI() {
-    // The 'name' property will be used as the TAG for logging
     override var name = "SupJav"
     override var mainUrl = "https://supjav.com"
     override var lang = "en"
@@ -74,7 +73,6 @@ class SupJav : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Using Android's Log. The 'name' property ("SupJav") acts as the tag.
         Log.d(name, "loadLinks called with data: $data")
         
         data.split("\n").forEach { link ->
@@ -88,7 +86,14 @@ class SupJav : MainAPI() {
                         referer = "$mainUrl/"
                     ).document
 
-                    val finalPlayerUrl = intermediatePage1Doc.selectFirst("iframe")?.attr("src") ?: return@forEach
+                    val finalPlayerUrl = intermediatePage1Doc.selectFirst("iframe")?.attr("src")
+                    
+                    if (finalPlayerUrl == null) {
+                        // ADDED LOGGING FOR SILENT FAIL
+                        Log.e(name, "Could not find iframe in intermediate page: $intermediatePageUrl1")
+                        return@forEach // Skip to the next server link
+                    }
+
                     Log.d(name, "Extracted player URL: $finalPlayerUrl")
 
                     if (finalPlayerUrl.contains("emturbovid.com")) {
