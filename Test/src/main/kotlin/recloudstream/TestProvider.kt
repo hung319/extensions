@@ -36,18 +36,18 @@ class JavSubIdnProvider : MainAPI() {
             it.toSearchResult()
         }
         
-        // =================================================================
-        // THAY ĐỔI 1: Thêm tiêu đề cho danh sách phim ở trang chủ
-        // =================================================================
         val homePageList = HomePageList(
-            name = "Video Jav Terbaru", // Tiêu đề bạn yêu cầu
+            name = "Video Jav Terbaru",
             list = home
         )
 
-        // Kiểm tra xem có trang kế tiếp hay không để bật/tắt nút "Next"
-        val hasNextPage = document.selectFirst("div.pagination a:contains(Next)") != null
+        // Logic kiểm tra trang tiếp theo, dựa trên sự tồn tại của nút "Next"
+        val hasNext = document.selectFirst("div.pagination a:contains(Next)") != null
         
-        return HomePageResponse(listOf(homePageList), hasNextPage = hasNextPage)
+        // =================================================================
+        // SỬA LỖI: Dùng đúng tên tham số là 'hasNext' theo định nghĩa bạn cung cấp
+        // =================================================================
+        return HomePageResponse(items = listOf(homePageList), hasNext = hasNext)
     }
 
     // Hàm chuyển đổi một phần tử HTML thành đối tượng SearchResponse
@@ -99,12 +99,9 @@ class JavSubIdnProvider : MainAPI() {
     ): Boolean {
         val document = app.get(data).document
 
-        // =================================================================
-        // THAY ĐỔI 2: Tải các server song song để tăng tốc và độ ổn định
-        // =================================================================
         coroutineScope {
             document.select("div.box-server a").map { element ->
-                async { // Chạy mỗi lần gọi extractor trong một tiến trình riêng
+                async {
                     try {
                         val serverUrl = element.attr("onclick").substringAfter("'").substringBefore("'")
                         loadExtractor(serverUrl, data, subtitleCallback, callback)
