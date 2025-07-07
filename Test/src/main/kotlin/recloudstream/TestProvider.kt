@@ -1,24 +1,21 @@
-// Save this as SupJav.kt
-package com.recloudstream // 1. Package changed
+// File: SupJav.kt
+package recloudstream // Package has been changed
 
-import android.content.Context
+// Bổ sung đầy đủ các import cần thiết
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
 
-// 2. Plugin loader class has been removed. 
-// The provider class itself will be registered directly.
+// Chỉ cần một lớp MainAPI, không cần lớp Plugin riêng
 class SupJav : MainAPI() {
     override var name = "SupJav"
     override var mainUrl = "https://supjav.com"
     override var lang = "en"
-    override val hasMainPage = true // Enable the main page feature
+    override val hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
 
-    // Helper function to parse a list of video items from a given HTML element.
-    // This helps avoid code duplication between getMainPage() and search().
     private fun parseVideoList(element: Element): List<SearchResponse> {
         return element.select("div.post").mapNotNull {
             val titleElement = it.selectFirst("div.con h3 a")
@@ -29,18 +26,18 @@ class SupJav : MainAPI() {
                 img.attr("data-original").ifBlank { img.attr("src") }
             }
 
+            // Sử dụng newTvShowSearchResponse để tạo kết quả tìm kiếm
             newTvShowSearchResponse(title, href, TvType.NSFW) {
+                // 'this' ở đây tham chiếu đến đối tượng TvShowSearchResponse
                 this.posterUrl = posterUrl
             }
         }
     }
 
-    // 3. Implement getMainPage to build the homepage content
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(mainUrl).document
         val allPages = ArrayList<HomePageList>()
 
-        // Find all content blocks on the main page (e.g., "Censored", "Uncensored", etc.)
         document.select("div.contents > div.content").forEach { contentBlock ->
             val title = contentBlock.selectFirst(".archive-title h1")?.text() ?: "Unknown Category"
             val videoList = parseVideoList(contentBlock)
@@ -55,15 +52,13 @@ class SupJav : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/?s=$query"
         val document = app.get(url).document
-        // Reuse the helper function to parse search results
         return parseVideoList(document)
     }
 
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
-        val title = document.selectFirst("div.archive-title h1")?.text()?.trim()
-            ?: "No title found"
+        val title = document.selectFirst("div.archive-title h1")?.text()?.trim() ?: "No title found"
         val poster = document.selectFirst("div.post-meta img")?.attr("src")
         val plot = "Watch ${title} on SupJav"
         val tags = document.select("div.tags a").map { it.text() }
@@ -78,7 +73,9 @@ class SupJav : MainAPI() {
             }
         }.reversed()
 
+        // Sử dụng newTvShowLoadResponse để tạo thông tin chi tiết
         return newTvShowLoadResponse(title, url, TvType.NSFW, episodes) {
+            // 'this' ở đây tham chiếu đến đối tượng TvShowLoadResponse
             this.posterUrl = poster
             this.plot = plot
             this.tags = tags
