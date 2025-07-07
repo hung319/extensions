@@ -1,134 +1,294 @@
-// Bấm vào "Copy" ở góc trên bên phải để sao chép mã
 package recloudstream
 
+// Import các thư viện cần thiết
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-import android.net.Uri
+import com.lagradost.cloudstream3.newTvSeriesLoadResponse
+import com.lagradost.cloudstream3.newMovieLoadResponse
+import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.newMovieSearchResponse // Helper
+import com.lagradost.cloudstream3.newTvSeriesSearchResponse // Helper
+import com.lagradost.cloudstream3.newHomePageResponse
+import com.lagradost.cloudstream3.newEpisode
+import com.lagradost.cloudstream3.MainAPI
+import com.lagradost.cloudstream3.SearchResponse
+import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream3.mvvm.logError
+import com.lagradost.cloudstream3.mvvm.normalSafeApiCall
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.Qualities
+import java.net.URLEncoder
+import android.util.Log
 
-class XpornTvProvider : MainAPI() {
-    override var mainUrl = "https://www.xporn.tv"
-    override var name = "Xporn.tv"
+// Data classes for Kitsu API response parsing
+data class KitsuMain(val data: List<KitsuData>?)
+data class KitsuData(val attributes: KitsuAttributes?)
+data class KitsuAttributes(
+    val canonicalTitle: String?,
+    val posterImage: KitsuPoster?
+)
+data class KitsuPoster(
+    val original: String?,
+    val large: String?,
+    val medium: String?,
+    val small: String?,
+    val tiny: String?
+)
+
+
+class BoctemProvider : MainAPI() {
+    override var mainUrl = "https://boctem.com"
+    override var name = "Boctem"
+    override val supportedTypes = setOf( TvType.Anime, TvType.Cartoon )
+    override var lang = "vi"
     override val hasMainPage = true
-    override var lang = "en"
+    override val hasChromecastSupport = true
     override val hasDownloadSupport = true
-    override val supportedTypes = setOf(
-        TvType.NSFW
-    )
 
-    override val mainPage = mainPageOf(
-        "$mainUrl/latest-updates/" to "Latest Videos",
-        "$mainUrl/most-popular/" to "Most Popular",
-        "$mainUrl/top-rated/" to "Top Rated",
-    )
-
-    override suspend fun getMainPage(
-        page: Int,
-        request: MainPageRequest
-    ): HomePageResponse {
-        val url = if (page > 1) "${request.data}$page" else request.data
-        val document = app.get(url).document
-        
-        val home = document.select("div.list-videos div.item").mapNotNull {
-            it.toSearchResult()
-        }
-        return newHomePageResponse(request.name, home)
+    // Hàm helper để thử xóa kích thước khỏi URL ảnh
+    private fun getOriginalImageUrl(thumbnailUrl: String?): String? {
+        if (thumbnailUrl.isNullOrBlank()) return null
+        val imageSizeRegex = Regex("""(-\d+x\d+)(\.\w+)$""")
+        return imageSizeRegex.replace(thumbnailUrl, "$2")
     }
 
-    private fun Element.toSearchResult(): SearchResponse? {
-        val title = this.selectFirst("strong.title")?.text()?.trim() ?: return null
-        val href = this.selectFirst("a")?.attr("href") ?: return null
-        val posterUrl = this.selectFirst("img.thumb")?.attr("src")
-
-        return newMovieSearchResponse(title, href, TvType.NSFW) {
-            this.posterUrl = posterUrl
-        }
+    // === HÀM LẤY POSTER TỪ KITSU ===
+    private suspend fun getKitsuPoster(title: String): String? {
+        Log.d("Boctem", "Searching Kitsu for: $title")
+        return try {
+            val searchUrl = "https://kitsu.io/api/edge/anime?filter[text]=${URLEncoder.encode(title, "UTF-8")}&page[limit]=1"
+            val response = app.get(searchUrl).parsedSafe<KitsuMain>()
+            val poster = response?.data?.firstOrNull()?.attributes?.posterImage
+            val kitsuPosterUrl = poster?.original ?: poster?.large ?: poster?.medium ?: poster?.small ?: poster?.tiny
+            if (!kitsuPosterUrl.isNullOrBlank()) { Log.d("Boctem", "Found Kitsu poster: $kitsuPosterUrl") }
+            else { Log.w("Boctem", "Kitsu poster not found for '$title'") }
+            kitsuPosterUrl
+        } catch (e: Exception) { Log.e("Boctem", "Kitsu API Error for title '$title': ${e.message}"); null }
     }
 
-    override suspend fun search(query: String): List<SearchResponse> {
-        val searchResponse = app.get("$mainUrl/search/$query/").document
-        return searchResponse.select("div.list-videos div.item").mapNotNull {
-            it.toSearchResult()
-        }
+    // --- Hàm getMainPage ---
+    override suspend fun getMainPage(page: Int, request : MainPageRequest): HomePageResponse? {
+        val items = mutableListOf<HomePageList>()
+        if (page > 1) return null
+        try {
+            val document = app.get(mainUrl).document
+            // Carousel
+            try {
+                val carouselSection = document.select("div#halim-carousel-widget-3xx").firstOrNull()
+                val carouselTitle = carouselSection?.selectFirst("h3.section-title span")?.text() ?: "Anime Vietsub Mới Nhất"
+                val movieElements = carouselSection?.select("div#halim-carousel-widget-3 div.owl-item:not(.cloned) article.thumb")
+                if (movieElements != null && movieElements.isNotEmpty()) {
+                    val movies = movieElements.mapNotNull { element ->
+                        val href = element.selectFirst("a.halim-thumb")?.attr("href")
+                        val title = element.selectFirst("h2.entry-title")?.text()
+                        val originalTitle = element.selectFirst("p.original_title")?.text()
+                        val posterThumbnail = element.selectFirst("figure img.lazy")?.attr("data-src")
+                        val boctemPoster = getOriginalImageUrl(posterThumbnail)
+                        if (href.isNullOrBlank() || title.isNullOrBlank()) return@mapNotNull null
+                        val tvType = if (href.contains("/hoat-hinh-trung-quoc/", ignoreCase = true)) TvType.Cartoon else TvType.Anime
+                        val finalPoster = if (tvType == TvType.Anime) { getKitsuPoster(originalTitle ?: title) ?: boctemPoster } else { boctemPoster }
+                        newTvSeriesSearchResponse( title, href, tvType ) { this.posterUrl = finalPoster }
+                    }
+                    if (movies.isNotEmpty()) items.add(HomePageList(carouselTitle, movies))
+                }
+            } catch (e: Exception) { Log.e("Boctem", "Error parsing Carousel: ${e.message}") }
+            // Grid
+            try {
+                val gridSection = document.select("section#halim-advanced-widget-2").firstOrNull()
+                val gridTitle = gridSection?.selectFirst("span.h-text")?.text() ?: "Anime Vừa Cập Nhật"
+                val movieElements = gridSection?.select("div#halim-advanced-widget-2-ajax-box article.thumb")
+                if (movieElements != null && movieElements.isNotEmpty()) {
+                    val movies = movieElements.mapNotNull { element ->
+                        val href = element.selectFirst("a.halim-thumb")?.attr("href")
+                        val title = element.selectFirst("h2.entry-title")?.text()
+                        val posterThumbnail = element.selectFirst("figure img.lazy")?.attr("data-src")
+                        val poster = getOriginalImageUrl(posterThumbnail)
+                        if (href.isNullOrBlank() || title.isNullOrBlank()) return@mapNotNull null
+                        val tvType = if (href.contains("/hoat-hinh-trung-quoc/", ignoreCase = true)) TvType.Cartoon else TvType.Anime
+                        newTvSeriesSearchResponse( title, href, tvType ) { this.posterUrl = poster }
+                    }
+                    if (movies.isNotEmpty()) items.add(HomePageList(gridTitle, movies))
+                }
+            } catch (e: Exception) { Log.e("Boctem", "Error parsing Grid: ${e.message}") }
+            // Popular
+            try {
+                val popularSection = document.select("div#halim_tab_popular_videos-widget-2").firstOrNull()
+                val popularItems = popularSection?.select("div.tab-pane.active div.item")
+                if (popularItems != null && popularItems.isNotEmpty()) {
+                    val popularMovies = popularItems.mapNotNull { item ->
+                        val href = item.selectFirst("a")?.attr("href")
+                        val title = item.selectFirst("h3.title")?.text()
+                        val posterThumbnail = item.selectFirst("img.lazy")?.let { it.attr("data-src").ifBlank { it.attr("src") } }
+                        val poster = getOriginalImageUrl(posterThumbnail)
+                        if (href.isNullOrBlank() || title.isNullOrBlank()) return@mapNotNull null
+                        val tvType = if (href.contains("/hoat-hinh-trung-quoc/", ignoreCase = true)) TvType.Cartoon else TvType.Anime
+                        newTvSeriesSearchResponse( title, href, tvType ) { this.posterUrl = poster }
+                    }
+                    if (popularMovies.isNotEmpty()) {
+                        val popularTitle = popularSection.selectFirst("ul.halim-popular-tab li.active a")?.text()?.let { "Nổi bật ($it)" } ?: "Nổi bật (Ngày)"
+                        items.add(HomePageList(popularTitle, popularMovies))
+                    }
+                }
+            } catch (e: Exception) { Log.e("Boctem", "Error parsing Popular Section: ${e.message}") }
+
+            if (items.isEmpty()) return null
+            return newHomePageResponse(items)
+        } catch (e: Exception) { logError(e); return null }
     }
 
-    override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url).document
-
-        val title = document.selectFirst("h1")?.text()?.trim()
-            ?: document.selectFirst("meta[property=og:title]")?.attr("content")
-            ?: "Video"
-        
-        val videoId = url.split("/")[4]
-        
-        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
-        val description = document.selectFirst("meta[name=description]")?.attr("content")
-        
-        val recommendations = document.select("div.related-videos div.item").mapNotNull {
-            it.toSearchResult()
-        }
-        
-        return newMovieLoadResponse(title, url, TvType.NSFW, videoId) {
-            this.posterUrl = poster
-            this.plot = description
-            this.recommendations = recommendations
-        }
+    // --- Hàm search ---
+    override suspend fun search(query: String): List<SearchResponse>? {
+        val searchUrl = "$mainUrl/search/$query/"
+        Log.d("Boctem", "Searching URL: $searchUrl")
+        return try {
+            val document = app.get(searchUrl).document
+            val resultsContainer = document.select("div.halim_box").firstOrNull()
+            resultsContainer?.select("article.thumb.grid-item")?.mapNotNull { element ->
+                val href = element.selectFirst("a.halim-thumb")?.attr("href")
+                val title = element.selectFirst("h2.entry-title")?.text()
+                val posterThumbnail = element.selectFirst("figure img.lazy")?.attr("data-src")
+                val poster = getOriginalImageUrl(posterThumbnail)
+                if (href.isNullOrBlank() || title.isNullOrBlank()) return@mapNotNull null
+                val tvType = if (href.contains("/hoat-hinh-trung-quoc/", ignoreCase = true)) TvType.Cartoon else TvType.Anime
+                newTvSeriesSearchResponse( title, href, tvType ) { this.posterUrl = poster }
+            }
+        } catch (e: Exception) { logError(e); null }
     }
-    
+
+    // --- Hàm load ---
+    override suspend fun load(url: String): LoadResponse? {
+        Log.d("Boctem", "Loading URL: $url")
+        return try {
+            val document = app.get(url).document
+            val title = document.selectFirst("div.movie-detail h1.entry-title")?.text() ?: ""
+            val originalTitle = document.selectFirst("p.org_title")?.text()
+            val posterThumbnail = document.selectFirst("div.movie-poster img.movie-thumb")?.let { it.attr("data-src").ifBlank { it.attr("src") } }
+            val boctemPoster = getOriginalImageUrl(posterThumbnail)
+            val plot = document.selectFirst("article.item-content")?.select("p")?.joinToString("\n\n") { it.text() }?.trim() ?: ""
+            val year = document.selectFirst("p.released span.title-year a")?.text()?.toIntOrNull()
+            val tags = document.select("p.category a")?.mapNotNull { it?.text() }
+            val isDonghua = tags?.any { it.contains("Hoạt hình Trung Quốc", ignoreCase = true) } == true
+            val primaryTvType = if (isDonghua) TvType.Cartoon else TvType.Anime
+            val finalPosterUrl = if (primaryTvType == TvType.Anime) { getKitsuPoster(originalTitle?.takeIf { it.isNotBlank() } ?: title) ?: boctemPoster } else { boctemPoster }
+            val episodeListElement = document.selectFirst("div#halim-list-server ul.halim-list-eps")
+
+            // Parse recommendations
+            val recommendations = document.select("div#halim_related_movies-2 article.thumb").mapNotNull { recElement ->
+                val recLink = recElement.selectFirst("a.halim-thumb")?.attr("href")
+                val recTitle = recElement.selectFirst("h2.entry-title")?.text()
+                val recPosterThumbnail = recElement.selectFirst("figure img.lazy")?.attr("data-src")
+                val recPoster = getOriginalImageUrl(recPosterThumbnail)
+                if (recLink.isNullOrBlank() || recTitle.isNullOrBlank()) return@mapNotNull null
+                val recType = if (recLink.contains("/hoat-hinh-trung-quoc/", ignoreCase = true)) TvType.Cartoon else TvType.Anime
+                newTvSeriesSearchResponse(recTitle, recLink, recType) { this.posterUrl = recPoster }
+            }
+
+            if (episodeListElement != null) { // Series
+                val episodes = mutableListOf<Episode>()
+                episodeListElement.select("li.halim-episode a")?.forEach { element ->
+                    val epHref = element.attr("href"); val epName = element.selectFirst("span")?.text(); val epNum = epName?.toIntOrNull() ?: 1
+                    if (epHref.isNotBlank()) {
+                        episodes.add( newEpisode(data = "$epHref|$epNum") {
+                            this.name = "Tập $epName"
+                            this.episode = null
+                        } )
+                    }
+                }
+                newTvSeriesLoadResponse(title, url, primaryTvType, episodes.reversed()) { // reversed() để tập mới nhất lên đầu
+                    this.posterUrl = finalPosterUrl; this.year = year; this.plot = plot; this.tags = tags; this.recommendations = recommendations
+                }
+            } else { // Movie
+                newMovieLoadResponse(title, url, primaryTvType, url) {
+                    this.posterUrl = finalPosterUrl; this.year = year; this.plot = plot; this.tags = tags; this.recommendations = recommendations
+                }
+            }
+        } catch (e: Exception) { logError(e); null }
+    }
+
+    // --- Hàm loadLinks ---
     override suspend fun loadLinks(
-        data: String, // `data` là videoId
+        data: String, // Định dạng "URL|EpisodeNum"
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val videoId = data
-        val videoIdInt = videoId.toIntOrNull() ?: return false
+        val parts = data.split('|')
+        val watchUrl = parts[0]
+        val episodeNum = parts.getOrNull(1)?.toIntOrNull() ?: 1
+        Log.d("Boctem", "loadLinks called for watchUrl: $watchUrl, episode: $episodeNum")
 
-        // Lấy tên miền gốc từ mainUrl để dễ bảo trì
-        val hostName = Uri.parse(mainUrl).host?.replace("www.", "") ?: "xporn.tv"
+        val document = try { app.get(watchUrl, referer = mainUrl).document }
+        catch (e: Exception) { Log.e("Boctem", "Failed to GET watch page $watchUrl: ${e.message}"); return false }
 
-        // Tính toán thư mục
-        val videoFolder = (videoIdInt / 1000) * 1000
-        
-        // ================== LOGIC MỚI Ở ĐÂY ==================
-        // Tạo ra danh sách các link có khả năng hoạt động
-        val urlsToTest = listOf(
-            "https://vid2.$hostName/videos1X/$videoFolder/$videoId/$videoId.mp4", // Cấu trúc mới
-            "https://vid.$hostName/videos/$videoFolder/$videoId/$videoId.mp4"    // Cấu trúc cũ
-        )
+        var nonce: String? = null
+        var postId: String? = null
+        val htmlContent = document.html()
 
-        var workingUrl: String? = null
+        try {
+            // Regex để lấy nonce từ biến 'ajax_player'
+            val nonceRegex = Regex("""'nonce'\s*:\s*'([^']+)""")
+            nonce = nonceRegex.find(htmlContent)?.groupValues?.getOrNull(1)
 
-        // Vòng lặp để kiểm tra từng link
-        for (url in urlsToTest) {
+            // Regex để lấy post_id từ biến 'halim_cfg'
+            val postIdRegex = Regex("""'post_id'\s*:\s*(\d+)""")
+            postId = postIdRegex.find(htmlContent)?.groupValues?.getOrNull(1)
+
+        } catch (e: Exception) { Log.e("Boctem", "Error extracting nonce/postId: ${e.message}") }
+
+        if (!nonce.isNullOrBlank() && !postId.isNullOrBlank()) {
+            val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
+            
+            // Dữ liệu POST chính xác dựa trên cURL
+            val postData = mapOf(
+                "action" to "halim_ajax_player", // Tên action chính xác
+                "nonce" to nonce,
+                "postid" to postId,
+                "episode" to episodeNum.toString(),
+                "server" to "1" // Tham số server là cần thiết
+            )
+
+            val headers = mapOf(
+                "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8",
+                "X-Requested-With" to "XMLHttpRequest",
+                "Referer" to watchUrl
+            )
+            Log.d("Boctem", "Attempting AJAX POST with data: $postData")
+
             try {
-                // Dùng app.head để kiểm tra sự tồn tại của link mà không cần tải toàn bộ file
-                // Mã 200 (OK) có nghĩa là link hoạt động
-                if (app.head(url, referer = mainUrl).code == 200) {
-                    workingUrl = url
-                    break // Tìm thấy link hoạt động, thoát khỏi vòng lặp
+                val ajaxResponseText = app.post(ajaxUrl, headers = headers, data = postData).text
+                Log.d("Boctem", "AJAX Response (first 500 chars): ${ajaxResponseText.take(500)}")
+
+                // Regex để tìm link M3U8 trong hàm playerInstance.setup
+                val scriptRegex = Regex("""playerInstance\.setup\(\s*\{.*?file\s*:\s*["']\s*(https?://[^"']+\.m3u8[^"']*)?\s*["'].*?\}\s*\);?""", RegexOption.DOT_MATCHES_ALL)
+                val match = scriptRegex.find(ajaxResponseText)
+                val m3u8Link = match?.groups?.get(1)?.value?.trim()
+
+                if (!m3u8Link.isNullOrBlank()) {
+                    Log.d("Boctem", "Extracted M3U8 link from AJAX response: $m3u8Link")
+                    callback.invoke(
+                        newExtractorLink(
+                            source = this.name,
+                            name = this.name,
+                            url = m3u8Link,
+                            type = ExtractorLinkType.M3U8,
+                            referer = watchUrl
+                        )
+                    )
+                    Log.d("Boctem", "M3U8 link submitted successfully.")
+                    return true
+                } else {
+                    Log.w("Boctem", "Could not find M3U8 link in AJAX response.")
                 }
             } catch (e: Exception) {
-                // Bỏ qua lỗi (ví dụ 404) và tiếp tục thử link tiếp theo
+                Log.e("Boctem", "AJAX POST request failed: ${e.message}"); e.printStackTrace()
             }
-        }
-        
-        // Nếu tìm thấy link hoạt động, gửi nó cho trình phát
-        if (workingUrl != null) {
-            callback.invoke(
-                ExtractorLink(
-                    source = this.name,
-                    name = this.name,
-                    url = workingUrl,
-                    referer = mainUrl, // Dùng mainUrl làm referer theo yêu cầu
-                    quality = Qualities.Unknown.value,
-                    type = ExtractorLinkType.VIDEO 
-                )
-            )
-            return true
+        } else {
+            Log.e("Boctem", "Failed to extract nonce or postid for AJAX. Nonce: $nonce, PostID: $postId")
         }
 
-        // Nếu không có link nào hoạt động, báo lỗi
-        throw ErrorLoadingException("Không tìm thấy link video hợp lệ")
+        Log.e("Boctem", "Failed to get link via AJAX for $watchUrl (Ep: $episodeNum).")
+        return false
     }
 }
