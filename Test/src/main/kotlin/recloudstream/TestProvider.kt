@@ -4,7 +4,6 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-// Không cần import CloudflareKiller nữa
 
 class XpornTvProvider : MainAPI() {
     override var mainUrl = "https://www.xporn.tv"
@@ -15,9 +14,6 @@ class XpornTvProvider : MainAPI() {
     override val supportedTypes = setOf(
         TvType.NSFW
     )
-
-    // ĐÃ XÓA DÒNG NÀY VÌ PHIÊN BẢN API CỦA BẠN KHÔNG HỖ TRỢ
-    // override val interceptor = CloudflareKiller() 
 
     override val mainPage = mainPageOf(
         "$mainUrl/latest-updates/" to "Latest Videos",
@@ -43,7 +39,6 @@ class XpornTvProvider : MainAPI() {
         val href = this.selectFirst("a")?.attr("href") ?: return null
         val posterUrl = this.selectFirst("img.thumb")?.attr("src")
 
-        // Sử dụng phiên bản MovieSearchResponse không có tags/qualityData
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
         }
@@ -88,20 +83,23 @@ class XpornTvProvider : MainAPI() {
         val script = document.select("script").find { it.data().contains("flashvars") }?.data()
             ?: throw ErrorLoadingException("Không tìm thấy script chứa thông tin video")
 
-        val videoUrlRegex = Regex("""video_url'\s*:\s*'.*?/(get_file/.+?\.mp4/\S*)'""")
-        val videoUrl = videoUrlRegex.find(script)?.groups?.get(1)?.value
+        // ================== SỬA LỖI REGEX Ở ĐÂY ==================
+        // Regex mới linh hoạt hơn, tìm đúng key "video_url:" và lấy giá trị bên trong dấu nháy đơn
+        val videoUrlRegex = Regex("""video_url:\s*'[^']*/(get_file/[^']*)'""")
+        val videoPath = videoUrlRegex.find(script)?.groups?.get(1)?.value
             ?: throw ErrorLoadingException("Không thể trích xuất link video từ script")
+        // =========================================================
 
-        val fullVideoUrl = "$mainUrl/$videoUrl"
+        val fullVideoUrl = "$mainUrl/$videoPath"
 
         callback.invoke(
             ExtractorLink(
                 source = this.name,
                 name = this.name,
                 url = fullVideoUrl,
-                referer = data,
+                referer = data, // Referer là trang chứa video
                 quality = Qualities.Unknown.value,
-                type = ExtractorLinkType.VIDEO 
+                type = ExtractorLinkType.VIDEO
             )
         )
         return true
