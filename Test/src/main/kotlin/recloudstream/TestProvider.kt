@@ -16,6 +16,33 @@ class SupJav : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
 
+    override val mainPage = mainPageOf(
+        "$mainUrl/popular/?sort=week" to "Popular This Week",
+        "$mainUrl/category/censored-jav" to "Censored JAV",
+        "$mainUrl/category/uncensored-jav" to "Uncensored JAV",
+        "$mainUrl/category/amateur" to "Amateur",
+        "$mainUrl/category/reducing-mosaic" to "Reducing Mosaic",
+        "$mainUrl/category/english-subtitles" to "English Subtitles",
+    )
+
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val url = if (page > 1) {
+            if (request.data.contains("?")) {
+                val parts = request.data.split("?")
+                "${parts[0]}/page/$page?${parts[1]}"
+            } else {
+                "${request.data}/page/$page"
+            }
+        } else {
+            request.data
+        }
+
+        val document = app.get(url).document
+        val home = parseVideoList(document.selectFirst("div.posts") ?: return HomePageResponse(emptyList()))
+
+        return newHomePageResponse(request, home, hasNext = home.isNotEmpty())
+    }
+
     private fun parseVideoList(element: Element): List<SearchResponse> {
         return element.select("div.post").mapNotNull {
             val titleElement = it.selectFirst("div.con h3 a")
@@ -28,19 +55,6 @@ class SupJav : MainAPI() {
                 this.posterUrl = posterUrl
             }
         }
-    }
-
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get(mainUrl).document
-        val allPages = ArrayList<HomePageList>()
-        document.select("div.contents > div.content").forEach { contentBlock ->
-            val title = contentBlock.selectFirst(".archive-title h1")?.text() ?: "Unknown Category"
-            val videoList = parseVideoList(contentBlock)
-            if (videoList.isNotEmpty()) {
-                allPages.add(HomePageList(title, videoList))
-            }
-        }
-        return HomePageResponse(allPages)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -62,50 +76,40 @@ class SupJav : MainAPI() {
             this.posterUrl = poster
             this.plot = plot
             this.tags = tags
+            this.recommendations = document.select("div.content").find {
+                it.selectFirst("h2")?.text()?.contains("You May Also Like") == true
+            }?.let { parseVideoList(it) }
         }
     }
 
-    // SIMPLIFIED: Using loadExtractor for all servers
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        var isLinkLoaded = false
-
-        data.split("\n").forEach { link ->
+        // Use apmap (async parallel map) to process all server links concurrently
+        data.split("\n").apmap { link ->
             if (link.isNotBlank()) {
                 try {
                     val reversedData = link.reversed()
                     val intermediatePageUrl1 = "https://lk1.supremejav.com/supjav.php?c=$reversedData"
-                    
                     val response = app.get(intermediatePageUrl1, referer = "$mainUrl/", allowRedirects = false)
 
                     val finalPlayerUrl = if (response.code == 302) {
                         response.headers["Location"]
                     } else {
                         response.document.selectFirst("iframe")?.attr("src")
-                    } ?: throw Exception("Could not find player URL from intermediate page")
+                    } ?: return@apmap // Exit this iteration if no player URL is found
 
                     Log.d(name, "Passing to loadExtractor: $finalPlayerUrl")
                     
-                    // --- SIMPLIFICATION ---
-                    // Now we use loadExtractor for all cases.
-                    if (loadExtractor(finalPlayerUrl, intermediatePageUrl1, subtitleCallback, callback)) {
-                        isLinkLoaded = true
-                    }
-                    
+                    loadExtractor(finalPlayerUrl, intermediatePageUrl1, subtitleCallback, callback)
                 } catch (e: Exception) {
                     Log.e(name, "A server failed: ${e.message}")
                 }
             }
         }
-        
-        if (!isLinkLoaded) {
-            throw Exception("All servers failed to return a valid video link.")
-        }
-
         return true
     }
 }
