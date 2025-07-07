@@ -1,12 +1,13 @@
 // File: SupJav.kt
 package recloudstream
 
+// Bổ sung đầy đủ các import cần thiết
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType // ADDED for the new constructor
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
-import com.lagradost.cloudstream3.utils.log.Log // ADDED for logging
+import com.lagradost.cloudstream3.utils.log.Log // <--- THÊM DÒNG NÀY ĐỂ SỬA LỖI
 import org.jsoup.nodes.Element
 
 class SupJav : MainAPI() {
@@ -16,7 +17,6 @@ class SupJav : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
 
-    // parseVideoList, getMainPage, search, and load functions remain the same...
     private fun parseVideoList(element: Element): List<SearchResponse> {
         return element.select("div.post").mapNotNull {
             val titleElement = it.selectFirst("div.con h3 a")
@@ -68,14 +68,12 @@ class SupJav : MainAPI() {
         }
     }
 
-    // loadLinks function updated with logging, throw, and new ExtractorLinkType
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // LOGGING: Log the input data
         Log.d(name, "loadLinks called with data: $data")
         
         data.split("\n").forEach { link ->
@@ -90,7 +88,6 @@ class SupJav : MainAPI() {
                     ).document
 
                     val finalPlayerUrl = intermediatePage1Doc.selectFirst("iframe")?.attr("src") ?: return@forEach
-                    // LOGGING: Log the extracted player URL
                     Log.d(name, "Extracted player URL: $finalPlayerUrl")
 
                     if (finalPlayerUrl.contains("emturbovid.com")) {
@@ -102,7 +99,6 @@ class SupJav : MainAPI() {
                             val videoUrl = videoUrlRegex.find(scriptContent)?.groups?.get("url")?.value
                             
                             if (videoUrl != null) {
-                                // LOGGING: Log the final video URL
                                 Log.d(name, "Found M3U8 link: $videoUrl")
                                 callback.invoke(
                                     ExtractorLink(
@@ -111,8 +107,7 @@ class SupJav : MainAPI() {
                                         url = videoUrl,
                                         referer = finalPlayerUrl,
                                         quality = Qualities.Unknown.value,
-                                        // UPDATED to use ExtractorLinkType.M3U8
-                                        type = ExtractorLinkType.M3U8 
+                                        type = ExtractorLinkType.M3U8
                                     )
                                 )
                             }
@@ -122,9 +117,7 @@ class SupJav : MainAPI() {
                     }
 
                 } catch (e: Exception) {
-                    // LOGGING: Log the error
                     Log.e(name, "Error in loadLinks for link: $link", e)
-                    // RE-THROW the exception to see it in the app's crash logs
                     throw e 
                 }
             }
