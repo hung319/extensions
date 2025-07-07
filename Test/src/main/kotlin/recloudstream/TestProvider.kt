@@ -32,10 +32,6 @@ class JavSubIdnProvider : MainAPI() {
         val home = document.select("article.thumb-block").mapNotNull { it.toSearchResult() }
         val homePageList = HomePageList(name = "Video Jav Terbaru", list = home)
         val hasNext = document.selectFirst("div.pagination a:contains(Next)") != null
-        
-        // =================================================================
-        // SỬA LỖI: Dùng đúng tên tham số `list` thay vì `items`
-        // =================================================================
         return newHomePageResponse(list = listOf(homePageList), hasNext = hasNext)
     }
 
@@ -77,12 +73,14 @@ class JavSubIdnProvider : MainAPI() {
         val urlRegex = Regex("""(https?://[^\'"]+)""")
 
         document.select("div.box-server a").forEach { element ->
+            // Bọc mỗi lần gọi trong try-catch để một server lỗi không ảnh hưởng đến các server khác
             try {
                 val onclickAttribute = element.attr("onclick")
                 val serverUrl = urlRegex.find(onclickAttribute)?.value ?: return@forEach
+                // Gọi hàm chung của CloudStream để xử lý link
                 loadExtractor(serverUrl, data, subtitleCallback, callback)
             } catch (t: Throwable) {
-                // Lặng lẽ bỏ qua lỗi của một server và tiếp tục
+                // Nếu có lỗi xảy ra với server này, lặng lẽ bỏ qua và tiếp tục với server tiếp theo
             }
         }
         
