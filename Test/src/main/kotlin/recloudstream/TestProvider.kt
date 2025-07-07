@@ -267,14 +267,16 @@ class BoctemProvider : MainAPI() {
 
                 if (!m3u8Link.isNullOrBlank()) {
                     Log.d("Boctem", "Extracted M3U8 link from AJAX response: $m3u8Link")
+                    // SỬA LỖI BIÊN DỊCH: Dùng khối lambda để đặt referer
                     callback.invoke(
                         newExtractorLink(
                             source = this.name,
                             name = this.name,
                             url = m3u8Link,
                             type = ExtractorLinkType.M3U8,
-                            referer = watchUrl
-                        )
+                        ) {
+                            this.referer = watchUrl
+                        }
                     )
                     Log.d("Boctem", "M3U8 link submitted successfully.")
                     return true
