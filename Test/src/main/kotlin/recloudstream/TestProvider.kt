@@ -4,6 +4,7 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
+import android.net.Uri
 
 class XpornTvProvider : MainAPI() {
     override var mainUrl = "https://www.xporn.tv"
@@ -83,36 +84,51 @@ class XpornTvProvider : MainAPI() {
         val videoId = data
         val videoIdInt = videoId.toIntOrNull() ?: return false
 
-        val subdomain: String
-        val pathSegment: String
+        // Lấy tên miền gốc từ mainUrl để dễ bảo trì
+        val hostName = Uri.parse(mainUrl).host?.replace("www.", "") ?: "xporn.tv"
 
-        // ================== LOGIC THÔNG MINH Ở ĐÂY ==================
-        // Dựa vào ID để chọn đúng cấu trúc server và đường dẫn
-        if (videoIdInt >= 290000) {
-            // Cấu trúc cho video mới
-            subdomain = "vid2"
-            pathSegment = "videos1X"
-        } else {
-            // Cấu trúc cho video cũ
-            subdomain = "vid"
-            pathSegment = "videos"
-        }
-        // =========================================================
-
+        // Tính toán thư mục
         val videoFolder = (videoIdInt / 1000) * 1000
         
-        val finalUrl = "https://$subdomain.xporn.tv/$pathSegment/$videoFolder/$videoId/$videoId.mp4"
-
-        callback.invoke(
-            ExtractorLink(
-                source = this.name,
-                name = this.name,
-                url = finalUrl,
-                referer = "$mainUrl/videos/$videoId/",
-                quality = Qualities.Unknown.value,
-                type = ExtractorLinkType.VIDEO 
-            )
+        // ================== LOGIC MỚI Ở ĐÂY ==================
+        // Tạo ra danh sách các link có khả năng hoạt động
+        val urlsToTest = listOf(
+            "https://vid2.$hostName/videos1X/$videoFolder/$videoId/$videoId.mp4", // Cấu trúc mới
+            "https://vid.$hostName/videos/$videoFolder/$videoId/$videoId.mp4"    // Cấu trúc cũ
         )
-        return true
+
+        var workingUrl: String? = null
+
+        // Vòng lặp để kiểm tra từng link
+        for (url in urlsToTest) {
+            try {
+                // Dùng app.head để kiểm tra sự tồn tại của link mà không cần tải toàn bộ file
+                // Mã 200 (OK) có nghĩa là link hoạt động
+                if (app.head(url, referer = mainUrl).code == 200) {
+                    workingUrl = url
+                    break // Tìm thấy link hoạt động, thoát khỏi vòng lặp
+                }
+            } catch (e: Exception) {
+                // Bỏ qua lỗi (ví dụ 404) và tiếp tục thử link tiếp theo
+            }
+        }
+        
+        // Nếu tìm thấy link hoạt động, gửi nó cho trình phát
+        if (workingUrl != null) {
+            callback.invoke(
+                ExtractorLink(
+                    source = this.name,
+                    name = this.name,
+                    url = workingUrl,
+                    referer = mainUrl, // Dùng mainUrl làm referer theo yêu cầu
+                    quality = Qualities.Unknown.value,
+                    type = ExtractorLinkType.VIDEO 
+                )
+            )
+            return true
+        }
+
+        // Nếu không có link nào hoạt động, báo lỗi
+        throw ErrorLoadingException("Không tìm thấy link video hợp lệ")
     }
 }
