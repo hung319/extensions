@@ -96,7 +96,7 @@ class XpornTvProvider : MainAPI() {
                 quality = Qualities.Unknown.value,
                 // ================== SỬA LỖI Ở ĐÂY ==================
                 // Đổi type thành HLS để trình phát xử lý đúng luồng m3u8
-                type = ExtractorLinkType.HLS
+                type = ExtractorLinkType.M3U8
                 // ==================================================
             )
         )
