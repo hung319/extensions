@@ -58,7 +58,6 @@ class XpornTvProvider : MainAPI() {
             ?: document.selectFirst("meta[property=og:title]")?.attr("content")
             ?: "Video"
         
-        // Trích xuất videoId trực tiếp từ URL của trang. Ví dụ: ".../videos/23672/..." -> "23672"
         val videoId = url.split("/")[4]
         
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
@@ -68,7 +67,6 @@ class XpornTvProvider : MainAPI() {
             it.toSearchResult()
         }
         
-        // Truyền videoId cho hàm `loadLinks` để nó xây dựng link cuối cùng
         return newMovieLoadResponse(title, url, TvType.NSFW, videoId) {
             this.posterUrl = poster
             this.plot = description
@@ -77,18 +75,13 @@ class XpornTvProvider : MainAPI() {
     }
     
     override suspend fun loadLinks(
-        data: String, // `data` bây giờ là videoId (ví dụ: "23672")
+        data: String, // `data` là videoId
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val videoId = data
-
-        // Tính toán thư mục chứa video dựa trên ID
-        // Ví dụ: ID 23672 -> thư mục 23000. ID 62 -> thư mục 0.
         val videoFolder = (videoId.toInt() / 1000) * 1000
-        
-        // Xây dựng URL cuối cùng với tên miền phụ `vid.` và cấu trúc đường dẫn đã biết
         val finalUrl = "https://vid.xporn.tv/videos/$videoFolder/$videoId/$videoId.mp4"
 
         callback.invoke(
@@ -96,9 +89,12 @@ class XpornTvProvider : MainAPI() {
                 source = this.name,
                 name = this.name,
                 url = finalUrl,
-                referer = "$mainUrl/videos/$videoId/", // Gửi referer để đảm bảo link hoạt động
+                referer = "$mainUrl/videos/$videoId/",
                 quality = Qualities.Unknown.value,
-                type = ExtractorLinkType.VIDEO // Vẫn để HLS cho linh hoạt
+                // ================== THAY ĐỔI THEO YÊU CẦU ==================
+                // Đổi lại type thành VIDEO
+                type = ExtractorLinkType.VIDEO 
+                // =======================================================
             )
         )
         return true
