@@ -65,14 +65,13 @@ class SupJav : MainAPI() {
         }
     }
 
-    // Rewritten loadLinks to handle 302 redirects
+    // SIMPLIFIED: Using loadExtractor for all servers
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d(name, "loadLinks called with data: $data")
         var isLinkLoaded = false
 
         data.split("\n").forEach { link ->
@@ -81,40 +80,22 @@ class SupJav : MainAPI() {
                     val reversedData = link.reversed()
                     val intermediatePageUrl1 = "https://lk1.supremejav.com/supjav.php?c=$reversedData"
                     
-                    // --- START OF THE FIX ---
-                    // Make a request but DO NOT follow redirects automatically
                     val response = app.get(intermediatePageUrl1, referer = "$mainUrl/", allowRedirects = false)
 
-                    // Check the response code to determine how to get the final player URL
                     val finalPlayerUrl = if (response.code == 302) {
-                        // If it's a redirect, get the URL from the 'Location' header
                         response.headers["Location"]
                     } else {
-                        // Otherwise, parse the HTML body to find the iframe (the old way)
                         response.document.selectFirst("iframe")?.attr("src")
                     } ?: throw Exception("Could not find player URL from intermediate page")
 
-                    Log.d(name, "Extracted player URL: $finalPlayerUrl")
-
-                    // The rest of the logic remains the same
-                    if (finalPlayerUrl.contains("emturbovid.com")) {
-                        val playerDoc = app.get(finalPlayerUrl, referer = intermediatePageUrl1).document
-                        val scriptContent = playerDoc.select("script").find { it.data().contains("var urlPlay") }?.data()
-                            ?: throw Exception("L2: Could not find script in EmturboVid")
-                        
-                        val videoUrlRegex = Regex("""var urlPlay = '(?<url>https?://[^']+\.m3u8[^']*)'""")
-                        val videoUrl = videoUrlRegex.find(scriptContent)?.groups?.get("url")?.value
-                            ?: throw Exception("L3: Could not extract M3U8 from EmturboVid")
-                        
-                        callback.invoke(
-                            ExtractorLink(this.name, "EmturboVid - OK", videoUrl, finalPlayerUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
-                        )
+                    Log.d(name, "Passing to loadExtractor: $finalPlayerUrl")
+                    
+                    // --- SIMPLIFICATION ---
+                    // Now we use loadExtractor for all cases.
+                    if (loadExtractor(finalPlayerUrl, intermediatePageUrl1, subtitleCallback, callback)) {
                         isLinkLoaded = true
-                    } else {
-                        if (loadExtractor(finalPlayerUrl, intermediatePageUrl1, subtitleCallback, callback)) {
-                            isLinkLoaded = true
-                        }
                     }
+                    
                 } catch (e: Exception) {
                     Log.e(name, "A server failed: ${e.message}")
                 }
