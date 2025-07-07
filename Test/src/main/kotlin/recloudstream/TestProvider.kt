@@ -83,23 +83,21 @@ class XpornTvProvider : MainAPI() {
         val script = document.select("script").find { it.data().contains("flashvars") }?.data()
             ?: throw ErrorLoadingException("Không tìm thấy script chứa thông tin video")
 
-        // ================== SỬA LỖI REGEX Ở ĐÂY ==================
-        // Regex mới linh hoạt hơn, tìm đúng key "video_url:" và lấy giá trị bên trong dấu nháy đơn
-        val videoUrlRegex = Regex("""video_url:\s*'[^']*/(get_file/[^']*)'""")
-        val videoPath = videoUrlRegex.find(script)?.groups?.get(1)?.value
+        val videoUrlRegex = Regex("""video_url:\s*'.*?(https?://[^']+)""")
+        val videoUrl = videoUrlRegex.find(script)?.groups?.get(1)?.value
             ?: throw ErrorLoadingException("Không thể trích xuất link video từ script")
-        // =========================================================
-
-        val fullVideoUrl = "$mainUrl/$videoPath"
 
         callback.invoke(
             ExtractorLink(
                 source = this.name,
                 name = this.name,
-                url = fullVideoUrl,
-                referer = data, // Referer là trang chứa video
+                url = videoUrl,
+                referer = data,
                 quality = Qualities.Unknown.value,
-                type = ExtractorLinkType.VIDEO
+                // ================== SỬA LỖI Ở ĐÂY ==================
+                // Đổi type thành HLS để trình phát xử lý đúng luồng m3u8
+                type = ExtractorLinkType.HLS
+                // ==================================================
             )
         )
         return true
