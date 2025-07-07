@@ -16,7 +16,6 @@ class SupJav : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
 
-    // parseVideoList, getMainPage, search, load functions remain unchanged...
     private fun parseVideoList(element: Element): List<SearchResponse> {
         return element.select("div.post").mapNotNull {
             val titleElement = it.selectFirst("div.con h3 a")
@@ -66,7 +65,7 @@ class SupJav : MainAPI() {
         }
     }
 
-    // Rewritten loadLinks to be more robust and prevent silent fails
+    // Rewritten loadLinks to handle 302 redirects
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -81,12 +80,23 @@ class SupJav : MainAPI() {
                 try {
                     val reversedData = link.reversed()
                     val intermediatePageUrl1 = "https://lk1.supremejav.com/supjav.php?c=$reversedData"
-                    val intermediatePage1Doc = app.get(intermediatePageUrl1, referer = "$mainUrl/").document
-                    val finalPlayerUrl = intermediatePage1Doc.selectFirst("iframe")?.attr("src") 
-                        ?: throw Exception("L1: Could not find iframe")
+                    
+                    // --- START OF THE FIX ---
+                    // Make a request but DO NOT follow redirects automatically
+                    val response = app.get(intermediatePageUrl1, referer = "$mainUrl/", allowRedirects = false)
+
+                    // Check the response code to determine how to get the final player URL
+                    val finalPlayerUrl = if (response.code == 302) {
+                        // If it's a redirect, get the URL from the 'Location' header
+                        response.headers["Location"]
+                    } else {
+                        // Otherwise, parse the HTML body to find the iframe (the old way)
+                        response.document.selectFirst("iframe")?.attr("src")
+                    } ?: throw Exception("Could not find player URL from intermediate page")
 
                     Log.d(name, "Extracted player URL: $finalPlayerUrl")
 
+                    // The rest of the logic remains the same
                     if (finalPlayerUrl.contains("emturbovid.com")) {
                         val playerDoc = app.get(finalPlayerUrl, referer = intermediatePageUrl1).document
                         val scriptContent = playerDoc.select("script").find { it.data().contains("var urlPlay") }?.data()
@@ -97,30 +107,20 @@ class SupJav : MainAPI() {
                             ?: throw Exception("L3: Could not extract M3U8 from EmturboVid")
                         
                         callback.invoke(
-                            ExtractorLink(
-                                source = this.name,
-                                name = "EmturboVid - OK",
-                                url = videoUrl,
-                                referer = finalPlayerUrl,
-                                quality = Qualities.Unknown.value,
-                                type = ExtractorLinkType.M3U8
-                            )
+                            ExtractorLink(this.name, "EmturboVid - OK", videoUrl, finalPlayerUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
                         )
                         isLinkLoaded = true
                     } else {
-                        // For other players, check the return value of loadExtractor
                         if (loadExtractor(finalPlayerUrl, intermediatePageUrl1, subtitleCallback, callback)) {
                             isLinkLoaded = true
                         }
                     }
                 } catch (e: Exception) {
-                    // We don't throw here, just log it. We will throw a final error if nothing works.
                     Log.e(name, "A server failed: ${e.message}")
                 }
             }
         }
         
-        // If after trying all servers, no link was loaded, throw an exception.
         if (!isLinkLoaded) {
             throw Exception("All servers failed to return a valid video link.")
         }
