@@ -244,34 +244,26 @@ class AnimeVietsubProvider : MainAPI() {
                     val segmentHeaders = mutableMapOf<String, String>()
                     bypassHeaders.forEach { (key, value) -> segmentHeaders[key] = value }
                     segmentHeaders["Referer"] = referer
-                    
-                    // Xử lý 302 Redirect một cách tường minh
+
+                    // ===== THAY ĐỔI CUỐI CÙNG =====
+                    // Để app.get tự động theo dõi redirect.
+                    // Nó sẽ tự xử lý chuỗi 302 và trả về kết quả cuối cùng từ googleusercontent.com
                     val segmentResponse = runBlocking {
                         app.get(
-                            segmentUrl, 
+                            url = segmentUrl, 
                             headers = segmentHeaders, 
-                            allowRedirects = false // Quan trọng!
+                            allowRedirects = true // Quan trọng: Trả về mặc định
                         )
                     }
                     
-                    if (segmentResponse.code == 302) {
-                        val newLocation = segmentResponse.headers["Location"]
-                        if (newLocation != null) {
-                            return@Interceptor Response.Builder()
-                                .request(request)
-                                .protocol(okhttp3.Protocol.HTTP_1_1)
-                                .code(302).message("Found")
-                                .header("Location", newLocation)
-                                .body(okhttp3.ResponseBody.create(null, "")).build()
-                        }
-                    }
-                    
-                    // Trả về response nếu không phải redirect
+                    // Trả về thẳng response cuối cùng cho trình phát video
                     return@Interceptor Response.Builder()
                         .request(request).protocol(okhttp3.Protocol.HTTP_1_1)
                         .code(segmentResponse.code).message("OK") 
                         .headers(segmentResponse.headers)
                         .body(segmentResponse.body).build()
+                    // ==============================
+
                 } else {
                     Response.Builder()
                         .request(request).protocol(okhttp3.Protocol.HTTP_1_1)
