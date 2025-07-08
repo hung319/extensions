@@ -86,6 +86,8 @@ subprojects {
         implementation("app.cash.quickjs:quickjs-android:0.9.2")
         implementation("io.karn:khttp-android:0.1.2")
         implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+        implementation("io.ktor:ktor-server-core-jvm:2.3.12")
+        implementation("io.ktor:ktor-server-netty-jvm:2.3.12")
     }
 }
 
