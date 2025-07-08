@@ -27,10 +27,16 @@ import kotlin.math.roundToInt
 
 class AnimeVietsubProvider : MainAPI() {
 
+    // ===== THAY ĐỔI KIẾN TRÚC QUAN TRỌNG NHẤT =====
     companion object {
+        // Di chuyển cả hai vào đây để chúng trở thành singleton,
+        // tồn tại và được chia sẻ qua mọi lần provider được tái tạo.
         private val m3u8Contents = mutableMapOf<String, String>()
+        private val cfInterceptor = CloudflareKiller()
+        
         private const val PROXY_DOMAIN = "https://avs-final.local"
     }
+    // =================================================
 
     private val gson = Gson()
     
@@ -39,8 +45,7 @@ class AnimeVietsubProvider : MainAPI() {
     override var lang = "vi"
     override val hasMainPage = true
 
-    private val cfInterceptor = CloudflareKiller()
-
+    // Khởi tạo mainUrl bằng runBlocking, sử dụng cfInterceptor từ companion object
     override var mainUrl: String = runBlocking {
         try {
             val response = app.get("https://bit.ly/animevietsubtv", interceptor = cfInterceptor, allowRedirects = true)
@@ -57,6 +62,8 @@ class AnimeVietsubProvider : MainAPI() {
         "/bang-xep-hang/day.html" to "Xem Nhiều Trong Ngày"
     )
 
+    // Tất cả các hàm gọi mạng bên dưới đều đã sử dụng cfInterceptor từ companion object
+    // nên chúng sẽ chia sẻ cùng một session Cloudflare.
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page == 1) {
             "$mainUrl${request.data}"
@@ -244,26 +251,20 @@ class AnimeVietsubProvider : MainAPI() {
                     val segmentHeaders = mutableMapOf<String, String>()
                     bypassHeaders.forEach { (key, value) -> segmentHeaders[key] = value }
                     segmentHeaders["Referer"] = referer
-
-                    // ===== THAY ĐỔI CUỐI CÙNG =====
-                    // Để app.get tự động theo dõi redirect.
-                    // Nó sẽ tự xử lý chuỗi 302 và trả về kết quả cuối cùng từ googleusercontent.com
+                    
                     val segmentResponse = runBlocking {
                         app.get(
                             url = segmentUrl, 
                             headers = segmentHeaders, 
-                            allowRedirects = true // Quan trọng: Trả về mặc định
+                            allowRedirects = true
                         )
                     }
                     
-                    // Trả về thẳng response cuối cùng cho trình phát video
                     return@Interceptor Response.Builder()
                         .request(request).protocol(okhttp3.Protocol.HTTP_1_1)
                         .code(segmentResponse.code).message("OK") 
                         .headers(segmentResponse.headers)
                         .body(segmentResponse.body).build()
-                    // ==============================
-
                 } else {
                     Response.Builder()
                         .request(request).protocol(okhttp3.Protocol.HTTP_1_1)
