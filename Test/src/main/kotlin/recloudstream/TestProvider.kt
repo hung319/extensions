@@ -148,7 +148,7 @@ class AnimeVietsubProvider : MainAPI() {
                         val title = titleElement.text().trim()
                         val href = fixUrl(titleElement.attr("href"), baseUrl) ?: return@mapNotNull null
                         val posterUrl = fixUrl(element.selectFirst("a.thumb img")?.attr("src"), baseUrl)
-                        newMovieSearchResponse(title, href, TvType.Anime).apply {
+                        newMovieSearchResponse(title, href, TvType.Anime) {
                             this.posterUrl = posterUrl
                         }
                     } catch (e: Exception) {
@@ -197,7 +197,7 @@ class AnimeVietsubProvider : MainAPI() {
             val isMovie = listOf("OVA", "ONA", "Movie", "Phim Lẻ").any { title.contains(it, true) } ||
                     this.selectFirst("span.mli-eps") == null
             val tvType = if (isMovie) TvType.Movie else TvType.Anime
-            newMovieSearchResponse(title, href, tvType).apply {
+            newMovieSearchResponse(title, href, tvType) {
                 this.posterUrl = posterUrl
             }
         } catch (e: Exception) {
@@ -295,10 +295,11 @@ class AnimeVietsubProvider : MainAPI() {
             try {
                 val dataId = el.attr("data-id").ifBlank { null } ?: return@mapNotNull null
                 val dataHash = el.attr("data-hash").ifBlank { null } ?: return@mapNotNull null
-                val name = el.attr("title").ifBlank { el.text() }.trim()
-                // SỬA LỖI: Gọi AppUtils.toJson
+                val episodeName = el.attr("title").ifBlank { el.text() }.trim()
                 val data = AppUtils.toJson(LinkData(hash = dataHash, id = dataId))
-                newEpisode(data) { this.name = name }
+                newEpisode(data) {
+                    this.name = episodeName
+                }
             } catch (e: Exception) {
                 null
             }
@@ -337,7 +338,6 @@ class AnimeVietsubProvider : MainAPI() {
             }
         } else {
             val duration = this.extractDuration()
-            // SỬA LỖI: Gọi AppUtils.toJson
             val data = episodes.firstOrNull()?.data
                 ?: AppUtils.toJson(LinkData(this.getDataIdFallback(infoUrl) ?: "", ""))
             provider.newMovieLoadResponse(title, infoUrl, finalTvType, data) {
@@ -362,8 +362,7 @@ class AnimeVietsubProvider : MainAPI() {
         val href = fixUrl(item.selectFirst("a")?.attr("href"), baseUrl) ?: return@mapNotNull null
         val title = item.selectFirst(".Title")?.text()?.trim() ?: return@mapNotNull null
         val posterUrl = fixUrl(item.selectFirst("img")?.attr("src"), baseUrl)
-        // SỬA LỖI: Sử dụng .apply {}
-        newMovieSearchResponse(title, href, TvType.Anime).apply {
+        newMovieSearchResponse(title, href, TvType.Anime) {
             this.posterUrl = posterUrl
         }
     }
