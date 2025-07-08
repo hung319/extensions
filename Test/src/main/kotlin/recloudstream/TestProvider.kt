@@ -1,5 +1,6 @@
 package recloudstream // Package đã được thay đổi theo yêu cầu
 
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
@@ -10,17 +11,18 @@ class Kurakura21Provider : MainAPI() {
     override var mainUrl = "https://kurakura21.net"
     override var name = "Kurakura21"
     override val hasMainPage = true
-    override var lang = "id" // Ngôn ngữ Indonesia
+    override var lang = "id"
     override val hasDownloadSupport = true
+    // Đã thay đổi supportedTypes thành NSFW
     override val supportedTypes = setOf(
-        TvType.Movie,
-        TvType.TvSeries
+        TvType.NSFW
     )
-
-    // Hàm hỗ trợ để lấy URL đầy đủ
-    private fun String.toFullUrl(): String {
-        return if (this.startsWith("http")) this else "$mainUrl$this"
-    }
+    
+    // Lớp dữ liệu để lưu thông tin cho lời gọi AJAX, sẽ được chuyển thành JSON
+    private data class EpisodeData(
+        @JsonProperty("ajaxUrl") val ajaxUrl: String,
+        @JsonProperty("postData") val postData: Map<String, String>
+    )
 
     // Hàm để phân tích kết quả tìm kiếm và danh sách phim
     private fun Element.toSearchResult(): SearchResponse? {
@@ -28,13 +30,10 @@ class Kurakura21Provider : MainAPI() {
         val href = this.selectFirst("a")?.attr("href") ?: return null
         val posterUrl = this.selectFirst("img")?.attr("data-src")
 
-        return newMovieSearchResponse(title, href) {
+        // Sử dụng newAnimeSearchResponse vì đây là nội dung NSFW
+        return newAnimeSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
-            // Thêm tag chất lượng nếu có
-            this.quality =
-                this.selectFirst(".gmr-quality-item a")?.text()?.let {
-                    getQualityFromString(it)
-                }
+            this.quality = getQualityFromString(this.selectFirst(".gmr-quality-item a")?.text())
         }
     }
     
@@ -43,7 +42,6 @@ class Kurakura21Provider : MainAPI() {
         val document = app.get(mainUrl).document
         val homePageList = mutableListOf<HomePageList>()
 
-        // Phân tích tất cả các khu vực phim trên trang chủ
         document.select("div.home-widget").forEach { block ->
             val header = block.selectFirst("h3.homemodule-title")?.text() ?: return@forEach
             val movies = block.select("article, div.gmr-item-modulepost").mapNotNull {
@@ -54,7 +52,6 @@ class Kurakura21Provider : MainAPI() {
             }
         }
         
-        // Phân tích khu vực "Latest Movie" (Phim mới nhất) ở dưới cùng
         val latestMoviesHeader = document.selectFirst("#primary h3.homemodule-title")?.text() ?: "Latest Movies"
         val latestMovies = document.select("#gmr-main-load article.item-infinite").mapNotNull {
             it.toSearchResult()
@@ -68,15 +65,13 @@ class Kurakura21Provider : MainAPI() {
 
     // --- Chức năng tìm kiếm ---
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/?s=$query"
-        val document = app.get(searchUrl).document
-
+        val document = app.get("$mainUrl/?s=$query").document
         return document.select("article.item-infinite").mapNotNull {
             it.toSearchResult()
         }
     }
 
-    // --- Tải dữ liệu phim/series ---
+    // --- Tải dữ liệu ---
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
         val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: "No Title"
@@ -86,58 +81,55 @@ class Kurakura21Provider : MainAPI() {
             Regex("""(\d{4})""").find(it)?.groupValues?.get(1)?.toIntOrNull()
         }
         
-        // ID của bài đăng (post ID) cần thiết cho lời gọi AJAX để lấy máy chủ video
         val postId = document.body().attr("class").let {
             Regex("postid-(\\d+)").find(it)?.groupValues?.get(1)
         } ?: throw ErrorLoadingException("Failed to get post ID")
 
-        // Tìm các tab máy chủ
         val servers = document.select("ul.muvipro-player-tabs li a")
 
         val episodes = servers.mapIndexed { index, server ->
             val serverName = server.text()
-            val embedUrl = "$mainUrl/wp-admin/admin-ajax.php" // Điểm cuối của AJAX
+            val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
             val postData = mapOf(
                 "action" to "muvipro_player_content",
                 "post_id" to postId,
-                "player" to (index + 1).toString() // Chỉ số player bắt đầu từ 1
+                "player" to (index + 1).toString()
             )
+            
+            val episodeDataJson = EpisodeData(ajaxUrl, postData).toJson()
 
-            // Tạo một tập phim với một callback để tải liên kết sau
             Episode(
-                data = embedUrl,
-                name = serverName,
-                // Truyền postData như một phần của dữ liệu Episode
-                extra = mapOf("postData" to postData)
+                data = episodeDataJson,
+                name = serverName
             )
         }
 
-        return newMovieLoadResponse(title, url, TvType.Movie, episodes) {
+        // Sử dụng newAnimeLoadResponse cho nội dung NSFW
+        return newAnimeLoadResponse(title, url, TvType.NSFW) {
             this.posterUrl = poster
             this.year = year
             this.plot = description
+            addEpisodes(DubStatus.Dubbed, episodes) // Thêm danh sách server/episode
         }
     }
 
-    // --- Trích xuất liên kết video từ các trang nhúng ---
+    // --- Trích xuất liên kết video ---
     override suspend fun loadLinks(
-        data: String, // Đây sẽ là URL của AJAX
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Lấy postData từ bản đồ extra của Episode
-        val postData = (AppUtils.parseJson<Map<String, Any>>(data)["extra"] as? Map<*, *>)
-            ?.get("postData") as? Map<String, String>
-            ?: throw ErrorLoadingException("Failed to get post data for AJAX call")
+        val episodeData = try {
+            parseJson<EpisodeData>(data)
+        } catch (e: Exception) {
+            throw ErrorLoadingException("Failed to parse episode data")
+        }
 
-        // Thực hiện lời gọi AJAX để lấy iframe
-        val ajaxResponse = app.post(data, data = postData).document
+        val ajaxResponse = app.post(episodeData.ajaxUrl, data = episodeData.postData).document
         val iframeSrc = ajaxResponse.selectFirst("iframe")?.attr("src")
             ?: throw ErrorLoadingException("Failed to find iframe source")
-
-        // Sử dụng trình trích xuất tích hợp để xử lý nguồn iframe
-        // Trình trích xuất này có thể tự động xử lý nhiều máy chủ video phổ biến
+            
         return loadExtractor(iframeSrc, subtitleCallback, callback)
     }
 }
