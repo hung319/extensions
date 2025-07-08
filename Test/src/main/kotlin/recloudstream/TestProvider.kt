@@ -242,12 +242,12 @@ class AnimeVietsubProvider : MainAPI() {
             ),
             data = mapOf("link" to linkData.hash, "id" to linkData.id)
         ).text
-
+        
+        var decryptedM3u8: String? = null
         if (response.contains("[{\"file\":\"")) {
             val encrypted = response.substringAfter("[{\"file\":\"").substringBefore("\"}")
-
             val key = decodeB64("5nDwIaiZK8NTF5ia3bv5KG1b5aNnisGt5GN6IayZFZJNkMGm3aj4KgGtAMC=")
-            val decryptedM3u8 = decrypt(encrypted, key)
+            decryptedM3u8 = decrypt(encrypted, key)
 
             if (decryptedM3u8 != null) {
                 m3u8Contents[keyM3u8] = decryptedM3u8.replace("\"", "")
@@ -257,7 +257,10 @@ class AnimeVietsubProvider : MainAPI() {
         callback.invoke(
             newExtractorLink(
                 source = name,
-                name = name,
+                // ================== THAY ĐỔI ĐỂ DEBUG ==================
+                // Tên của link sẽ là nội dung file m3u8 hoặc thông báo lỗi
+                name = decryptedM3u8 ?: "Lỗi Giải Mã M3U8",
+                // =======================================================
                 url = "https://storage.googleapis.com/cloudstream-27898.appspot.com/animevietsub%2Fb$keyM3u8.m3u8",
                 type = ExtractorLinkType.M3U8
             ) {
@@ -297,7 +300,6 @@ class AnimeVietsubProvider : MainAPI() {
                 val dataId = el.attr("data-id").ifBlank { null } ?: return@mapNotNull null
                 val dataHash = el.attr("data-hash").ifBlank { null } ?: return@mapNotNull null
                 val episodeName = el.attr("title").ifBlank { el.text() }.trim()
-                // SỬA LỖI: Gọi .toJson() trực tiếp từ đối tượng
                 val data = LinkData(hash = dataHash, id = dataId).toJson()
                 Episode(
                     data = data,
@@ -341,7 +343,6 @@ class AnimeVietsubProvider : MainAPI() {
             }
         } else {
             val duration = this.extractDuration()
-            // SỬA LỖI: Gọi .toJson() trực tiếp từ đối tượng
             val data = episodes.firstOrNull()?.data
                 ?: LinkData(this.getDataIdFallback(infoUrl) ?: "", "").toJson()
             provider.newMovieLoadResponse(title, infoUrl, finalTvType, data) {
