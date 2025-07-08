@@ -218,7 +218,6 @@ class AnimeVietsubProvider : MainAPI() {
                         referer = "",
                         quality = Qualities.Unknown.value,
                         type = ExtractorLinkType.M3U8,
-                        extraData = mapOf("direct" to "true") // Báo cho trình phát biết đây là nội dung
                     )
                 )
                 m3u8Cache.remove(cacheKey) // Xóa khỏi cache sau khi dùng
