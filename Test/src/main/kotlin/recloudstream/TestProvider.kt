@@ -1,6 +1,5 @@
 package com.lagradost.cloudstream3.movieprovider // QUAN TRỌNG: Sử dụng package chuẩn
 
-import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
@@ -13,12 +12,6 @@ class Kurakura21Provider : MainAPI() {
     override var lang = "id"
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.NSFW)
-    
-    // Lớp dữ liệu để lưu thông tin cho lời gọi AJAX
-    private data class EpisodeData(
-        @JsonProperty("ajaxUrl") val ajaxUrl: String,
-        @JsonProperty("postData") val postData: Map<String, String>
-    )
 
     private fun Element.toSearchResult(): SearchResponse? {
         val title = this.selectFirst("h2.entry-title a")?.text() ?: return null
@@ -61,6 +54,7 @@ class Kurakura21Provider : MainAPI() {
         return document.select("article.item-infinite").mapNotNull { it.toSearchResult() }
     }
 
+    // THAY ĐỔI LỚN: Hàm load bây giờ sẽ trực tiếp lấy link embed
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
         val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: "No Title"
@@ -74,26 +68,38 @@ class Kurakura21Provider : MainAPI() {
             Regex("postid-(\\d+)").find(it)?.groupValues?.get(1)
         } ?: throw ErrorLoadingException("Failed to get post ID")
 
-        // Lấy danh sách các server
-        val servers = document.select("ul.muvipro-player-tabs li a")
+        // Lấy server đầu tiên
+        val firstServer = document.select("ul.muvipro-player-tabs li a").firstOrNull() 
+            ?: throw ErrorLoadingException("No servers found")
 
-        val episodes = servers.mapNotNull { serverElement ->
-            val serverName = serverElement.text()
-            // SỬA LỖI: Lấy giá trị của tham số 'tab' từ thuộc tính href (ví dụ: #p1 -> p1)
-            val tabValue = serverElement.attr("href").removePrefix("#")
-            if (tabValue.isBlank()) return@mapNotNull null
+        val serverName = firstServer.text()
+        val tabValue = firstServer.attr("href").removePrefix("#")
 
+        val episodes = mutableListOf<Episode>()
+
+        if (tabValue.isNotBlank()) {
             val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
-            // SỬA LỖI: Sử dụng tham số 'tab' thay vì 'player'
             val postData = mapOf(
                 "action" to "muvipro_player_content",
                 "post_id" to postId,
                 "tab" to tabValue 
             )
-            
-            val episodeDataJson = AppUtils.toJson(EpisodeData(ajaxUrl, postData))
 
-            Episode(data = episodeDataJson, name = serverName)
+            // Gọi AJAX ngay tại đây
+            val ajaxResponse = app.post(ajaxUrl, data = postData, referer = url).document
+            val iframeSrc = ajaxResponse.selectFirst("iframe")?.attr("src")
+
+            if (iframeSrc != null) {
+                // Tạo một episode duy nhất với dữ liệu là link iframe
+                episodes.add(Episode(
+                    data = iframeSrc,
+                    name = serverName
+                ))
+            }
+        }
+        
+        if (episodes.isEmpty()) {
+            throw ErrorLoadingException("Could not extract any video links")
         }
 
         return newAnimeLoadResponse(title, url, TvType.NSFW) {
@@ -104,25 +110,14 @@ class Kurakura21Provider : MainAPI() {
         }
     }
 
+    // THAY ĐỔI LỚN: Hàm loadLinks bây giờ rất đơn giản
     override suspend fun loadLinks(
-        data: String,
+        data: String, // 'data' bây giờ là link iframe trực tiếp
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val episodeData = AppUtils.parseJson<EpisodeData>(data)
-        
-        // Gửi yêu cầu AJAX với dữ liệu đã được sửa chính xác
-        val ajaxResponse = app.post(
-            episodeData.ajaxUrl,
-            data = episodeData.postData,
-            referer = this.mainUrl // Thêm referer để yêu cầu hợp lệ hơn
-        ).document
-        
-        val iframeSrc = ajaxResponse.selectFirst("iframe")?.attr("src")
-            ?: throw ErrorLoadingException("Failed to find iframe source")
-            
-        // loadExtractor sẽ xử lý link iframe (ví dụ: filemoon.to)
-        return loadExtractor(iframeSrc, subtitleCallback, callback)
+        // Chỉ cần gọi loadExtractor với link iframe
+        return loadExtractor(data, subtitleCallback, callback)
     }
 }
