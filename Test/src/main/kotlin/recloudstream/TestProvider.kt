@@ -1,7 +1,6 @@
 package recloudstream
 
-import com.lagradost.cloudstream3.* // Giữ lại import wildcard
-import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
+import com.lagradost.cloudstream3.* import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.LoadResponse.Companion.addDuration
 import android.util.Log
 import com.google.gson.Gson
@@ -25,7 +24,7 @@ import io.ktor.server.netty.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 
-// =================== SỬA LỖI: THÊM CÁC IMPORT BỊ THIẾU ===================
+// Import các thành phần API cần thiết
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
@@ -50,7 +49,6 @@ class AnimeVietsubProvider : MainAPI() {
     private var currentActiveUrl = bitlyResolverUrl
     private var domainResolutionAttempted = false
 
-    // =================== KTOR LOCAL PROXY SERVER ===================
     companion object {
         private var localServer: NettyApplicationEngine? = null
         private var serverJob: Job? = null
@@ -85,7 +83,6 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
 
-    // =================== LOGIC GIẢI MÃ ===================
     private val KEY_STRING_B64 = "ZG1fdGhhbmdfc3VjX3ZhdF9nZXRfbGlua19hbl9kYnQ="
 
     private val aesKey by lazy {
@@ -257,7 +254,6 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
     
-    // Sửa lại chữ ký hàm cho đúng
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -303,10 +299,11 @@ class AnimeVietsubProvider : MainAPI() {
                 source = name,
                 name = name,
                 url = m3u8DataUri,
-                type = ExtractorLinkType.M3U8,
-                referer = episodePageUrl,
-                quality = Qualities.Unknown.value
-            ).let { callback(it) }
+                referer = episodePageUrl, // referer là một tham số chính
+                type = ExtractorLinkType.M3U8
+            ) { // Khối builder để đặt các thuộc tính còn lại
+                this.quality = Qualities.Unknown.value
+            }.let { callback(it) }
         }
 
         return true
