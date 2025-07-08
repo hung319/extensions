@@ -5,6 +5,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.LoadResponse.Companion.addDuration
 import com.lagradost.cloudstream3.utils.AppUtils
+import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
@@ -147,7 +148,10 @@ class AnimeVietsubProvider : MainAPI() {
                         val title = titleElement.text().trim()
                         val href = fixUrl(titleElement.attr("href"), baseUrl) ?: return@mapNotNull null
                         val posterUrl = fixUrl(element.selectFirst("a.thumb img")?.attr("src"), baseUrl)
-                        newMovieSearchResponse(title, href, TvType.Anime, posterUrl = posterUrl)
+                        // SỬA LỖI: Sử dụng .apply {}
+                        newMovieSearchResponse(title, href, TvType.Anime).apply {
+                            this.posterUrl = posterUrl
+                        }
                     } catch (e: Exception) {
                         null
                     }
@@ -194,7 +198,10 @@ class AnimeVietsubProvider : MainAPI() {
             val isMovie = listOf("OVA", "ONA", "Movie", "Phim Lẻ").any { title.contains(it, true) } ||
                     this.selectFirst("span.mli-eps") == null
             val tvType = if (isMovie) TvType.Movie else TvType.Anime
-            provider.newMovieSearchResponse(title, href, tvType, posterUrl = posterUrl)
+            // SỬA LỖI: Sử dụng .apply {}
+            newMovieSearchResponse(title, href, tvType).apply {
+                this.posterUrl = posterUrl
+            }
         } catch (e: Exception) {
             null
         }
@@ -217,6 +224,7 @@ class AnimeVietsubProvider : MainAPI() {
         return infoDocument.toLoadResponse(this, url, baseUrl, watchPageDoc)
     }
 
+    // SỬA LỖI: Đảm bảo signature của hàm khớp với MainAPI
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -247,16 +255,14 @@ class AnimeVietsubProvider : MainAPI() {
                 m3u8Contents[keyM3u8] = decryptedM3u8.replace("\"", "")
             }
         }
-        
-        // SỬA ĐỔI THEO YÊU CẦU
+
         callback.invoke(
             newExtractorLink(
                 source = name,
                 name = name,
                 url = "https://storage.googleapis.com/cloudstream-27898.appspot.com/animevietsub%2Fb$keyM3u8.m3u8",
-                type = ExtractorLinkType.M3U8 // `type` nằm ngoài
+                type = ExtractorLinkType.M3U8
             ) {
-                // `quality` và `referer` nằm trong lambda
                 this.quality = Qualities.Unknown.value
                 this.referer = "$baseUrl/"
             }
@@ -264,22 +270,24 @@ class AnimeVietsubProvider : MainAPI() {
         return true
     }
 
-    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
-        if (!(extractorLink.url.contains("animevietsub") && extractorLink.url.endsWith(".m3u8"))) {
-            return null
-        }
-
+    // SỬA LỖI: Đảm bảo signature của hàm khớp với MainAPI
+    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor {
         return Interceptor { chain ->
             val request = chain.request()
             val url = request.url.toString()
-            val key = url.substringAfter("animevietsub%2Fb").substringBefore(".m3u8")
-            val m3u8Content = m3u8Contents[key]
+            if (url.contains("animevietsub") && url.endsWith(".m3u8")) {
+                val key = url.substringAfter("animevietsub%2Fb").substringBefore(".m3u8")
+                val m3u8Content = m3u8Contents[key]
 
-            if (m3u8Content != null) {
-                val responseBody = m3u8Content.toResponseBody("application/vnd.apple.mpegurl".toMediaTypeOrNull())
-                chain.proceed(request).newBuilder()
-                    .code(200).message("OK").body(responseBody)
-                    .build()
+                if (m3u8Content != null) {
+                    val responseBody =
+                        m3u8Content.toResponseBody("application/vnd.apple.mpegurl".toMediaTypeOrNull())
+                    chain.proceed(request).newBuilder()
+                        .code(200).message("OK").body(responseBody)
+                        .build()
+                } else {
+                    chain.proceed(request)
+                }
             } else {
                 chain.proceed(request)
             }
@@ -356,7 +364,10 @@ class AnimeVietsubProvider : MainAPI() {
         val href = fixUrl(item.selectFirst("a")?.attr("href"), baseUrl) ?: return@mapNotNull null
         val title = item.selectFirst(".Title")?.text()?.trim() ?: return@mapNotNull null
         val posterUrl = fixUrl(item.selectFirst("img")?.attr("src"), baseUrl)
-        provider.newMovieSearchResponse(title, href, TvType.Anime, posterUrl = posterUrl)
+        // SỬA LỖI: Sử dụng .apply {}
+        newMovieSearchResponse(title, href, TvType.Anime).apply {
+            this.posterUrl = posterUrl
+        }
     }
     private fun Document.getShowStatus(episodeCount: Int): ShowStatus {
         return when (this.selectFirst("li:has(strong:containsOwn(Trạng thái))")?.ownText()?.lowercase()) {
