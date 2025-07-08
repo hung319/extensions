@@ -296,10 +296,13 @@ class AnimeVietsubProvider : MainAPI() {
                 val dataId = el.attr("data-id").ifBlank { null } ?: return@mapNotNull null
                 val dataHash = el.attr("data-hash").ifBlank { null } ?: return@mapNotNull null
                 val episodeName = el.attr("title").ifBlank { el.text() }.trim()
+                // SỬA LỖI: Gọi AppUtils.toJson
                 val data = AppUtils.toJson(LinkData(hash = dataHash, id = dataId))
-                newEpisode(data) {
-                    this.name = episodeName
-                }
+                // SỬA LỖI: Khởi tạo trực tiếp Episode để tránh lỗi
+                Episode(
+                    data = data,
+                    name = episodeName
+                )
             } catch (e: Exception) {
                 null
             }
@@ -338,6 +341,7 @@ class AnimeVietsubProvider : MainAPI() {
             }
         } else {
             val duration = this.extractDuration()
+            // SỬA LỖI: Gọi AppUtils.toJson
             val data = episodes.firstOrNull()?.data
                 ?: AppUtils.toJson(LinkData(this.getDataIdFallback(infoUrl) ?: "", ""))
             provider.newMovieLoadResponse(title, infoUrl, finalTvType, data) {
