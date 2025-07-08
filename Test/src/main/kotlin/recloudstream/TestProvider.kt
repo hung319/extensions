@@ -5,6 +5,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.LoadResponse.Companion.addDuration
 import com.lagradost.cloudstream3.utils.AppUtils
+import com.lagradost.cloudstream3.utils.AppUtils.toJson // Import extension function
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
@@ -296,9 +297,8 @@ class AnimeVietsubProvider : MainAPI() {
                 val dataId = el.attr("data-id").ifBlank { null } ?: return@mapNotNull null
                 val dataHash = el.attr("data-hash").ifBlank { null } ?: return@mapNotNull null
                 val episodeName = el.attr("title").ifBlank { el.text() }.trim()
-                // SỬA LỖI: Gọi AppUtils.toJson
-                val data = AppUtils.toJson(LinkData(hash = dataHash, id = dataId))
-                // SỬA LỖI: Khởi tạo trực tiếp Episode để tránh lỗi
+                // SỬA LỖI: Gọi .toJson() trực tiếp từ đối tượng
+                val data = LinkData(hash = dataHash, id = dataId).toJson()
                 Episode(
                     data = data,
                     name = episodeName
@@ -341,9 +341,9 @@ class AnimeVietsubProvider : MainAPI() {
             }
         } else {
             val duration = this.extractDuration()
-            // SỬA LỖI: Gọi AppUtils.toJson
+            // SỬA LỖI: Gọi .toJson() trực tiếp từ đối tượng
             val data = episodes.firstOrNull()?.data
-                ?: AppUtils.toJson(LinkData(this.getDataIdFallback(infoUrl) ?: "", ""))
+                ?: LinkData(this.getDataIdFallback(infoUrl) ?: "", "").toJson()
             provider.newMovieLoadResponse(title, infoUrl, finalTvType, data) {
                 this.posterUrl = posterUrl; this.plot = plot; this.tags = tags; this.year = year
                 this.rating = rating; this.actors = actors; this.recommendations = recommendations
