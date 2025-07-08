@@ -2,8 +2,12 @@ package com.lagradost.cloudstream3
 
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.newExtractorLink
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Interceptor
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.Response
 import org.jsoup.nodes.Element
 
@@ -71,7 +75,7 @@ class AnimeVietsubProvider : MainAPI() {
         return newAnimeSearchResponse(title, href, TvType.Anime) {
             this.posterUrl = posterUrl
             if (episodeText != null) {
-                addDubStatus(dubStatus = DubStatus.Subbed, episode = episodeText.toIntOrNull())
+                addDubStatus(DubStatus.Subbed, episodes = episodeText.toIntOrNull())
             }
         }
     }
@@ -141,16 +145,16 @@ class AnimeVietsubProvider : MainAPI() {
         // Create a fake URL that the interceptor will catch
         val interceptorUrl = "https://placeholder.google.com/animevietsub/$key.m3u8"
 
-        callback.invoke(
-            ExtractorLink(
-                name,
-                name,
-                interceptorUrl,
-                referer = getBaseUrl(),
-                quality = Qualities.Unknown.value,
-                isM3u8 = true
-            )
-        )
+        newExtractorLink(
+            source = name,
+            name = name,
+            url = interceptorUrl,
+            type = ExtractorLinkType.M3U8
+        ) {
+            // FIXED: referer is now set inside the lambda
+            this.referer = getBaseUrl()
+            this.quality = Qualities.Unknown.value
+        }.let(callback)
 
         return true
     }
@@ -158,8 +162,8 @@ class AnimeVietsubProvider : MainAPI() {
     // A simple data class to parse the JSON response for episode info
     private data class EpisodeInfo(val status: Boolean?, val `data`: String)
 
-    override fun getVideoInterceptor(url: String): Interceptor? {
-        if (!url.contains("placeholder.google.com/animevietsub")) return null
+    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
+        if (!extractorLink.url.contains("placeholder.google.com/animevietsub")) return null
 
         return Interceptor { chain ->
             val request = chain.request()
@@ -170,7 +174,7 @@ class AnimeVietsubProvider : MainAPI() {
 
             if (m3u8Data != null) {
                 val responseBody = okhttp3.ResponseBody.create(
-                    okhttp3.MediaType.parse("application/vnd.apple.mpegurl"),
+                    "application/vnd.apple.mpegurl".toMediaTypeOrNull(),
                     m3u8Data
                 )
                 Response.Builder()
