@@ -5,7 +5,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.LoadResponse.Companion.addDuration
 import com.lagradost.cloudstream3.utils.AppUtils
-import com.lagradost.cloudstream3.utils.AppUtils.toJson // Import extension function
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
@@ -40,61 +40,60 @@ class AnimeVietsubProvider : MainAPI() {
     override var lang = "vi"
     override val hasMainPage = true
 
-    private val m3u8Contents = mutableMapOf<String, String>()
-    private val b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
+    // ================== LOGIC GIẢI MÃ MỚI (Dịch từ Javascript) ==================
 
-    private fun decodeB64(input: String): String {
-        val str = Regex("[^A-Za-z0-9+/=]").replace(input, "")
-        val output = StringBuilder()
-        var i = 0
-        while (i < str.length) {
-            val enc1 = b64.indexOf(str[i++])
-            val enc2 = b64.indexOf(str[i++])
-            val enc3 = b64.indexOf(str[i++])
-            val enc4 = b64.indexOf(str[i++])
-            val chr1 = (enc1 shl 2) or (enc2 shr 4)
-            val chr2 = ((enc2 and 15) shl 4) or (enc3 shr 2)
-            val chr3 = ((enc3 and 3) shl 6) or enc4
-            output.append(chr1.toChar())
-            if (enc3 != 64) {
-                output.append(chr2.toChar())
-            }
-            if (enc4 != 64) {
-                output.append(chr3.toChar())
-            }
-        }
-        return String(output.toString().toByteArray(Charsets.ISO_8859_1), Charsets.UTF_8)
+    // Khóa B64 được cung cấp từ mã nguồn JS
+    private val keyStringB64 = "ZG1fdGhhbmdfc3VjX3ZhdF9nZXRfbGlua19hbl9kYnQ="
+
+    // Tính toán khóa AES một lần và lưu lại
+    private val aesKeyBytes: ByteArray by lazy {
+        val decodedKeyBytes = Base64.getDecoder().decode(keyStringB64)
+        MessageDigest.getInstance("SHA-256").digest(decodedKeyBytes)
     }
 
-    private fun decrypt(encode: String, key: String): String? {
+    private fun decryptAndDecompress(encryptedDataB64: String): String? {
         return try {
-            val sha256 = MessageDigest.getInstance("SHA-256")
-            // SỬA LỖI: Dùng getUrlDecoder() thay cho getDecoder()
-            val secretKey = sha256.digest(Base64.getUrlDecoder().decode(key))
-            val decoded = Base64.getUrlDecoder().decode(encode)
-            val iv = decoded.sliceArray(0..15)
-            val encrypted = decoded.sliceArray(16 until decoded.size)
-            val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(secretKey, "AES"), IvParameterSpec(iv))
-            val decrypted = cipher.doFinal(encrypted)
-            val inflater = Inflater(true)
-            inflater.setInput(decrypted)
-            val bos = ByteArrayOutputStream()
-            val buf = ByteArray(1024)
+            // Dọn dẹp chuỗi Base64 đầu vào
+            val cleanedB64 = encryptedDataB64.replace(Regex("[^A-Za-z0-9+/=]"), "")
+            val encryptedBytes = Base64.getDecoder().decode(cleanedB64)
+
+            // Tách IV (16 bytes đầu) và dữ liệu mã hóa
+            if (encryptedBytes.size < 16) return null
+            val ivBytes = encryptedBytes.sliceArray(0..15)
+            val ciphertextBytes = encryptedBytes.sliceArray(16 until encryptedBytes.size)
+
+            // Giải mã AES
+            val decipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+            decipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(aesKeyBytes, "AES"), IvParameterSpec(ivBytes))
+            val decryptedBytesPadded = decipher.doFinal(ciphertextBytes)
+
+            // Giải nén Zlib (Raw)
+            val inflater = Inflater(true) // true = no header (inflateRaw)
+            inflater.setInput(decryptedBytesPadded)
+            val outputStream = ByteArrayOutputStream()
+            val buffer = ByteArray(1024)
             while (!inflater.finished()) {
-                val count = inflater.inflate(buf)
-                bos.write(buf, 0, count)
+                val count = inflater.inflate(buffer)
+                outputStream.write(buffer, 0, count)
             }
             inflater.end()
-            val result = bos.toString(Charsets.UTF_8.name())
-            bos.close()
-            result
+            
+            // Xử lý chuỗi kết quả
+            var m3u8ContentRaw = outputStream.toString("UTF-8")
+            m3u8ContentRaw = m3u8ContentRaw.trim().replace(Regex("^\"|\"$"), "")
+            m3u8ContentRaw = m3u8ContentRaw.replace("\\n", "\n")
+            
+            m3u8ContentRaw
         } catch (e: Exception) {
             e.printStackTrace()
-            "Exception: ${e.message}"
+            null
         }
     }
-
+    
+    // =========================================================================
+    
+    private val m3u8Contents = mutableMapOf<String, String>()
+    
     override val mainPage = mainPageOf(
         "/anime-moi/" to "Mới Cập Nhật",
         "/anime-sap-chieu/" to "Sắp Chiếu",
@@ -241,21 +240,20 @@ class AnimeVietsubProvider : MainAPI() {
             data = mapOf("link" to linkData.hash, "id" to linkData.id)
         ).text
         
-        var decryptedM3u8: String? = "Không nhận được dữ liệu mã hóa"
         if (response.contains("[{\"file\":\"")) {
             val encrypted = response.substringAfter("[{\"file\":\"").substringBefore("\"}")
-            val key = decodeB64("5nDwIaiZK8NTF5ia3bv5KG1b5aNnisGt5GN6IayZFZJNkMGm3aj4KgGtAMC=")
-            decryptedM3u8 = decrypt(encrypted, key)
+            // Gọi hàm giải mã mới
+            val decryptedM3u8 = decryptAndDecompress(encrypted)
 
-            if (decryptedM3u8 != null && !decryptedM3u8.startsWith("Exception:")) {
-                m3u8Contents[keyM3u8] = decryptedM3u8.replace("\"", "")
+            if (decryptedM3u8 != null) {
+                m3u8Contents[keyM3u8] = decryptedM3u8
             }
         }
 
         callback.invoke(
             newExtractorLink(
                 source = name,
-                name = decryptedM3u8 ?: "Lỗi không xác định",
+                name = this.name, // Trả lại tên provider bình thường
                 url = "https://storage.googleapis.com/cloudstream-27898.appspot.com/animevietsub%2Fb$keyM3u8.m3u8",
                 type = ExtractorLinkType.M3U8
             ) {
