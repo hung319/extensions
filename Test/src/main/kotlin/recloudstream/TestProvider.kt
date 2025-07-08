@@ -1,133 +1,318 @@
-package recloudstream
+package com.lagradost.cloudstream3
 
-import com.lagradost.cloudstream3.*
+import android.util.Log
+import com.google.gson.Gson
+import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
+import com.lagradost.cloudstream3.LoadResponse.Companion.addDuration
+import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.utils.*
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import java.net.URL
+import java.net.URLEncoder
+import java.security.MessageDigest
+import java.util.*
+import java.util.zip.Inflater
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
+import kotlin.math.roundToInt
 
-class KuraKura21Provider : MainAPI() {
-    override var name = "KuraKura21"
-    override var mainUrl = "https://kurakura21.net"
-    override var lang = "id"
-    override var hasMainPage = true
+class AnimeVietsubProvider : MainAPI() {
+    private val gson = Gson()
+    
+    override var name = "AnimeVietsub"
+    override val supportedTypes = setOf(TvType.Anime, TvType.Movie, TvType.Cartoon)
+    override var lang = "vi"
+    override val hasMainPage = true
 
-    override val supportedTypes = setOf(
-        TvType.NSFW
+    // cfInterceptor giờ là công cụ chính để lấy header
+    private val cfInterceptor = CloudflareKiller()
+
+    override var mainUrl: String = runBlocking {
+        try {
+            val response = app.get("https://bit.ly/animevietsubtv", interceptor = cfInterceptor, allowRedirects = true)
+            val finalUrl = URL(response.url)
+            "${finalUrl.protocol}://${finalUrl.host}"
+        } catch (e: Exception) {
+            "https://animevietsub.lol"
+        }
+    }
+
+    override val mainPage = mainPageOf(
+        "/anime-moi/" to "Mới Cập Nhật",
+        "/anime-sap-chieu/" to "Sắp Chiếu",
+        "/bang-xep-hang/day.html" to "Xem Nhiều Trong Ngày"
     )
 
-    // CẬP NHẬT: Sử dụng hàm newHomePageResponse để loại bỏ cảnh báo
+    // ... các hàm getMainPage, search, load giữ nguyên ...
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get(mainUrl).document
-        val homePageList = document.select("div.gmr-item-modulepost").mapNotNull {
-            it.toSearchResult()
+        val url = if (page == 1) {
+            "$mainUrl${request.data}"
+        } else {
+            if (request.data.contains("bang-xep-hang")) {
+                "$mainUrl${request.data}"
+            } else {
+                val slug = request.data.removeSuffix("/")
+                "$mainUrl$slug/trang-$page.html"
+            }
         }
-        
-        return newHomePageResponse( // Đã cập nhật hàm
-            listOf(
-                HomePageList(
-                    name = "RECENT POST",
-                    list = homePageList
-                )
+        val document = app.get(url, interceptor = cfInterceptor).document
+        val home = when {
+            request.data.contains("bang-xep-hang") -> {
+                document.select("ul.bxh-movie-phimletv li.group").mapNotNull { element ->
+                    element.toSearchResponse(this, mainUrl)
+                }
+            }
+            else -> {
+                document.select("ul.MovieList.Rows li.TPostMv").mapNotNull {
+                    it.toSearchResponse(this, mainUrl)
+                }
+            }
+        }
+        val hasNext = if (request.data.contains("bang-xep-hang")) {
+            false
+        } else {
+            document.selectFirst("div.wp-pagenavi span.current + a.page, div.wp-pagenavi a.larger:contains(Trang Cuối)") != null
+        }
+        return newHomePageResponse(
+            list = HomePageList(
+                name = request.name,
+                list = home
             ),
-            hasNext = false // Thêm tham số hasNext để rõ ràng hơn
+            hasNext = hasNext
         )
-    }
-    
-    private fun Element.toSearchResult(): SearchResponse? {
-        val href = this.selectFirst("a")?.attr("href") ?: return null
-        val title = this.selectFirst("h2.entry-title a")?.text() ?: "Không có tiêu đề"
-        val posterUrl = this.selectFirst("img")?.attr("data-src")
-
-        return newMovieSearchResponse(
-            name = title,
-            url = href,
-            type = TvType.NSFW
-        ) {
-            this.posterUrl = posterUrl
-        }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/?s=$query"
-        val document = app.get(searchUrl).document
-
-        return document.select("article.item-infinite").mapNotNull {
-            val href = it.selectFirst("a")?.attr("href") ?: return@mapNotNull null
-            val title = it.selectFirst("h2.entry-title a")?.text() ?: "Không có tiêu đề"
-            val posterUrl = it.selectFirst("img")?.attr("src")
-
-            newMovieSearchResponse(
-                name = title,
-                url = href,
-                type = TvType.NSFW
-            ) {
-                this.posterUrl = posterUrl
-            }
-        }
+        val requestUrl = "$mainUrl/tim-kiem/${query.encodeUri()}/"
+        val document = app.get(requestUrl, interceptor = cfInterceptor).document
+        return document.select("ul.MovieList.Rows li.TPostMv")
+            .mapNotNull { it.toSearchResponse(this, mainUrl) }
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url).document
-        
-        val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: "Không có tiêu đề"
-        val poster = document.selectFirst("div.gmr-movie-data img")?.attr("data-src")
-        val description = document.selectFirst("div.entry-content")?.text()?.trim()
-        val tags = document.select("div.gmr-moviedata a[rel=tag]").map { it.text() }
-        val postId = document.body().className().substringAfter("postid-").substringBefore(" ")
+        val infoDocument = app.get(url, interceptor = cfInterceptor).document
+        val genres = infoDocument.getGenres()
+        val watchPageDoc = if (!genres.any { it.equals("Anime sắp chiếu", ignoreCase = true) }) {
+            try {
+                val watchPageUrl = if (url.endsWith("/")) "${url}xem-phim.html" else "$url/xem-phim.html"
+                app.get(watchPageUrl, referer = url, interceptor = cfInterceptor).document
+            } catch (e: Exception) { null }
+        } else { null }
+        return infoDocument.toLoadResponse(this, url, mainUrl, watchPageDoc)
+    }
 
-        val recommendations = document.select("div.gmr-grid:has(h3.gmr-related-title) article.item").mapNotNull {
-            val recHref = it.selectFirst("a")?.attr("href") ?: return@mapNotNull null
-            val recTitle = it.selectFirst("h2.entry-title a")?.text() ?: "N/A"
-            val recPoster = it.selectFirst("img")?.attr("data-src") ?: it.selectFirst("img")?.attr("src")
+    private val aesKey: SecretKeySpec by lazy {
+        val keyStringB64 = "ZG1fdGhhbmdfc3VjX3ZhdF9nZXRfbGlua19hbl9kYnQ="
+        val decodedKeyBytes = Base64.getDecoder().decode(keyStringB64)
+        val sha256Hasher = MessageDigest.getInstance("SHA-256")
+        val hashedKeyBytes = sha256Hasher.digest(decodedKeyBytes)
+        SecretKeySpec(hashedKeyBytes, "AES")
+    }
 
-            newMovieSearchResponse(recTitle, recHref, TvType.NSFW) {
-                this.posterUrl = recPoster
+    private fun decryptM3u8Content(encryptedDataString: String): String {
+        return try {
+            val encryptedBytes = Base64.getDecoder().decode(encryptedDataString)
+            if (encryptedBytes.size < 16) throw Exception("Dữ liệu sau decode quá ngắn")
+            val ivBytes = encryptedBytes.copyOfRange(0, 16)
+            val ciphertextBytes = encryptedBytes.copyOfRange(16, encryptedBytes.size)
+            val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+            cipher.init(Cipher.DECRYPT_MODE, aesKey, IvParameterSpec(ivBytes))
+            val decryptedBytesPadded = cipher.doFinal(ciphertextBytes)
+            val inflater = Inflater(true)
+            inflater.setInput(decryptedBytesPadded, 0, decryptedBytesPadded.size)
+            val resultStream = java.io.ByteArrayOutputStream()
+            val buffer = ByteArray(1024)
+            while (!inflater.finished()) {
+                val count = inflater.inflate(buffer)
+                resultStream.write(buffer, 0, count)
             }
-        }
-
-        return newMovieLoadResponse(
-            name = title,
-            url = url,
-            type = TvType.NSFW,
-            dataUrl = postId 
-        ) {
-            this.posterUrl = poster
-            this.plot = description
-            this.tags = tags
-            this.recommendations = recommendations
+            inflater.end()
+            var m3u8Content = resultStream.toByteArray().toString(Charsets.UTF_8)
+            m3u8Content = m3u8Content.trim().removeSurrounding("\"")
+            m3u8Content.replace("\\n", "\n")
+        } catch (e: Exception) {
+            throw ErrorLoadingException("Giải mã thất bại: ${e.message}")
         }
     }
 
+    // ===== HÀM loadLinks ĐƯỢC VIẾT LẠI HOÀN TOÀN =====
     override suspend fun loadLinks(
-        data: String, 
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val postId = data
-        val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
-        
-        (1..2).toList().forEach { tabIndex ->
-            try {
-                val tabId = "p$tabIndex"
-                val postData = mapOf(
-                    "action" to "muvipro_player_content",
-                    "tab" to tabId,
-                    "post_id" to postId
-                )
-
-                val playerContent = app.post(
-                    url = ajaxUrl,
-                    data = postData,
-                    referer = "$mainUrl/"
-                ).document
-
-                playerContent.select("iframe").firstOrNull()?.attr("src")?.let { iframeSrc ->
-                    loadExtractor(iframeSrc, subtitleCallback, callback)
-                }
-            } catch (e: Exception) {
-                // Bỏ qua lỗi và tiếp tục với server tiếp theo
+        try {
+            val episodeData = gson.fromJson(data, EpisodeData::class.java)
+            val ajaxUrl = "$mainUrl/ajax/player?v=2019a"
+            val postData = mutableMapOf("id" to (episodeData.dataId ?: return false), "play" to "api").apply {
+                episodeData.duHash?.let { put("link", it) }
             }
+            
+            val playerResponse = app.post(ajaxUrl, data = postData, referer = episodeData.url, interceptor = cfInterceptor).parsed<AjaxPlayerResponse>()
+
+            if (playerResponse.success != 1 || playerResponse.link.isNullOrEmpty()) return false
+
+            coroutineScope {
+                playerResponse.link.forEach { linkSource ->
+                    launch {
+                        try {
+                            val encryptedUrl = linkSource.file ?: return@launch
+                            val m3u8Content = decryptM3u8Content(encryptedUrl)
+                            if (!m3u8Content.contains("#EXTM3U")) return@launch
+
+                            // Bước 1: Chuẩn bị bộ headers để M3u8Helper2 sử dụng cho các segment
+                            val bypassHeaders = cfInterceptor.getCookieHeaders(episodeData.url)
+                            val segmentHeaders = mutableMapOf<String, String>()
+                            bypassHeaders.forEach { (key, value) -> segmentHeaders[key] = value }
+                            segmentHeaders["Referer"] = episodeData.url
+                            
+                            // Bước 2: Biến nội dung M3U8 thành một URL dạng data: URI
+                            val m3u8DataUri = "data:application/vnd.apple.mpegurl;base64," + Base64.getEncoder().encodeToString(m3u8Content.toByteArray())
+
+                            // Bước 3: Gọi M3u8Helper2 để nó xử lý tất cả
+                            M3u8Helper.generateM3u8(
+                                source = this@AnimeVietsubProvider.name,
+                                streamUrl = m3u8DataUri,
+                                referer = episodeData.url,
+                                headers = segmentHeaders
+                            ).forEach(callback)
+
+                        } catch (e: Exception) {
+                            Log.e(name, "Lỗi xử lý link source với M3u8Helper: ${e.message}")
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(name, "Lỗi nghiêm trọng trong loadLinks: ${e.message}", e)
         }
         return true
+    }
+
+    // HÀM getVideoInterceptor KHÔNG CÒN CẦN THIẾT NỮA
+    // override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? { ... }
+
+    // ... Phần còn lại của các hàm helper ...
+    private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): SearchResponse? {
+        return try {
+            val linkElement = this.selectFirst("article.TPost > a") ?: return null
+            val href = fixUrl(linkElement.attr("href"), baseUrl) ?: return null
+            val title = linkElement.selectFirst("h2.Title")?.text()?.trim()?.takeIf { it.isNotBlank() } ?: return null
+            val posterUrlRaw = linkElement.selectFirst("div.Image img")?.let { img ->
+                img.attr("data-src").ifBlank { img.attr("src") }
+            }
+            val posterUrl = fixUrl(posterUrlRaw, baseUrl)
+            val isMovie = listOf("OVA", "ONA", "Movie", "Phim Lẻ").any { title.contains(it, true) } ||
+                    this.selectFirst("span.mli-eps") == null
+            val tvType = if (isMovie) TvType.Movie else TvType.Anime
+            provider.newMovieSearchResponse(title, href, tvType) {
+                this.posterUrl = posterUrl
+            }
+        } catch (e: Exception) { null }
+    }
+    
+    private suspend fun Document.toLoadResponse(
+        provider: MainAPI,
+        infoUrl: String,
+        baseUrl: String,
+        watchPageDoc: Document?
+    ): LoadResponse? {
+        try {
+            val title = this.selectFirst("div.TPost.Single div.Title")?.text()?.trim()
+                ?: this.selectFirst("meta[property=og:title]")?.attr("content")?.substringBefore(" Tập")?.trim()
+                ?: throw ErrorLoadingException("Could not find title on info page $infoUrl")
+            val posterUrl = this.extractPosterUrl(baseUrl)
+            val plot = this.extractPlot()
+            val tags = this.getGenres()
+            val year = this.extractYear()
+            val rating = this.extractRating()
+            val actors = this.extractActors(baseUrl)
+            val recommendations = this.extractRecommendations(provider, baseUrl)
+            if (tags.any { it.equals("Anime sắp chiếu", ignoreCase = true) }) {
+                return provider.newAnimeLoadResponse(title, infoUrl, TvType.Anime) {
+                    this.posterUrl = posterUrl; this.plot = plot; this.tags = tags; this.year = year
+                    this.rating = rating; this.actors = actors; this.recommendations = recommendations
+                }
+            }
+            val episodes = watchPageDoc?.parseEpisodes(baseUrl, infoUrl) ?: emptyList()
+            val status = this.getShowStatus(episodes.size)
+            val finalTvType = this.determineFinalTvType(title, tags, episodes.size)
+            return if (finalTvType == TvType.Movie || finalTvType == TvType.AnimeMovie || episodes.size <= 1) {
+                val duration = this.extractDuration()
+                val data = episodes.firstOrNull()?.data
+                    ?: gson.toJson(EpisodeData(infoUrl, this.getDataIdFallback(infoUrl), null))
+                provider.newMovieLoadResponse(title, infoUrl, finalTvType, data) {
+                    this.posterUrl = posterUrl; this.plot = plot; this.tags = tags; this.year = year
+                    this.rating = rating; this.actors = actors; this.recommendations = recommendations
+                    duration?.let { addDuration(it.toString()) }
+                }
+            } else {
+                 provider.newTvSeriesLoadResponse(title, infoUrl, finalTvType, episodes) {
+                    this.posterUrl = posterUrl; this.plot = plot; this.tags = tags; this.year = year
+                    this.rating = rating; this.showStatus = status; this.actors = actors; this.recommendations = recommendations
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(name, "Error in toLoadResponse for url: $infoUrl", e)
+            return null
+        }
+    }
+
+    private fun Document.extractPosterUrl(baseUrl: String): String? = this.selectFirst("meta[property=og:image]")?.attr("content")?.let { fixUrl(it, baseUrl) }
+    private fun Document.extractPlot(): String? = this.selectFirst("div.Description")?.text()?.trim()
+    private fun Document.getGenres(): List<String> = this.select("li:has(strong:containsOwn(Thể loại)) a").mapNotNull { it.text()?.trim() }.distinct()
+    private fun Document.extractYear(): Int? = this.selectFirst("a[href*=/nam-phat-hanh/]")?.text()?.toIntOrNull()
+    private fun Document.extractRating(): Int? = this.selectFirst("strong#average_score")?.text()?.toDoubleOrNull()?.let { (it * 10).roundToInt() }
+    private fun Document.extractDuration(): Int? = this.selectFirst("li.AAIco-adjust")?.ownText()?.filter { it.isDigit() }?.toIntOrNull()
+    private fun Document.extractActors(baseUrl: String): List<ActorData> = this.select("div#MvTb-Cast ul.ListCast li a").mapNotNull {
+        val actorName = it.attr("title").removePrefix("Nhân vật ").trim()
+        if (actorName.isNotBlank()) ActorData(Actor(actorName, image = fixUrl(it.selectFirst("img")?.attr("src"), baseUrl))) else null
+    }
+    private fun Document.extractRecommendations(provider: MainAPI, baseUrl: String): List<SearchResponse> = this.select("div.MovieListRelated div.TPostMv").mapNotNull { it.toSearchResponse(provider, baseUrl) }
+    private fun Document.getShowStatus(episodeCount: Int): ShowStatus {
+        return when (this.selectFirst("li:has(strong:containsOwn(Trạng thái))")?.ownText()?.lowercase()) {
+            "đang chiếu", "đang tiến hành" -> ShowStatus.Ongoing
+            "hoàn thành", "full" -> ShowStatus.Completed
+            else -> if (episodeCount > 1) ShowStatus.Ongoing else ShowStatus.Completed
+        }
+    }
+    private fun Document.determineFinalTvType(title: String, genres: List<String>, episodeCount: Int): TvType {
+        val country = this.selectFirst("a[href*=/quoc-gia/]")?.text()?.lowercase() ?: ""
+        return if (episodeCount <= 1 || title.contains("movie", true)) {
+            if (country == "nhật bản") TvType.AnimeMovie else TvType.Movie
+        } else {
+            if (country == "nhật bản") TvType.Anime else TvType.Cartoon
+        }
+    }
+    private fun Document.getDataIdFallback(infoUrl: String): String? = infoUrl.substringAfterLast("-")?.filter { it.isDigit() }?.takeIf { it.isNotBlank() }
+    private fun Document.parseEpisodes(baseUrl: String, infoUrl: String): List<Episode> {
+        return this.select("div.server ul.list-episode li a.btn-episode").mapNotNull { el ->
+            try {
+                val dataId = el.attr("data-id").ifBlank { null } ?: return@mapNotNull null
+                newEpisode(gson.toJson(EpisodeData(fixUrl(el.attr("href"), baseUrl) ?: infoUrl, dataId, el.attr("data-hash").ifBlank { null }))) {
+                    this.name = el.attr("title").ifBlank { el.text() }.trim()
+                }
+            } catch (e: Exception) { null }
+        }
+    }
+
+    data class EpisodeData(val url: String, val dataId: String?, val duHash: String?)
+    data class AjaxPlayerResponse(val success: Int?, val link: List<LinkSource>?)
+    data class LinkSource(val file: String?, val type: String?, val label: String?)
+
+    private fun String?.encodeUri(): String = this?.let { URLEncoder.encode(it, "UTF-8") } ?: ""
+    private fun fixUrl(url: String?, baseUrl: String): String? {
+        if (url.isNullOrBlank()) return null
+        return when {
+            url.startsWith("http") -> url
+            url.startsWith("//") -> "https:$url"
+            else -> URL(URL(baseUrl), url).toString()
+        }
     }
 }
