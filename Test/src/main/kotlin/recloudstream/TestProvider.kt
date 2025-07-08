@@ -14,19 +14,21 @@ class KuraKura21Provider : MainAPI() {
         TvType.NSFW
     )
 
+    // CẬP NHẬT: Sử dụng hàm newHomePageResponse để loại bỏ cảnh báo
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(mainUrl).document
         val homePageList = document.select("div.gmr-item-modulepost").mapNotNull {
             it.toSearchResult()
         }
         
-        return HomePageResponse(
+        return newHomePageResponse( // Đã cập nhật hàm
             listOf(
                 HomePageList(
                     name = "RECENT POST",
                     list = homePageList
                 )
-            )
+            ),
+            hasNext = false // Thêm tham số hasNext để rõ ràng hơn
         )
     }
     
@@ -72,7 +74,6 @@ class KuraKura21Provider : MainAPI() {
         val tags = document.select("div.gmr-moviedata a[rel=tag]").map { it.text() }
         val postId = document.body().className().substringAfter("postid-").substringBefore(" ")
 
-        // SỬA LỖI: Cập nhật selector để lấy đúng danh sách phim liên quan
         val recommendations = document.select("div.gmr-grid:has(h3.gmr-related-title) article.item").mapNotNull {
             val recHref = it.selectFirst("a")?.attr("href") ?: return@mapNotNull null
             val recTitle = it.selectFirst("h2.entry-title a")?.text() ?: "N/A"
@@ -105,7 +106,6 @@ class KuraKura21Provider : MainAPI() {
         val postId = data
         val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
         
-        // SỬA LỖI: Dùng forEach để xử lý tuần tự, tránh lỗi race condition
         (1..2).toList().forEach { tabIndex ->
             try {
                 val tabId = "p$tabIndex"
