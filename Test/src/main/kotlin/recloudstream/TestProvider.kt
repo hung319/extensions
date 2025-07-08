@@ -15,12 +15,7 @@ import android.util.Log
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 
-// Các import cần thiết cho Interceptor và giải mã
-import okhttp3.Interceptor
-import okhttp3.Response
-import okhttp3.ResponseBody.Companion.toResponseBody
-import okhttp3.MediaType.Companion.toMediaTypeOrNull
-import okhttp3.Protocol
+// Các import cần thiết cho việc giải mã nội bộ
 import java.security.MessageDigest
 import java.util.zip.Inflater
 import javax.crypto.Cipher
@@ -29,59 +24,7 @@ import javax.crypto.spec.SecretKeySpec
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Interceptor này sẽ chặn các yêu cầu đến domain ảo "local.proxy"
- * và trả về nội dung từ cache thay vì thực hiện yêu cầu mạng.
- */
-class ContentInterceptor(private val cache: ConcurrentHashMap<String, String>) : Interceptor {
-    override fun intercept(chain: Interceptor.Chain): Response {
-        val request = chain.request()
-        val host = request.url.host
-        val path = request.url.encodedPath
-
-        // Chỉ xử lý các request đến domain ảo của chúng ta
-        if (host == "local.proxy") {
-            val cacheKey = path.removePrefix("/m3u8/")
-            val content = cache[cacheKey]
-
-            // Xóa khỏi cache ngay sau khi dùng để giải phóng bộ nhớ
-            cache.remove(cacheKey)
-
-            return if (content != null) {
-                // Nếu tìm thấy nội dung, tạo một Response thành công
-                val body = content.toResponseBody("application/vnd.apple.mpegurl".toMediaTypeOrNull())
-                Response.Builder()
-                    .request(request)
-                    .protocol(Protocol.HTTP_1_1)
-                    .code(200)
-                    .message("OK")
-                    .body(body)
-                    .build()
-            } else {
-                // Nếu không tìm thấy, trả về lỗi 404
-                Response.Builder()
-                    .request(request)
-                    .protocol(Protocol.HTTP_1_1)
-                    .code(404)
-                    .message("Not Found in Cache")
-                    .body("".toResponseBody(null))
-                    .build()
-            }
-        }
-
-        // Với các request khác, cho phép nó tiếp tục bình thường
-        return chain.proceed(request)
-    }
-}
-
-
 class AnimeVietsubProvider : MainAPI() {
-
-    // Cache dùng chung và cờ để đảm bảo interceptor chỉ được đăng ký một lần
-    companion object {
-        val m3u8Cache = ConcurrentHashMap<String, String>()
-        var interceptorRegistered = false
-    }
 
     private val gson = Gson()
     override var mainUrl = "https://bit.ly/animevietsubtv"
@@ -99,6 +42,11 @@ class AnimeVietsubProvider : MainAPI() {
     private val ultimateFallbackDomain = "https://animevietsub.lol"
     private var currentActiveUrl = bitlyResolverUrl
     private var domainResolutionAttempted = false
+    
+    // Cache để lưu nội dung M3U8 tạm thời
+    private val m3u8Cache = ConcurrentHashMap<String, String>()
+    // Tiền tố cho các URL ảo để loadLinks có thể nhận diện và xử lý nội bộ
+    private val INTERNAL_PROXY_PREFIX = "https://avs-internal-proxy/"
 
     private val b64KeyString = "ZG1fdGhhbmdfc3VjX3ZhdF9nZXRfbGlua19hbl9kYnQ="
     private var aesKeyBytes: ByteArray? = null
@@ -106,12 +54,6 @@ class AnimeVietsubProvider : MainAPI() {
 
     init {
         calculateAesKey()
-        // Đăng ký Interceptor nếu nó chưa được đăng ký
-        if (!interceptorRegistered) {
-            app.addOkhttpInterceptor(ContentInterceptor(m3u8Cache))
-            interceptorRegistered = true
-            Log.i(name, "ContentInterceptor đã được đăng ký.")
-        }
     }
 
     private fun calculateAesKey() {
@@ -121,7 +63,6 @@ class AnimeVietsubProvider : MainAPI() {
                 val sha256Hasher = MessageDigest.getInstance("SHA-256")
                 sha256Hasher.update(decodedKeyBytes)
                 aesKeyBytes = sha256Hasher.digest()
-                Log.i(name, "Khóa AES đã được tính toán thành công.")
             } catch (e: Exception) {
                 Log.e(name, "Không thể tính toán khóa AES", e)
             }
@@ -262,6 +203,32 @@ class AnimeVietsubProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        
+        // BƯỚC 1: "Chặn" các yêu cầu đến proxy nội bộ
+        if (data.startsWith(INTERNAL_PROXY_PREFIX)) {
+            val cacheKey = data.substringAfter(INTERNAL_PROXY_PREFIX)
+            val m3u8Content = m3u8Cache[cacheKey]
+            if (m3u8Content != null) {
+                // Trả về một link đặc biệt để Cloudstream biết đây là nội dung trực tiếp
+                callback(
+                    ExtractorLink(
+                        source = name,
+                        name = "$name M3U8",
+                        url = m3u8Content,
+                        referer = "",
+                        quality = Qualities.Unknown.value,
+                        type = ExtractorLinkType.M3U8,
+                        extraData = mapOf("direct" to "true") // Báo cho trình phát biết đây là nội dung
+                    )
+                )
+                m3u8Cache.remove(cacheKey) // Xóa khỏi cache sau khi dùng
+                return true
+            } else {
+                throw ErrorLoadingException("M3U8 không tìm thấy trong cache")
+            }
+        }
+        
+        // BƯỚC 2: Logic lấy link gốc và giải mã
         var foundLinks = false
         try {
             val episodeData = gson.fromJson(data, EpisodeData::class.java)
@@ -291,24 +258,27 @@ class AnimeVietsubProvider : MainAPI() {
                         try {
                             val encryptedUrl = linkSource.file ?: return@launch
                             
+                            // BƯỚC 3: Giải mã, tạo key, lưu vào cache
                             val m3u8Content = decryptAndDecompress(encryptedUrl)
-
                             val cacheKey = "${Base64.getUrlEncoder().withoutPadding().encodeToString(m3u8Content.toByteArray())}.m3u8"
                             m3u8Cache[cacheKey] = m3u8Content
                             
-                            val proxyUrl = "https://local.proxy/m3u8/$cacheKey"
-
-                            M3u8Helper.generateM3u8(
-                                source = this@AnimeVietsubProvider.name,
-                                streamUrl = proxyUrl,
-                                referer = episodePageUrl,
-                                headers = headers
-                            ).forEach { link ->
-                                callback(link)
-                                foundLinks = true
-                            }
+                            // BƯỚC 4: Tạo URL ảo và gọi lại `loadLinks` thông qua `callback`
+                            val proxyUrl = "$INTERNAL_PROXY_PREFIX$cacheKey"
+                            
+                            callback(
+                                ExtractorLink(
+                                    source = this@AnimeVietsubProvider.name,
+                                    name = this@AnimeVietsubProvider.name,
+                                    url = proxyUrl, // Đây là URL ảo
+                                    referer = episodePageUrl,
+                                    quality = Qualities.Unknown.value,
+                                    type = ExtractorLinkType.M3U8
+                                )
+                            )
+                            foundLinks = true
                         } catch (e: Exception) {
-                             Log.e(name, "Lỗi khi xử lý một nguồn link", e)
+                            Log.e(name, "Lỗi khi xử lý một nguồn link", e)
                         }
                     }
                 }
