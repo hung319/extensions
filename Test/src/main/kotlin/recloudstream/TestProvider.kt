@@ -1,6 +1,7 @@
 package recloudstream
 
-import com.lagradost.cloudstream3.* import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
+import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.LoadResponse.Companion.addDuration
 import android.util.Log
 import com.google.gson.Gson
@@ -253,7 +254,7 @@ class AnimeVietsubProvider : MainAPI() {
             return null
         }
     }
-    
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -299,9 +300,9 @@ class AnimeVietsubProvider : MainAPI() {
                 source = name,
                 name = name,
                 url = m3u8DataUri,
-                referer = episodePageUrl, // referer là một tham số chính
                 type = ExtractorLinkType.M3U8
-            ) { // Khối builder để đặt các thuộc tính còn lại
+            ) { // SỬA LỖI: Đặt referer và quality vào trong khối builder
+                this.referer = episodePageUrl
                 this.quality = Qualities.Unknown.value
             }.let { callback(it) }
         }
