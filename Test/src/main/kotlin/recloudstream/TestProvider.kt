@@ -1,10 +1,8 @@
-package com.lagradost.cloudstream3.movieprovider // QUAN TRỌNG: Sử dụng package chuẩn
+package recloudstream // Giữ package theo yêu cầu của bạn
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 
-// Khai báo lớp provider
 class Kurakura21Provider : MainAPI() {
     override var mainUrl = "https://kurakura21.net"
     override var name = "Kurakura21"
@@ -25,28 +23,12 @@ class Kurakura21Provider : MainAPI() {
     }
     
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get(mainUrl).document
-        val homePageList = mutableListOf<HomePageList>()
-
-        document.select("div.home-widget").forEach { block ->
-            val header = block.selectFirst("h3.homemodule-title")?.text() ?: return@forEach
-            val movies = block.select("article, div.gmr-item-modulepost").mapNotNull {
-                it.toSearchResult()
-            }
-            if (movies.isNotEmpty()) {
-                homePageList.add(HomePageList(header, movies))
-            }
-        }
-        
-        val latestMoviesHeader = document.selectFirst("#primary h3.homemodule-title")?.text() ?: "Latest Movies"
-        val latestMovies = document.select("#gmr-main-load article.item-infinite").mapNotNull {
+        val document = app.get(if (page == 1) mainUrl else "$mainUrl/page/$page").document
+        val home = document.select("article.item-infinite, article.thumb-block").mapNotNull {
             it.toSearchResult()
         }
-        if(latestMovies.isNotEmpty()) {
-            homePageList.add(HomePageList(latestMoviesHeader, latestMovies))
-        }
-
-        return HomePageResponse(homePageList)
+        val hasNext = document.selectFirst("a.next.page-numbers") != null
+        return newHomePageResponse(list = listOf(HomePageList(name = "Recent Movies", list = home)), hasNext = hasNext)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -54,70 +36,76 @@ class Kurakura21Provider : MainAPI() {
         return document.select("article.item-infinite").mapNotNull { it.toSearchResult() }
     }
 
-    // THAY ĐỔI LỚN: Hàm load bây giờ sẽ trực tiếp lấy link embed
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
         val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: "No Title"
         val poster = document.selectFirst("figure.pull-left img")?.attr("data-src")
         val description = document.selectFirst("div.entry-content")?.text()?.trim()
-        val year = document.selectFirst("div.gmr-moviedata")?.text()?.let {
-            Regex("""(\d{4})""").find(it)?.groupValues?.get(1)?.toIntOrNull()
-        }
+        val recommendations = document.select("div.gmr-grid article.item").mapNotNull { it.toSearchResult() }
         
         val postId = document.body().attr("class").let {
             Regex("postid-(\\d+)").find(it)?.groupValues?.get(1)
         } ?: throw ErrorLoadingException("Failed to get post ID")
 
-        // Lấy server đầu tiên
-        val firstServer = document.select("ul.muvipro-player-tabs li a").firstOrNull() 
-            ?: throw ErrorLoadingException("No servers found")
+        val servers = document.select("ul.muvipro-player-tabs li a")
 
-        val serverName = firstServer.text()
-        val tabValue = firstServer.attr("href").removePrefix("#")
+        val episodes = servers.mapNotNull { serverElement ->
+            val serverName = serverElement.text()
+            val tabValue = serverElement.attr("href").removePrefix("#")
+            if (tabValue.isBlank()) return@mapNotNull null
 
-        val episodes = mutableListOf<Episode>()
-
-        if (tabValue.isNotBlank()) {
             val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
-            val postData = mapOf(
-                "action" to "muvipro_player_content",
-                "post_id" to postId,
-                "tab" to tabValue 
-            )
+            val postDataString = "action=muvipro_player_content&post_id=$postId&tab=$tabValue"
+            
+            // Mã hóa dữ liệu vào một chuỗi String duy nhất, phân cách bằng ';;;'
+            // Định dạng: "url_ajax;;;chuoi_du_lieu_post"
+            val encodedData = "$ajaxUrl;;;$postDataString"
 
-            // Gọi AJAX ngay tại đây
-            val ajaxResponse = app.post(ajaxUrl, data = postData, referer = url).document
-            val iframeSrc = ajaxResponse.selectFirst("iframe")?.attr("src")
-
-            if (iframeSrc != null) {
-                // Tạo một episode duy nhất với dữ liệu là link iframe
-                episodes.add(Episode(
-                    data = iframeSrc,
-                    name = serverName
-                ))
-            }
-        }
-        
-        if (episodes.isEmpty()) {
-            throw ErrorLoadingException("Could not extract any video links")
+            Episode(data = encodedData, name = serverName)
         }
 
         return newAnimeLoadResponse(title, url, TvType.NSFW) {
             this.posterUrl = poster
-            this.year = year
             this.plot = description
+            this.recommendations = recommendations
             addEpisodes(DubStatus.Dubbed, episodes)
         }
     }
 
-    // THAY ĐỔI LỚN: Hàm loadLinks bây giờ rất đơn giản
     override suspend fun loadLinks(
-        data: String, // 'data' bây giờ là link iframe trực tiếp
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Chỉ cần gọi loadExtractor với link iframe
-        return loadExtractor(data, subtitleCallback, callback)
+        // Giải mã chuỗi String thủ công
+        val parts = data.split(";;;")
+        if (parts.size < 2) throw ErrorLoadingException("Invalid episode data")
+        
+        val ajaxUrl = parts[0]
+        val postDataString = parts[1]
+        
+        // Chuyển chuỗi dữ liệu POST trở lại thành Map
+        val postDataMap = postDataString.split("&").associate {
+            val (key, value) = it.split("=")
+            key to value
+        }
+        
+        try {
+            val ajaxResponse = app.post(
+                ajaxUrl,
+                data = postDataMap,
+                referer = mainUrl
+            ).document
+            
+            val iframeSrc = ajaxResponse.selectFirst("iframe")?.attr("src")
+                ?: return false
+                
+            loadExtractor(iframeSrc, mainUrl, subtitleCallback, callback)
+        } catch (e: Exception) {
+            // Bỏ qua lỗi nếu có server không hoạt động
+        }
+            
+        return true
     }
 }
