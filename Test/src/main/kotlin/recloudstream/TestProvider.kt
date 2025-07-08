@@ -3,6 +3,9 @@ package recloudstream // Package đã được thay đổi theo yêu cầu
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+// Thêm các import cần thiết cho các hàm tiện ích và Jsoup
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import org.jsoup.nodes.Element
 
 // Khai báo lớp provider
@@ -13,12 +16,11 @@ class Kurakura21Provider : MainAPI() {
     override val hasMainPage = true
     override var lang = "id"
     override val hasDownloadSupport = true
-    // Đã thay đổi supportedTypes thành NSFW
     override val supportedTypes = setOf(
         TvType.NSFW
     )
     
-    // Lớp dữ liệu để lưu thông tin cho lời gọi AJAX, sẽ được chuyển thành JSON
+    // Lớp dữ liệu để lưu thông tin cho lời gọi AJAX
     private data class EpisodeData(
         @JsonProperty("ajaxUrl") val ajaxUrl: String,
         @JsonProperty("postData") val postData: Map<String, String>
@@ -30,7 +32,6 @@ class Kurakura21Provider : MainAPI() {
         val href = this.selectFirst("a")?.attr("href") ?: return null
         val posterUrl = this.selectFirst("img")?.attr("data-src")
 
-        // Sử dụng newAnimeSearchResponse vì đây là nội dung NSFW
         return newAnimeSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
             this.quality = getQualityFromString(this.selectFirst(".gmr-quality-item a")?.text())
@@ -96,7 +97,7 @@ class Kurakura21Provider : MainAPI() {
                 "player" to (index + 1).toString()
             )
             
-            val episodeDataJson = EpisodeData(ajaxUrl, postData).toJson()
+            val episodeDataJson = toJson(EpisodeData(ajaxUrl, postData)) // Sử dụng hàm toJson() đã import
 
             Episode(
                 data = episodeDataJson,
@@ -104,12 +105,11 @@ class Kurakura21Provider : MainAPI() {
             )
         }
 
-        // Sử dụng newAnimeLoadResponse cho nội dung NSFW
         return newAnimeLoadResponse(title, url, TvType.NSFW) {
             this.posterUrl = poster
             this.year = year
             this.plot = description
-            addEpisodes(DubStatus.Dubbed, episodes) // Thêm danh sách server/episode
+            addEpisodes(DubStatus.Dubbed, episodes)
         }
     }
 
@@ -120,6 +120,7 @@ class Kurakura21Provider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // Sử dụng hàm parseJson() đã import
         val episodeData = try {
             parseJson<EpisodeData>(data)
         } catch (e: Exception) {
