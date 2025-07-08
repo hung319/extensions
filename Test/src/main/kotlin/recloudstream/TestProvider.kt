@@ -1,9 +1,8 @@
 package recloudstream
 
-import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.* // Giữ lại import wildcard
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.LoadResponse.Companion.addDuration
-import com.lagradost.cloudstream3.utils.AppUtils.app
 import android.util.Log
 import com.google.gson.Gson
 import org.jsoup.nodes.Document
@@ -25,6 +24,12 @@ import io.ktor.server.engine.*
 import io.ktor.server.netty.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
+
+// =================== SỬA LỖI: THÊM CÁC IMPORT BỊ THIẾU ===================
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.newExtractorLink
 
 class AnimeVietsubProvider : MainAPI() {
 
@@ -49,14 +54,12 @@ class AnimeVietsubProvider : MainAPI() {
     companion object {
         private var localServer: NettyApplicationEngine? = null
         private var serverJob: Job? = null
-        private const val serverPort = 9999 // Bạn có thể chọn cổng khác nếu xung đột
+        private const val serverPort = 9999
 
-        // Hàm để khởi tạo và chạy server Ktor
-        // CoroutineScope(Dispatchers.IO) để server chạy trên một thread riêng
         private fun startKtorServer() {
             if (localServer?.application?.isActive == true) return
 
-            serverJob?.cancel() // Hủy job cũ nếu có
+            serverJob?.cancel()
             serverJob = CoroutineScope(Dispatchers.IO).launch {
                 localServer = embeddedServer(Netty, port = serverPort) {
                     routing {
@@ -69,9 +72,7 @@ class AnimeVietsubProvider : MainAPI() {
 
                             Log.d("KtorProxy", "Proxying URL: $targetUrl")
                             try {
-                                // Dùng app.get để tải với Cloudflare Killer
                                 val response = app.get(targetUrl)
-                                // Stream dữ liệu trả về cho trình phát
                                 call.respondBytes(response.body.bytes())
                             } catch (e: Exception) {
                                 Log.e("KtorProxy", "Failed to proxy $targetUrl", e)
@@ -83,7 +84,6 @@ class AnimeVietsubProvider : MainAPI() {
             }
         }
     }
-
 
     // =================== LOGIC GIẢI MÃ ===================
     private val KEY_STRING_B64 = "ZG1fdGhhbmdfc3VjX3ZhdF9nZXRfbGlua19hbl9kYnQ="
@@ -138,7 +138,7 @@ class AnimeVietsubProvider : MainAPI() {
             "$baseUrl${request.data}"
         } else {
             if (request.data.contains("bang-xep-hang")) {
-                "$baseUrl${request.data}" // Bảng xếp hạng không có phân trang
+                "$baseUrl${request.data}"
             } else {
                 val slug = request.data.removeSuffix("/")
                 "$baseUrl$slug/trang-$page.html"
@@ -256,14 +256,14 @@ class AnimeVietsubProvider : MainAPI() {
             return null
         }
     }
-
+    
+    // Sửa lại chữ ký hàm cho đúng
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Bước 1: Khởi động Ktor server nếu nó chưa chạy
         startKtorServer()
 
         val episodeData = gson.fromJson(data, EpisodeData::class.java)
@@ -288,7 +288,6 @@ class AnimeVietsubProvider : MainAPI() {
             val encryptedUrl = linkSource.file ?: return@forEach
             val decryptedM3u8 = decryptM3u8Content(encryptedUrl) ?: return@forEach
 
-            // Viết lại M3U8 để trỏ đến Ktor proxy
             val rewrittenM3u8 = decryptedM3u8.lines().joinToString("\n") { line ->
                 if (line.trim().startsWith("http")) {
                     val encodedUrl = URLEncoder.encode(line.trim(), "UTF-8")
@@ -298,7 +297,6 @@ class AnimeVietsubProvider : MainAPI() {
                 }
             }
 
-            // Dùng Data URI để nhúng M3U8 đã viết lại vào URL
             val m3u8DataUri = "data:application/vnd.apple.mpegurl;charset=utf-8,${URLEncoder.encode(rewrittenM3u8, "UTF-8")}"
 
             newExtractorLink(
@@ -306,7 +304,8 @@ class AnimeVietsubProvider : MainAPI() {
                 name = name,
                 url = m3u8DataUri,
                 type = ExtractorLinkType.M3U8,
-                referer = episodePageUrl
+                referer = episodePageUrl,
+                quality = Qualities.Unknown.value
             ).let { callback(it) }
         }
 
@@ -369,13 +368,13 @@ class AnimeVietsubProvider : MainAPI() {
                         this.posterUrl = posterUrl; this.plot = plot; this.tags = tags; this.year = year
                         this.rating = rating; this.showStatus = status; this.actors = actors; this.recommendations = recommendations
                     }
-                } else { // Cartoon, TvSeries
+                } else {
                     provider.newTvSeriesLoadResponse(title, infoUrl, finalTvType, episodes) {
                         this.posterUrl = posterUrl; this.plot = plot; this.tags = tags; this.year = year
                         this.rating = rating; this.showStatus = status; this.actors = actors; this.recommendations = recommendations
                     }
                 }
-            } else { // Movie
+            } else {
                 val duration = this.extractDuration()
                 val data = episodes.firstOrNull()?.data
                     ?: gson.toJson(EpisodeData(infoUrl, this.getDataIdFallback(infoUrl), null))
