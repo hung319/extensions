@@ -5,8 +5,9 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.LoadResponse.Companion.addDuration
 import com.lagradost.cloudstream3.utils.AppUtils
-import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.ResponseBody.Companion.toResponseBody
@@ -99,7 +100,7 @@ class AnimeVietsubProvider : MainAPI() {
         "/anime-sap-chieu/" to "Sắp Chiếu",
         "/bang-xep-hang/day.html" to "Xem Nhiều Trong Ngày"
     )
-    
+
     private var currentActiveUrl = mainUrl
     private var domainResolutionAttempted = false
 
@@ -146,9 +147,7 @@ class AnimeVietsubProvider : MainAPI() {
                         val title = titleElement.text().trim()
                         val href = fixUrl(titleElement.attr("href"), baseUrl) ?: return@mapNotNull null
                         val posterUrl = fixUrl(element.selectFirst("a.thumb img")?.attr("src"), baseUrl)
-                        newMovieSearchResponse(title, href, TvType.Anime) {
-                            this.posterUrl = posterUrl
-                        }
+                        newMovieSearchResponse(title, href, TvType.Anime, posterUrl = posterUrl)
                     } catch (e: Exception) {
                         null
                     }
@@ -182,7 +181,7 @@ class AnimeVietsubProvider : MainAPI() {
         return document.select("ul.MovieList.Rows li.TPostMv")
             .mapNotNull { it.toSearchResponse(this, baseUrl) }
     }
-    
+
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): SearchResponse? {
         return try {
             val linkElement = this.selectFirst("article.TPost > a") ?: return null
@@ -195,9 +194,7 @@ class AnimeVietsubProvider : MainAPI() {
             val isMovie = listOf("OVA", "ONA", "Movie", "Phim Lẻ").any { title.contains(it, true) } ||
                     this.selectFirst("span.mli-eps") == null
             val tvType = if (isMovie) TvType.Movie else TvType.Anime
-            provider.newMovieSearchResponse(title, href, tvType) {
-                this.posterUrl = posterUrl
-            }
+            provider.newMovieSearchResponse(title, href, tvType, posterUrl = posterUrl)
         } catch (e: Exception) {
             null
         }
@@ -242,8 +239,7 @@ class AnimeVietsubProvider : MainAPI() {
 
         if (response.contains("[{\"file\":\"")) {
             val encrypted = response.substringAfter("[{\"file\":\"").substringBefore("\"}")
-            
-            // Sử dụng các hàm giải mã đã tích hợp
+
             val key = decodeB64("5nDwIaiZK8NTF5ia3bv5KG1b5aNnisGt5GN6IayZFZJNkMGm3aj4KgGtAMC=")
             val decryptedM3u8 = decrypt(encrypted, key)
 
@@ -251,31 +247,34 @@ class AnimeVietsubProvider : MainAPI() {
                 m3u8Contents[keyM3u8] = decryptedM3u8.replace("\"", "")
             }
         }
-
+        
+        // SỬA ĐỔI THEO YÊU CẦU
         callback.invoke(
-            ExtractorLink(
+            newExtractorLink(
                 source = name,
                 name = name,
                 url = "https://storage.googleapis.com/cloudstream-27898.appspot.com/animevietsub%2Fb$keyM3u8.m3u8",
-                referer = "$baseUrl/",
-                quality = Qualities.Unknown.value,
-                isM3u8 = true,
-            )
+                type = ExtractorLinkType.M3U8 // `type` nằm ngoài
+            ) {
+                // `quality` và `referer` nằm trong lambda
+                this.quality = Qualities.Unknown.value
+                this.referer = "$baseUrl/"
+            }
         )
         return true
     }
-    
+
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
         if (!(extractorLink.url.contains("animevietsub") && extractorLink.url.endsWith(".m3u8"))) {
             return null
         }
-        
+
         return Interceptor { chain ->
             val request = chain.request()
             val url = request.url.toString()
             val key = url.substringAfter("animevietsub%2Fb").substringBefore(".m3u8")
             val m3u8Content = m3u8Contents[key]
-            
+
             if (m3u8Content != null) {
                 val responseBody = m3u8Content.toResponseBody("application/vnd.apple.mpegurl".toMediaTypeOrNull())
                 chain.proceed(request).newBuilder()
@@ -321,7 +320,7 @@ class AnimeVietsubProvider : MainAPI() {
                 this.rating = rating; this.actors = actors; this.recommendations = recommendations
             }
         }
-        
+
         val episodes = watchPageDoc?.parseEpisodes(baseUrl) ?: emptyList()
         val status = this.getShowStatus(episodes.size)
         val finalTvType = this.determineFinalTvType(title, tags, episodes.size)
@@ -342,7 +341,7 @@ class AnimeVietsubProvider : MainAPI() {
             }
         }
     }
-    
+
     // Các hàm helper khác
     private fun Document.extractPosterUrl(baseUrl: String): String? = this.selectFirst("meta[property=og:image]")?.attr("content")?.let { fixUrl(it, baseUrl) }
     private fun Document.extractPlot(): String? = this.selectFirst("div.Description")?.text()?.trim()
@@ -357,7 +356,7 @@ class AnimeVietsubProvider : MainAPI() {
         val href = fixUrl(item.selectFirst("a")?.attr("href"), baseUrl) ?: return@mapNotNull null
         val title = item.selectFirst(".Title")?.text()?.trim() ?: return@mapNotNull null
         val posterUrl = fixUrl(item.selectFirst("img")?.attr("src"), baseUrl)
-        provider.newMovieSearchResponse(title, href, TvType.Anime) { this.posterUrl = posterUrl }
+        provider.newMovieSearchResponse(title, href, TvType.Anime, posterUrl = posterUrl)
     }
     private fun Document.getShowStatus(episodeCount: Int): ShowStatus {
         return when (this.selectFirst("li:has(strong:containsOwn(Trạng thái))")?.ownText()?.lowercase()) {
@@ -385,6 +384,6 @@ class AnimeVietsubProvider : MainAPI() {
             else -> URL(URL(baseUrl), url).toString()
         }
     }
-    
+
     data class LinkData(val hash: String, val id: String)
 }
