@@ -248,7 +248,6 @@ class AnimeVietsubProvider : MainAPI() {
                         referer = "",
                         quality = Qualities.Unknown.value,
                         type = ExtractorLinkType.M3U8,
-                        extraData = mapOf("direct" to "true")
                     )
                 )
                 m3u8Cache.remove(cacheKey)
