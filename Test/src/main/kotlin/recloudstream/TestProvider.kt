@@ -1,111 +1,130 @@
-package recloudstream // Giữ package theo yêu cầu của bạn
+// Thêm package theo yêu cầu
+package recloudstream
 
+// Import các thư viện cần thiết
 import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 
-class Kurakura21Provider : MainAPI() {
+class KuraKura21Provider : MainAPI() {
+    override var name = "KuraKura21"
     override var mainUrl = "https://kurakura21.net"
-    override var name = "Kurakura21"
-    override val hasMainPage = true
     override var lang = "id"
-    override val hasDownloadSupport = true
-    override val supportedTypes = setOf(TvType.NSFW)
-
-    private fun Element.toSearchResult(): SearchResponse? {
-        val title = this.selectFirst("h2.entry-title a")?.text() ?: return null
-        val href = this.selectFirst("a")?.attr("href") ?: return null
-        val posterUrl = this.selectFirst("img")?.attr("data-src")
-
-        return newAnimeSearchResponse(title, href, TvType.NSFW) {
-            this.posterUrl = posterUrl
-            this.quality = getQualityFromString(this.selectFirst(".gmr-quality-item a")?.text())
-        }
-    }
     
+    // --> THÊM MỚI: Báo cho CloudStream biết plugin này có trang chủ
+    override var hasMainPage = true
+
+    // --> CẬP NHẬT: Thay đổi loại nội dung thành NSFW
+    override val supportedTypes = setOf(
+        TvType.NSFW
+    )
+
+    // Hàm lấy danh sách phim từ trang chủ
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get(if (page == 1) mainUrl else "$mainUrl/page/$page").document
-        val home = document.select("article.item-infinite, article.thumb-block").mapNotNull {
+        val document = app.get(mainUrl).document
+        val homePageList = document.select("div.gmr-item-modulepost").mapNotNull {
             it.toSearchResult()
         }
-        val hasNext = document.selectFirst("a.next.page-numbers") != null
-        return newHomePageResponse(list = listOf(HomePageList(name = "Recent Movies", list = home)), hasNext = hasNext)
+
+        return newHomePageResponse(
+            list = listOf(
+                HomePageList(
+                    name = "Phim Mới Cập Nhật",
+                    list = homePageList,
+                    isHorizontal = true
+                )
+            ),
+            hasNext = false
+        )
     }
+    
+    // Hàm tiện ích chuyển đổi HTML sang SearchResponse
+    private fun Element.toSearchResult(): SearchResponse? {
+        val href = this.selectFirst("a")?.attr("href") ?: return null
+        val title = this.selectFirst("h2.entry-title a")?.text() ?: "Không có tiêu đề"
+        val posterUrl = this.selectFirst("img")?.attr("data-src")
 
-    override suspend fun search(query: String): List<SearchResponse> {
-        val document = app.get("$mainUrl/?s=$query").document
-        return document.select("article.item-infinite").mapNotNull { it.toSearchResult() }
-    }
-
-    override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url).document
-        val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: "No Title"
-        val poster = document.selectFirst("figure.pull-left img")?.attr("data-src")
-        val description = document.selectFirst("div.entry-content")?.text()?.trim()
-        val recommendations = document.select("div.gmr-grid article.item").mapNotNull { it.toSearchResult() }
-        
-        val postId = document.body().attr("class").let {
-            Regex("postid-(\\d+)").find(it)?.groupValues?.get(1)
-        } ?: throw ErrorLoadingException("Failed to get post ID")
-
-        val servers = document.select("ul.muvipro-player-tabs li a")
-
-        val episodes = servers.mapNotNull { serverElement ->
-            val serverName = serverElement.text()
-            val tabValue = serverElement.attr("href").removePrefix("#")
-            if (tabValue.isBlank()) return@mapNotNull null
-
-            val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
-            val postDataString = "action=muvipro_player_content&post_id=$postId&tab=$tabValue"
-            
-            // Mã hóa dữ liệu vào một chuỗi String duy nhất, phân cách bằng ';;;'
-            // Định dạng: "url_ajax;;;chuoi_du_lieu_post"
-            val encodedData = "$ajaxUrl;;;$postDataString"
-
-            Episode(data = encodedData, name = serverName)
+        // --> CẬP NHẬT: Sử dụng newNsfwSearchResponse
+        return newNsfwSearchResponse(
+            name = title,
+            url = href
+        ) {
+            this.posterUrl = posterUrl
         }
+    }
 
-        return newAnimeLoadResponse(title, url, TvType.NSFW) {
+    // Hàm tìm kiếm
+    override suspend fun search(query: String): List<SearchResponse> {
+        val searchUrl = "$mainUrl/?s=$query"
+        val document = app.get(searchUrl).document
+
+        return document.select("article.item-infinite").mapNotNull {
+            val href = it.selectFirst("a")?.attr("href") ?: return@mapNotNull null
+            val title = it.selectFirst("h2.entry-title a")?.text() ?: "Không có tiêu đề"
+            val posterUrl = it.selectFirst("img")?.attr("src")
+
+            // --> CẬP NHẬT: Sử dụng newNsfwSearchResponse
+            newNsfwSearchResponse(
+                name = title,
+                url = href
+            ) {
+                this.posterUrl = posterUrl
+            }
+        }
+    }
+
+    // Hàm load để lấy thêm Post ID
+    override suspend fun load(url: String): LoadResponse? {
+        val document = app.get(url).document
+        
+        val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: "Không có tiêu đề"
+        val poster = document.selectFirst("div.gmr-movie-data img")?.attr("src")
+        val description = document.selectFirst("div.entry-content")?.text()?.trim()
+        val tags = document.select("div.gmr-moviedata a[rel=tag]").map { it.text() }
+        val postId = document.body().className().substringAfter("postid-").substringBefore(" ")
+
+        // --> CẬP NHẬT: Sử dụng newNsfwLoadResponse
+        return newNsfwLoadResponse(
+            name = title,
+            url = url,
+            dataUrl = postId 
+        ) {
             this.posterUrl = poster
             this.plot = description
-            this.recommendations = recommendations
-            addEpisodes(DubStatus.Dubbed, episodes)
+            this.tags = tags
         }
     }
 
+    // Hàm loadLinks sử dụng API và loadExtractor (không thay đổi logic)
     override suspend fun loadLinks(
-        data: String,
+        data: String, // postId
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Giải mã chuỗi String thủ công
-        val parts = data.split(";;;")
-        if (parts.size < 2) throw ErrorLoadingException("Invalid episode data")
+        val postId = data
+        val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
         
-        val ajaxUrl = parts[0]
-        val postDataString = parts[1]
-        
-        // Chuyển chuỗi dữ liệu POST trở lại thành Map
-        val postDataMap = postDataString.split("&").associate {
-            val (key, value) = it.split("=")
-            key to value
-        }
-        
-        try {
-            val ajaxResponse = app.post(
-                ajaxUrl,
-                data = postDataMap,
-                referer = mainUrl
+        (1..2).forEach { tabIndex ->
+            val tabId = "p$tabIndex"
+            val postData = mapOf(
+                "action" to "muvipro_player_content",
+                "tab" to tabId,
+                "post_id" to postId
+            )
+
+            val playerContent = app.post(
+                url = ajaxUrl,
+                data = postData,
+                referer = "$mainUrl/"
             ).document
-            
-            val iframeSrc = ajaxResponse.selectFirst("iframe")?.attr("src")
-                ?: return false
-                
-            loadExtractor(iframeSrc, mainUrl, subtitleCallback, callback)
-        } catch (e: Exception) {
-            // Bỏ qua lỗi nếu có server không hoạt động
+
+            val iframeSrc = playerContent.selectFirst("iframe")?.attr("src")
+            if (iframeSrc != null) {
+                loadExtractor(iframeSrc, subtitleCallback, callback)
+            }
         }
-            
+
         return true
     }
 }
