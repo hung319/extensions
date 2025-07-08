@@ -40,10 +40,7 @@ class AnimeVietsubProvider : MainAPI() {
     override var lang = "vi"
     override val hasMainPage = true
 
-    // Biến lưu trữ nội dung M3U8 đã giải mã
     private val m3u8Contents = mutableMapOf<String, String>()
-
-    // Hằng số và hàm giải mã được tích hợp trực tiếp
     private val b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
 
     private fun decodeB64(input: String): String {
@@ -70,7 +67,8 @@ class AnimeVietsubProvider : MainAPI() {
     }
 
     private fun decrypt(encode: String, key: String): String? {
-        try {
+        // Sửa đổi ở đây để trả về thông báo lỗi chi tiết
+        return try {
             val sha256 = MessageDigest.getInstance("SHA-256")
             val secretKey = sha256.digest(Base64.getDecoder().decode(key))
             val decoded = Base64.getDecoder().decode(encode)
@@ -90,10 +88,11 @@ class AnimeVietsubProvider : MainAPI() {
             inflater.end()
             val result = bos.toString(Charsets.UTF_8.name())
             bos.close()
-            return result
+            result
         } catch (e: Exception) {
             e.printStackTrace()
-            return null
+            // Trả về thông báo lỗi để hiển thị trên UI
+            "Exception: ${e.message}"
         }
     }
 
@@ -243,13 +242,13 @@ class AnimeVietsubProvider : MainAPI() {
             data = mapOf("link" to linkData.hash, "id" to linkData.id)
         ).text
         
-        var decryptedM3u8: String? = null
+        var decryptedM3u8: String? = "Không nhận được dữ liệu mã hóa"
         if (response.contains("[{\"file\":\"")) {
             val encrypted = response.substringAfter("[{\"file\":\"").substringBefore("\"}")
             val key = decodeB64("5nDwIaiZK8NTF5ia3bv5KG1b5aNnisGt5GN6IayZFZJNkMGm3aj4KgGtAMC=")
             decryptedM3u8 = decrypt(encrypted, key)
 
-            if (decryptedM3u8 != null) {
+            if (decryptedM3u8 != null && !decryptedM3u8.startsWith("Exception:")) {
                 m3u8Contents[keyM3u8] = decryptedM3u8.replace("\"", "")
             }
         }
@@ -257,10 +256,7 @@ class AnimeVietsubProvider : MainAPI() {
         callback.invoke(
             newExtractorLink(
                 source = name,
-                // ================== THAY ĐỔI ĐỂ DEBUG ==================
-                // Tên của link sẽ là nội dung file m3u8 hoặc thông báo lỗi
-                name = decryptedM3u8 ?: "Lỗi Giải Mã M3U8",
-                // =======================================================
+                name = decryptedM3u8 ?: "Lỗi không xác định",
                 url = "https://storage.googleapis.com/cloudstream-27898.appspot.com/animevietsub%2Fb$keyM3u8.m3u8",
                 type = ExtractorLinkType.M3U8
             ) {
