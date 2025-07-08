@@ -10,44 +10,42 @@ class KuraKura21Provider : MainAPI() {
     override var name = "KuraKura21"
     override var mainUrl = "https://kurakura21.net"
     override var lang = "id"
-    
-    // --> THÊM MỚI: Báo cho CloudStream biết plugin này có trang chủ
     override var hasMainPage = true
 
-    // --> CẬP NHẬT: Thay đổi loại nội dung thành NSFW
     override val supportedTypes = setOf(
-        TvType.NSFW
+        TvType.NSFW // Phân loại là nội dung NSFW
     )
 
-    // Hàm lấy danh sách phim từ trang chủ
+    // Sửa lại cách tạo HomePageResponse
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(mainUrl).document
         val homePageList = document.select("div.gmr-item-modulepost").mapNotNull {
             it.toSearchResult()
         }
 
-        return newHomePageResponse(
-            list = listOf(
+        // Trả về danh sách phim cho trang chủ CloudStream
+        // Sửa lỗi: HomePageList không cần isHorizontal, nó sẽ hiển thị ngang theo mặc định
+        return HomePageResponse(
+            listOf(
                 HomePageList(
                     name = "Phim Mới Cập Nhật",
-                    list = homePageList,
-                    isHorizontal = true
+                    list = homePageList
                 )
-            ),
-            hasNext = false
+            )
         )
     }
-    
+
     // Hàm tiện ích chuyển đổi HTML sang SearchResponse
     private fun Element.toSearchResult(): SearchResponse? {
         val href = this.selectFirst("a")?.attr("href") ?: return null
         val title = this.selectFirst("h2.entry-title a")?.text() ?: "Không có tiêu đề"
         val posterUrl = this.selectFirst("img")?.attr("data-src")
 
-        // --> CẬP NHẬT: Sử dụng newNsfwSearchResponse
-        return newNsfwSearchResponse(
+        // Sửa lỗi: Dùng 'newMovieSearchResponse' thay vì 'newNsfwSearchResponse'
+        return newMovieSearchResponse(
             name = title,
-            url = href
+            url = href,
+            type = TvType.NSFW // Chỉ định loại nội dung ở đây
         ) {
             this.posterUrl = posterUrl
         }
@@ -63,17 +61,18 @@ class KuraKura21Provider : MainAPI() {
             val title = it.selectFirst("h2.entry-title a")?.text() ?: "Không có tiêu đề"
             val posterUrl = it.selectFirst("img")?.attr("src")
 
-            // --> CẬP NHẬT: Sử dụng newNsfwSearchResponse
-            newNsfwSearchResponse(
+            // Sửa lỗi: Dùng 'newMovieSearchResponse'
+            newMovieSearchResponse(
                 name = title,
-                url = href
+                url = href,
+                type = TvType.NSFW
             ) {
                 this.posterUrl = posterUrl
             }
         }
     }
 
-    // Hàm load để lấy thêm Post ID
+    // Hàm load để lấy thông tin chi tiết
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
         
@@ -83,10 +82,11 @@ class KuraKura21Provider : MainAPI() {
         val tags = document.select("div.gmr-moviedata a[rel=tag]").map { it.text() }
         val postId = document.body().className().substringAfter("postid-").substringBefore(" ")
 
-        // --> CẬP NHẬT: Sử dụng newNsfwLoadResponse
-        return newNsfwLoadResponse(
+        // Sửa lỗi: Dùng 'newMovieLoadResponse' thay vì 'newNsfwLoadResponse'
+        return newMovieLoadResponse(
             name = title,
             url = url,
+            type = TvType.NSFW, // Chỉ định loại nội dung ở đây
             dataUrl = postId 
         ) {
             this.posterUrl = poster
@@ -105,23 +105,28 @@ class KuraKura21Provider : MainAPI() {
         val postId = data
         val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
         
-        (1..2).forEach { tabIndex ->
-            val tabId = "p$tabIndex"
-            val postData = mapOf(
-                "action" to "muvipro_player_content",
-                "tab" to tabId,
-                "post_id" to postId
-            )
+        // Lấy link cho 2 server
+        (1..2).apmap { tabIndex -> // Sử dụng apmap để chạy song song, tăng tốc độ
+            try {
+                val tabId = "p$tabIndex"
+                val postData = mapOf(
+                    "action" to "muvipro_player_content",
+                    "tab" to tabId,
+                    "post_id" to postId
+                )
 
-            val playerContent = app.post(
-                url = ajaxUrl,
-                data = postData,
-                referer = "$mainUrl/"
-            ).document
+                val playerContent = app.post(
+                    url = ajaxUrl,
+                    data = postData,
+                    referer = "$mainUrl/" // Referer chung
+                ).document
 
-            val iframeSrc = playerContent.selectFirst("iframe")?.attr("src")
-            if (iframeSrc != null) {
-                loadExtractor(iframeSrc, subtitleCallback, callback)
+                val iframeSrc = playerContent.selectFirst("iframe")?.attr("src")
+                if (iframeSrc != null) {
+                    loadExtractor(iframeSrc, subtitleCallback, callback)
+                }
+            } catch (e: Exception) {
+                // Bỏ qua lỗi nếu một trong các server không hoạt động
             }
         }
 
