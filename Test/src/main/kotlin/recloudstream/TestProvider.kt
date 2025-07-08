@@ -148,7 +148,6 @@ class AnimeVietsubProvider : MainAPI() {
                         val title = titleElement.text().trim()
                         val href = fixUrl(titleElement.attr("href"), baseUrl) ?: return@mapNotNull null
                         val posterUrl = fixUrl(element.selectFirst("a.thumb img")?.attr("src"), baseUrl)
-                        // SỬA LỖI: Sử dụng .apply {}
                         newMovieSearchResponse(title, href, TvType.Anime).apply {
                             this.posterUrl = posterUrl
                         }
@@ -198,7 +197,6 @@ class AnimeVietsubProvider : MainAPI() {
             val isMovie = listOf("OVA", "ONA", "Movie", "Phim Lẻ").any { title.contains(it, true) } ||
                     this.selectFirst("span.mli-eps") == null
             val tvType = if (isMovie) TvType.Movie else TvType.Anime
-            // SỬA LỖI: Sử dụng .apply {}
             newMovieSearchResponse(title, href, tvType).apply {
                 this.posterUrl = posterUrl
             }
@@ -224,7 +222,6 @@ class AnimeVietsubProvider : MainAPI() {
         return infoDocument.toLoadResponse(this, url, baseUrl, watchPageDoc)
     }
 
-    // SỬA LỖI: Đảm bảo signature của hàm khớp với MainAPI
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -270,7 +267,6 @@ class AnimeVietsubProvider : MainAPI() {
         return true
     }
 
-    // SỬA LỖI: Đảm bảo signature của hàm khớp với MainAPI
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor {
         return Interceptor { chain ->
             val request = chain.request()
@@ -300,6 +296,7 @@ class AnimeVietsubProvider : MainAPI() {
                 val dataId = el.attr("data-id").ifBlank { null } ?: return@mapNotNull null
                 val dataHash = el.attr("data-hash").ifBlank { null } ?: return@mapNotNull null
                 val name = el.attr("title").ifBlank { el.text() }.trim()
+                // SỬA LỖI: Gọi AppUtils.toJson
                 val data = AppUtils.toJson(LinkData(hash = dataHash, id = dataId))
                 newEpisode(data) { this.name = name }
             } catch (e: Exception) {
@@ -340,6 +337,7 @@ class AnimeVietsubProvider : MainAPI() {
             }
         } else {
             val duration = this.extractDuration()
+            // SỬA LỖI: Gọi AppUtils.toJson
             val data = episodes.firstOrNull()?.data
                 ?: AppUtils.toJson(LinkData(this.getDataIdFallback(infoUrl) ?: "", ""))
             provider.newMovieLoadResponse(title, infoUrl, finalTvType, data) {
