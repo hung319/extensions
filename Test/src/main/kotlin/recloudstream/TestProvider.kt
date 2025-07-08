@@ -1,11 +1,9 @@
-package recloudstream // Package đã được thay đổi theo yêu cầu
+package recloudstream // Package vẫn giữ theo yêu cầu
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-// Thêm các import cần thiết cho các hàm tiện ích và Jsoup
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import org.jsoup.nodes.Element
 
 // Khai báo lớp provider
@@ -28,13 +26,14 @@ class Kurakura21Provider : MainAPI() {
 
     // Hàm để phân tích kết quả tìm kiếm và danh sách phim
     private fun Element.toSearchResult(): SearchResponse? {
-        val title = this.selectFirst("h2.entry-title a")?.text() ?: return null
-        val href = this.selectFirst("a")?.attr("href") ?: return null
-        val posterUrl = this.selectFirst("img")?.attr("data-src")
+        // Đổi selectFirst() thành select().firstOrNull() để khắc phục lỗi biên dịch
+        val title = this.select("h2.entry-title a").firstOrNull()?.text() ?: return null
+        val href = this.select("a").firstOrNull()?.attr("href") ?: return null
+        val posterUrl = this.select("img").firstOrNull()?.attr("data-src")
 
         return newAnimeSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
-            this.quality = getQualityFromString(this.selectFirst(".gmr-quality-item a")?.text())
+            this.quality = getQualityFromString(this.select(".gmr-quality-item a").firstOrNull()?.text())
         }
     }
     
@@ -44,7 +43,7 @@ class Kurakura21Provider : MainAPI() {
         val homePageList = mutableListOf<HomePageList>()
 
         document.select("div.home-widget").forEach { block ->
-            val header = block.selectFirst("h3.homemodule-title")?.text() ?: return@forEach
+            val header = block.select("h3.homemodule-title").firstOrNull()?.text() ?: return@forEach
             val movies = block.select("article, div.gmr-item-modulepost").mapNotNull {
                 it.toSearchResult()
             }
@@ -53,7 +52,7 @@ class Kurakura21Provider : MainAPI() {
             }
         }
         
-        val latestMoviesHeader = document.selectFirst("#primary h3.homemodule-title")?.text() ?: "Latest Movies"
+        val latestMoviesHeader = document.select("#primary h3.homemodule-title").firstOrNull()?.text() ?: "Latest Movies"
         val latestMovies = document.select("#gmr-main-load article.item-infinite").mapNotNull {
             it.toSearchResult()
         }
@@ -75,9 +74,9 @@ class Kurakura21Provider : MainAPI() {
     // --- Tải dữ liệu ---
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
-        val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: "No Title"
-        val poster = document.selectFirst("figure.pull-left img")?.attr("data-src")
-        val description = document.selectFirst("div.entry-content")?.text()?.trim()
+        val title = document.select("h1.entry-title").firstOrNull()?.text()?.trim() ?: "No Title"
+        val poster = document.select("figure.pull-left img").firstOrNull()?.attr("data-src")
+        val description = document.select("div.entry-content").firstOrNull()?.text()?.trim()
         val year = document.select("div.gmr-moviedata").toString().let {
             Regex("""(\d{4})""").find(it)?.groupValues?.get(1)?.toIntOrNull()
         }
@@ -97,7 +96,8 @@ class Kurakura21Provider : MainAPI() {
                 "player" to (index + 1).toString()
             )
             
-            val episodeDataJson = toJson(EpisodeData(ajaxUrl, postData)) // Sử dụng hàm toJson() đã import
+            // SỬA LỖI: Gọi hàm .toJson() trên đối tượng, thay vì truyền đối tượng vào hàm
+            val episodeDataJson = EpisodeData(ajaxUrl, postData).toJson()
 
             Episode(
                 data = episodeDataJson,
@@ -120,7 +120,6 @@ class Kurakura21Provider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Sử dụng hàm parseJson() đã import
         val episodeData = try {
             parseJson<EpisodeData>(data)
         } catch (e: Exception) {
@@ -128,7 +127,7 @@ class Kurakura21Provider : MainAPI() {
         }
 
         val ajaxResponse = app.post(episodeData.ajaxUrl, data = episodeData.postData).document
-        val iframeSrc = ajaxResponse.selectFirst("iframe")?.attr("src")
+        val iframeSrc = ajaxResponse.select("iframe").firstOrNull()?.attr("src")
             ?: throw ErrorLoadingException("Failed to find iframe source")
             
         return loadExtractor(iframeSrc, subtitleCallback, callback)
