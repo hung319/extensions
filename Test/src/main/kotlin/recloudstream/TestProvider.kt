@@ -67,11 +67,11 @@ class AnimeVietsubProvider : MainAPI() {
     }
 
     private fun decrypt(encode: String, key: String): String? {
-        // Sửa đổi ở đây để trả về thông báo lỗi chi tiết
         return try {
             val sha256 = MessageDigest.getInstance("SHA-256")
-            val secretKey = sha256.digest(Base64.getDecoder().decode(key))
-            val decoded = Base64.getDecoder().decode(encode)
+            // SỬA LỖI: Dùng getUrlDecoder() thay cho getDecoder()
+            val secretKey = sha256.digest(Base64.getUrlDecoder().decode(key))
+            val decoded = Base64.getUrlDecoder().decode(encode)
             val iv = decoded.sliceArray(0..15)
             val encrypted = decoded.sliceArray(16 until decoded.size)
             val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
@@ -91,7 +91,6 @@ class AnimeVietsubProvider : MainAPI() {
             result
         } catch (e: Exception) {
             e.printStackTrace()
-            // Trả về thông báo lỗi để hiển thị trên UI
             "Exception: ${e.message}"
         }
     }
