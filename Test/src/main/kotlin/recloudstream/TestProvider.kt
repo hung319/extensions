@@ -44,8 +44,6 @@ class AnimeHayProvider : MainAPI() {
     override var lang = "vi"
     override val hasMainPage = true
 
-    private val mobileUserAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
-
     private var activeUrl = "https://animehay.bid"
     private var isDomainCheckComplete = false
 
@@ -56,7 +54,8 @@ class AnimeHayProvider : MainAPI() {
 
         Log.d("AnimeHayProvider", "Starting domain check. Default: $activeUrl, Check URL: $mainUrl")
         runCatching {
-            val response = app.get(mainUrl, allowRedirects = true, headers = mapOf("User-Agent" to mobileUserAgent))
+            // LOẠI BỎ User-Agent thủ công
+            val response = app.get(mainUrl, allowRedirects = true)
             val document = response.document
             val landedUrl = response.url
             Log.d("AnimeHayProvider", "Fetched from $mainUrl, landed on: $landedUrl")
@@ -104,7 +103,7 @@ class AnimeHayProvider : MainAPI() {
         return runCatching {
             val encodedTitle = URLEncoder.encode(title, "UTF-8")
             val searchUrl = "https://kitsu.io/api/edge/anime?filter[text]=$encodedTitle&page[limit]=1"
-            val response = app.get(searchUrl, headers = mapOf("User-Agent" to mobileUserAgent)).parsedSafe<KitsuMain>()
+            val response = app.get(searchUrl).parsedSafe<KitsuMain>()
             val poster = response?.data?.firstOrNull()?.attributes?.posterImage
             listOfNotNull(poster?.original, poster?.large, poster?.medium, poster?.small, poster?.tiny).firstOrNull()
         }.getOrNull()
@@ -115,8 +114,8 @@ class AnimeHayProvider : MainAPI() {
             val siteBaseUrl = getActiveUrl()
             val urlToFetch = if (page <= 1) siteBaseUrl else "$siteBaseUrl/phim-moi-cap-nhap/trang-$page.html"
 
-            val document = app.get(urlToFetch, headers = mapOf("User-Agent" to mobileUserAgent)).document
-            // SỬA LỖI: Cập nhật selector để tìm các mục phim
+            // LOẠI BỎ User-Agent thủ công
+            val document = app.get(urlToFetch).document
             val homePageItems = document.select("div.film-list div.film-item").mapNotNull {
                 it.toSearchResponse(this, siteBaseUrl)
             }
@@ -140,9 +139,8 @@ class AnimeHayProvider : MainAPI() {
             val siteBaseUrl = getActiveUrl()
             val searchUrl = "$siteBaseUrl/tim-kiem/${query.encodeUri()}.html"
 
-            val document = app.get(searchUrl, headers = mapOf("User-Agent" to mobileUserAgent)).document
-            
-            // SỬA LỖI: Cập nhật selector để tìm các mục phim trong trang tìm kiếm
+            // LOẠI BỎ User-Agent thủ công
+            val document = app.get(searchUrl).document
             document.select("div.film-list .film-item").mapNotNull { 
                 it.toSearchResponse(this, siteBaseUrl) 
             }
@@ -154,7 +152,8 @@ class AnimeHayProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         return runCatching {
             val siteBaseUrl = getActiveUrl()
-            val document = app.get(url, headers = mapOf("User-Agent" to mobileUserAgent)).document
+            // LOẠI BỎ User-Agent thủ công
+            val document = app.get(url).document
             document.toLoadResponse(this, url, siteBaseUrl)
         }.onFailure {
             Log.e("AnimeHayProvider", "Error in load for $url", it)
@@ -190,7 +189,8 @@ class AnimeHayProvider : MainAPI() {
         var foundLinks = false
         runCatching {
             val siteBaseUrl = getActiveUrl()
-            val document = app.get(data, referer = siteBaseUrl, headers = mapOf("User-Agent" to mobileUserAgent)).document
+            // LOẠI BỎ User-Agent thủ công
+            val document = app.get(data, referer = siteBaseUrl).document
             val pageContent = document.html()
 
             runCatching {
@@ -202,8 +202,7 @@ class AnimeHayProvider : MainAPI() {
                             referer = siteBaseUrl
                             this.headers = mapOf(
                                 "Origin" to siteBaseUrl,
-                                "Referer" to siteBaseUrl,
-                                "User-Agent" to mobileUserAgent
+                                "Referer" to siteBaseUrl
                             )
                         }
                     )
@@ -271,7 +270,6 @@ class AnimeHayProvider : MainAPI() {
         }
     }
 
-    // SỬA LỖI: Cập nhật lại toàn bộ hàm toSearchResponse để phù hợp với layout mới
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): AnimeSearchResponse? {
         val element = this
         return runCatching {
