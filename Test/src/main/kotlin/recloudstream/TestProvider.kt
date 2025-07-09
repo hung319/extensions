@@ -6,6 +6,10 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
 
+// Thêm các import còn thiếu
+import com.lagradost.cloudstream3.Quality
+import com.lagradost.cloudstream3.ActorData
+
 // Đặt tên cho plugin của bạn
 class SextbProvider : MainAPI() {
     // Tên hiển thị trong ứng dụng
@@ -91,12 +95,17 @@ class SextbProvider : MainAPI() {
             } ?: return null
 
         val poster = document.selectFirst("div.covert img")?.attr("data-src")
-        val cast = document.select("div.description:contains(Cast) a").map { it.text() }
+        
+        // SỬA LỖI: Chuyển đổi danh sách tên diễn viên thành List<ActorData>
+        val cast = document.select("div.description:contains(Cast) a").map {
+            ActorData(it.text())
+        }
+        
         val plot = document.selectFirst("span.full-text-desc")?.text()?.trim()
         val tags = document.select("div.description:contains(Genre) a").map { it.text() }
         val year = document.select("div.description:contains(Release Date)").text()
             .substringAfter("Release Date:").trim().let {
-                it.split(".").last().toIntOrNull()
+                it.split(".").lastOrNull()?.toIntOrNull()
             }
         val recommendations = document.select("div#related div.tray-item").mapNotNull {
             it.toSearchResult()
@@ -116,7 +125,7 @@ class SextbProvider : MainAPI() {
             this.year = year
             this.plot = plot
             this.tags = tags
-            this.actors = cast // SỬA LỖI: Đổi `cast` thành `actors`
+            this.actors = cast
             this.recommendations = recommendations
         }
     }
