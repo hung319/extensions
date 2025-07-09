@@ -44,7 +44,6 @@ class AnimeHayProvider : MainAPI() {
     override var lang = "vi"
     override val hasMainPage = true
 
-    // SỬA LỖI: Thêm User-Agent của trình duyệt di động để giả lập
     private val mobileUserAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
 
     private var activeUrl = "https://animehay.bid"
@@ -108,11 +107,6 @@ class AnimeHayProvider : MainAPI() {
             val response = app.get(searchUrl, headers = mapOf("User-Agent" to mobileUserAgent)).parsedSafe<KitsuMain>()
             val poster = response?.data?.firstOrNull()?.attributes?.posterImage
             listOfNotNull(poster?.original, poster?.large, poster?.medium, poster?.small, poster?.tiny).firstOrNull()
-        }.onSuccess {
-            if (it != null) Log.d("AnimeHayProvider", "Found Kitsu poster for '$title': $it")
-            else Log.w("AnimeHayProvider", "Kitsu poster not found for '$title'")
-        }.onFailure {
-            Log.e("AnimeHayProvider", "Kitsu API Error for title '$title'", it)
         }.getOrNull()
     }
 
@@ -122,8 +116,13 @@ class AnimeHayProvider : MainAPI() {
             val urlToFetch = if (page <= 1) siteBaseUrl else "$siteBaseUrl/phim-moi-cap-nhap/trang-$page.html"
 
             val document = app.get(urlToFetch, headers = mapOf("User-Agent" to mobileUserAgent)).document
-            val homePageItems = document.select("div.movies-list div.movie-item").mapNotNull {
+            // SỬA LỖI: Cập nhật selector để tìm các mục phim
+            val homePageItems = document.select("div.film-list div.film-item").mapNotNull {
                 it.toSearchResponse(this, siteBaseUrl)
+            }
+
+            if (homePageItems.isEmpty()) {
+                 Log.w("AnimeHayProvider", "No items found on homepage with selector 'div.film-list div.film-item'")
             }
 
             val currentPage = document.selectFirst("div.pagination a.active_page")?.text()?.toIntOrNull() ?: page
@@ -140,11 +139,13 @@ class AnimeHayProvider : MainAPI() {
         return runCatching {
             val siteBaseUrl = getActiveUrl()
             val searchUrl = "$siteBaseUrl/tim-kiem/${query.encodeUri()}.html"
-            Log.i("AnimeHayProvider", "Searching URL: $searchUrl")
 
-            app.get(searchUrl, headers = mapOf("User-Agent" to mobileUserAgent)).document
-                .select("div.movies-list div.movie-item")
-                .mapNotNull { it.toSearchResponse(this, siteBaseUrl) }
+            val document = app.get(searchUrl, headers = mapOf("User-Agent" to mobileUserAgent)).document
+            
+            // SỬA LỖI: Cập nhật selector để tìm các mục phim trong trang tìm kiếm
+            document.select("div.film-list .film-item").mapNotNull { 
+                it.toSearchResponse(this, siteBaseUrl) 
+            }
         }.onFailure {
             Log.e("AnimeHayProvider", "Error in search for query '$query'", it)
         }.getOrDefault(emptyList())
@@ -153,7 +154,6 @@ class AnimeHayProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         return runCatching {
             val siteBaseUrl = getActiveUrl()
-            Log.d("AnimeHayProvider", "Loading details for URL: $url")
             val document = app.get(url, headers = mapOf("User-Agent" to mobileUserAgent)).document
             document.toLoadResponse(this, url, siteBaseUrl)
         }.onFailure {
@@ -190,11 +190,9 @@ class AnimeHayProvider : MainAPI() {
         var foundLinks = false
         runCatching {
             val siteBaseUrl = getActiveUrl()
-            // SỬA LỖI: Thêm User-Agent để giả lập trình duyệt di động
             val document = app.get(data, referer = siteBaseUrl, headers = mapOf("User-Agent" to mobileUserAgent)).document
             val pageContent = document.html()
 
-            // Server TOK
             runCatching {
                 val tokRegex = Regex("""tik:\s*['"]([^'"]+)['"]""")
                 tokRegex.find(pageContent)?.groupValues?.get(1)?.trim()?.let { m3u8Link ->
@@ -204,7 +202,7 @@ class AnimeHayProvider : MainAPI() {
                             referer = siteBaseUrl
                             this.headers = mapOf(
                                 "Origin" to siteBaseUrl,
-                                "Referer" to siteBaseUrl, // Thêm Referer vào headers của M3U8 request
+                                "Referer" to siteBaseUrl,
                                 "User-Agent" to mobileUserAgent
                             )
                         }
@@ -213,7 +211,6 @@ class AnimeHayProvider : MainAPI() {
                 }
             }.onFailure { Log.e("AnimeHayProvider", "Error extracting TOK", it) }
             
-            // Server GUN
             runCatching {
                 val (gunLink, gunId) = findServerInfo(document, pageContent, "gun", siteBaseUrl)
                 if (gunLink != null && gunId != null) {
@@ -228,7 +225,6 @@ class AnimeHayProvider : MainAPI() {
                 }
             }.onFailure { Log.e("AnimeHayProvider", "Error extracting GUN", it) }
 
-            // Server PHO
             runCatching {
                 val (phoLink, phoId) = findServerInfo(document, pageContent, "pho", siteBaseUrl)
                 if (phoLink != null && phoId != null) {
@@ -261,7 +257,6 @@ class AnimeHayProvider : MainAPI() {
                 if (body != null) {
                     try {
                         val originalBytes = body.bytes()
-                        // SỬA LỖI: Thêm kiểm tra kích thước để tránh lỗi
                         if (originalBytes.size > 10) {
                             val fixedBytes = originalBytes.copyOfRange(10, originalBytes.size)
                             val newBody = fixedBytes.toResponseBody(body.contentType())
@@ -276,15 +271,16 @@ class AnimeHayProvider : MainAPI() {
         }
     }
 
+    // SỬA LỖI: Cập nhật lại toàn bộ hàm toSearchResponse để phù hợp với layout mới
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): AnimeSearchResponse? {
         val element = this
         return runCatching {
-            val linkElement = element.selectFirst("> a[href], a[href*=thong-tin-phim]") ?: return null
+            val linkElement = element.selectFirst("a") ?: return null
             val href = fixUrl(linkElement.attr("href"), baseUrl) ?: return null
-            val title = element.selectFirst("div.name-movie")?.text()?.takeIf { it.isNotBlank() }
+            val title = element.selectFirst(".film-name")?.text()?.trim()
                 ?: linkElement.attr("title").takeIf { it.isNotBlank() } ?: return null
 
-            val posterUrl = element.selectFirst("img")?.let { it.attr("src").ifBlank { it.attr("data-src") } }
+            val posterUrl = element.selectFirst("img")?.attr("data-src")
             val fixedPosterUrl = fixUrl(posterUrl, baseUrl)
             val tvType = if (href.contains("/phim/", true)) TvType.AnimeMovie else TvType.Anime
 
@@ -292,7 +288,7 @@ class AnimeHayProvider : MainAPI() {
                 this.posterUrl = fixedPosterUrl
                 this.dubStatus = EnumSet.of(DubStatus.Subbed)
                 
-                val episodeText = element.selectFirst("div.episode-latest span")?.text()?.trim()
+                val episodeText = element.selectFirst(".ribbon-episode")?.text()?.trim()
                 if (episodeText != null) {
                     val episodeCount = episodeText.substringBefore("/").substringBefore("-").filter { it.isDigit() }.toIntOrNull()
                     if (episodeCount != null) {
@@ -338,7 +334,7 @@ class AnimeHayProvider : MainAPI() {
                     "Đang tiến hành", "Đang cập nhật" -> ShowStatus.Ongoing
                     else -> null
                 }
-                this.recommendations = document.select("div.movie-recommend div.movie-item").mapNotNull {
+                this.recommendations = document.select("div.film-list .film-item").mapNotNull {
                     it.toSearchResponse(provider, baseUrl)
                 }
 
