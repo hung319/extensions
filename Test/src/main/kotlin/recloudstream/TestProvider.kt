@@ -190,9 +190,11 @@ class AnimeHayProvider : MainAPI() {
             Regex("""src=["'](https?://[^"']*gun\.php\?id=([^&"']+)&[^"']*)["']"""),
             "iframe#gun_if[src*=gun.php]",
             Regex(""".*gun\.php\?id=([^&"']+)"""),
-            { id -> "https://pt.rapovideo.xyz/playlist/v2/$id/master.m3u8" },
-            callback
-        ).also { foundLinks = true }
+            { id -> "https://pt.rapovideo.xyz/playlist/v2/$id/master.m3u8" }
+        ) { extractorLink ->
+            callback(extractorLink)
+            foundLinks = true
+        }
 
         // 3. Server PHO
         extractServerFromPhp(
@@ -200,9 +202,11 @@ class AnimeHayProvider : MainAPI() {
             Regex("""src=["'](https?://[^"']*pho\.php\?id=([^&"']+)&[^"']*)["']"""),
             "iframe#pho_if[src*=pho.php]",
             Regex(""".*pho\.php\?id=([^&"']+)"""),
-            { id -> "https://pt.rapovideo.xyz/playlist/$id/master.m3u8" },
-            callback
-        ).also { foundLinks = true }
+            { id -> "https://pt.rapovideo.xyz/playlist/$id/master.m3u8" }
+        ) { extractorLink ->
+            callback(extractorLink)
+            foundLinks = true
+        }
 
         return foundLinks
     }
