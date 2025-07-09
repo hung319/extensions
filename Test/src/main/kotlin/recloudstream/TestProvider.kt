@@ -1,6 +1,5 @@
-package recloudstream // Giữ nguyên package gốc của file AnimeHay
+package com.linor // Thay thế bằng package của bạn
 
-// === Imports ===
 import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addDuration
@@ -11,6 +10,8 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import okhttp3.Interceptor
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URL
@@ -157,7 +158,6 @@ class AnimeHayProvider : MainAPI() {
         }.getOrNull()
     }
 
-    // THÊM LẠI: Hàm helper để tìm server GUN và PHO
     private fun findServerInfo(document: Document, pageContent: String, serverName: String, baseUrl: String): Pair<String?, String?> {
         val regex = Regex("""src=["'](https?://[^"']*$serverName\.php\?id=([^&"']+)&[^"']*)["']""")
         val iframeSelector = "iframe#${serverName}_if[src*=$serverName.php]"
@@ -190,20 +190,22 @@ class AnimeHayProvider : MainAPI() {
             val document = app.get(data, referer = siteBaseUrl).document
             val pageContent = document.html()
 
-            // Server TOK (Đã chính xác)
+            // Server TOK
             runCatching {
                 val tokRegex = Regex("""tik:\s*['"]([^'"]+)['"]""")
                 tokRegex.find(pageContent)?.groupValues?.get(1)?.trim()?.let { m3u8Link ->
                     callback(
                         newExtractorLink(source = m3u8Link, name = "Server TOK", url = m3u8Link, type = ExtractorLinkType.M3U8) {
                             quality = Qualities.Unknown.value
+                            referer = siteBaseUrl
+                            this.headers = mapOf("Origin" to siteBaseUrl)
                         }
                     )
                     foundLinks = true
                 }
             }.onFailure { Log.e("AnimeHayProvider", "Error extracting TOK", it) }
             
-            // THÊM LẠI: Server GUN
+            // Server GUN
             runCatching {
                 val (gunLink, gunId) = findServerInfo(document, pageContent, "gun", siteBaseUrl)
                 if (gunLink != null && gunId != null) {
@@ -218,7 +220,7 @@ class AnimeHayProvider : MainAPI() {
                 }
             }.onFailure { Log.e("AnimeHayProvider", "Error extracting GUN", it) }
 
-            // THÊM LẠI: Server PHO
+            // Server PHO
             runCatching {
                 val (phoLink, phoId) = findServerInfo(document, pageContent, "pho", siteBaseUrl)
                 if (phoLink != null && phoId != null) {
@@ -233,13 +235,42 @@ class AnimeHayProvider : MainAPI() {
                 }
             }.onFailure { Log.e("AnimeHayProvider", "Error extracting PHO", it) }
 
-            // BỎ SERVER SS
-
         }.onFailure {
             Log.e("AnimeHayProvider", "General error in loadLinks for $data", it)
         }
 
         return foundLinks
+    }
+
+    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
+        // Interceptor này sẽ được áp dụng cho các link video
+        return Interceptor { chain ->
+            val request = chain.request()
+            val response = chain.proceed(request)
+            val url = request.url.toString()
+
+            // Chỉ áp dụng cho các link video từ các server này (dựa trên phân tích file Java)
+            if (url.contains("tiktokcdn.com") || url.contains("ibyteimg.com") || url.contains("segment.cloudbeta.win")) {
+                val body = response.body
+                if (body != null) {
+                    try {
+                        // Lấy toàn bộ byte của đoạn video
+                        val originalBytes = body.bytes()
+                        // Cắt bỏ 10 byte đầu tiên (là các byte rác)
+                        val fixedBytes = originalBytes.copyOfRange(10, originalBytes.size)
+                        // Tạo lại body mới với dữ liệu đã được làm sạch
+                        val newBody = fixedBytes.toResponseBody(body.contentType())
+                        // Trả về response với body đã sửa
+                        return@Interceptor response.newBuilder().body(newBody).build()
+                    } catch (e: Exception) {
+                        // Nếu có lỗi, trả về response gốc
+                        return@Interceptor response
+                    }
+                }
+            }
+            // Nếu không phải link cần sửa, trả về response gốc
+            return@Interceptor response
+        }
     }
 
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): AnimeSearchResponse? {
