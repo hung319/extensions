@@ -336,12 +336,14 @@ class AnimeHayProvider : MainAPI() {
             try {
                 val finalM3u8Link = linkFormatter(serverId) // Dùng hàm formatter
                 Log.d("AnimeHayProvider", "Constructed $serverName M3U8 link: $finalM3u8Link")
-                callback(
+                launch {
+                  callback(
                     newExtractorLink(source = finalM3u8Link, name = "Server $serverName", url = finalM3u8Link, type = ExtractorLinkType.M3U8) {
                         this.quality = Qualities.Unknown.value
                         this.referer = serverLink
                     }
                 )
+                }
                 Log.d("AnimeHayProvider", "$serverName M3U8 link submitted.")
                 return true // Đã tìm thấy và xử lý
             } catch (e: Exception) {
