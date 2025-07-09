@@ -3,8 +3,6 @@ package recloudstream
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
 import android.util.Base64
@@ -42,29 +40,17 @@ class SextbProvider : MainAPI() {
             this.posterUrl = posterUrl
         }
     }
-    
-    private fun RelatedAjaxItem.toSearchResponse(): SearchResponse {
-        val slug = this.guid.ifEmpty { this.code }
-        val item = this 
-        return newMovieSearchResponse(item.name, "$mainUrl/$slug", TvType.Movie) {
-            posterUrl = item.poster
-        }
-    }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val document = app.get("$mainUrl/search/$query").document
         return document.select("div.tray-item").mapNotNull { it.toSearchResult() }
     }
     
+    // Hàm load giờ đây rất đơn giản, chỉ lấy thông tin hiển thị
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
         val title = document.selectFirst("h1.film-info-title")?.text()?.trim() ?: return null
         
-        val filmId = document.selectFirst("script:containsData(filmId)")?.data()
-            ?.let { Regex("""filmId\s*=\s*['"]?(\d+)['"]?""").find(it)?.groupValues?.get(1) } ?: return null
-        val token = document.selectFirst("meta[name=_token]")?.attr("value") ?: return null
-        val socket = document.selectFirst("meta[name=_socket]")?.attr("value") ?: return null
-
         val poster = document.selectFirst("div.covert img")?.attr("data-src")
         val plot = document.selectFirst("span.full-text-desc")?.text()?.trim()
         val tags = document.select("div.description:contains(Genre) a").map { it.text() }
@@ -73,87 +59,53 @@ class SextbProvider : MainAPI() {
         val cast = document.select("div.description:contains(Cast) a").map { actorElement ->
             ActorData(Actor(name = actorElement.text()), roleString = "Actor")
         }
-
-        val authKey = "Basic " + Base64.encodeToString(("$token:$socket").toByteArray(), Base64.NO_WRAP)
         
-        val recommendations = try {
-            val relatedJson = app.post(
-                "$mainUrl/ajax/relatedAjax",
-                 headers = mapOf("Authorization" to authKey, "Referer" to url),
-                 data = mapOf("pg" to "1", "filmId" to filmId)
-            ).text
-            parseJson<List<RelatedAjaxItem>>(relatedJson).map { it.toSearchResponse() }
-        } catch (e: Exception) {
-            listOf()
-        }
-
-        val episodes = document.select("div.episode-list button.episode").mapIndexedNotNull { index, it ->
-            val serverName = it.text().trim()
-            val episodeData = EpisodeData(filmId, index.toString(), token, socket)
-            newEpisode(episodeData.toJson()) {
-                name = serverName
-            }
-        }
-        
-        if (episodes.isEmpty()) throw RuntimeException("No free servers found for this movie")
-
-        return newMovieLoadResponse(title, url, TvType.Movie, episodes) {
+        // Không lấy phim liên quan ở đây nữa để tránh lỗi và tăng tốc độ
+        // Thay vì truyền danh sách episode, ta truyền thẳng url của phim
+        return newMovieLoadResponse(title, url, TvType.Movie, url) {
             this.posterUrl = poster
             this.year = year
             this.plot = plot
             this.tags = tags
             this.actors = cast
-            this.recommendations = recommendations
         }
     }
 
+    // Toàn bộ logic lấy link được chuyển hết vào đây
     override suspend fun loadLinks(
-        data: String,
+        data: String, // `data` giờ là URL của phim
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // SỬA LỖI: Xử lý cấu trúc JSON mảng mà chương trình test gửi vào
-        // Lớp này dùng để hứng dữ liệu bên ngoài
-        data class EpisodeWrapper(@JsonProperty("data") val innerData: String)
+        // Tải lại trang phim để lấy thông tin cần thiết
+        val document = app.get(data).document
 
-        // Phân tích mảng JSON bên ngoài, lấy phần tử đầu tiên, rồi lấy key "data"
-        val innerJsonData = parseJson<List<EpisodeWrapper>>(data).firstOrNull()?.innerData
-            ?: throw RuntimeException("Failed to parse outer episode wrapper")
-        
-        // Phân tích chuỗi JSON bên trong để có được dữ liệu thực sự
-        val episodeData = parseJson<EpisodeData>(innerJsonData)
-        
-        val authKey = "Basic " + Base64.encodeToString(("${episodeData.token}:${episodeData.socket}").toByteArray(), Base64.NO_WRAP)
-        val referer = "$mainUrl/anything"
+        // Trích xuất các key động từ trang
+        val filmId = document.selectFirst("script:containsData(filmId)")?.data()
+            ?.let { Regex("""filmId\s*=\s*['"]?(\d+)['"]?""").find(it)?.groupValues?.get(1) }
+            ?: return false // Nếu không có filmId, thoát
+        val token = document.selectFirst("meta[name=_token]")?.attr("value") ?: return false
+        val socket = document.selectFirst("meta[name=_socket]")?.attr("value") ?: return false
 
+        // Tự động chọn server đầu tiên (index = 0)
+        val episodeIndex = "0"
+        
+        // Tạo Authorization header động
+        val authKey = "Basic " + Base64.encodeToString(("$token:$socket").toByteArray(), Base64.NO_WRAP)
+        val referer = data
+
+        // Gọi API để lấy link player
         val res = app.post(
             "$mainUrl/ajax/player",
             headers = mapOf("Authorization" to authKey, "Referer" to referer),
-            data = mapOf("episode" to episodeData.episodeIndex, "filmId" to episodeData.filmId)
+            data = mapOf("episode" to episodeIndex, "filmId" to filmId)
         ).parsed<PlayerResponse>()
 
         val iframeSrc = res.player?.let { Regex("""src="(.*?)"""").find(it)?.groupValues?.get(1) } ?: return false
         
         return loadExtractor(iframeSrc, referer, subtitleCallback, callback)
     }
-
-    // SỬA LỖI: Sửa lỗi chính tả "filmld" -> "filmId" bằng JsonProperty
-    data class EpisodeData(
-        @JsonProperty("filmld") // <- Sửa lỗi chính tả ở đây
-        val filmId: String,
-        val episodeIndex: String,
-        val token: String,
-        val socket: String
-    )
-    
-    data class RelatedAjaxItem(
-        @JsonProperty("id") val id: String?,
-        @JsonProperty("code") val code: String,
-        @JsonProperty("guid") val guid: String,
-        @JsonProperty("name") val name: String,
-        @JsonProperty("poster") val poster: String
-    )
     
     data class PlayerResponse(
         @JsonProperty("player") val player: String?
