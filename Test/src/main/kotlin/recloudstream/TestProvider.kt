@@ -123,7 +123,9 @@ class AnimeHayProvider : MainAPI() {
         return document.toLoadResponse(this, url, getBaseUrl())
     }
 
-    // Helper function to extract links from PHP-based servers
+    // =======================================================================
+    // START: SỬA LỖI NULL-SAFETY
+    // =======================================================================
     private suspend fun extractServerFromPhp(
         document: Document,
         pageSource: String,
@@ -149,17 +151,23 @@ class AnimeHayProvider : MainAPI() {
             }
         }
 
-        if (serverLink != null && serverId != null) {
-            Log.i(name, "Processing $serverName link ID: $serverId")
-            val finalM3u8Link = linkFormatter(serverId)
-            val link = newExtractorLink(finalM3u8Link, "Server $serverName", finalM3u8Link, ExtractorLinkType.M3U8) {
-                this.quality = Qualities.Unknown.value
-                this.referer = serverLink
+        // Sử dụng `let` lồng nhau để đảm bảo an toàn tuyệt đối cho các biến nullable
+        serverLink?.let { safeServerLink ->
+            serverId?.let { safeServerId ->
+                // Cả hai biến `safeServerLink` và `safeServerId` ở đây chắc chắn không null
+                Log.i(name, "Processing $serverName link ID: $safeServerId")
+                val finalM3u8Link = linkFormatter(safeServerId)
+                val link = newExtractorLink(finalM3u8Link, "Server $serverName", finalM3u8Link, ExtractorLinkType.M3U8) {
+                    this.quality = Qualities.Unknown.value
+                    this.referer = safeServerLink // Sử dụng biến an toàn
+                }
+                onLinkFound(link)
+                return@extractServerFromPhp // Thoát khỏi hàm vì đã tìm thấy link
             }
-            onLinkFound(link)
-        } else {
-            Log.w(name, "$serverName link/ID not found.")
         }
+        
+        // Chỉ log khi không tìm thấy
+        Log.w(name, "$serverName link/ID not found.")
     }
 
     override suspend fun loadLinks(
@@ -210,6 +218,9 @@ class AnimeHayProvider : MainAPI() {
 
         return foundLinks
     }
+    // =======================================================================
+    // END: SỬA LỖI NULL-SAFETY
+    // =======================================================================
 
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): SearchResponse? {
         val linkElement = this.selectFirst("> a[href]") ?: return null
