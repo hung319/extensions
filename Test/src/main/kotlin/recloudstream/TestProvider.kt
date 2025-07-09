@@ -42,14 +42,9 @@ class AnimeHayProvider : MainAPI() {
     override val hasMainPage = true
 
     // --- Phần xử lý domain động ---
-    // SỬA LỖI: Quay lại dùng biến trạng thái để lưu URL và cờ kiểm tra.
     private var activeUrl = "https://animehay.bid"
     private var isDomainCheckComplete = false
 
-    /**
-     * SỬA LỖI: Logic tìm domain được đặt trong một hàm `suspend` riêng.
-     * Hàm này sẽ chỉ thực hiện kiểm tra mạng ở lần gọi đầu tiên.
-     */
     private suspend fun getActiveUrl(): String {
         if (isDomainCheckComplete) {
             return activeUrl
@@ -118,7 +113,7 @@ class AnimeHayProvider : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         return runCatching {
-            val siteBaseUrl = getActiveUrl() // SỬA LỖI: Gọi hàm suspend
+            val siteBaseUrl = getActiveUrl()
             val urlToFetch = if (page <= 1) siteBaseUrl else "$siteBaseUrl/phim-moi-cap-nhap/trang-$page.html"
 
             val document = app.get(urlToFetch).document
@@ -138,7 +133,7 @@ class AnimeHayProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         return runCatching {
-            val siteBaseUrl = getActiveUrl() // SỬA LỖI: Gọi hàm suspend
+            val siteBaseUrl = getActiveUrl()
             val searchUrl = "$siteBaseUrl/tim-kiem/${query.encodeUri()}.html"
             Log.i("AnimeHayProvider", "Searching URL: $searchUrl")
 
@@ -152,7 +147,7 @@ class AnimeHayProvider : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         return runCatching {
-            val siteBaseUrl = getActiveUrl() // SỬA LỖI: Gọi hàm suspend
+            val siteBaseUrl = getActiveUrl()
             Log.d("AnimeHayProvider", "Loading details for URL: $url")
             val document = app.get(url).document
             document.toLoadResponse(this, url, siteBaseUrl)
@@ -190,17 +185,20 @@ class AnimeHayProvider : MainAPI() {
     ): Boolean {
         var foundLinks = false
         runCatching {
-            val siteBaseUrl = getActiveUrl() // SỬA LỖI: Gọi hàm suspend
+            val siteBaseUrl = getActiveUrl()
             val document = app.get(data, referer = siteBaseUrl).document
             val pageContent = document.html()
 
+            // SỬA SERVER TOK: Thêm header "Origin" để video có thể load được
             runCatching {
                 val tokRegex = Regex("""tik:\s*['"]([^'"]+)['"]""")
                 tokRegex.find(pageContent)?.groupValues?.get(1)?.trim()?.let { m3u8Link ->
                     callback(
                         newExtractorLink(source = m3u8Link, name = "Server TOK", url = m3u8Link, type = ExtractorLinkType.M3U8) {
                             quality = Qualities.Unknown.value
-                            referer = data
+                            referer = siteBaseUrl
+                            // Thêm header Origin là chìa khóa để video chạy được
+                            this.headers = mapOf("Origin" to siteBaseUrl)
                         }
                     )
                     foundLinks = true
@@ -236,16 +234,7 @@ class AnimeHayProvider : MainAPI() {
                 }
             }.onFailure { Log.e("AnimeHayProvider", "Error extracting PHO", it) }
 
-            runCatching {
-                val hyRegex = Regex("""src=["']([^"']*playhydrax\.com[^"']*)["']""")
-                val hyLink = hyRegex.find(pageContent)?.groupValues?.get(1)
-                    ?: document.selectFirst("iframe[src*=playhydrax.com]")?.attr("src")
-
-                hyLink?.let { fixedUrl ->
-                    loadExtractor(fixedUrl, data, subtitleCallback, callback)
-                    foundLinks = true
-                }
-            }.onFailure { Log.e("AnimeHayProvider", "Error extracting HY", it) }
+            // ĐÃ XÓA SERVER HY
 
         }.onFailure {
             Log.e("AnimeHayProvider", "General error in loadLinks for $data", it)
@@ -265,8 +254,13 @@ class AnimeHayProvider : MainAPI() {
             val fixedPosterUrl = fixUrl(posterUrl, baseUrl)
             val tvType = if (href.contains("/phim/", true)) TvType.AnimeMovie else TvType.Anime
 
+            // THÊM STATUS: Lấy thông tin tập mới nhất từ thẻ div.ribbon
+            val latestEpisodeText = this.selectFirst("div.ribbon")?.text()?.trim()
+
             provider.newMovieSearchResponse(title, href, tvType) {
                 this.posterUrl = fixedPosterUrl
+                // Hiển thị text lên poster
+                this.latestEpisodeName = latestEpisodeText 
             }
         }.getOrNull()
     }
@@ -350,7 +344,6 @@ class AnimeHayProvider : MainAPI() {
         } else if (url.startsWith("//")) {
             "https:$url"
         } else {
-            // Đảm bảo baseUrl không có dấu / ở cuối và url có dấu / ở đầu
             baseUrl.removeSuffix("/") + "/" + url.removePrefix("/")
         }
     }
