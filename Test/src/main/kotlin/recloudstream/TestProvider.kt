@@ -17,6 +17,7 @@ import java.net.MalformedURLException
 import java.net.URL
 import java.net.URLEncoder
 import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
 
 // *** THÊM KITSU DATA CLASSES ***
 // Dùng để phân tích phản hồi từ Kitsu API
