@@ -84,7 +84,6 @@ class SextbProvider : MainAPI() {
         val socket = document.selectFirst("meta[name=_socket]")?.attr("value") 
             ?: throw Exception("Could not find _socket")
 
-        // SỬA ĐỔI: Logic chọn server theo thứ tự ưu tiên ST -> VG -> Server đầu tiên
         val allServers = document.select("div.episode-list button.episode")
         if (allServers.isEmpty()) throw Exception("No servers found on page")
 
@@ -92,7 +91,8 @@ class SextbProvider : MainAPI() {
             ?: allServers.firstOrNull { it.text().trim().equals("VG", ignoreCase = true) }
             ?: allServers.first()
         
-        val episodeId = targetServer.attr("data-id")
+        // SỬA LỖI: Thêm toán tử `!!` để khẳng định targetServer không null
+        val episodeId = targetServer!!.attr("data-id")
         
         val authKey = "Basic " + Base64.encodeToString(("$token:$socket").toByteArray(), Base64.NO_WRAP)
         
