@@ -16,10 +16,8 @@ import org.jsoup.nodes.Element
 import java.net.URL
 import java.net.URLEncoder
 import kotlin.math.roundToInt
-// THAY ĐỔI: Thêm các import cần thiết cho Anime-Response
 import com.lagradost.cloudstream3.DubStatus
 import java.util.EnumSet
-
 
 // *** Kitsu Data Classes ***
 data class KitsuMain(val data: List<KitsuData>?)
@@ -241,7 +239,6 @@ class AnimeHayProvider : MainAPI() {
         return foundLinks
     }
 
-    // THAY ĐỔI: Chuyển sang sử dụng newAnimeSearchResponse
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): AnimeSearchResponse? {
         return runCatching {
             val linkElement = this.selectFirst("> a[href], a[href*=thong-tin-phim]") ?: return null
@@ -255,10 +252,8 @@ class AnimeHayProvider : MainAPI() {
 
             provider.newAnimeSearchResponse(name = title, url = href, type = tvType) {
                 this.posterUrl = fixedPosterUrl
-                // Thêm trạng thái lồng tiếng/phụ đề. AnimeHay chủ yếu là Vietsub.
                 this.dubStatus = EnumSet.of(DubStatus.Subbed)
                 
-                // Lấy số tập từ ribbon và đưa vào map episodes
                 val episodeText = this.selectFirst("div.ribbon")?.text()?.trim()
                 val episodeCount = episodeText?.filter { it.isDigit() }?.toIntOrNull()
                 if (episodeCount != null) {
@@ -268,13 +263,13 @@ class AnimeHayProvider : MainAPI() {
         }.getOrNull()
     }
 
-    // THAY ĐỔI: Chuyển sang sử dụng newAnimeLoadResponse, hợp nhất logic cho phim lẻ và phim bộ
     private suspend fun Document.toLoadResponse(provider: MainAPI, url: String, baseUrl: String): AnimeLoadResponse? {
+        val document = this
         return runCatching {
-            val title = this.selectFirst("h1.heading_movie")?.text()?.trim() ?: return null
-            val genres = this.select("div.list_cate a").mapNotNull { it.text()?.trim() }
+            val title = document.selectFirst("h1.heading_movie")?.text()?.trim() ?: return null
+            val genres = document.select("div.list_cate a").mapNotNull { it.text()?.trim() }
             val isChineseAnimation = genres.any { it.equals("CN Animation", ignoreCase = true) }
-            val hasEpisodes = this.selectFirst("div.list-item-episode a") != null
+            val hasEpisodes = document.selectFirst("div.list-item-episode a") != null
 
             val mainTvType = when {
                 hasEpisodes && isChineseAnimation -> TvType.Cartoon
@@ -283,44 +278,39 @@ class AnimeHayProvider : MainAPI() {
                 else -> TvType.AnimeMovie
             }
 
-            val animehayPosterUrl = fixUrl(this.selectFirst("div.head div.first img")?.attr("src"), baseUrl)
+            val animehayPosterUrl = fixUrl(document.selectFirst("div.head div.first img")?.attr("src"), baseUrl)
             
-            // Dùng coroutine để có thể gọi Kitsu API song song với việc phân tích trang
             val finalPosterUrl = if (mainTvType in setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)) {
                  getKitsuPoster(title) ?: animehayPosterUrl
             } else {
                 animehayPosterUrl
             }
 
-            // Tạo response bằng builder mới
             provider.newAnimeLoadResponse(name = title, url = url, type = mainTvType) {
                 this.posterUrl = finalPosterUrl
-                this.plot = this@toLoadResponse.selectFirst("div.desc > div:last-child")?.text()?.trim()
-                this.year = this@toLoadResponse.selectFirst("div.update_time div:nth-child(2)")?.text()?.filter { it.isDigit() }?.toIntOrNull()
-                this.rating = this@toLoadResponse.selectFirst("div.score div:nth-child(2)")?.text()
+                this.plot = document.selectFirst("div.desc > div:last-child")?.text()?.trim()
+                this.year = document.selectFirst("div.update_time div:nth-child(2)")?.text()?.filter { it.isDigit() }?.toIntOrNull()
+                this.rating = document.selectFirst("div.score div:nth-child(2)")?.text()
                     ?.substringBefore("||")?.trim()?.toDoubleOrNull()?.toAnimeHayRatingInt()
                 this.tags = genres
-                this.showStatus = when (this@toLoadResponse.selectFirst("div.status div:nth-child(2)")?.text()?.trim()) {
+                this.showStatus = when (document.selectFirst("div.status div:nth-child(2)")?.text()?.trim()) {
                     "Hoàn thành" -> ShowStatus.Completed
                     "Đang tiến hành", "Đang cập nhật" -> ShowStatus.Ongoing
                     else -> null
                 }
-                this.recommendations = this@toLoadResponse.select("div.movie-recommend div.movie-item").mapNotNull {
+                this.recommendations = document.select("div.movie-recommend div.movie-item").mapNotNull {
                     it.toSearchResponse(provider, baseUrl)
                 }
 
                 if(hasEpisodes) {
-                    // Xử lý danh sách tập cho phim bộ
-                    val episodeList = this@toLoadResponse.select("div.list-item-episode a").mapNotNull { epLink ->
+                    val episodeList = document.select("div.list-item-episode a").mapNotNull { epLink ->
                         val epUrl = fixUrl(epLink.attr("href"), baseUrl) ?: return@mapNotNull null
                         val epName = epLink.attr("title").ifBlank { epLink.selectFirst("span")?.text() }?.trim() ?: return@mapNotNull null
                         Episode(data = epUrl, name = epName)
                     }.reversed()
-                    // Gán danh sách tập vào map với key là Subbed
                     this.episodes[DubStatus.Subbed] = episodeList
                 } else {
-                    // Xử lý thời lượng cho phim lẻ
-                    this.duration = this@toLoadResponse.selectFirst("div.duration div:nth-child(2)")?.text()?.filter { it.isDigit() }?.toIntOrNull()
+                    this.duration = document.selectFirst("div.duration div:nth-child(2)")?.text()?.filter { it.isDigit() }?.toIntOrNull()
                 }
             }
         }.onFailure {
