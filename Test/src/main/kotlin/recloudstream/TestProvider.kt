@@ -43,10 +43,13 @@ class SextbProvider : MainAPI() {
         }
     }
     
+    // SỬA LỖI: Làm rõ phạm vi của `this` để tránh lỗi "unresolved reference"
     private fun RelatedAjaxItem.toSearchResponse(): SearchResponse {
         val slug = this.guid.ifEmpty { this.code }
-        return newMovieSearchResponse(this.name, "$mainUrl/$slug", TvType.Movie) {
-            posterUrl = this.poster
+        // Gán `this` (là RelatedAjaxItem) vào một biến để sử dụng bên trong lambda
+        val item = this 
+        return newMovieSearchResponse(item.name, "$mainUrl/$slug", TvType.Movie) {
+            posterUrl = item.poster
         }
     }
 
@@ -59,7 +62,6 @@ class SextbProvider : MainAPI() {
         val document = app.get(url).document
         val title = document.selectFirst("h1.film-info-title")?.text()?.trim() ?: return null
         
-        // Trích xuất các thông tin cần thiết từ trang
         val filmId = document.selectFirst("script:containsData(filmId)")?.data()
             ?.let { Regex("""filmId\s*=\s*['"]?(\d+)['"]?""").find(it)?.groupValues?.get(1) } ?: return null
         val token = document.selectFirst("meta[name=_token]")?.attr("value") ?: return null
@@ -74,21 +76,18 @@ class SextbProvider : MainAPI() {
             ActorData(Actor(name = actorElement.text()), roleString = "Actor")
         }
 
-        // Tạo Authorization header động
         val authKey = "Basic " + Base64.encodeToString(("$token:$socket").toByteArray(), Base64.NO_WRAP)
         
-        // Lấy phim liên quan bằng Ajax
         val recommendations = app.post(
             "$mainUrl/ajax/relatedAjax",
              headers = mapOf("Authorization" to authKey, "Referer" to url),
              data = mapOf("pg" to "1", "filmId" to filmId)
         ).parsed<List<RelatedAjaxItem>>().map { it.toSearchResponse() }
 
-        // Tạo danh sách server (episode)
         val episodes = document.select("div.episode-list button.episode").mapIndexedNotNull { index, it ->
             val serverName = it.text().trim()
             val episodeData = EpisodeData(filmId, index.toString(), token, socket)
-            newEpisode(episodeData.toJson()) { // Chuyển data class thành chuỗi JSON
+            newEpisode(episodeData.toJson()) {
                 name = serverName
             }
         }
@@ -111,10 +110,8 @@ class SextbProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Giải mã chuỗi JSON để lấy lại thông tin
         val episodeData = parseJson<EpisodeData>(data)
         
-        // Tạo lại Authorization header động
         val authKey = "Basic " + Base64.encodeToString(("${episodeData.token}:${episodeData.socket}").toByteArray(), Base64.NO_WRAP)
         val referer = "$mainUrl/anything"
 
@@ -129,7 +126,6 @@ class SextbProvider : MainAPI() {
         return loadExtractor(iframeSrc, referer, subtitleCallback, callback)
     }
 
-    // Data class để truyền dữ liệu giữa `load` và `loadLinks`
     data class EpisodeData(
         val filmId: String,
         val episodeIndex: String,
