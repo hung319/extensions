@@ -1,4 +1,4 @@
-package com.linor // Thay thế bằng package của bạn
+package recloudstream // Thay thế bằng package của bạn
 
 import android.util.Log
 import com.lagradost.cloudstream3.*
