@@ -264,6 +264,7 @@ class AnimeHayProvider : MainAPI() {
     }
 
     private suspend fun Document.toLoadResponse(provider: MainAPI, url: String, baseUrl: String): AnimeLoadResponse? {
+        // SỬA LỖI: Gán 'this' (Document) vào một biến 'document' để tránh lỗi Unresolved reference
         val document = this
         return runCatching {
             val title = document.selectFirst("h1.heading_movie")?.text()?.trim() ?: return null
