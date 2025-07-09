@@ -16,6 +16,8 @@ import org.jsoup.nodes.Element
 import java.net.URL
 import java.net.URLEncoder
 import kotlin.math.roundToInt
+import com.lagradost.cloudstream3.DubStatus
+import java.util.EnumSet
 
 // *** Kitsu Data Classes ***
 data class KitsuMain(val data: List<KitsuData>?)
@@ -41,15 +43,9 @@ class AnimeHayProvider : MainAPI() {
     override var lang = "vi"
     override val hasMainPage = true
 
-    // --- Phần xử lý domain động ---
-    // SỬA LỖI: Quay lại dùng biến trạng thái để lưu URL và cờ kiểm tra.
     private var activeUrl = "https://animehay.bid"
     private var isDomainCheckComplete = false
 
-    /**
-     * SỬA LỖI: Logic tìm domain được đặt trong một hàm `suspend` riêng.
-     * Hàm này sẽ chỉ thực hiện kiểm tra mạng ở lần gọi đầu tiên.
-     */
     private suspend fun getActiveUrl(): String {
         if (isDomainCheckComplete) {
             return activeUrl
@@ -118,7 +114,7 @@ class AnimeHayProvider : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         return runCatching {
-            val siteBaseUrl = getActiveUrl() // SỬA LỖI: Gọi hàm suspend
+            val siteBaseUrl = getActiveUrl()
             val urlToFetch = if (page <= 1) siteBaseUrl else "$siteBaseUrl/phim-moi-cap-nhap/trang-$page.html"
 
             val document = app.get(urlToFetch).document
@@ -138,7 +134,7 @@ class AnimeHayProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         return runCatching {
-            val siteBaseUrl = getActiveUrl() // SỬA LỖI: Gọi hàm suspend
+            val siteBaseUrl = getActiveUrl()
             val searchUrl = "$siteBaseUrl/tim-kiem/${query.encodeUri()}.html"
             Log.i("AnimeHayProvider", "Searching URL: $searchUrl")
 
@@ -152,7 +148,7 @@ class AnimeHayProvider : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         return runCatching {
-            val siteBaseUrl = getActiveUrl() // SỬA LỖI: Gọi hàm suspend
+            val siteBaseUrl = getActiveUrl()
             Log.d("AnimeHayProvider", "Loading details for URL: $url")
             val document = app.get(url).document
             document.toLoadResponse(this, url, siteBaseUrl)
@@ -181,7 +177,6 @@ class AnimeHayProvider : MainAPI() {
         return null to null
     }
 
-
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -190,7 +185,7 @@ class AnimeHayProvider : MainAPI() {
     ): Boolean {
         var foundLinks = false
         runCatching {
-            val siteBaseUrl = getActiveUrl() // SỬA LỖI: Gọi hàm suspend
+            val siteBaseUrl = getActiveUrl()
             val document = app.get(data, referer = siteBaseUrl).document
             val pageContent = document.html()
 
@@ -200,7 +195,7 @@ class AnimeHayProvider : MainAPI() {
                     callback(
                         newExtractorLink(source = m3u8Link, name = "Server TOK", url = m3u8Link, type = ExtractorLinkType.M3U8) {
                             quality = Qualities.Unknown.value
-                            referer = data
+                            referer = siteBaseUrl
                             this.headers = mapOf("Origin" to siteBaseUrl)
                         }
                     )
@@ -237,17 +232,6 @@ class AnimeHayProvider : MainAPI() {
                 }
             }.onFailure { Log.e("AnimeHayProvider", "Error extracting PHO", it) }
 
-            runCatching {
-                val hyRegex = Regex("""src=["']([^"']*playhydrax\.com[^"']*)["']""")
-                val hyLink = hyRegex.find(pageContent)?.groupValues?.get(1)
-                    ?: document.selectFirst("iframe[src*=playhydrax.com]")?.attr("src")
-
-                hyLink?.let { fixedUrl ->
-                    loadExtractor(fixedUrl, data, subtitleCallback, callback)
-                    foundLinks = true
-                }
-            }.onFailure { Log.e("AnimeHayProvider", "Error extracting HY", it) }
-
         }.onFailure {
             Log.e("AnimeHayProvider", "General error in loadLinks for $data", it)
         }
@@ -255,29 +239,38 @@ class AnimeHayProvider : MainAPI() {
         return foundLinks
     }
 
-    private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): SearchResponse? {
+    private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): AnimeSearchResponse? {
+        val element = this
         return runCatching {
-            val linkElement = this.selectFirst("> a[href], a[href*=thong-tin-phim]") ?: return null
+            val linkElement = element.selectFirst("> a[href], a[href*=thong-tin-phim]") ?: return null
             val href = fixUrl(linkElement.attr("href"), baseUrl) ?: return null
-            val title = this.selectFirst("div.name-movie")?.text()?.takeIf { it.isNotBlank() }
+            val title = element.selectFirst("div.name-movie")?.text()?.takeIf { it.isNotBlank() }
                 ?: linkElement.attr("title").takeIf { it.isNotBlank() } ?: return null
 
-            val posterUrl = this.selectFirst("img")?.let { it.attr("src").ifBlank { it.attr("data-src") } }
+            val posterUrl = element.selectFirst("img")?.let { it.attr("src").ifBlank { it.attr("data-src") } }
             val fixedPosterUrl = fixUrl(posterUrl, baseUrl)
             val tvType = if (href.contains("/phim/", true)) TvType.AnimeMovie else TvType.Anime
 
-            provider.newMovieSearchResponse(title, href, tvType) {
+            provider.newAnimeSearchResponse(name = title, url = href, type = tvType) {
                 this.posterUrl = fixedPosterUrl
+                this.dubStatus = EnumSet.of(DubStatus.Subbed)
+                
+                val episodeText = element.selectFirst("div.ribbon")?.text()?.trim()
+                val episodeCount = episodeText?.filter { it.isDigit() }?.toIntOrNull()
+                if (episodeCount != null) {
+                    this.episodes[DubStatus.Subbed] = episodeCount
+                }
             }
         }.getOrNull()
     }
 
-    private suspend fun Document.toLoadResponse(provider: MainAPI, url: String, baseUrl: String): LoadResponse? {
+    private suspend fun Document.toLoadResponse(provider: MainAPI, url: String, baseUrl: String): AnimeLoadResponse? {
+        val document = this
         return runCatching {
-            val title = this.selectFirst("h1.heading_movie")?.text()?.trim() ?: return null
-            val genres = this.select("div.list_cate a").mapNotNull { it.text()?.trim() }
+            val title = document.selectFirst("h1.heading_movie")?.text()?.trim() ?: return null
+            val genres = document.select("div.list_cate a").mapNotNull { it.text()?.trim() }
             val isChineseAnimation = genres.any { it.equals("CN Animation", ignoreCase = true) }
-            val hasEpisodes = this.selectFirst("div.list-item-episode a") != null
+            val hasEpisodes = document.selectFirst("div.list-item-episode a") != null
 
             val mainTvType = when {
                 hasEpisodes && isChineseAnimation -> TvType.Cartoon
@@ -286,54 +279,39 @@ class AnimeHayProvider : MainAPI() {
                 else -> TvType.AnimeMovie
             }
 
-            val animehayPosterUrl = fixUrl(this.selectFirst("div.head div.first img")?.attr("src"), baseUrl)
+            val animehayPosterUrl = fixUrl(document.selectFirst("div.head div.first img")?.attr("src"), baseUrl)
+            
             val finalPosterUrl = if (mainTvType in setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)) {
-                getKitsuPoster(title) ?: animehayPosterUrl
+                 getKitsuPoster(title) ?: animehayPosterUrl
             } else {
                 animehayPosterUrl
             }
 
-            val description = this.selectFirst("div.desc > div:last-child")?.text()?.trim()
-            val year = this.selectFirst("div.update_time div:nth-child(2)")?.text()?.filter { it.isDigit() }?.toIntOrNull()
-            val rating = this.selectFirst("div.score div:nth-child(2)")?.text()
-                ?.substringBefore("||")?.trim()?.toDoubleOrNull()?.toAnimeHayRatingInt()
-
-            val status = when (this.selectFirst("div.status div:nth-child(2)")?.text()?.trim()) {
-                "Hoàn thành" -> ShowStatus.Completed
-                "Đang tiến hành", "Đang cập nhật" -> ShowStatus.Ongoing
-                else -> null
-            }
-
-            val episodes = this.select("div.list-item-episode a").mapNotNull { epLink ->
-                val epUrl = fixUrl(epLink.attr("href"), baseUrl) ?: return@mapNotNull null
-                val epName = epLink.attr("title").ifBlank { epLink.selectFirst("span")?.text() }?.trim() ?: return@mapNotNull null
-                newEpisode(data = epUrl) { this.name = epName }
-            }.reversed()
-
-            val recommendations = this.select("div.movie-recommend div.movie-item").mapNotNull {
-                it.toSearchResponse(provider, baseUrl)
-            }
-
-            if (hasEpisodes) {
-                provider.newTvSeriesLoadResponse(title, url, mainTvType, episodes) {
-                    this.posterUrl = finalPosterUrl
-                    this.plot = description
-                    this.tags = genres
-                    this.year = year
-                    this.rating = rating
-                    this.showStatus = status
-                    this.recommendations = recommendations
+            provider.newAnimeLoadResponse(name = title, url = url, type = mainTvType) {
+                this.posterUrl = finalPosterUrl
+                this.plot = document.selectFirst("div.desc > div:last-child")?.text()?.trim()
+                this.year = document.selectFirst("div.update_time div:nth-child(2)")?.text()?.filter { it.isDigit() }?.toIntOrNull()
+                this.rating = document.selectFirst("div.score div:nth-child(2)")?.text()
+                    ?.substringBefore("||")?.trim()?.toDoubleOrNull()?.toAnimeHayRatingInt()
+                this.tags = genres
+                this.showStatus = when (document.selectFirst("div.status div:nth-child(2)")?.text()?.trim()) {
+                    "Hoàn thành" -> ShowStatus.Completed
+                    "Đang tiến hành", "Đang cập nhật" -> ShowStatus.Ongoing
+                    else -> null
                 }
-            } else {
-                val durationMinutes = this.selectFirst("div.duration div:nth-child(2)")?.text()?.filter { it.isDigit() }?.toIntOrNull()
-                provider.newMovieLoadResponse(title, url, mainTvType, url) {
-                    this.posterUrl = finalPosterUrl
-                    this.plot = description
-                    this.tags = genres
-                    this.year = year
-                    this.rating = rating
-                    durationMinutes?.let { addDuration(it.toString()) }
-                    this.recommendations = recommendations
+                this.recommendations = document.select("div.movie-recommend div.movie-item").mapNotNull {
+                    it.toSearchResponse(provider, baseUrl)
+                }
+
+                if(hasEpisodes) {
+                    val episodeList = document.select("div.list-item-episode a").mapNotNull { epLink ->
+                        val epUrl = fixUrl(epLink.attr("href"), baseUrl) ?: return@mapNotNull null
+                        val epName = epLink.attr("title").ifBlank { epLink.selectFirst("span")?.text() }?.trim() ?: return@mapNotNull null
+                        Episode(data = epUrl, name = epName)
+                    }.reversed()
+                    this.episodes[DubStatus.Subbed] = episodeList
+                } else {
+                    this.duration = document.selectFirst("div.duration div:nth-child(2)")?.text()?.filter { it.isDigit() }?.toIntOrNull()
                 }
             }
         }.onFailure {
@@ -349,9 +327,8 @@ class AnimeHayProvider : MainAPI() {
         return if (url.startsWith("http")) {
             url
         } else if (url.startsWith("//")) {
-            "https:$url"
+            "https:" + url
         } else {
-            // Đảm bảo baseUrl không có dấu / ở cuối và url có dấu / ở đầu
             baseUrl.removeSuffix("/") + "/" + url.removePrefix("/")
         }
     }
