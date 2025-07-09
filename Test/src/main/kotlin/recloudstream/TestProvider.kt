@@ -5,8 +5,6 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
-
-// Đã xóa import không dùng tới cho Quality
 import com.lagradost.cloudstream3.Actor
 import com.lagradost.cloudstream3.ActorData
 
@@ -31,8 +29,6 @@ class SextbProvider : MainAPI() {
         "subtitle" to "Subtitle",
         "amateur" to "Amateur"
     )
-
-    // SỬA LỖI: Đã xóa hàm getQualityFromString vì gây lỗi
     
     // Hàm lấy danh sách phim từ trang chủ hoặc các danh mục
     override suspend fun getMainPage(
@@ -42,7 +38,6 @@ class SextbProvider : MainAPI() {
         val url = if (page == 1) {
             "$mainUrl/${request.data}"
         } else {
-            // Xử lý trang cho các danh mục khác nhau
             val pageType = if(request.data.isBlank()) "page" else "${request.data}/page"
             "$mainUrl/$pageType/$page"
         }
@@ -58,13 +53,9 @@ class SextbProvider : MainAPI() {
         val href = this.selectFirst("a")?.attr("href") ?: return null
         val title = this.selectFirst("div.tray-item-title")?.text() ?: return null
         val posterUrl = this.selectFirst("img")?.attr("data-src")
-        // SỬA LỖI: Đã xóa phần lấy thông tin chất lượng
-        // val quality = this.select("div.tray-item-quality span.hd").text().trim()
 
         return newMovieSearchResponse(title, href, TvType.Movie) {
             this.posterUrl = posterUrl
-            // SỬA LỖI: Đã xóa phần gán chất lượng
-            // this.quality = getQualityFromString(quality)
         }
     }
 
@@ -81,7 +72,6 @@ class SextbProvider : MainAPI() {
         val document = app.get(url).document
         val title = document.selectFirst("h1.film-info-title")?.text()?.trim() ?: return null
         
-        // Lấy filmId từ một script tag trong HTML
         val filmId = document.selectFirst("script:containsData(filmId)")?.data()
             ?.let { scriptData ->
                 Regex("""var filmId = (\d+);""").find(scriptData)?.groupValues?.get(1)
@@ -104,10 +94,8 @@ class SextbProvider : MainAPI() {
             it.toSearchResult()
         }
 
-        // Lấy danh sách các server/tập phim, num là index của server
         val episodes = document.select("div.episode-list button.episode").mapIndexedNotNull { index, it ->
             val serverName = it.text().trim()
-            // Dữ liệu truyền cho loadLinks sẽ là "filmId/chỉ_số_tập"
             newEpisode(data = "$filmId/$index") {
                 name = serverName
             }
@@ -130,7 +118,16 @@ class SextbProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val (filmId, episodeIndex) = data.split("/").let { it[0] to it[1] }
+        // SỬA LỖI: Làm sạch chuỗi `data` để loại bỏ phần URL thừa
+        val cleanedData = data.removePrefix("$mainUrl/")
+        
+        // Tách filmId và episodeIndex từ chuỗi đã được làm sạch
+        val (filmId, episodeIndex) = cleanedData.split("/").let {
+            // Thêm kiểm tra để tránh lỗi nếu định dạng vẫn sai
+            if (it.size < 2) return false
+            it[0] to it[1]
+        }
+        
         val referer = "$mainUrl/anything" 
 
         val res = app.post(
