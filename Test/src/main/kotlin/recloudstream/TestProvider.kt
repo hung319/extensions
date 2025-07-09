@@ -12,7 +12,7 @@ class SextbProvider : MainAPI() {
     override var name = "Sextb"
     override var mainUrl = "https://sextb.net"
     override var lang = "en"
-    override val supportedTypes = setOf(TvType.Movie)
+    override val supportedTypes = setOf(TvType.NSFW)
     override val hasMainPage = true
 
     override val mainPage = mainPageOf(
@@ -37,16 +37,17 @@ class SextbProvider : MainAPI() {
         val href = this.selectFirst("a")?.attr("href") ?: return null
         val title = this.selectFirst("div.tray-item-title")?.text() ?: return null
         val posterUrl = this.selectFirst("img")?.attr("data-src")
-        return newMovieSearchResponse(title, href, TvType.Movie) {
+        return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
         }
     }
     
-    // Hàm chuyển đổi dữ liệu từ Ajax thành SearchResponse để hiển thị
+    // SỬA LỖI: Làm rõ phạm vi của biến để trình biên dịch không bị nhầm lẫn
     private fun RelatedAjaxItem.toSearchResponse(): SearchResponse {
         val slug = this.guid.ifEmpty { this.code }
-        return newMovieSearchResponse(this.name, "$mainUrl/$slug", TvType.Movie) {
-            posterUrl = this.poster
+        val item = this // Gán `this` (là RelatedAjaxItem) vào một biến
+        return newMovieSearchResponse(item.name, "$mainUrl/$slug", TvType.NSFW) {
+            posterUrl = item.poster // Sử dụng biến `item` tường minh
         }
     }
 
@@ -59,7 +60,6 @@ class SextbProvider : MainAPI() {
         val document = app.get(url).document
         val title = document.selectFirst("h1.film-info-title")?.text()?.trim() ?: return null
         
-        // Trích xuất các key động
         val filmId = document.selectFirst("script:containsData(filmId)")?.data()
             ?.let { Regex("""filmId\s*=\s*['"]?(\d+)['"]?""").find(it)?.groupValues?.get(1) }
             ?: return null
@@ -75,7 +75,6 @@ class SextbProvider : MainAPI() {
             ActorData(Actor(name = actorElement.text()), roleString = "Actor")
         }
 
-        // THÊM LẠI: Lấy danh sách phim liên quan bằng Ajax
         val authKey = "Basic " + Base64.encodeToString(("$token:$socket").toByteArray(), Base64.NO_WRAP)
         val recommendations = try {
             val relatedJson = app.post(
@@ -85,18 +84,10 @@ class SextbProvider : MainAPI() {
             ).text
             parseJson<List<RelatedAjaxItem>>(relatedJson).map { it.toSearchResponse() }
         } catch (e: Exception) {
-            listOf() // Nếu lỗi thì trả về danh sách rỗng
+            listOf()
         }
         
-        // Logic chọn server vẫn giữ nguyên như phiên bản trước
-        val allServers = document.select("div.episode-list button.episode")
-        val targetServer = allServers.firstOrNull { it.text().trim().equals("ST", ignoreCase = true) } 
-            ?: allServers.firstOrNull { it.text().trim().equals("VG", ignoreCase = true) }
-            ?: allServers.firstOrNull()
-
-        if (targetServer == null) throw Exception("No servers found")
-
-        return newMovieLoadResponse(title, url, TvType.Movie, url) {
+        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
             this.year = year
             this.plot = plot
@@ -106,7 +97,6 @@ class SextbProvider : MainAPI() {
         }
     }
 
-    // Dọn dẹp, loại bỏ log
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -145,7 +135,6 @@ class SextbProvider : MainAPI() {
         return loadExtractor(iframeSrc, data, subtitleCallback, callback)
     }
     
-    // Data class cho phim liên quan
     data class RelatedAjaxItem(
         @JsonProperty("id") val id: String?,
         @JsonProperty("code") val code: String,
