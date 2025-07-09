@@ -68,12 +68,10 @@ class SextbProvider : MainAPI() {
             ActorData(Actor(name = actorElement.text()), roleString = "Actor")
         }
         
-        // SỬA ĐỔI: Lấy danh sách server với `data-id` chính xác
         val episodes = document.select("div.episode-list button.episode").mapNotNull {
             val serverName = it.text().trim()
-            val episodeId = it.attr("data-id") // Lấy `data-id` thay vì index
+            val episodeId = it.attr("data-id")
             if (episodeId.isBlank()) return@mapNotNull null
-
             val episodeData = EpisodeData(filmId, episodeId, token, socket)
             newEpisode(episodeData.toJson()) {
                 name = serverName
@@ -89,6 +87,7 @@ class SextbProvider : MainAPI() {
         }
     }
 
+    // SỬA ĐỔI: `loadLinks` giờ sẽ xử lý được cả hai loại dữ liệu
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -102,33 +101,49 @@ class SextbProvider : MainAPI() {
         }
 
         try {
-            log("1. Bắt đầu `loadLinks`.")
-            
-            val episodeData = parseJson<EpisodeData>(data)
-            log("2. Phân tích dữ liệu episode thành công: filmId=${episodeData.filmId}, episodeId=${episodeData.episodeId}")
+            log("1. Bắt đầu loadLinks.")
+            log("   - Dữ liệu thô nhận được: ${data.take(150)}...")
+
+            // Logic xử lý dữ liệu kép
+            val episodeData = try {
+                // Thử phân tích như dữ liệu từ app thật (một object JSON)
+                log("2a. Thử phân tích data như một object đơn lẻ...")
+                parseJson(data)
+            } catch (e1: Exception) {
+                // Nếu thất bại, thử phân tích như dữ liệu từ trình test (một danh sách JSON)
+                log("2b. Thất bại. Thử phân tích data như một danh sách...")
+                try {
+                    data class TestWrapper(@JsonProperty("data") val innerData: String)
+                    val innerData = parseJson<List<TestWrapper>>(data).first().innerData
+                    log("   - Đã trích xuất được dữ liệu bên trong: ${innerData.take(150)}...")
+                    parseJson(innerData)
+                } catch (e2: Exception) {
+                    throw Exception("Không thể phân tích dữ liệu episode theo cả hai cách. Lỗi: ${e2.message}")
+                }
+            }
+            log("3. Phân tích EpisodeData thành công: filmId=${episodeData.filmId}, episodeId=${episodeData.episodeId}")
 
             val authKey = "Basic " + Base64.encodeToString(("${episodeData.token}:${episodeData.socket}").toByteArray(), Base64.NO_WRAP)
-            log("3. Đã tạo AuthKey: $authKey")
+            log("4. Đã tạo AuthKey.")
             
-            log("4. Đang gửi yêu cầu Ajax với episodeId=${episodeData.episodeId}")
+            log("5. Đang gửi yêu cầu Ajax với episodeId=${episodeData.episodeId}...")
             val res = app.post(
                 "$mainUrl/ajax/player",
                 headers = mapOf("Authorization" to authKey, "Referer" to "$mainUrl/"),
                 data = mapOf("episode" to episodeData.episodeId, "filmId" to episodeData.filmId)
             ).parsed<PlayerResponse>()
-            log("5. Phản hồi từ server: ${res.player?.take(100)}...")
+            log("6. Phản hồi từ server: ${res.player?.take(100)}...")
 
             val iframeSrc = res.player?.let { Regex("""src="(.*?)"""").find(it)?.groupValues?.get(1) } 
                 ?: throw Exception("Không trích xuất được link iframe")
-            log("6. Đã lấy được link iframe: $iframeSrc")
+            log("7. Đã lấy được link iframe: $iframeSrc")
             
-            log("7. Đang gọi Extractor...")
+            log("8. Đang gọi Extractor...")
             val success = loadExtractor(iframeSrc, "$mainUrl/", subtitleCallback, callback)
 
             if (!success) {
                 throw Exception("loadExtractor trả về false. Host video không được hỗ trợ hoặc link đã hết hạn.")
             }
-            
             return true
 
         } catch (e: Exception) {
@@ -136,9 +151,11 @@ class SextbProvider : MainAPI() {
         }
     }
     
+    // SỬA ĐỔI: Sửa lỗi chính tả `episodeld` từ log của trình test
     data class EpisodeData(
         val filmId: String,
-        val episodeId: String, // Đổi tên từ episodeIndex thành episodeId cho rõ nghĩa
+        @JsonProperty("episodeld") // Sửa lỗi chính tả
+        val episodeId: String,
         val token: String,
         val socket: String
     )
