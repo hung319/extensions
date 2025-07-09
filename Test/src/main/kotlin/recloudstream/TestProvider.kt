@@ -156,8 +156,28 @@ class AnimeHayProvider : MainAPI() {
             Log.e("AnimeHayProvider", "Error in load for $url", it)
         }.getOrNull()
     }
-    
-    // CẢI THIỆN: Hàm loadLinks được viết lại hoàn toàn để phù hợp với cấu trúc mới của trang web
+
+    // THÊM LẠI: Hàm helper để tìm server GUN và PHO
+    private fun findServerInfo(document: Document, pageContent: String, serverName: String, baseUrl: String): Pair<String?, String?> {
+        val regex = Regex("""src=["'](https?://[^"']*$serverName\.php\?id=([^&"']+)&[^"']*)["']""")
+        val iframeSelector = "iframe#${serverName}_if[src*=$serverName.php]"
+
+        var match = regex.find(pageContent)
+        if (match != null) {
+            val link = fixUrl(match.groupValues[1], baseUrl)
+            val id = match.groupValues[2]
+            return link to id
+        }
+
+        document.selectFirst(iframeSelector)?.let { iframe ->
+            val link = fixUrl(iframe.attr("src"), baseUrl)
+            val id = link?.let { Regex(""".*?$serverName\.php\?id=([^&"']+)""").find(it)?.groupValues?.get(1) }
+            return link to id
+        }
+        
+        return null to null
+    }
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -170,7 +190,7 @@ class AnimeHayProvider : MainAPI() {
             val document = app.get(data, referer = siteBaseUrl).document
             val pageContent = document.html()
 
-            // Server TOK
+            // Server TOK (Đã chính xác)
             runCatching {
                 val tokRegex = Regex("""tik:\s*['"]([^'"]+)['"]""")
                 tokRegex.find(pageContent)?.groupValues?.get(1)?.trim()?.let { m3u8Link ->
@@ -185,16 +205,37 @@ class AnimeHayProvider : MainAPI() {
                 }
             }.onFailure { Log.e("AnimeHayProvider", "Error extracting TOK", it) }
             
-            // Server SS (Mới)
+            // THÊM LẠI: Server GUN
             runCatching {
-                val ssRegex = Regex("""case 'SS':.*?src="([^"]+)"""")
-                ssRegex.find(pageContent)?.groupValues?.get(1)?.let { ssLink ->
-                    loadExtractor(ssLink, data, subtitleCallback, callback)
+                val (gunLink, gunId) = findServerInfo(document, pageContent, "gun", siteBaseUrl)
+                if (gunLink != null && gunId != null) {
+                    val finalM3u8Link = "https://pt.rapovideo.xyz/playlist/v2/$gunId/master.m3u8"
+                    callback(
+                        newExtractorLink(source = finalM3u8Link, name = "Server GUN", url = finalM3u8Link, type = ExtractorLinkType.M3U8) {
+                            quality = Qualities.Unknown.value
+                            this.referer = gunLink
+                        }
+                    )
                     foundLinks = true
                 }
-            }.onFailure { Log.e("AnimeHayProvider", "Error extracting SS", it) }
+            }.onFailure { Log.e("AnimeHayProvider", "Error extracting GUN", it) }
 
-            // Các server cũ như GUN, PHO đã bị loại bỏ. Server HY bị loại bỏ theo yêu cầu.
+            // THÊM LẠI: Server PHO
+            runCatching {
+                val (phoLink, phoId) = findServerInfo(document, pageContent, "pho", siteBaseUrl)
+                if (phoLink != null && phoId != null) {
+                    val finalM3u8Link = "https://pt.rapovideo.xyz/playlist/$phoId/master.m3u8"
+                    callback(
+                        newExtractorLink(source = finalM3u8Link, name = "Server PHO", url = finalM3u8Link, type = ExtractorLinkType.M3U8) {
+                            quality = Qualities.Unknown.value
+                            this.referer = phoLink
+                        }
+                    )
+                    foundLinks = true
+                }
+            }.onFailure { Log.e("AnimeHayProvider", "Error extracting PHO", it) }
+
+            // BỎ SERVER SS
 
         }.onFailure {
             Log.e("AnimeHayProvider", "General error in loadLinks for $data", it)
