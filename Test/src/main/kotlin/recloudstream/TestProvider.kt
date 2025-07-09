@@ -76,7 +76,6 @@ class SextbProvider : MainAPI() {
 
         val authKey = "Basic " + Base64.encodeToString(("$token:$socket").toByteArray(), Base64.NO_WRAP)
         
-        // SỬA LỖI: Dùng .text và parseJson<>() để phân tích danh sách một cách an toàn
         val recommendations = try {
             val relatedJson = app.post(
                 "$mainUrl/ajax/relatedAjax",
@@ -85,9 +84,8 @@ class SextbProvider : MainAPI() {
             ).text
             parseJson<List<RelatedAjaxItem>>(relatedJson).map { it.toSearchResponse() }
         } catch (e: Exception) {
-            listOf() // Nếu có lỗi, trả về danh sách rỗng
+            listOf()
         }
-
 
         val episodes = document.select("div.episode-list button.episode").mapIndexedNotNull { index, it ->
             val serverName = it.text().trim()
@@ -115,7 +113,16 @@ class SextbProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val episodeData = parseJson<EpisodeData>(data)
+        // SỬA LỖI: Xử lý cấu trúc JSON mảng mà chương trình test gửi vào
+        // Lớp này dùng để hứng dữ liệu bên ngoài
+        data class EpisodeWrapper(@JsonProperty("data") val innerData: String)
+
+        // Phân tích mảng JSON bên ngoài, lấy phần tử đầu tiên, rồi lấy key "data"
+        val innerJsonData = parseJson<List<EpisodeWrapper>>(data).firstOrNull()?.innerData
+            ?: throw RuntimeException("Failed to parse outer episode wrapper")
+        
+        // Phân tích chuỗi JSON bên trong để có được dữ liệu thực sự
+        val episodeData = parseJson<EpisodeData>(innerJsonData)
         
         val authKey = "Basic " + Base64.encodeToString(("${episodeData.token}:${episodeData.socket}").toByteArray(), Base64.NO_WRAP)
         val referer = "$mainUrl/anything"
@@ -131,7 +138,9 @@ class SextbProvider : MainAPI() {
         return loadExtractor(iframeSrc, referer, subtitleCallback, callback)
     }
 
+    // SỬA LỖI: Sửa lỗi chính tả "filmld" -> "filmId" bằng JsonProperty
     data class EpisodeData(
+        @JsonProperty("filmld") // <- Sửa lỗi chính tả ở đây
         val filmId: String,
         val episodeIndex: String,
         val token: String,
