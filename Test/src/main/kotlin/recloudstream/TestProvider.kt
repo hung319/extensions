@@ -69,16 +69,13 @@ class SextbProvider : MainAPI() {
         }
     }
 
-    // SỬA ĐỔI: Chuyển log sang hộp thoại lỗi để dễ đọc hơn
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Dùng StringBuilder để xây dựng chuỗi log
         val logBuilder = StringBuilder()
-        
         fun log(message: String) {
             Log.d("SextbProvider", message)
             logBuilder.append(message).append("\n")
@@ -117,7 +114,14 @@ class SextbProvider : MainAPI() {
             log("8. Đã lấy được link iframe: $iframeSrc")
             
             log("9. Đang gọi Extractor để lấy link cuối cùng...")
-            return loadExtractor(iframeSrc, data, subtitleCallback, callback)
+            val success = loadExtractor(iframeSrc, data, subtitleCallback, callback)
+
+            // SỬA ĐỔI: Nếu loadExtractor thất bại, cũng ném lỗi để hiển thị log
+            if (!success) {
+                throw Exception("loadExtractor trả về false. Có thể host video bị lỗi hoặc link đã hết hạn.")
+            }
+            
+            return true
 
         } catch (e: Exception) {
             // Ném ra một lỗi RuntimeException với nội dung là toàn bộ log
