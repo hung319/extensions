@@ -5,9 +5,9 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
-
-// Thêm các import còn thiếu
+// SỬA LỖI: Thêm các import cần thiết
 import com.lagradost.cloudstream3.Quality
+import com.lagradost.cloudstream3.Actor
 import com.lagradost.cloudstream3.ActorData
 
 // Đặt tên cho plugin của bạn
@@ -96,9 +96,10 @@ class SextbProvider : MainAPI() {
 
         val poster = document.selectFirst("div.covert img")?.attr("data-src")
         
-        // SỬA LỖI: Chuyển đổi danh sách tên diễn viên thành List<ActorData>
-        val cast = document.select("div.description:contains(Cast) a").map {
-            ActorData(it.text())
+        // SỬA LỖI: Chuyển đổi tên diễn viên thành đối tượng ActorData
+        val cast = document.select("div.description:contains(Cast) a").map { actorElement ->
+            val actorName = actorElement.text()
+            ActorData(Actor(name = actorName), roleString = "Actor")
         }
         
         val plot = document.selectFirst("span.full-text-desc")?.text()?.trim()
