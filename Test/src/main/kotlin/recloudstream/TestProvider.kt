@@ -133,7 +133,7 @@ class AnimeHayProvider : MainAPI() {
         iframeSelector: String,
         iframeIdRegex: Regex,
         linkFormatter: (String) -> String,
-        callback: (ExtractorLink) -> Unit
+        onLinkFound: (ExtractorLink) -> Unit
     ) {
         var serverLink: String? = null
         var serverId: String? = null
@@ -156,7 +156,7 @@ class AnimeHayProvider : MainAPI() {
                 this.quality = Qualities.Unknown.value
                 this.referer = serverLink
             }
-            callback(link)
+            onLinkFound(link)
         } else {
             Log.w(name, "$serverName link/ID not found.")
         }
