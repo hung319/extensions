@@ -201,7 +201,7 @@ class AnimeHayProvider : MainAPI() {
                         newExtractorLink(source = m3u8Link, name = "Server TOK", url = m3u8Link, type = ExtractorLinkType.M3U8) {
                             quality = Qualities.Unknown.value
                             referer = data
-                            origin = activeUrl
+                            this.headers = mapOf("Origin" to siteBaseUrl)
                         }
                     )
                     foundLinks = true
