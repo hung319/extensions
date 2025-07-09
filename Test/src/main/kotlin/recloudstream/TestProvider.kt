@@ -3,6 +3,8 @@ package recloudstream
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
 import android.util.Base64
@@ -47,10 +49,17 @@ class SextbProvider : MainAPI() {
         return document.select("div.tray-item").mapNotNull { it.toSearchResult() }
     }
     
+    // Quay lại kiến trúc `load` tạo danh sách server
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
         val title = document.selectFirst("h1.film-info-title")?.text()?.trim() ?: return null
         
+        val filmId = document.selectFirst("script:containsData(filmId)")?.data()
+            ?.let { Regex("""filmId\s*=\s*['"]?(\d+)['"]?""").find(it)?.groupValues?.get(1) }
+            ?: return null
+        val token = document.selectFirst("meta[name=_token]")?.attr("value") ?: return null
+        val socket = document.selectFirst("meta[name=_socket]")?.attr("value") ?: return null
+
         val poster = document.selectFirst("div.covert img")?.attr("data-src")
         val plot = document.selectFirst("span.full-text-desc")?.text()?.trim()
         val tags = document.select("div.description:contains(Genre) a").map { it.text() }
@@ -60,7 +69,16 @@ class SextbProvider : MainAPI() {
             ActorData(Actor(name = actorElement.text()), roleString = "Actor")
         }
         
-        return newMovieLoadResponse(title, url, TvType.Movie, url) {
+        val episodes = document.select("div.episode-list button.episode").mapIndexedNotNull { index, it ->
+            val serverName = it.text().trim()
+            // Đóng gói tất cả thông tin cần thiết vào data của mỗi episode
+            val episodeData = EpisodeData(filmId, index.toString(), token, socket)
+            newEpisode(episodeData.toJson()) {
+                name = serverName
+            }
+        }
+
+        return newMovieLoadResponse(title, url, TvType.Movie, episodes) {
             this.posterUrl = poster
             this.year = year
             this.plot = plot
@@ -82,53 +100,56 @@ class SextbProvider : MainAPI() {
         }
 
         try {
-            log("1. Bắt đầu `loadLinks` với data: $data")
+            log("1. Bắt đầu `loadLinks`.")
 
-            val document = app.get(data).document
-            log("2. Tải trang phim thành công.")
+            // Logic mới để xử lý cả data từ app thật và từ trình test
+            val episodeData = try {
+                // Thử phân tích theo định dạng của trình test trước
+                data class EpisodeWrapper(@JsonProperty("data") val innerData: String)
+                val innerJsonData = parseJson<List<EpisodeWrapper>>(data).first().innerData
+                parseJson<EpisodeData>(innerJsonData)
+            } catch (e: Exception) {
+                // Nếu thất bại, thử phân tích như data từ app thật
+                parseJson<EpisodeData>(data)
+            }
+            log("2. Phân tích dữ liệu episode thành công: filmId=${episodeData.filmId}, index=${episodeData.episodeIndex}")
 
-            val filmId = document.selectFirst("script:containsData(filmId)")?.data()
-                ?.let { Regex("""filmId\s*=\s*['"]?(\d+)['"]?""").find(it)?.groupValues?.get(1) }
-                ?: throw Exception("Không tìm thấy filmId")
-            log("3. Đã tìm thấy filmId: $filmId")
-
-            val token = document.selectFirst("meta[name=_token]")?.attr("value") 
-                ?: throw Exception("Không tìm thấy _token")
-            val socket = document.selectFirst("meta[name=_socket]")?.attr("value") 
-                ?: throw Exception("Không tìm thấy _socket")
-            log("4. Đã tìm thấy token và socket.")
-
-            val authKey = "Basic " + Base64.encodeToString(("$token:$socket").toByteArray(), Base64.NO_WRAP)
-            log("5. Đã tạo AuthKey: $authKey")
+            val authKey = "Basic " + Base64.encodeToString(("${episodeData.token}:${episodeData.socket}").toByteArray(), Base64.NO_WRAP)
+            log("3. Đã tạo AuthKey: $authKey")
             
-            log("6. Đang gửi yêu cầu Ajax đến server...")
+            log("4. Đang gửi yêu cầu Ajax...")
             val res = app.post(
                 "$mainUrl/ajax/player",
-                headers = mapOf("Authorization" to authKey, "Referer" to data),
-                data = mapOf("episode" to "0", "filmId" to filmId)
+                headers = mapOf("Authorization" to authKey, "Referer" to "$mainUrl/"),
+                data = mapOf("episode" to episodeData.episodeIndex, "filmId" to episodeData.filmId)
             ).parsed<PlayerResponse>()
-            log("7. Phản hồi từ server: ${res.player?.take(100)}...")
+            log("5. Phản hồi từ server: ${res.player?.take(100)}...")
 
             val iframeSrc = res.player?.let { Regex("""src="(.*?)"""").find(it)?.groupValues?.get(1) } 
-                ?: throw Exception("Không trích xuất được link iframe từ phản hồi")
-            log("8. Đã lấy được link iframe: $iframeSrc")
+                ?: throw Exception("Không trích xuất được link iframe")
+            log("6. Đã lấy được link iframe: $iframeSrc")
             
-            log("9. Đang gọi Extractor để lấy link cuối cùng...")
-            val success = loadExtractor(iframeSrc, data, subtitleCallback, callback)
+            log("7. Đang gọi Extractor...")
+            val success = loadExtractor(iframeSrc, "$mainUrl/", subtitleCallback, callback)
 
-            // SỬA ĐỔI: Nếu loadExtractor thất bại, cũng ném lỗi để hiển thị log
             if (!success) {
-                throw Exception("loadExtractor trả về false. Có thể host video bị lỗi hoặc link đã hết hạn.")
+                throw Exception("loadExtractor trả về false. Host video không được hỗ trợ hoặc link đã hết hạn.")
             }
             
             return true
 
         } catch (e: Exception) {
-            // Ném ra một lỗi RuntimeException với nội dung là toàn bộ log
-            // CloudStream sẽ tự động bắt lỗi này và hiển thị trên giao diện
             throw RuntimeException(logBuilder.toString() + "\nLỖI: " + e.message)
         }
     }
+    
+    // Data class để truyền dữ liệu giữa `load` và `loadLinks`
+    data class EpisodeData(
+        val filmId: String,
+        val episodeIndex: String,
+        val token: String,
+        val socket: String
+    )
     
     data class PlayerResponse(
         @JsonProperty("player") val player: String?
