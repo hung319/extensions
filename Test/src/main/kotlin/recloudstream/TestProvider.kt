@@ -43,10 +43,8 @@ class SextbProvider : MainAPI() {
         }
     }
     
-    // SỬA LỖI: Làm rõ phạm vi của `this` để tránh lỗi "unresolved reference"
     private fun RelatedAjaxItem.toSearchResponse(): SearchResponse {
         val slug = this.guid.ifEmpty { this.code }
-        // Gán `this` (là RelatedAjaxItem) vào một biến để sử dụng bên trong lambda
         val item = this 
         return newMovieSearchResponse(item.name, "$mainUrl/$slug", TvType.Movie) {
             posterUrl = item.poster
@@ -78,11 +76,18 @@ class SextbProvider : MainAPI() {
 
         val authKey = "Basic " + Base64.encodeToString(("$token:$socket").toByteArray(), Base64.NO_WRAP)
         
-        val recommendations = app.post(
-            "$mainUrl/ajax/relatedAjax",
-             headers = mapOf("Authorization" to authKey, "Referer" to url),
-             data = mapOf("pg" to "1", "filmId" to filmId)
-        ).parsed<List<RelatedAjaxItem>>().map { it.toSearchResponse() }
+        // SỬA LỖI: Dùng .text và parseJson<>() để phân tích danh sách một cách an toàn
+        val recommendations = try {
+            val relatedJson = app.post(
+                "$mainUrl/ajax/relatedAjax",
+                 headers = mapOf("Authorization" to authKey, "Referer" to url),
+                 data = mapOf("pg" to "1", "filmId" to filmId)
+            ).text
+            parseJson<List<RelatedAjaxItem>>(relatedJson).map { it.toSearchResponse() }
+        } catch (e: Exception) {
+            listOf() // Nếu có lỗi, trả về danh sách rỗng
+        }
+
 
         val episodes = document.select("div.episode-list button.episode").mapIndexedNotNull { index, it ->
             val serverName = it.text().trim()
@@ -134,7 +139,7 @@ class SextbProvider : MainAPI() {
     )
     
     data class RelatedAjaxItem(
-        @JsonProperty("id") val id: String,
+        @JsonProperty("id") val id: String?,
         @JsonProperty("code") val code: String,
         @JsonProperty("guid") val guid: String,
         @JsonProperty("name") val name: String,
