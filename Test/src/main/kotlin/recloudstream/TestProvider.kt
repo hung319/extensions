@@ -7,10 +7,6 @@ import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
 import android.util.Base64
 import android.util.Log
-// Thêm các import cần thiết cho Toast
-import android.widget.Toast
-import com.lagradost.cloudstream3.MainActivity
-import com.lagradost.cloudstream3.utils.Coroutines.main
 
 class SextbProvider : MainAPI() {
     override var name = "Sextb"
@@ -19,8 +15,6 @@ class SextbProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.Movie)
     override val hasMainPage = true
 
-    private val logTag = "SextbProvider"
-
     override val mainPage = mainPageOf(
         "" to "Home",
         "censored" to "Censored",
@@ -28,13 +22,6 @@ class SextbProvider : MainAPI() {
         "subtitle" to "Subtitle",
         "amateur" to "Amateur"
     )
-
-    // Hàm tiện ích để hiển thị Toast
-    private fun showToast(message: String, duration: Int = Toast.LENGTH_SHORT) {
-        main {
-            Toast.makeText(MainActivity.activity, message, duration).show()
-        }
-    }
 
     override suspend fun getMainPage(
         page: Int,
@@ -82,66 +69,60 @@ class SextbProvider : MainAPI() {
         }
     }
 
+    // SỬA ĐỔI: Chuyển log sang hộp thoại lỗi để dễ đọc hơn
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // Dùng StringBuilder để xây dựng chuỗi log
+        val logBuilder = StringBuilder()
+        
+        fun log(message: String) {
+            Log.d("SextbProvider", message)
+            logBuilder.append(message).append("\n")
+        }
+
         try {
-            showToast("Bắt đầu lấy link...")
-            Log.d(logTag, "loadLinks started with data: $data")
+            log("1. Bắt đầu `loadLinks` với data: $data")
 
             val document = app.get(data).document
-            showToast("Đã tải trang phim thành công")
+            log("2. Tải trang phim thành công.")
 
             val filmId = document.selectFirst("script:containsData(filmId)")?.data()
                 ?.let { Regex("""filmId\s*=\s*['"]?(\d+)['"]?""").find(it)?.groupValues?.get(1) }
-                ?: run {
-                    showToast("Lỗi: Không tìm thấy filmId", Toast.LENGTH_LONG)
-                    return false
-                }
-            showToast("Đã tìm thấy filmId: $filmId")
+                ?: throw Exception("Không tìm thấy filmId")
+            log("3. Đã tìm thấy filmId: $filmId")
 
-            val token = document.selectFirst("meta[name=_token]")?.attr("value") ?: run {
-                showToast("Lỗi: Không tìm thấy token", Toast.LENGTH_LONG)
-                return false
-            }
+            val token = document.selectFirst("meta[name=_token]")?.attr("value") 
+                ?: throw Exception("Không tìm thấy _token")
+            val socket = document.selectFirst("meta[name=_socket]")?.attr("value") 
+                ?: throw Exception("Không tìm thấy _socket")
+            log("4. Đã tìm thấy token và socket.")
 
-            val socket = document.selectFirst("meta[name=_socket]")?.attr("value") ?: run {
-                showToast("Lỗi: Không tìm thấy socket", Toast.LENGTH_LONG)
-                return false
-            }
-            showToast("Đã tìm thấy token & socket")
-
-            val episodeIndex = "0"
             val authKey = "Basic " + Base64.encodeToString(("$token:$socket").toByteArray(), Base64.NO_WRAP)
-            showToast("Đã tạo AuthKey")
-            Log.d(logTag, "Generated AuthKey: $authKey")
-
-            val referer = data
+            log("5. Đã tạo AuthKey: $authKey")
             
-            showToast("Đang gửi yêu cầu lấy link...")
+            log("6. Đang gửi yêu cầu Ajax đến server...")
             val res = app.post(
                 "$mainUrl/ajax/player",
-                headers = mapOf("Authorization" to authKey, "Referer" to referer),
-                data = mapOf("episode" to episodeIndex, "filmId" to filmId)
+                headers = mapOf("Authorization" to authKey, "Referer" to data),
+                data = mapOf("episode" to "0", "filmId" to filmId)
             ).parsed<PlayerResponse>()
-            Log.d(logTag, "POST response received: ${res.player}")
+            log("7. Phản hồi từ server: ${res.player?.take(100)}...")
 
-            val iframeSrc = res.player?.let { Regex("""src="(.*?)"""").find(it)?.groupValues?.get(1) } ?: run {
-                showToast("Lỗi: Không lấy được iframe từ phản hồi", Toast.LENGTH_LONG)
-                return false
-            }
-            showToast("Đã lấy được link iframe: $iframeSrc")
+            val iframeSrc = res.player?.let { Regex("""src="(.*?)"""").find(it)?.groupValues?.get(1) } 
+                ?: throw Exception("Không trích xuất được link iframe từ phản hồi")
+            log("8. Đã lấy được link iframe: $iframeSrc")
             
-            return loadExtractor(iframeSrc, referer, subtitleCallback, callback)
+            log("9. Đang gọi Extractor để lấy link cuối cùng...")
+            return loadExtractor(iframeSrc, data, subtitleCallback, callback)
 
         } catch (e: Exception) {
-            showToast("Lỗi nghiêm trọng: ${e.message}", Toast.LENGTH_LONG)
-            Log.e(logTag, "Exception in loadLinks: ${e.message}")
-            e.printStackTrace()
-            return false
+            // Ném ra một lỗi RuntimeException với nội dung là toàn bộ log
+            // CloudStream sẽ tự động bắt lỗi này và hiển thị trên giao diện
+            throw RuntimeException(logBuilder.toString() + "\nLỖI: " + e.message)
         }
     }
     
