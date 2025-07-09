@@ -87,7 +87,6 @@ class SextbProvider : MainAPI() {
         }
     }
 
-    // SỬA ĐỔI: `loadLinks` giờ sẽ xử lý được cả hai loại dữ liệu
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -104,19 +103,17 @@ class SextbProvider : MainAPI() {
             log("1. Bắt đầu loadLinks.")
             log("   - Dữ liệu thô nhận được: ${data.take(150)}...")
 
-            // Logic xử lý dữ liệu kép
+            // SỬA LỖI: Thêm kiểu dữ liệu <EpisodeData> vào các lệnh gọi parseJson
             val episodeData = try {
-                // Thử phân tích như dữ liệu từ app thật (một object JSON)
                 log("2a. Thử phân tích data như một object đơn lẻ...")
-                parseJson(data)
+                parseJson<EpisodeData>(data)
             } catch (e1: Exception) {
-                // Nếu thất bại, thử phân tích như dữ liệu từ trình test (một danh sách JSON)
                 log("2b. Thất bại. Thử phân tích data như một danh sách...")
                 try {
                     data class TestWrapper(@JsonProperty("data") val innerData: String)
                     val innerData = parseJson<List<TestWrapper>>(data).first().innerData
                     log("   - Đã trích xuất được dữ liệu bên trong: ${innerData.take(150)}...")
-                    parseJson(innerData)
+                    parseJson<EpisodeData>(innerData)
                 } catch (e2: Exception) {
                     throw Exception("Không thể phân tích dữ liệu episode theo cả hai cách. Lỗi: ${e2.message}")
                 }
@@ -151,10 +148,9 @@ class SextbProvider : MainAPI() {
         }
     }
     
-    // SỬA ĐỔI: Sửa lỗi chính tả `episodeld` từ log của trình test
     data class EpisodeData(
         val filmId: String,
-        @JsonProperty("episodeld") // Sửa lỗi chính tả
+        @JsonProperty("episodeld")
         val episodeId: String,
         val token: String,
         val socket: String
