@@ -124,52 +124,8 @@ class AnimeHayProvider : MainAPI() {
     }
 
     // =======================================================================
-    // START: SỬA LỖI NULL-SAFETY
+    // START: HÀM LOADLINKS VIẾT LẠI HOÀN TOÀN
     // =======================================================================
-    private suspend fun extractServerFromPhp(
-        document: Document,
-        pageSource: String,
-        baseUrl: String,
-        serverName: String,
-        scriptRegex: Regex,
-        iframeSelector: String,
-        iframeIdRegex: Regex,
-        linkFormatter: (String) -> String,
-        onLinkFound: (ExtractorLink) -> Unit
-    ) {
-        var serverLink: String? = null
-        var serverId: String? = null
-
-        val match = scriptRegex.find(pageSource)
-        if (match != null) {
-            serverLink = match.groups[1]?.value?.let { fixUrl(it, baseUrl) }
-            serverId = match.groups[2]?.value
-        } else {
-            document.selectFirst(iframeSelector)?.let { iframe ->
-                serverLink = iframe.attr("src")?.let { fixUrl(it, baseUrl) }
-                serverId = serverLink?.let { iframeIdRegex.find(it)?.groups?.get(1)?.value }
-            }
-        }
-
-        // Sử dụng `let` lồng nhau để đảm bảo an toàn tuyệt đối cho các biến nullable
-        serverLink?.let { safeServerLink ->
-            serverId?.let { safeServerId ->
-                // Cả hai biến `safeServerLink` và `safeServerId` ở đây chắc chắn không null
-                Log.i(name, "Processing $serverName link ID: $safeServerId")
-                val finalM3u8Link = linkFormatter(safeServerId)
-                val link = newExtractorLink(finalM3u8Link, "Server $serverName", finalM3u8Link, ExtractorLinkType.M3U8) {
-                    this.quality = Qualities.Unknown.value
-                    this.referer = safeServerLink // Sử dụng biến an toàn
-                }
-                onLinkFound(link)
-                return@extractServerFromPhp // Thoát khỏi hàm vì đã tìm thấy link
-            }
-        }
-        
-        // Chỉ log khi không tìm thấy
-        Log.w(name, "$serverName link/ID not found.")
-    }
-
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -192,35 +148,49 @@ class AnimeHayProvider : MainAPI() {
             foundLinks = true
         }
 
-        // 2. Server GUN
-        extractServerFromPhp(
-            document, pageSource, baseUrl, "GUN",
-            Regex("""src=["'](https?://[^"']*gun\.php\?id=([^&"']+)&[^"']*)["']"""),
-            "iframe#gun_if[src*=gun.php]",
-            Regex(""".*gun\.php\?id=([^&"']+)"""),
-            { id -> "https://pt.rapovideo.xyz/playlist/v2/$id/master.m3u8" }
-        ) { extractorLink ->
-            callback(extractorLink)
-            foundLinks = true
+        // 2. Server GUN - Viết lại trực tiếp, không dùng helper
+        val gunRegex = Regex("""src=["'](https?://[^"']*gun\.php\?id=([^&"']+)&[^"']*)["']""")
+        gunRegex.find(pageSource)?.let { match ->
+            val serverLink = match.groupValues[1].let { url -> fixUrl(url, baseUrl) }
+            val serverId = match.groupValues[2]
+            
+            // Lồng `let` để đảm bảo an toàn tuyệt đối
+            serverLink?.let { safeServerLink ->
+                Log.i(name, "Processing GUN link ID: $serverId")
+                val finalM3u8Link = "https://pt.rapovideo.xyz/playlist/v2/$serverId/master.m3u8"
+                val link = newExtractorLink(finalM3u8Link, "Server GUN", finalM3u8Link, ExtractorLinkType.M3U8) {
+                    this.quality = Qualities.Unknown.value
+                    this.referer = safeServerLink
+                }
+                callback(link)
+                foundLinks = true
+            }
         }
 
-        // 3. Server PHO
-        extractServerFromPhp(
-            document, pageSource, baseUrl, "PHO",
-            Regex("""src=["'](https?://[^"']*pho\.php\?id=([^&"']+)&[^"']*)["']"""),
-            "iframe#pho_if[src*=pho.php]",
-            Regex(""".*pho\.php\?id=([^&"']+)"""),
-            { id -> "https://pt.rapovideo.xyz/playlist/$id/master.m3u8" }
-        ) { extractorLink ->
-            callback(extractorLink)
-            foundLinks = true
-        }
+        // 3. Server PHO - Viết lại trực tiếp, không dùng helper
+        val phoRegex = Regex("""src=["'](https?://[^"']*pho\.php\?id=([^&"']+)&[^"']*)["']""")
+        phoRegex.find(pageSource)?.let { match ->
+            val serverLink = match.groupValues[1].let { url -> fixUrl(url, baseUrl) }
+            val serverId = match.groupValues[2]
 
+            // Lồng `let` để đảm bảo an toàn tuyệt đối
+            serverLink?.let { safeServerLink ->
+                Log.i(name, "Processing PHO link ID: $serverId")
+                val finalM3u8Link = "https://pt.rapovideo.xyz/playlist/$serverId/master.m3u8"
+                val link = newExtractorLink(finalM3u8Link, "Server PHO", finalM3u8Link, ExtractorLinkType.M3U8) {
+                    this.quality = Qualities.Unknown.value
+                    this.referer = safeServerLink
+                }
+                callback(link)
+                foundLinks = true
+            }
+        }
+        
         return foundLinks
     }
     // =======================================================================
-    // END: SỬA LỖI NULL-SAFETY
-    // =======================================================================
+    // END: HÀM LOADLINKS VIẾT LẠI HOÀN TOÀN
+    // =================================----------------======================
 
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): SearchResponse? {
         val linkElement = this.selectFirst("> a[href]") ?: return null
