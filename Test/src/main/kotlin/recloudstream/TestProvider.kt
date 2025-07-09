@@ -49,7 +49,6 @@ class SextbProvider : MainAPI() {
         return document.select("div.tray-item").mapNotNull { it.toSearchResult() }
     }
     
-    // Quay lại kiến trúc `load` tạo danh sách server
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
         val title = document.selectFirst("h1.film-info-title")?.text()?.trim() ?: return null
@@ -69,10 +68,13 @@ class SextbProvider : MainAPI() {
             ActorData(Actor(name = actorElement.text()), roleString = "Actor")
         }
         
-        val episodes = document.select("div.episode-list button.episode").mapIndexedNotNull { index, it ->
+        // SỬA ĐỔI: Lấy danh sách server với `data-id` chính xác
+        val episodes = document.select("div.episode-list button.episode").mapNotNull {
             val serverName = it.text().trim()
-            // Đóng gói tất cả thông tin cần thiết vào data của mỗi episode
-            val episodeData = EpisodeData(filmId, index.toString(), token, socket)
+            val episodeId = it.attr("data-id") // Lấy `data-id` thay vì index
+            if (episodeId.isBlank()) return@mapNotNull null
+
+            val episodeData = EpisodeData(filmId, episodeId, token, socket)
             newEpisode(episodeData.toJson()) {
                 name = serverName
             }
@@ -101,27 +103,18 @@ class SextbProvider : MainAPI() {
 
         try {
             log("1. Bắt đầu `loadLinks`.")
-
-            // Logic mới để xử lý cả data từ app thật và từ trình test
-            val episodeData = try {
-                // Thử phân tích theo định dạng của trình test trước
-                data class EpisodeWrapper(@JsonProperty("data") val innerData: String)
-                val innerJsonData = parseJson<List<EpisodeWrapper>>(data).first().innerData
-                parseJson<EpisodeData>(innerJsonData)
-            } catch (e: Exception) {
-                // Nếu thất bại, thử phân tích như data từ app thật
-                parseJson<EpisodeData>(data)
-            }
-            log("2. Phân tích dữ liệu episode thành công: filmId=${episodeData.filmId}, index=${episodeData.episodeIndex}")
+            
+            val episodeData = parseJson<EpisodeData>(data)
+            log("2. Phân tích dữ liệu episode thành công: filmId=${episodeData.filmId}, episodeId=${episodeData.episodeId}")
 
             val authKey = "Basic " + Base64.encodeToString(("${episodeData.token}:${episodeData.socket}").toByteArray(), Base64.NO_WRAP)
             log("3. Đã tạo AuthKey: $authKey")
             
-            log("4. Đang gửi yêu cầu Ajax...")
+            log("4. Đang gửi yêu cầu Ajax với episodeId=${episodeData.episodeId}")
             val res = app.post(
                 "$mainUrl/ajax/player",
                 headers = mapOf("Authorization" to authKey, "Referer" to "$mainUrl/"),
-                data = mapOf("episode" to episodeData.episodeIndex, "filmId" to episodeData.filmId)
+                data = mapOf("episode" to episodeData.episodeId, "filmId" to episodeData.filmId)
             ).parsed<PlayerResponse>()
             log("5. Phản hồi từ server: ${res.player?.take(100)}...")
 
@@ -143,10 +136,9 @@ class SextbProvider : MainAPI() {
         }
     }
     
-    // Data class để truyền dữ liệu giữa `load` và `loadLinks`
     data class EpisodeData(
         val filmId: String,
-        val episodeIndex: String,
+        val episodeId: String, // Đổi tên từ episodeIndex thành episodeId cho rõ nghĩa
         val token: String,
         val socket: String
     )
