@@ -44,6 +44,9 @@ class AnimeHayProvider : MainAPI() {
     override var lang = "vi"
     override val hasMainPage = true
 
+    // SỬA LỖI: Thêm User-Agent của trình duyệt di động để giả lập
+    private val mobileUserAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
+
     private var activeUrl = "https://animehay.bid"
     private var isDomainCheckComplete = false
 
@@ -54,7 +57,7 @@ class AnimeHayProvider : MainAPI() {
 
         Log.d("AnimeHayProvider", "Starting domain check. Default: $activeUrl, Check URL: $mainUrl")
         runCatching {
-            val response = app.get(mainUrl, allowRedirects = true)
+            val response = app.get(mainUrl, allowRedirects = true, headers = mapOf("User-Agent" to mobileUserAgent))
             val document = response.document
             val landedUrl = response.url
             Log.d("AnimeHayProvider", "Fetched from $mainUrl, landed on: $landedUrl")
@@ -102,7 +105,7 @@ class AnimeHayProvider : MainAPI() {
         return runCatching {
             val encodedTitle = URLEncoder.encode(title, "UTF-8")
             val searchUrl = "https://kitsu.io/api/edge/anime?filter[text]=$encodedTitle&page[limit]=1"
-            val response = app.get(searchUrl).parsedSafe<KitsuMain>()
+            val response = app.get(searchUrl, headers = mapOf("User-Agent" to mobileUserAgent)).parsedSafe<KitsuMain>()
             val poster = response?.data?.firstOrNull()?.attributes?.posterImage
             listOfNotNull(poster?.original, poster?.large, poster?.medium, poster?.small, poster?.tiny).firstOrNull()
         }.onSuccess {
@@ -118,7 +121,7 @@ class AnimeHayProvider : MainAPI() {
             val siteBaseUrl = getActiveUrl()
             val urlToFetch = if (page <= 1) siteBaseUrl else "$siteBaseUrl/phim-moi-cap-nhap/trang-$page.html"
 
-            val document = app.get(urlToFetch).document
+            val document = app.get(urlToFetch, headers = mapOf("User-Agent" to mobileUserAgent)).document
             val homePageItems = document.select("div.movies-list div.movie-item").mapNotNull {
                 it.toSearchResponse(this, siteBaseUrl)
             }
@@ -139,7 +142,7 @@ class AnimeHayProvider : MainAPI() {
             val searchUrl = "$siteBaseUrl/tim-kiem/${query.encodeUri()}.html"
             Log.i("AnimeHayProvider", "Searching URL: $searchUrl")
 
-            app.get(searchUrl).document
+            app.get(searchUrl, headers = mapOf("User-Agent" to mobileUserAgent)).document
                 .select("div.movies-list div.movie-item")
                 .mapNotNull { it.toSearchResponse(this, siteBaseUrl) }
         }.onFailure {
@@ -151,7 +154,7 @@ class AnimeHayProvider : MainAPI() {
         return runCatching {
             val siteBaseUrl = getActiveUrl()
             Log.d("AnimeHayProvider", "Loading details for URL: $url")
-            val document = app.get(url).document
+            val document = app.get(url, headers = mapOf("User-Agent" to mobileUserAgent)).document
             document.toLoadResponse(this, url, siteBaseUrl)
         }.onFailure {
             Log.e("AnimeHayProvider", "Error in load for $url", it)
@@ -187,7 +190,8 @@ class AnimeHayProvider : MainAPI() {
         var foundLinks = false
         runCatching {
             val siteBaseUrl = getActiveUrl()
-            val document = app.get(data, referer = siteBaseUrl).document
+            // SỬA LỖI: Thêm User-Agent để giả lập trình duyệt di động
+            val document = app.get(data, referer = siteBaseUrl, headers = mapOf("User-Agent" to mobileUserAgent)).document
             val pageContent = document.html()
 
             // Server TOK
@@ -198,7 +202,11 @@ class AnimeHayProvider : MainAPI() {
                         newExtractorLink(source = m3u8Link, name = "Server TOK", url = m3u8Link, type = ExtractorLinkType.M3U8) {
                             quality = Qualities.Unknown.value
                             referer = siteBaseUrl
-                            this.headers = mapOf("Origin" to siteBaseUrl)
+                            this.headers = mapOf(
+                                "Origin" to siteBaseUrl,
+                                "Referer" to siteBaseUrl, // Thêm Referer vào headers của M3U8 request
+                                "User-Agent" to mobileUserAgent
+                            )
                         }
                     )
                     foundLinks = true
@@ -243,32 +251,27 @@ class AnimeHayProvider : MainAPI() {
     }
 
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
-        // Interceptor này sẽ được áp dụng cho các link video
         return Interceptor { chain ->
             val request = chain.request()
             val response = chain.proceed(request)
             val url = request.url.toString()
 
-            // Chỉ áp dụng cho các link video từ các server này (dựa trên phân tích file Java)
             if (url.contains("tiktokcdn.com") || url.contains("ibyteimg.com") || url.contains("segment.cloudbeta.win")) {
                 val body = response.body
                 if (body != null) {
                     try {
-                        // Lấy toàn bộ byte của đoạn video
                         val originalBytes = body.bytes()
-                        // Cắt bỏ 10 byte đầu tiên (là các byte rác)
-                        val fixedBytes = originalBytes.copyOfRange(10, originalBytes.size)
-                        // Tạo lại body mới với dữ liệu đã được làm sạch
-                        val newBody = fixedBytes.toResponseBody(body.contentType())
-                        // Trả về response với body đã sửa
-                        return@Interceptor response.newBuilder().body(newBody).build()
+                        // SỬA LỖI: Thêm kiểm tra kích thước để tránh lỗi
+                        if (originalBytes.size > 10) {
+                            val fixedBytes = originalBytes.copyOfRange(10, originalBytes.size)
+                            val newBody = fixedBytes.toResponseBody(body.contentType())
+                            return@Interceptor response.newBuilder().body(newBody).build()
+                        }
                     } catch (e: Exception) {
-                        // Nếu có lỗi, trả về response gốc
                         return@Interceptor response
                     }
                 }
             }
-            // Nếu không phải link cần sửa, trả về response gốc
             return@Interceptor response
         }
     }
