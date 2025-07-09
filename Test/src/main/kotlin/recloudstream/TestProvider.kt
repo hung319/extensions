@@ -5,8 +5,8 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
-// SỬA LỖI: Thêm các import cần thiết
-import com.lagradost.cloudstream3.Quality
+
+// Đã xóa import không dùng tới cho Quality
 import com.lagradost.cloudstream3.Actor
 import com.lagradost.cloudstream3.ActorData
 
@@ -32,16 +32,8 @@ class SextbProvider : MainAPI() {
         "amateur" to "Amateur"
     )
 
-    // Hàm tiện ích để chuyển đổi chuỗi chất lượng thành enum
-    private fun getQualityFromString(quality: String?): Quality? {
-        return when (quality?.trim()?.uppercase()) {
-            "HD" -> Quality.HD
-            "FHD" -> Quality.FullHd
-            "4K" -> Quality.UHD
-            else -> null
-        }
-    }
-
+    // SỬA LỖI: Đã xóa hàm getQualityFromString vì gây lỗi
+    
     // Hàm lấy danh sách phim từ trang chủ hoặc các danh mục
     override suspend fun getMainPage(
         page: Int,
@@ -66,18 +58,19 @@ class SextbProvider : MainAPI() {
         val href = this.selectFirst("a")?.attr("href") ?: return null
         val title = this.selectFirst("div.tray-item-title")?.text() ?: return null
         val posterUrl = this.selectFirst("img")?.attr("data-src")
-        val quality = this.select("div.tray-item-quality span.hd").text().trim()
+        // SỬA LỖI: Đã xóa phần lấy thông tin chất lượng
+        // val quality = this.select("div.tray-item-quality span.hd").text().trim()
 
         return newMovieSearchResponse(title, href, TvType.Movie) {
             this.posterUrl = posterUrl
-            this.quality = getQualityFromString(quality)
+            // SỬA LỖI: Đã xóa phần gán chất lượng
+            // this.quality = getQualityFromString(quality)
         }
     }
 
     // Hàm tìm kiếm phim
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$mainUrl/search/$query"
-        val document = app.get(url).document
+        val document = app.get("$mainUrl/search/$query").document
         return document.select("div.tray-item").mapNotNull {
             it.toSearchResult()
         }
@@ -96,7 +89,6 @@ class SextbProvider : MainAPI() {
 
         val poster = document.selectFirst("div.covert img")?.attr("data-src")
         
-        // SỬA LỖI: Chuyển đổi tên diễn viên thành đối tượng ActorData
         val cast = document.select("div.description:contains(Cast) a").map { actorElement ->
             val actorName = actorElement.text()
             ActorData(Actor(name = actorName), roleString = "Actor")
@@ -138,15 +130,12 @@ class SextbProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // data ở đây sẽ có dạng "filmId/episodeIndex"
         val (filmId, episodeIndex) = data.split("/").let { it[0] to it[1] }
-        val referer = "$mainUrl/anything" // Referer là cần thiết
+        val referer = "$mainUrl/anything" 
 
-        // Gửi yêu cầu POST tới endpoint ajax để lấy trình phát
         val res = app.post(
             "$mainUrl/ajax/player",
             headers = mapOf(
-                // Header Authorization này là tĩnh, được lấy từ cURL bạn cung cấp
                 "Authorization" to "Basic WW5jMVdVbzNNM0JOYkhOeE1rbHZUV2wxWmt4Vlp6MDk6VWtOaGJHOXRORGgxUjBnMVNIcDVURGM0V2tOMVVUMDk=",
                 "Referer" to referer
             ),
@@ -156,12 +145,10 @@ class SextbProvider : MainAPI() {
             )
         ).parsed<PlayerResponse>()
 
-        // Phân tích chuỗi iframe để lấy src
         val iframeSrc = res.player?.let {
             Regex("""src="(.*?)"""").find(it)?.groupValues?.get(1)
         } ?: return false
         
-        // Gọi extractor của CloudStream để xử lý link iframe
         return loadExtractor(iframeSrc, referer, subtitleCallback, callback)
     }
 
