@@ -1,9 +1,8 @@
-package recloudstream // Thêm package vào đây
+package recloudstream
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.getQualityFromString
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
 
@@ -28,6 +27,16 @@ class SextbProvider : MainAPI() {
         "subtitle" to "Subtitle",
         "amateur" to "Amateur"
     )
+
+    // Hàm tiện ích để chuyển đổi chuỗi chất lượng thành enum
+    private fun getQualityFromString(quality: String?): Quality? {
+        return when (quality?.trim()?.uppercase()) {
+            "HD" -> Quality.HD
+            "FHD" -> Quality.FullHd
+            "4K" -> Quality.UHD
+            else -> null
+        }
+    }
 
     // Hàm lấy danh sách phim từ trang chủ hoặc các danh mục
     override suspend fun getMainPage(
@@ -107,7 +116,7 @@ class SextbProvider : MainAPI() {
             this.year = year
             this.plot = plot
             this.tags = tags
-            this.cast = cast
+            this.actors = cast // SỬA LỖI: Đổi `cast` thành `actors`
             this.recommendations = recommendations
         }
     }
