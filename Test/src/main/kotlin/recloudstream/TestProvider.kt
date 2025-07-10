@@ -54,7 +54,6 @@ class AnimeHayProvider : MainAPI() {
 
         Log.d("AnimeHayProvider", "Starting domain check. Default: $activeUrl, Check URL: $mainUrl")
         runCatching {
-            // LOẠI BỎ User-Agent thủ công
             val response = app.get(mainUrl, allowRedirects = true)
             val document = response.document
             val landedUrl = response.url
@@ -114,14 +113,10 @@ class AnimeHayProvider : MainAPI() {
             val siteBaseUrl = getActiveUrl()
             val urlToFetch = if (page <= 1) siteBaseUrl else "$siteBaseUrl/phim-moi-cap-nhap/trang-$page.html"
 
-            // LOẠI BỎ User-Agent thủ công
             val document = app.get(urlToFetch).document
-            val homePageItems = document.select("div.film-list div.film-item").mapNotNull {
+            // QUAY LẠI SELECTOR ĐÚNG
+            val homePageItems = document.select("div.movies-list div.movie-item").mapNotNull {
                 it.toSearchResponse(this, siteBaseUrl)
-            }
-
-            if (homePageItems.isEmpty()) {
-                 Log.w("AnimeHayProvider", "No items found on homepage with selector 'div.film-list div.film-item'")
             }
 
             val currentPage = document.selectFirst("div.pagination a.active_page")?.text()?.toIntOrNull() ?: page
@@ -138,10 +133,10 @@ class AnimeHayProvider : MainAPI() {
         return runCatching {
             val siteBaseUrl = getActiveUrl()
             val searchUrl = "$siteBaseUrl/tim-kiem/${query.encodeUri()}.html"
-
-            // LOẠI BỎ User-Agent thủ công
+            
             val document = app.get(searchUrl).document
-            document.select("div.film-list .film-item").mapNotNull { 
+            // QUAY LẠI SELECTOR ĐÚNG
+            document.select("div.movies-list div.movie-item").mapNotNull { 
                 it.toSearchResponse(this, siteBaseUrl) 
             }
         }.onFailure {
@@ -152,7 +147,6 @@ class AnimeHayProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         return runCatching {
             val siteBaseUrl = getActiveUrl()
-            // LOẠI BỎ User-Agent thủ công
             val document = app.get(url).document
             document.toLoadResponse(this, url, siteBaseUrl)
         }.onFailure {
@@ -189,7 +183,6 @@ class AnimeHayProvider : MainAPI() {
         var foundLinks = false
         runCatching {
             val siteBaseUrl = getActiveUrl()
-            // LOẠI BỎ User-Agent thủ công
             val document = app.get(data, referer = siteBaseUrl).document
             val pageContent = document.html()
 
@@ -273,12 +266,13 @@ class AnimeHayProvider : MainAPI() {
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): AnimeSearchResponse? {
         val element = this
         return runCatching {
-            val linkElement = element.selectFirst("a") ?: return null
+            // QUAY LẠI SELECTOR ĐÚNG
+            val linkElement = element.selectFirst("> a[href], a[href*=thong-tin-phim]") ?: return null
             val href = fixUrl(linkElement.attr("href"), baseUrl) ?: return null
-            val title = element.selectFirst(".film-name")?.text()?.trim()
+            val title = element.selectFirst("div.name-movie")?.text()?.takeIf { it.isNotBlank() }
                 ?: linkElement.attr("title").takeIf { it.isNotBlank() } ?: return null
 
-            val posterUrl = element.selectFirst("img")?.attr("data-src")
+            val posterUrl = element.selectFirst("img")?.let { it.attr("src").ifBlank { it.attr("data-src") } }
             val fixedPosterUrl = fixUrl(posterUrl, baseUrl)
             val tvType = if (href.contains("/phim/", true)) TvType.AnimeMovie else TvType.Anime
 
@@ -286,7 +280,8 @@ class AnimeHayProvider : MainAPI() {
                 this.posterUrl = fixedPosterUrl
                 this.dubStatus = EnumSet.of(DubStatus.Subbed)
                 
-                val episodeText = element.selectFirst(".ribbon-episode")?.text()?.trim()
+                // QUAY LẠI SELECTOR ĐÚNG
+                val episodeText = element.selectFirst("div.episode-latest span")?.text()?.trim()
                 if (episodeText != null) {
                     val episodeCount = episodeText.substringBefore("/").substringBefore("-").filter { it.isDigit() }.toIntOrNull()
                     if (episodeCount != null) {
@@ -332,7 +327,8 @@ class AnimeHayProvider : MainAPI() {
                     "Đang tiến hành", "Đang cập nhật" -> ShowStatus.Ongoing
                     else -> null
                 }
-                this.recommendations = document.select("div.film-list .film-item").mapNotNull {
+                // QUAY LẠI SELECTOR ĐÚNG
+                this.recommendations = document.select("div.movie-recommend div.movie-item").mapNotNull {
                     it.toSearchResponse(provider, baseUrl)
                 }
 
