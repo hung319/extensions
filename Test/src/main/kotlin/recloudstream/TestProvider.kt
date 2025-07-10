@@ -1,4 +1,4 @@
-package recloudstream // Thay thế bằng package của bạn
+package com.linor // Thay thế bằng package của bạn
 
 import android.util.Log
 import com.lagradost.cloudstream3.*
@@ -184,6 +184,7 @@ class AnimeHayProvider : MainAPI() {
             val document = app.get(data, referer = siteBaseUrl).document
             val pageContent = document.html()
 
+            // Server TOK
             runCatching {
                 val tokRegex = Regex("""tik:\s*['"]([^'"]+)['"]""")
                 tokRegex.find(pageContent)?.groupValues?.get(1)?.trim()?.let { m3u8Link ->
@@ -194,7 +195,7 @@ class AnimeHayProvider : MainAPI() {
                             url = m3u8Link,
                             referer = siteBaseUrl,
                             quality = Qualities.Unknown.value,
-                            type = ExtractorLinkType.M3U8,
+                            type = ExtractorLinkType.M3U8, // Đã dùng đúng type
                             headers = mapOf(
                                 "Origin" to siteBaseUrl,
                                 "Referer" to siteBaseUrl
@@ -205,6 +206,7 @@ class AnimeHayProvider : MainAPI() {
                 }
             }.onFailure { Log.e("AnimeHayProvider", "Error extracting TOK", it) }
             
+            // Server GUN
             runCatching {
                 val (gunLink, gunId) = findServerInfo(document, pageContent, "gun", siteBaseUrl)
                 if (gunLink != null && gunId != null) {
@@ -219,6 +221,7 @@ class AnimeHayProvider : MainAPI() {
                 }
             }.onFailure { Log.e("AnimeHayProvider", "Error extracting GUN", it) }
 
+            // Server PHO
             runCatching {
                 val (phoLink, phoId) = findServerInfo(document, pageContent, "pho", siteBaseUrl)
                 if (phoLink != null && phoId != null) {
@@ -240,28 +243,24 @@ class AnimeHayProvider : MainAPI() {
         return foundLinks
     }
 
-    // =================================================================================
-    // =========================== BÍ MẬT GIẢI MÃ VIDEO =================================
-    // =================================================================================
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
-        val key = "anh iu em".toByteArray() // Chìa khóa giải mã được tìm thấy
         return Interceptor { chain ->
             val request = chain.request()
             val response = chain.proceed(request)
             val url = request.url.toString()
 
-            // Áp dụng giải mã cho các link video từ CDN
             if (url.contains("tiktokcdn.com") || url.contains("ibyteimg.com") || url.contains("segment.cloudbeta.win")) {
                 val body = response.body
                 if (body != null) {
                     try {
                         val originalBytes = body.bytes()
-                        // Giải mã XOR từng byte của đoạn video với chìa khóa
-                        val fixedBytes = ByteArray(originalBytes.size) { i ->
-                            (originalBytes[i].toInt() xor key[i % key.size].toInt()).toByte()
+                        // THAY ĐỔI CUỐI CÙNG: Thử nghiệm cắt 9 byte thay vì 10
+                        val bytesToSkip = 7
+                        if (originalBytes.size > bytesToSkip) {
+                            val fixedBytes = originalBytes.copyOfRange(bytesToSkip, originalBytes.size)
+                            val newBody = fixedBytes.toResponseBody(body.contentType())
+                            return@Interceptor response.newBuilder().body(newBody).build()
                         }
-                        val newBody = fixedBytes.toResponseBody(body.contentType())
-                        return@Interceptor response.newBuilder().body(newBody).build()
                     } catch (e: Exception) {
                         return@Interceptor response
                     }
@@ -270,9 +269,6 @@ class AnimeHayProvider : MainAPI() {
             return@Interceptor response
         }
     }
-    // =================================================================================
-    // =================================================================================
-    // =================================================================================
 
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): AnimeSearchResponse? {
         val element = this
