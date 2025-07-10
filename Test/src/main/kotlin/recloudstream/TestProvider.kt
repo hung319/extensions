@@ -255,7 +255,7 @@ class AnimeHayProvider : MainAPI() {
                     try {
                         val originalBytes = body.bytes()
                         // THAY ĐỔI CUỐI CÙNG: Thử nghiệm cắt 9 byte thay vì 10
-                        val bytesToSkip = 9 
+                        val bytesToSkip = 10
                         if (originalBytes.size > bytesToSkip) {
                             val fixedBytes = originalBytes.copyOfRange(bytesToSkip, originalBytes.size)
                             val newBody = fixedBytes.toResponseBody(body.contentType())
