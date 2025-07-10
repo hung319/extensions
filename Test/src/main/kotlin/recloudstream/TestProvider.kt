@@ -126,29 +126,7 @@ class AnimeVietsubProvider : MainAPI() {
             request.data.contains("bang-xep-hang") -> {
                 document.select("ul.bxh-movie-phimletv li.group").mapNotNull { element ->
                     try {
-                        val titleElement = element.selectFirst("h3.title-item a") ?: return@mapNotNull null
-                        val title = titleElement.text().trim()
-                        val href = fixUrl(titleElement.attr("href"), baseUrl) ?: return@mapNotNull null
-                        val posterUrl = fixUrl(element.selectFirst("a.thumb img")?.attr("src"), baseUrl)
-                        val latestEpisodeText = element.selectFirst("div.film-info span")?.text()?.trim()
-
-                        // ✨ THAY ĐỔI: Dùng phương pháp từ file tham khảo
-                        newAnimeSearchResponse(title, href, TvType.Anime) {
-                            this.posterUrl = posterUrl
-
-                            if (!latestEpisodeText.isNullOrBlank()) {
-                                // Tách lấy số tập
-                                val episodeNumber = latestEpisodeText
-                                    .substringBefore("/") // Xử lý trường hợp "12/12"
-                                    .filter { it.isDigit() } // Chỉ lấy chữ số
-                                    .toIntOrNull()
-
-                                if (episodeNumber != null) {
-                                    // Gán số tập vào map `episodes`
-                                    this.episodes[DubStatus.Subbed] = episodeNumber
-                                }
-                            }
-                        }
+                        element.toSearchResponse(this, baseUrl, isRanking = true)
                     } catch (e: Exception) {
                         Log.e(name, "Lỗi parse item của Bảng xếp hạng", e)
                         null
@@ -264,34 +242,50 @@ class AnimeVietsubProvider : MainAPI() {
         return true
     }
     
-    // ✨ CẬP NHẬT: Hàm toSearchResponse áp dụng phương pháp mới
-    private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): SearchResponse? {
-        return try {
-            val linkElement = this.selectFirst("article.TPost > a") ?: return null
-            val href = fixUrl(linkElement.attr("href"), baseUrl) ?: return null
-            val title = linkElement.selectFirst("h2.Title")?.text()?.trim()?.takeIf { it.isNotBlank() } ?: return null
-            val posterUrlRaw = linkElement.selectFirst("div.Image img")?.let { img ->
-                img.attr("data-src").ifBlank { img.attr("src") }
+    // ✨ SỬA LỖI & CẢI TIẾN: Hàm toSearchResponse được viết lại hoàn toàn
+    private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String, isRanking: Boolean = false): SearchResponse? {
+        try {
+            val (href, rawTitle, posterUrl, episodeText) = if (isRanking) {
+                // Parser cho trang Bảng xếp hạng
+                val linkElement = this.selectFirst("a") ?: return null
+                val titleElement = this.selectFirst("h3.title-item a") ?: return null
+                Triple(
+                    fixUrl(linkElement.attr("href"), baseUrl),
+                    titleElement.text(),
+                    fixUrl(linkElement.selectFirst("img")?.attr("src"), baseUrl),
+                    this.selectFirst("div.film-info span")?.text()?.trim()
+                )
+            } else {
+                // Parser cho trang chủ, tìm kiếm, đề xuất
+                val linkElement = this.selectFirst("article.TPost > a") ?: return null
+                Triple(
+                    fixUrl(linkElement.attr("href"), baseUrl),
+                    linkElement.selectFirst(".Title")?.text(), // Sửa selector .Title
+                    fixUrl(linkElement.selectFirst("div.Image img")?.let { it.attr("data-src").ifBlank { it.attr("src") } }, baseUrl),
+                    linkElement.selectFirst("span.mli-eps")?.text()?.trim()
+                )
             }
-            val posterUrl = fixUrl(posterUrlRaw, baseUrl)
 
-            val latestEpisodeText = this.selectFirst("span.mli-eps")?.text()?.trim()
-            val isMovie = latestEpisodeText == null || listOf("Full", "Movie", "Trailer").any { latestEpisodeText.contains(it, true) }
+            val title = rawTitle?.trim()?.takeIf { it.isNotBlank() } ?: return null
+            if (href.isNullOrBlank()) return null
+
+            val isMovie = episodeText == null || listOf("Full", "Movie", "Trailer").any { episodeText.contains(it, true) }
             val tvType = if (isMovie) TvType.Movie else TvType.Anime
             
-            if (tvType == TvType.Anime) {
+            return if (tvType == TvType.Anime) {
                  provider.newAnimeSearchResponse(title, href, tvType) {
                     this.posterUrl = posterUrl
 
-                    // Áp dụng logic từ file tham khảo
-                    if (!latestEpisodeText.isNullOrBlank()) {
-                        val episodeNumber = latestEpisodeText
-                            .substringBefore("/") // Xử lý "12/12"
-                            .filter { it.isDigit() } // Chỉ lấy số
+                    // SỬA LỖI 1: Thêm lại dubStatus để kích hoạt tag số tập
+                    this.dubStatus = EnumSet.of(DubStatus.Subbed)
+
+                    if (!episodeText.isNullOrBlank()) {
+                        val episodeNumber = episodeText
+                            .substringBefore("/")
+                            .filter { it.isDigit() }
                             .toIntOrNull()
 
                         if (episodeNumber != null) {
-                            // Gán số tập vào map `episodes` để theme tự hiển thị tag
                             this.episodes[DubStatus.Subbed] = episodeNumber
                         }
                     }
@@ -303,10 +297,11 @@ class AnimeVietsubProvider : MainAPI() {
             }
         } catch (e: Exception) {
             Log.e(name, "Error parsing search result item", e)
-            null
+            return null
         }
     }
 
+    // ✨ CẢI TIẾN: toLoadResponse có thêm showStatus và fix rcm
     private suspend fun Document.toLoadResponse(
         provider: MainAPI,
         infoUrl: String,
@@ -323,32 +318,39 @@ class AnimeVietsubProvider : MainAPI() {
             val year = this.extractYear()
             val rating = this.extractRating()
             val actors = this.extractActors(baseUrl)
+            
+            // SỬA LỖI 2: Danh sách đề xuất đã hoạt động trở lại
             val recommendations = this.extractRecommendations(provider, baseUrl)
-            if (tags.any { it.equals("Anime sắp chiếu", ignoreCase = true) }) {
-                Log.i(name, "'$title' is an upcoming anime. Returning LoadResponse without episodes.")
-                return provider.newAnimeLoadResponse(title, infoUrl, TvType.Anime) {
-                    this.posterUrl = posterUrl; this.plot = plot; this.tags = tags; this.year = year
-                    this.rating = rating; this.actors = actors; this.recommendations = recommendations
-                }
-            }
+            
             val episodes = watchPageDoc?.parseEpisodes(baseUrl) ?: emptyList()
             val status = this.getShowStatus(episodes.size)
             val finalTvType = this.determineFinalTvType(title, tags, episodes.size)
 
             return if (finalTvType != TvType.Movie) {
                 provider.newAnimeLoadResponse(title, infoUrl, finalTvType) {
-                    // Chuyển danh sách Episode thành Map<DubStatus, List<Episode>>
                     this.episodes[DubStatus.Subbed] = episodes
-                    this.posterUrl = posterUrl; this.plot = plot; this.tags = tags; this.year = year
-                    this.rating = rating; this.showStatus = status; this.actors = actors; this.recommendations = recommendations
+                    this.posterUrl = posterUrl
+                    this.plot = plot
+                    this.tags = tags
+                    this.year = year
+                    this.rating = rating
+                    this.showStatus = status // CẢI TIẾN: Thêm trạng thái
+                    this.actors = actors
+                    this.recommendations = recommendations
                 }
             } else {
                 val duration = this.extractDuration()
                 val data = episodes.firstOrNull()?.data
                     ?: LinkData(this.getDataIdFallback(infoUrl) ?: "", "").toJson()
                 provider.newMovieLoadResponse(title, infoUrl, finalTvType, data) {
-                    this.posterUrl = posterUrl; this.plot = plot; this.tags = tags; this.year = year
-                    this.rating = rating; this.actors = actors; this.recommendations = recommendations
+                    this.posterUrl = posterUrl
+                    this.plot = plot
+                    this.tags = tags
+                    this.year = year
+                    this.rating = rating
+                    this.showStatus = status // CẢI TIẾN: Thêm trạng thái
+                    this.actors = actors
+                    this.recommendations = recommendations
                     duration?.let { addDuration(it.toString()) }
                 }
             }
@@ -361,7 +363,6 @@ class AnimeVietsubProvider : MainAPI() {
     // ==========================================================================================
     // CÁC HÀM HELPER GIỮ NGUYÊN
     // ==========================================================================================
-
     private fun Document.extractPosterUrl(baseUrl: String): String? {
         val selectors = listOf(
             "meta[property=og:image]",
@@ -420,12 +421,7 @@ class AnimeVietsubProvider : MainAPI() {
 
     private fun Document.extractRecommendations(provider: MainAPI, baseUrl: String): List<SearchResponse> {
         return this.select("div.Wdgt div.MovieListRelated.owl-carousel div.TPostMv").mapNotNull { item ->
-            try {
-                item.toSearchResponse(provider, baseUrl)
-            } catch (e: Exception) {
-                Log.e(name, "Error parsing recommendation item", e)
-                null
-            }
+            item.toSearchResponse(provider, baseUrl)
         }
     }
 
