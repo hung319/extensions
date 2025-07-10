@@ -1,4 +1,4 @@
-package recloudstream // Thay thế bằng package của bạn
+package com.linor // Thay thế bằng package của bạn
 
 import android.util.Log
 import com.lagradost.cloudstream3.*
@@ -114,7 +114,6 @@ class AnimeHayProvider : MainAPI() {
             val urlToFetch = if (page <= 1) siteBaseUrl else "$siteBaseUrl/phim-moi-cap-nhap/trang-$page.html"
 
             val document = app.get(urlToFetch).document
-            // QUAY LẠI SELECTOR ĐÚNG
             val homePageItems = document.select("div.movies-list div.movie-item").mapNotNull {
                 it.toSearchResponse(this, siteBaseUrl)
             }
@@ -135,7 +134,6 @@ class AnimeHayProvider : MainAPI() {
             val searchUrl = "$siteBaseUrl/tim-kiem/${query.encodeUri()}.html"
             
             val document = app.get(searchUrl).document
-            // QUAY LẠI SELECTOR ĐÚNG
             document.select("div.movies-list div.movie-item").mapNotNull { 
                 it.toSearchResponse(this, siteBaseUrl) 
             }
@@ -186,23 +184,29 @@ class AnimeHayProvider : MainAPI() {
             val document = app.get(data, referer = siteBaseUrl).document
             val pageContent = document.html()
 
+            // Server TOK
             runCatching {
                 val tokRegex = Regex("""tik:\s*['"]([^'"]+)['"]""")
                 tokRegex.find(pageContent)?.groupValues?.get(1)?.trim()?.let { m3u8Link ->
                     callback(
-                        newExtractorLink(source = m3u8Link, name = "Server TOK", url = m3u8Link, type = ExtractorLinkType.M3U8) {
-                            quality = Qualities.Unknown.value
-                            referer = siteBaseUrl
-                            this.headers = mapOf(
+                        ExtractorLink(
+                            source = this.name,
+                            name = "Server TOK",
+                            url = m3u8Link,
+                            referer = siteBaseUrl,
+                            quality = Qualities.Unknown.value,
+                            type = ExtractorLinkType.M3U8, // Đã dùng đúng type
+                            headers = mapOf(
                                 "Origin" to siteBaseUrl,
                                 "Referer" to siteBaseUrl
                             )
-                        }
+                        )
                     )
                     foundLinks = true
                 }
             }.onFailure { Log.e("AnimeHayProvider", "Error extracting TOK", it) }
             
+            // Server GUN
             runCatching {
                 val (gunLink, gunId) = findServerInfo(document, pageContent, "gun", siteBaseUrl)
                 if (gunLink != null && gunId != null) {
@@ -217,6 +221,7 @@ class AnimeHayProvider : MainAPI() {
                 }
             }.onFailure { Log.e("AnimeHayProvider", "Error extracting GUN", it) }
 
+            // Server PHO
             runCatching {
                 val (phoLink, phoId) = findServerInfo(document, pageContent, "pho", siteBaseUrl)
                 if (phoLink != null && phoId != null) {
@@ -249,8 +254,10 @@ class AnimeHayProvider : MainAPI() {
                 if (body != null) {
                     try {
                         val originalBytes = body.bytes()
-                        if (originalBytes.size > 10) {
-                            val fixedBytes = originalBytes.copyOfRange(10, originalBytes.size)
+                        // THAY ĐỔI CUỐI CÙNG: Thử nghiệm cắt 9 byte thay vì 10
+                        val bytesToSkip = 9 
+                        if (originalBytes.size > bytesToSkip) {
+                            val fixedBytes = originalBytes.copyOfRange(bytesToSkip, originalBytes.size)
                             val newBody = fixedBytes.toResponseBody(body.contentType())
                             return@Interceptor response.newBuilder().body(newBody).build()
                         }
@@ -266,7 +273,6 @@ class AnimeHayProvider : MainAPI() {
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): AnimeSearchResponse? {
         val element = this
         return runCatching {
-            // QUAY LẠI SELECTOR ĐÚNG
             val linkElement = element.selectFirst("> a[href], a[href*=thong-tin-phim]") ?: return null
             val href = fixUrl(linkElement.attr("href"), baseUrl) ?: return null
             val title = element.selectFirst("div.name-movie")?.text()?.takeIf { it.isNotBlank() }
@@ -280,7 +286,6 @@ class AnimeHayProvider : MainAPI() {
                 this.posterUrl = fixedPosterUrl
                 this.dubStatus = EnumSet.of(DubStatus.Subbed)
                 
-                // QUAY LẠI SELECTOR ĐÚNG
                 val episodeText = element.selectFirst("div.episode-latest span")?.text()?.trim()
                 if (episodeText != null) {
                     val episodeCount = episodeText.substringBefore("/").substringBefore("-").filter { it.isDigit() }.toIntOrNull()
@@ -327,7 +332,6 @@ class AnimeHayProvider : MainAPI() {
                     "Đang tiến hành", "Đang cập nhật" -> ShowStatus.Ongoing
                     else -> null
                 }
-                // QUAY LẠI SELECTOR ĐÚNG
                 this.recommendations = document.select("div.movie-recommend div.movie-item").mapNotNull {
                     it.toSearchResponse(provider, baseUrl)
                 }
