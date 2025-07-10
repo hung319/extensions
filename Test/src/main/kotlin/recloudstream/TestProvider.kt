@@ -17,7 +17,7 @@ import java.net.URLEncoder
 class AnimeHayProvider : MainAPI() {
 
     // === Thuộc tính Provider ===
-    override var mainUrl = "https://animehay.bid" // Đặt URL đang hoạt động làm URL chính
+    override var mainUrl = "https://animehay.bid"
     override var name = "AnimeHay"
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie)
     override var lang = "vi"
@@ -87,11 +87,12 @@ class AnimeHayProvider : MainAPI() {
                     val m3u8Link = tokRegex.find(scriptContent)?.groupValues?.getOrNull(1)
                     if (!m3u8Link.isNullOrBlank()) {
                         callback(
+                            // CẬP NHẬT: Sử dụng cấu trúc ExtractorLink mới
                             ExtractorLink(
                                 source = m3u8Link,
                                 name = "Server TOK",
                                 url = m3u8Link,
-                                referer = null,
+                                referer = "", // referer là String, không phải String?
                                 quality = Qualities.Unknown.value,
                                 type = ExtractorLinkType.M3U8
                             )
