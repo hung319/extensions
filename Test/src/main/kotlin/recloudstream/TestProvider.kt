@@ -20,6 +20,7 @@ import java.net.URL
 import java.net.URLEncoder
 import java.security.MessageDigest
 import java.util.Base64
+import java.util.EnumSet
 import java.util.zip.Inflater
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
@@ -100,7 +101,7 @@ class AnimeVietsubProvider : MainAPI() {
     }
     // ================== KẾT THÚC LOGIC GIẢI MÃ ==================
 
-    private var currentActiveUrl = "https://animevietsub.lol" 
+    private var currentActiveUrl = "https://animevietsub.lol"
 
     override val mainPage = mainPageOf(
         "/anime-moi/" to "Mới Cập Nhật",
@@ -129,14 +130,23 @@ class AnimeVietsubProvider : MainAPI() {
                         val title = titleElement.text().trim()
                         val href = fixUrl(titleElement.attr("href"), baseUrl) ?: return@mapNotNull null
                         val posterUrl = fixUrl(element.selectFirst("a.thumb img")?.attr("src"), baseUrl)
-                        // ✨ CẬP NHẬT: Thêm thông tin tập cho Bảng Xếp Hạng
-                        val latestEpisode = element.selectFirst("div.film-info span")?.text()?.trim()
+                        val latestEpisodeText = element.selectFirst("div.film-info span")?.text()?.trim()
 
+                        // ✨ THAY ĐỔI: Dùng phương pháp từ file tham khảo
                         newAnimeSearchResponse(title, href, TvType.Anime) {
                             this.posterUrl = posterUrl
-                            if (!latestEpisode.isNullOrBlank()) {
-                                // ✨ THAY ĐỔI: Dùng quality để hiển thị tag
-                                this.quality = SearchQuality.Custom(latestEpisode)
+
+                            if (!latestEpisodeText.isNullOrBlank()) {
+                                // Tách lấy số tập
+                                val episodeNumber = latestEpisodeText
+                                    .substringBefore("/") // Xử lý trường hợp "12/12"
+                                    .filter { it.isDigit() } // Chỉ lấy chữ số
+                                    .toIntOrNull()
+
+                                if (episodeNumber != null) {
+                                    // Gán số tập vào map `episodes`
+                                    this.episodes[DubStatus.Subbed] = episodeNumber
+                                }
                             }
                         }
                     } catch (e: Exception) {
@@ -177,7 +187,7 @@ class AnimeVietsubProvider : MainAPI() {
             emptyList()
         }
     }
-    
+
     private suspend fun getBaseUrl(): String {
         if (currentActiveUrl != "https://animevietsub.lol") {
             try {
@@ -188,7 +198,7 @@ class AnimeVietsubProvider : MainAPI() {
         }
         return currentActiveUrl
     }
-    
+
     override suspend fun load(url: String): LoadResponse? {
         val baseUrl = getBaseUrl()
         try {
@@ -254,7 +264,7 @@ class AnimeVietsubProvider : MainAPI() {
         return true
     }
     
-    // ✨ CẬP NHẬT: Hàm toSearchResponse để dùng `quality` làm tag
+    // ✨ CẬP NHẬT: Hàm toSearchResponse áp dụng phương pháp mới
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): SearchResponse? {
         return try {
             val linkElement = this.selectFirst("article.TPost > a") ?: return null
@@ -265,20 +275,25 @@ class AnimeVietsubProvider : MainAPI() {
             }
             val posterUrl = fixUrl(posterUrlRaw, baseUrl)
 
-            // Lấy thông tin tập mới nhất từ thẻ span.mli-eps
-            val latestEpisode = this.selectFirst("span.mli-eps")?.text()?.trim()
-
-            // Logic xác định loại phim
-            val isMovie = latestEpisode == null || listOf("Full", "Movie", "Trailer").any { latestEpisode.contains(it, true) }
+            val latestEpisodeText = this.selectFirst("span.mli-eps")?.text()?.trim()
+            val isMovie = latestEpisodeText == null || listOf("Full", "Movie", "Trailer").any { latestEpisodeText.contains(it, true) }
             val tvType = if (isMovie) TvType.Movie else TvType.Anime
             
-            // Sử dụng newAnimeSearchResponse cho Anime
-            if(tvType == TvType.Anime) {
+            if (tvType == TvType.Anime) {
                  provider.newAnimeSearchResponse(title, href, tvType) {
                     this.posterUrl = posterUrl
-                     if (!latestEpisode.isNullOrBlank()) {
-                        // ✨ THAY ĐỔI: Dùng quality để hiển thị tag
-                        this.quality = SearchQuality.Custom(latestEpisode)
+
+                    // Áp dụng logic từ file tham khảo
+                    if (!latestEpisodeText.isNullOrBlank()) {
+                        val episodeNumber = latestEpisodeText
+                            .substringBefore("/") // Xử lý "12/12"
+                            .filter { it.isDigit() } // Chỉ lấy số
+                            .toIntOrNull()
+
+                        if (episodeNumber != null) {
+                            // Gán số tập vào map `episodes` để theme tự hiển thị tag
+                            this.episodes[DubStatus.Subbed] = episodeNumber
+                        }
                     }
                 }
             } else { // TvType.Movie
@@ -320,13 +335,14 @@ class AnimeVietsubProvider : MainAPI() {
             val status = this.getShowStatus(episodes.size)
             val finalTvType = this.determineFinalTvType(title, tags, episodes.size)
 
-            return if (finalTvType != TvType.Movie) { // Anime, Cartoon, TVSeries
+            return if (finalTvType != TvType.Movie) {
                 provider.newAnimeLoadResponse(title, infoUrl, finalTvType) {
-                    this.episodes = mutableMapOf(DubStatus.Subbed to episodes)
+                    // Chuyển danh sách Episode thành Map<DubStatus, List<Episode>>
+                    this.episodes[DubStatus.Subbed] = episodes
                     this.posterUrl = posterUrl; this.plot = plot; this.tags = tags; this.year = year
                     this.rating = rating; this.showStatus = status; this.actors = actors; this.recommendations = recommendations
                 }
-            } else { // Movie
+            } else {
                 val duration = this.extractDuration()
                 val data = episodes.firstOrNull()?.data
                     ?: LinkData(this.getDataIdFallback(infoUrl) ?: "", "").toJson()
@@ -342,7 +358,10 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
     
-    // Các hàm helper không thay đổi
+    // ==========================================================================================
+    // CÁC HÀM HELPER GIỮ NGUYÊN
+    // ==========================================================================================
+
     private fun Document.extractPosterUrl(baseUrl: String): String? {
         val selectors = listOf(
             "meta[property=og:image]",
@@ -384,7 +403,7 @@ class AnimeVietsubProvider : MainAPI() {
         }?.substringBefore("/")?.replace(",", ".")
         return ratingText?.toDoubleOrNull()?.let { (it * 10).roundToInt() }
     }
-    
+
     private fun Document.extractDuration(): Int? {
         return this.selectFirst("li:has(strong:containsOwn(Thời lượng)), li.AAIco-adjust:contains(Thời lượng)")
             ?.ownText()?.filter { it.isDigit() }?.toIntOrNull()
@@ -398,7 +417,7 @@ class AnimeVietsubProvider : MainAPI() {
             } else null
         }
     }
-    
+
     private fun Document.extractRecommendations(provider: MainAPI, baseUrl: String): List<SearchResponse> {
         return this.select("div.Wdgt div.MovieListRelated.owl-carousel div.TPostMv").mapNotNull { item ->
             try {
