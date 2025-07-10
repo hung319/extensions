@@ -122,23 +122,30 @@ class AnimeVietsubProvider : MainAPI() {
             }
         }
         val document = app.get(url).document
-        val home = when {
-            request.data.contains("bang-xep-hang") -> {
-                document.select("ul.bxh-movie-phimletv li.group").mapNotNull { element ->
-                    try {
-                        element.toSearchResponse(this, baseUrl, isRanking = true)
-                    } catch (e: Exception) {
-                        Log.e(name, "Lỗi parse item của Bảng xếp hạng", e)
-                        null
-                    }
+        
+        // FIX 1: Tách riêng logic parse cho từng khu vực
+        val home = if (request.data.contains("bang-xep-hang")) {
+            // Parser cho Bảng Xếp Hạng
+            document.select("ul.bxh-movie-phimletv li.group").mapNotNull { element ->
+                val linkElement = element.selectFirst("a") ?: return@mapNotNull null
+                val titleElement = element.selectFirst("h3.title-item a") ?: return@mapNotNull null
+                val href = fixUrl(linkElement.attr("href"), baseUrl) ?: return@mapNotNull null
+                val title = titleElement.text().trim()
+                val posterUrl = fixUrl(linkElement.selectFirst("img")?.attr("src"), baseUrl)
+                val episodeText = element.selectFirst("div.film-info span")?.text()?.trim()
+                
+                newAnimeSearchResponse(title, href, TvType.Anime) {
+                    this.posterUrl = posterUrl
+                    addDubStatusAndEpisode(episodeText)
                 }
             }
-            else -> {
-                document.select("ul.MovieList.Rows li.TPostMv").mapNotNull {
-                    it.toSearchResponse(this, baseUrl)
-                }
+        } else {
+            // Parser cho Trang chủ (Mới cập nhật, Sắp chiếu)
+            document.select("ul.MovieList.Rows li.TPostMv").mapNotNull {
+                it.toSearchResponse(this, baseUrl)
             }
         }
+
         val hasNext = if (request.data.contains("bang-xep-hang")) {
             false
         } else {
@@ -182,7 +189,7 @@ class AnimeVietsubProvider : MainAPI() {
         try {
             val infoDocument = app.get(url, headers = mapOf("Referer" to baseUrl)).document
             val genres = infoDocument.getGenres()
-            val watchPageDoc = if (!genres.any { it.equals("Anime sắp chiếu", ignoreCase = true) }) {
+            val watchPageDoc = if (!genres.any { it.lowercase() == "anime sắp chiếu" }) {
                 try {
                     val watchPageUrl = if (url.endsWith("/")) "${url}xem-phim.html" else "$url/xem-phim.html"
                     app.get(watchPageUrl, referer = url).document
@@ -242,64 +249,43 @@ class AnimeVietsubProvider : MainAPI() {
         return true
     }
     
-    // SỬA LỖI 1: Dùng data class để tránh lỗi destructuring / Triple
-    private data class ParsedItemData(
-        val href: String?,
-        val title: String?,
-        val posterUrl: String?,
-        val episodeText: String?
-    )
-
-    private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String, isRanking: Boolean = false): SearchResponse? {
+    // Parser chính cho Trang chủ, Tìm kiếm
+    private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): SearchResponse? {
         try {
-            val item = if (isRanking) {
-                val linkElement = this.selectFirst("a") ?: return null
-                val titleElement = this.selectFirst("h3.title-item a") ?: return null
-                ParsedItemData(
-                    href = fixUrl(linkElement.attr("href"), baseUrl),
-                    title = titleElement.text(),
-                    posterUrl = fixUrl(linkElement.selectFirst("img")?.attr("src"), baseUrl),
-                    episodeText = this.selectFirst("div.film-info span")?.text()?.trim()
-                )
-            } else {
-                val linkElement = this.selectFirst("article.TPost > a") ?: return null
-                ParsedItemData(
-                    href = fixUrl(linkElement.attr("href"), baseUrl),
-                    title = linkElement.selectFirst(".Title")?.text(),
-                    posterUrl = fixUrl(linkElement.selectFirst("div.Image img")?.let { img -> img.attr("data-src").ifBlank { img.attr("src") } }, baseUrl),
-                    episodeText = linkElement.selectFirst("span.mli-eps")?.text()?.trim()
-                )
-            }
+            val linkElement = this.selectFirst("article.TPost > a") ?: return null
+            val href = fixUrl(linkElement.attr("href"), baseUrl) ?: return null
+            val title = linkElement.selectFirst(".Title")?.text()?.trim()?.takeIf { it.isNotBlank() } ?: return null
+            val posterUrl = fixUrl(linkElement.selectFirst("div.Image img")?.let { img -> img.attr("data-src").ifBlank { img.attr("src") } }, baseUrl)
+            val episodeText = linkElement.selectFirst("span.mli-eps")?.text()?.trim()
 
-            val title = item.title?.trim()?.takeIf { it.isNotBlank() } ?: return null
-            if (item.href.isNullOrBlank()) return null
-            
-            // SỬA LỖI 2: Dùng lowercase() thay cho contains(ignoreCase=true)
-            val lowercasedEpisodeText = item.episodeText?.lowercase() ?: ""
-            val isMovie = item.episodeText == null || listOf("full", "movie", "trailer").any { lowercasedEpisodeText.contains(it) }
+            val lowercasedEpisodeText = episodeText?.lowercase() ?: ""
+            val isMovie = episodeText == null || listOf("full", "movie", "trailer").any { lowercasedEpisodeText.contains(it) }
             val tvType = if (isMovie) TvType.Movie else TvType.Anime
             
             return if (tvType == TvType.Anime) {
-                 provider.newAnimeSearchResponse(title, item.href, tvType) {
-                    this.posterUrl = item.posterUrl
-                    this.dubStatus = EnumSet.of(DubStatus.Subbed)
-
-                    if (!item.episodeText.isNullOrBlank()) {
-                        // SỬA LỖI 3: Dùng Regex để parse số, an toàn hơn
-                        val episodeNumber = Regex("""\d+""").find(item.episodeText)?.value?.toIntOrNull()
-                        if (episodeNumber != null) {
-                            this.episodes[DubStatus.Subbed] = episodeNumber
-                        }
-                    }
+                 provider.newAnimeSearchResponse(title, href, tvType) {
+                    this.posterUrl = posterUrl
+                    addDubStatusAndEpisode(episodeText)
                 }
-            } else { // TvType.Movie
-                provider.newMovieSearchResponse(title, item.href, tvType) {
-                    this.posterUrl = item.posterUrl
+            } else {
+                provider.newMovieSearchResponse(title, href, tvType) {
+                    this.posterUrl = posterUrl
                 }
             }
         } catch (e: Exception) {
-            Log.e(name, "Error parsing search result item", e)
+            Log.e(name, "Error parsing search item", e)
             return null
+        }
+    }
+    
+    // Hàm helper để thêm tag, tránh lặp code
+    private fun AnimeSearchResponse.addDubStatusAndEpisode(episodeText: String?) {
+        this.dubStatus = EnumSet.of(DubStatus.Subbed)
+        if (!episodeText.isNullOrBlank()) {
+            val episodeNumber = Regex("""\d+""").find(episodeText)?.value?.toIntOrNull()
+            if (episodeNumber != null) {
+                this.episodes[DubStatus.Subbed] = episodeNumber
+            }
         }
     }
 
@@ -313,16 +299,20 @@ class AnimeVietsubProvider : MainAPI() {
             val title = this.selectFirst("div.TPost.Single div.Title")?.text()?.trim()
                 ?: this.selectFirst("meta[property=og:title]")?.attr("content")?.substringBefore(" Tập")?.trim()
                 ?: throw ErrorLoadingException("Could not find title on info page $infoUrl")
+            
             val posterUrl = this.extractPosterUrl(baseUrl)
             val plot = this.extractPlot()
             val tags = this.getGenres()
             val year = this.extractYear()
             val rating = this.extractRating()
-            val actors = this.extractActors(baseUrl)
+            
+            // FIX 2: Sửa lỗi và đảm bảo danh sách nhân vật được tải
+            val actors = this.extractActors()
+            
+            // FIX 3: Sửa lỗi và đảm bảo danh sách đề xuất được tải
             val recommendations = this.extractRecommendations(provider, baseUrl)
             
-            val episodes = watchPageDoc?.parseEpisodes(baseUrl) ?: emptyList()
-            // val status = this.getShowStatus(episodes.size) // Không dùng trực tiếp nữa
+            val episodes = watchPageDoc?.parseEpisodes() ?: emptyList()
             val finalTvType = this.determineFinalTvType(title, tags, episodes.size)
 
             return if (finalTvType != TvType.Movie) {
@@ -333,8 +323,6 @@ class AnimeVietsubProvider : MainAPI() {
                     this.tags = tags
                     this.year = year
                     this.rating = rating
-                    // SỬA LỖI 4: Xóa dòng gán showStatus vì không tương thích
-                    // this.showStatus = status 
                     this.actors = actors
                     this.recommendations = recommendations
                 }
@@ -348,8 +336,6 @@ class AnimeVietsubProvider : MainAPI() {
                     this.tags = tags
                     this.year = year
                     this.rating = rating
-                    // SỬA LỖI 4: Xóa dòng gán showStatus
-                    // this.showStatus = status
                     this.actors = actors
                     this.recommendations = recommendations
                     duration?.let { addDuration(it.toString()) }
@@ -362,8 +348,52 @@ class AnimeVietsubProvider : MainAPI() {
     }
     
     // ==========================================================================================
-    // CÁC HÀM HELPER GIỮ NGUYÊN
+    // CÁC HÀM HELPER
     // ==========================================================================================
+
+    // FIX 2: Sửa lại hàm `extractActors` để parse đúng thông tin nhân vật
+    private fun Document.extractActors(): List<ActorData> {
+        return this.select("div#MvTb-Cast ul.ListCast li a").mapNotNull {
+            val characterName = it.attr("title").removePrefix("Nhân vật ").trim()
+            if (characterName.isNotBlank()) {
+                val characterImage = fixUrl(it.selectFirst("img")?.attr("src"), currentActiveUrl)
+                // Trang này không có tên diễn viên lồng tiếng, chỉ có tên nhân vật.
+                // Chúng ta tạo một đối tượng Actor với tên và hình ảnh của nhân vật.
+                val actor = Actor(name = characterName, image = characterImage)
+                // Cloudstream yêu cầu ActorData phải có vai trò (role).
+                ActorData(actor = actor, roleString = "Main")
+            } else null
+        }
+    }
+    
+    // FIX 3: Dùng parser riêng cho `extractRecommendations` để đảm bảo ổn định
+    private fun Document.extractRecommendations(provider: MainAPI, baseUrl: String): List<SearchResponse> {
+        return this.select("div.Wdgt div.MovieListRelated.owl-carousel div.TPostMv").mapNotNull { item ->
+            try {
+                val linkElement = item.selectFirst("a") ?: return@mapNotNull null
+                val href = fixUrl(linkElement.attr("href"), baseUrl) ?: return@mapNotNull null
+                val title = linkElement.selectFirst(".Title")?.text()?.trim() ?: return@mapNotNull null
+                val posterUrl = fixUrl(linkElement.selectFirst("img")?.attr("src"), baseUrl)
+                val episodeText = linkElement.selectFirst("span.mli-eps")?.text()?.trim()
+                val isMovie = episodeText == null || listOf("full", "movie", "trailer").any { episodeText.lowercase().contains(it) }
+                val tvType = if (isMovie) TvType.Movie else TvType.Anime
+                
+                if (tvType == TvType.Anime) {
+                    provider.newAnimeSearchResponse(title, href, tvType) {
+                        this.posterUrl = posterUrl
+                        addDubStatusAndEpisode(episodeText)
+                    }
+                } else {
+                     provider.newMovieSearchResponse(title, href, tvType) {
+                        this.posterUrl = posterUrl
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(name, "Error parsing recommendation item", e)
+                null
+            }
+        }
+    }
 
     private fun Document.extractPosterUrl(baseUrl: String): String? {
         val selectors = listOf(
@@ -412,32 +442,6 @@ class AnimeVietsubProvider : MainAPI() {
             ?.ownText()?.filter { it.isDigit() }?.toIntOrNull()
     }
 
-    private fun Document.extractActors(baseUrl: String): List<ActorData> {
-        return this.select("div#MvTb-Cast ul.ListCast li a").mapNotNull {
-            val name = it.attr("title").removePrefix("Nhân vật ").trim()
-            if (name.isNotBlank()) {
-                ActorData(Actor(name, image = fixUrl(it.selectFirst("img")?.attr("src"), baseUrl)))
-            } else null
-        }
-    }
-
-    private fun Document.extractRecommendations(provider: MainAPI, baseUrl: String): List<SearchResponse> {
-        return this.select("div.Wdgt div.MovieListRelated.owl-carousel div.TPostMv").mapNotNull { item ->
-            item.toSearchResponse(provider, baseUrl)
-        }
-    }
-
-    private fun Document.getShowStatus(episodeCount: Int): ShowStatus {
-        val statusText = this.selectFirst("li:has(strong:containsOwn(Trạng thái)), div.mvici-left li:contains(Trạng thái)")
-            ?.ownText()?.lowercase() ?: ""
-        return when {
-            statusText.contains("đang chiếu") || statusText.contains("đang tiến hành") -> ShowStatus.Ongoing
-            statusText.contains("hoàn thành") || statusText.contains("full") -> ShowStatus.Completed
-            episodeCount <= 1 -> ShowStatus.Completed
-            else -> ShowStatus.Ongoing
-        }
-    }
-
     private fun Document.determineFinalTvType(title: String, genres: List<String>, episodeCount: Int): TvType {
         val country = this.selectFirst("li:has(strong:containsOwn(Quốc gia)) a")?.text()?.lowercase() ?: ""
         return when {
@@ -460,7 +464,7 @@ class AnimeVietsubProvider : MainAPI() {
                 ?.takeIf { it.isNotBlank() }
     }
 
-    private fun Document.parseEpisodes(baseUrl: String): List<Episode> {
+    private fun Document.parseEpisodes(): List<Episode> {
         return this.select("div.server ul.list-episode li a.btn-episode").mapNotNull { el ->
             try {
                 val dataId = el.attr("data-id").ifBlank { null } ?: return@mapNotNull null
