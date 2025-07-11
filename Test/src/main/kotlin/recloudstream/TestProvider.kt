@@ -16,7 +16,7 @@ import java.util.Arrays
 
 class AnimeHayProvider : MainAPI() {
 
-    override var mainUrl = "https://animehay.tv"
+    override var mainUrl = "https://animehay.ceo"
     override var name = "AnimeHay"
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
     override var lang = "vi"
@@ -84,56 +84,65 @@ class AnimeHayProvider : MainAPI() {
         return mainUrl
     }
 
-    // Thêm lại hàm fixUrl để đảm bảo an toàn null
-    private fun fixUrl(url: String?): String? {
+    // CHANGED: Hàm này giờ nhận `baseUrl` làm tham số thay vì tự gọi `getBaseUrl`
+    private fun fixUrl(url: String?, baseUrl: String): String? {
         if (url.isNullOrBlank()) return null
         return if (url.startsWith("http")) {
             url
+        } else if (url.startsWith("//")) {
+            "https:$url"
         } else {
-            "${getBaseUrl()}$url"
+            "$baseUrl$url"
         }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = if (page <= 1) getBaseUrl() else "${getBaseUrl()}/phim-moi-cap-nhap/trang-$page.html"
+        val baseUrl = getBaseUrl() // CHANGED: Lấy baseUrl một lần ở đây
+        val url = if (page <= 1) baseUrl else "$baseUrl/phim-moi-cap-nhap/trang-$page.html"
         val document = app.get(url).document
+
         val homePageList = document.select("div.movies-list div.movie-item").mapNotNull {
-            it.toSearchResponse()
+            it.toSearchResponse(baseUrl) // CHANGED: Truyền baseUrl vào hàm
         }
+
         return newHomePageResponse(
             list = HomePageList(name = "Mới Cập Nhật", list = homePageList),
             hasNext = homePageList.isNotEmpty()
         )
     }
 
-    private fun Element.toSearchResponse(): SearchResponse? {
-        val href = fixUrl(this.selectFirst("a")?.attr("href") ?: return null) ?: return null
+    // CHANGED: Hàm này giờ nhận `baseUrl` làm tham số
+    private fun Element.toSearchResponse(baseUrl: String): SearchResponse? {
+        val href = fixUrl(this.selectFirst("a")?.attr("href"), baseUrl) ?: return null // CHANGED: Truyền baseUrl
         val title = this.selectFirst("div.name-movie")?.text()?.trim() ?: return null
-        val posterUrl = fixUrl(this.selectFirst("img")?.attr("src"))
+        val posterUrl = fixUrl(this.selectFirst("img")?.attr("src"), baseUrl) // CHANGED: Truyền baseUrl
+
         return newMovieSearchResponse(title, href, TvType.Anime) {
             this.posterUrl = posterUrl
         }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "${getBaseUrl()}/tim-kiem/${URLEncoder.encode(query, "UTF-8")}.html"
+        val baseUrl = getBaseUrl() // CHANGED: Lấy baseUrl một lần ở đây
+        val url = "$baseUrl/tim-kiem/${URLEncoder.encode(query, "UTF-8")}.html"
         val document = app.get(url).document
+
         return document.select("div.movies-list div.movie-item").mapNotNull {
-            it.toSearchResponse()
+            it.toSearchResponse(baseUrl) // CHANGED: Truyền baseUrl
         }
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        val baseUrl = getBaseUrl() // CHANGED: Lấy baseUrl một lần ở đây
         val document = app.get(url).document
         val title = document.selectFirst("h1.heading_movie")?.text()?.trim() ?: return null
         val plot = document.selectFirst("div.desc > div:last-child")?.text()?.trim()
-        val posterUrl = fixUrl(document.selectFirst("div.head div.first img")?.attr("src"))
+        val posterUrl = fixUrl(document.selectFirst("div.head div.first img")?.attr("src"), baseUrl) // CHANGED: Truyền baseUrl
         val year = document.selectFirst("div.update_time div:nth-child(2)")?.text()
             ?.trim()?.filter { it.isDigit() }?.toIntOrNull()
 
-        // SỬA LỖI: Kiểm tra null cho epUrl trước khi gọi newEpisode
         val episodes = document.select("div.list-item-episode a").mapNotNull {
-            fixUrl(it.attr("href"))?.let { epUrl ->
+            fixUrl(it.attr("href"), baseUrl)?.let { epUrl -> // CHANGED: Truyền baseUrl
                 val epName = it.attr("title").trim().ifBlank { it.text().trim() }
                 newEpisode(epUrl) { this.name = epName }
             }
@@ -152,21 +161,21 @@ class AnimeHayProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        val baseUrl = getBaseUrl()
         val document = app.get(data).document
         val scriptContent = document.select("script").firstOrNull { it.data().contains("function loadVideo") }?.data()
 
         if (scriptContent != null) {
             val tokLink = Regex("tik:\\s*'([^']*)'").find(scriptContent)?.groupValues?.get(1)
 
-            // SỬA LỖI: Dùng `let` để đảm bảo tokLink không null và không trống
             tokLink?.takeIf { it.isNotBlank() }?.let { link ->
                 newExtractorLink(
                     source = "Server TOK",
                     name = this.name,
-                    url = link, // `link` ở đây chắc chắn không null
+                    url = link,
                     type = ExtractorLinkType.M3U8
                 ) {
-                    this.referer = getBaseUrl()
+                    this.referer = baseUrl
                     this.quality = Qualities.Unknown.value
                 }.let { callback.invoke(it) }
 
