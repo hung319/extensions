@@ -369,33 +369,32 @@ class AnimeHayProvider : MainAPI() {
      * Interceptor để sửa lỗi phát video từ một số server. Rất quan trọng!
      */
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
-        return object : Interceptor {
-            override fun intercept(chain: Interceptor.Chain): Response {
-                val request = chain.request()
-                val response = chain.proceed(request)
-                val url = request.url.toString()
+    return object : Interceptor {
+        override fun intercept(chain: Interceptor.Chain): Response {
+            val request = chain.request()
+            val response = chain.proceed(request)
+            val url = request.url.toString()
 
-                // Chỉ áp dụng cho các link video cần sửa lỗi
-                if (url.contains("ibyteimg.com") ||
-                    url.contains(".tiktokcdn.") ||
-                    (url.contains("segment.cloudbeta.win/file/segment/") && url.contains(".html?token="))
-                ) {
-                    val body = response.body
-                    if (body != null) {
-                        try {
-                            // Bỏ qua các byte lỗi ở đầu file video
-                            val fixedBytes = skipByteError(body) 
-                            val newBody = ResponseBody.create(body.contentType(), fixedBytes)
-                            return response.newBuilder().body(newBody).build()
-                        } catch (e: Exception) {
-                            // Bỏ qua và trả về response gốc nếu có lỗi
-                        }
+            if (url.contains("ibyteimg.com") ||
+                url.contains(".tiktokcdn.") ||
+                (url.contains("segment.cloudbeta.win/file/segment/") && url.contains(".html?token="))
+            ) {
+                // Sửa Warning 1: Dùng ?.let để code an toàn và sạch sẽ hơn
+                response.body?.let { body ->
+                    try {
+                        val fixedBytes = skipByteError(body)
+                        // Sửa Warning 2: Dùng phương thức 'toResponseBody()' mới
+                        val newBody = fixedBytes.toResponseBody(body.contentType())
+                        return response.newBuilder().body(newBody).build()
+                    } catch (e: Exception) {
+                        // Bỏ qua và trả về response gốc nếu có lỗi
                     }
                 }
-                return response
             }
+            return response
         }
     }
+}
 
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): AnimeSearchResponse? {
     return runCatching {
@@ -415,47 +414,21 @@ class AnimeHayProvider : MainAPI() {
         provider.newAnimeSearchResponse(name = title, url = href, type = tvType) {
             this.posterUrl = posterUrl
             
-            // 1. Hiển thị tag "Phụ đề"
-            //this.dubStatus = EnumSet.of(DubStatus.Subbed)
+            // Luôn hiển thị tag "Phụ đề"
+            this.dubStatus = EnumSet.of(DubStatus.Subbed)
 
+            // Lấy và hiển thị số tập mới nhất
             val episodeText = element.selectFirst("div.episode-latest span")?.text()?.trim()
             if (episodeText != null) {
-                // 2. Hiển thị tag số tập
                 val episodeCount = episodeText.substringBefore("/")
                                               .substringBefore("-")
                                               .filter { it.isDigit() }
                                               .toIntOrNull()
+                
                 if (episodeCount != null) {
+                    // Gán số tập vào 'episodes' để giao diện hiển thị tag "XX EP"
                     this.episodes[DubStatus.Subbed] = episodeCount
                 }
-
-                // ==================== PHẦN THÊM MỚI ====================
-                // 3. Hiển thị trạng thái qua 'otherName'
-                var statusTag: String? = null
-                val cleanText = episodeText.replace(" ", "")
-                when {
-                    cleanText.contains("SP/", ignoreCase = true) || cleanText.contains("OVA/", ignoreCase = true) -> {
-                        statusTag = "Hoàn thành"
-                    }
-                    cleanText.contains('/') -> {
-                        val parts = cleanText.split('/')
-                        if (parts.size == 2) {
-                            val currentEp = parts[0].toFloatOrNull()
-                            val totalEp = parts[1].filter { it.isDigit() || it == '.' }.toFloatOrNull()
-                            if (currentEp != null && totalEp != null && currentEp >= totalEp) {
-                                statusTag = "Hoàn thành"
-                            }
-                        }
-                    }
-                    cleanText.contains("phút", ignoreCase = true) -> {
-                         statusTag = "Hoàn thành"
-                    }
-                    cleanText.contains("drop", ignoreCase = true) -> {
-                        statusTag = "Bị Drop"
-                    }
-                }
-                this.otherName = statusTag
-                // ==========================================================
             }
         }
     }.getOrNull()
