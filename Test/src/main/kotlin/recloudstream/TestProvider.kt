@@ -233,9 +233,9 @@ class AnimeHayProvider : MainAPI() {
             }
         }
     }
-
+    
     /**
-    * HÀM ĐƯỢC CẬP NHẬT ĐỂ HIỂN THỊ TRẠNG THÁI VÀ TẬP MỚI
+    * HÀM ĐƯỢC CẬP NHẬT ĐỂ HIỂN THỊ TẬP MỚI
     */
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): SearchResponse? {
         try {
@@ -251,20 +251,22 @@ class AnimeHayProvider : MainAPI() {
                 else -> TvType.Anime
             }
 
-            // TÌM VÀ THÊM THÔNG TIN TẬP/TRẠNG THÁI
+            // TÌM VÀ THÊM THÔNG TIN TẬP
             val episodeStatusText = this.selectFirst("span.ribbon-text")?.text()?.trim()
 
-            // Sử dụng newAnimeSearchResponse thay vì newMovieSearchResponse
+            // Sử dụng newAnimeSearchResponse
             return provider.newAnimeSearchResponse(title, href, tvType) {
                 this.posterUrl = fixUrl(posterUrl, baseUrl)
                 
-                // Nếu tìm thấy text (ví dụ: "Tập 24" hoặc "Hoàn Tất")
                 if (!episodeStatusText.isNullOrBlank()) {
-                    // Hiển thị text trực tiếp lên poster
-                    this.quality = SearchQuality.Custom(episodeStatusText)
+                    // SỬA LỖI: Bỏ dòng `this.quality` vì `SearchQuality.Custom` không tồn tại.
+                    // Giao diện sẽ tự hiển thị số tập từ map `episodes`.
 
-                    // Cố gắng trích xuất số tập để lưu trữ
-                    val episodeNumber = episodeStatusText.filter { it.isDigit() }.toIntOrNull()
+                    // Cải thiện logic để lấy số tập cuối cùng trong chuỗi
+                    // (xử lý "Tập 24" -> 24, "Full 12/12" -> 12)
+                    val epRegex = Regex("""(\d+)""")
+                    val episodeNumber = epRegex.findAll(episodeStatusText).lastOrNull()?.value?.toIntOrNull()
+
                     if (episodeNumber != null) {
                         this.episodes[DubStatus.Subbed] = episodeNumber
                     }
