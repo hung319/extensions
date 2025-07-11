@@ -16,7 +16,7 @@ import java.util.Arrays
 
 class AnimeHayProvider : MainAPI() {
 
-    override var mainUrl = "https://animehay.tv"
+    override var mainUrl = "https://animehay.ceo"
     override var name = "AnimeHay"
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
     override var lang = "vi"
