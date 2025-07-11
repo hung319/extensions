@@ -398,9 +398,8 @@ class AnimeHayProvider : MainAPI() {
     }
 
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): AnimeSearchResponse? {
-    // Sử dụng runCatching để mã nguồn gọn gàng và an toàn hơn
     return runCatching {
-        val element = this // Gán 'this' vào biến để dễ sử dụng
+        val element = this
 
         val linkElement = element.selectFirst("> a[href], a[href*=thong-tin-phim]") ?: return null
         
@@ -413,32 +412,53 @@ class AnimeHayProvider : MainAPI() {
 
         val tvType = if (href.contains("/phim/", true)) TvType.AnimeMovie else TvType.Anime
 
-        // Tạo đối tượng AnimeSearchResponse và thiết lập các thuộc tính
         provider.newAnimeSearchResponse(name = title, url = href, type = tvType) {
             this.posterUrl = posterUrl
             
-            // ==================== PHẦN HIỂN THỊ TAG ====================
-
-            // 1. Luôn hiển thị tag "Phụ đề"
+            // 1. Hiển thị tag "Phụ đề"
             this.dubStatus = EnumSet.of(DubStatus.Subbed)
 
-            // 2. Lấy và hiển thị số tập mới nhất
             val episodeText = element.selectFirst("div.episode-latest span")?.text()?.trim()
             if (episodeText != null) {
-                // Lấy ra con số đầu tiên từ chuỗi (ví dụ: "109/156" -> 109, "90 phút" -> 90)
+                // 2. Hiển thị tag số tập
                 val episodeCount = episodeText.substringBefore("/")
                                               .substringBefore("-")
                                               .filter { it.isDigit() }
                                               .toIntOrNull()
-                
                 if (episodeCount != null) {
-                    // Gán số tập vào 'episodes' để giao diện hiển thị tag
                     this.episodes[DubStatus.Subbed] = episodeCount
                 }
+
+                // ==================== PHẦN THÊM MỚI ====================
+                // 3. Hiển thị trạng thái qua 'otherName'
+                var statusTag: String? = null
+                val cleanText = episodeText.replace(" ", "")
+                when {
+                    cleanText.contains("SP/", ignoreCase = true) || cleanText.contains("OVA/", ignoreCase = true) -> {
+                        statusTag = "Hoàn thành"
+                    }
+                    cleanText.contains('/') -> {
+                        val parts = cleanText.split('/')
+                        if (parts.size == 2) {
+                            val currentEp = parts[0].toFloatOrNull()
+                            val totalEp = parts[1].filter { it.isDigit() || it == '.' }.toFloatOrNull()
+                            if (currentEp != null && totalEp != null && currentEp >= totalEp) {
+                                statusTag = "Hoàn thành"
+                            }
+                        }
+                    }
+                    cleanText.contains("phút", ignoreCase = true) -> {
+                         statusTag = "Hoàn thành"
+                    }
+                    cleanText.contains("drop", ignoreCase = true) -> {
+                        statusTag = "Bị Drop"
+                    }
+                }
+                this.otherName = statusTag
+                // ==========================================================
             }
-            // ==========================================================
         }
-    }.getOrNull() // Trả về null nếu có bất kỳ lỗi nào xảy ra bên trong
+    }.getOrNull()
 }
     
     // ==================== THAY ĐỔI LỚN TẠI HÀM NÀY ====================
