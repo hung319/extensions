@@ -84,25 +84,22 @@ class AnimeHayProvider : MainAPI() {
         return mainUrl
     }
 
-    // CHANGED: Hàm này giờ nhận `baseUrl` làm tham số thay vì tự gọi `getBaseUrl`
     private fun fixUrl(url: String?, baseUrl: String): String? {
         if (url.isNullOrBlank()) return null
-        return if (url.startsWith("http")) {
-            url
-        } else if (url.startsWith("//")) {
-            "https:$url"
-        } else {
-            "$baseUrl$url"
+        return when {
+            url.startsWith("http") -> url
+            url.startsWith("//") -> "https:$url"
+            else -> "$baseUrl$url"
         }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val baseUrl = getBaseUrl() // CHANGED: Lấy baseUrl một lần ở đây
+        val baseUrl = getBaseUrl()
         val url = if (page <= 1) baseUrl else "$baseUrl/phim-moi-cap-nhap/trang-$page.html"
         val document = app.get(url).document
 
         val homePageList = document.select("div.movies-list div.movie-item").mapNotNull {
-            it.toSearchResponse(baseUrl) // CHANGED: Truyền baseUrl vào hàm
+            it.toSearchResponse(baseUrl)
         }
 
         return newHomePageResponse(
@@ -111,11 +108,10 @@ class AnimeHayProvider : MainAPI() {
         )
     }
 
-    // CHANGED: Hàm này giờ nhận `baseUrl` làm tham số
     private fun Element.toSearchResponse(baseUrl: String): SearchResponse? {
-        val href = fixUrl(this.selectFirst("a")?.attr("href"), baseUrl) ?: return null // CHANGED: Truyền baseUrl
+        val href = fixUrl(this.selectFirst("a")?.attr("href"), baseUrl) ?: return null
         val title = this.selectFirst("div.name-movie")?.text()?.trim() ?: return null
-        val posterUrl = fixUrl(this.selectFirst("img")?.attr("src"), baseUrl) // CHANGED: Truyền baseUrl
+        val posterUrl = fixUrl(this.selectFirst("img")?.attr("src"), baseUrl)
 
         return newMovieSearchResponse(title, href, TvType.Anime) {
             this.posterUrl = posterUrl
@@ -123,32 +119,63 @@ class AnimeHayProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val baseUrl = getBaseUrl() // CHANGED: Lấy baseUrl một lần ở đây
+        val baseUrl = getBaseUrl()
         val url = "$baseUrl/tim-kiem/${URLEncoder.encode(query, "UTF-8")}.html"
         val document = app.get(url).document
 
         return document.select("div.movies-list div.movie-item").mapNotNull {
-            it.toSearchResponse(baseUrl) // CHANGED: Truyền baseUrl
+            it.toSearchResponse(baseUrl)
         }
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val baseUrl = getBaseUrl() // CHANGED: Lấy baseUrl một lần ở đây
-        val document = app.get(url).document
-        val title = document.selectFirst("h1.heading_movie")?.text()?.trim() ?: return null
-        val plot = document.selectFirst("div.desc > div:last-child")?.text()?.trim()
-        val posterUrl = fixUrl(document.selectFirst("div.head div.first img")?.attr("src"), baseUrl) // CHANGED: Truyền baseUrl
-        val year = document.selectFirst("div.update_time div:nth-child(2)")?.text()
+        val baseUrl = getBaseUrl()
+        val initialDocument = app.get(url).document
+
+        // **LOGIC SỬA LỖI:**
+        // Kiểm tra xem URL hiện tại có phải là trang xem phim không.
+        // Nếu đúng, tìm link đến trang thông tin phim và tải lại document từ đó.
+        val (documentToParse, seriesUrl) = if (url.contains("/xem-phim/")) {
+            val seriesInfoHref = initialDocument.selectFirst("a[href*=/thong-tin-phim/]")?.attr("href")
+            val seriesInfoUrl = fixUrl(seriesInfoHref, baseUrl)
+            
+            if (seriesInfoUrl != null) {
+                // Tải document của trang thông tin phim
+                Pair(app.get(seriesInfoUrl).document, seriesInfoUrl)
+            } else {
+                Log.e(name, "Không thể tìm thấy link về trang thông tin phim từ URL: $url")
+                return null // Không thể tiếp tục nếu không có trang thông tin
+            }
+        } else {
+            // Nếu không phải trang xem phim, dùng document và url hiện tại
+            Pair(initialDocument, url)
+        }
+
+        // Từ đây, `documentToParse` chắc chắn là trang thông tin phim
+        val title = documentToParse.selectFirst("h1.heading_movie")?.text()?.trim() ?: return null
+        val plot = documentToParse.selectFirst("div.desc > div:last-child")?.text()?.trim()
+        val posterUrl = fixUrl(documentToParse.selectFirst("div.head div.first img")?.attr("src"), baseUrl)
+        val year = documentToParse.selectFirst("div.update_time div:nth-child(2)")?.text()
             ?.trim()?.filter { it.isDigit() }?.toIntOrNull()
 
-        val episodes = document.select("div.list-item-episode a").mapNotNull {
-            fixUrl(it.attr("href"), baseUrl)?.let { epUrl -> // CHANGED: Truyền baseUrl
+        val episodes = documentToParse.select("div.list-item-episode a").mapNotNull {
+            fixUrl(it.attr("href"), baseUrl)?.let { epUrl ->
                 val epName = it.attr("title").trim().ifBlank { it.text().trim() }
                 newEpisode(epUrl) { this.name = epName }
             }
         }.reversed()
 
-        return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+        // Nếu không có tập phim, coi như là phim lẻ
+        if (episodes.isEmpty()) {
+            return newMovieLoadResponse(title, seriesUrl, TvType.AnimeMovie) {
+                this.posterUrl = posterUrl
+                this.plot = plot
+                this.year = year
+            }
+        }
+
+        // Trả về kết quả cho phim bộ
+        return newTvSeriesLoadResponse(title, seriesUrl, TvType.TvSeries, episodes) {
             this.posterUrl = posterUrl
             this.plot = plot
             this.year = year
@@ -178,7 +205,6 @@ class AnimeHayProvider : MainAPI() {
                     this.referer = baseUrl
                     this.quality = Qualities.Unknown.value
                 }.let { callback.invoke(it) }
-
                 return true
             }
         }
