@@ -400,34 +400,27 @@ class AnimeHayProvider : MainAPI() {
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): AnimeSearchResponse? {
     return runCatching {
         val element = this
-
         val linkElement = element.selectFirst("> a[href], a[href*=thong-tin-phim]") ?: return null
-        
         val href = fixUrl(linkElement.attr("href"), baseUrl) ?: return null
-
         val title = element.selectFirst("div.name-movie")?.text()?.takeIf { it.isNotBlank() }
             ?: linkElement.attr("title").takeIf { it.isNotBlank() } ?: return null
-
         val posterUrl = fixUrl(element.selectFirst("img")?.let { it.attr("src").ifBlank { it.attr("data-src") } }, baseUrl)
-
         val tvType = if (href.contains("/phim/", true)) TvType.AnimeMovie else TvType.Anime
 
         provider.newAnimeSearchResponse(name = title, url = href, type = tvType) {
             this.posterUrl = posterUrl
-            
-            // Luôn hiển thị tag "Phụ đề"
             this.dubStatus = EnumSet.of(DubStatus.Subbed)
 
-            // Lấy và hiển thị số tập mới nhất
             val episodeText = element.selectFirst("div.episode-latest span")?.text()?.trim()
-            if (episodeText != null) {
+            
+            // SỬA LỖI: Chỉ lấy số tập nếu tag không chứa chữ "phút"
+            if (episodeText != null && !episodeText.contains("phút", ignoreCase = true)) {
                 val episodeCount = episodeText.substringBefore("/")
                                               .substringBefore("-")
                                               .filter { it.isDigit() }
                                               .toIntOrNull()
                 
                 if (episodeCount != null) {
-                    // Gán số tập vào 'episodes' để giao diện hiển thị tag "XX EP"
                     this.episodes[DubStatus.Subbed] = episodeCount
                 }
             }
