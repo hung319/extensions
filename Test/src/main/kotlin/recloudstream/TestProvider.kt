@@ -278,26 +278,19 @@ class AnimeVietsubProvider : MainAPI() {
         }
         val posterUrl = fixUrl(posterUrlRaw, baseUrl)
 
-        // Lấy chuỗi chứa thông tin tập phim, ví dụ: "Tập 12"
         val episodeString = this.selectFirst("span.mli-eps")?.text()
-
-        // Chỉ lọc lấy số từ chuỗi và chuyển đổi an toàn sang kiểu Int.
-        // Nếu chuỗi không chứa số, episodeCount sẽ là null.
         val episodeCount = episodeString?.filter { it.isDigit() }?.toIntOrNull()
-
-        // Xác định loại phim. Nếu không có thông tin tập phim, coi đó là phim lẻ.
         val tvType = if (episodeCount == null) TvType.Movie else TvType.Anime
 
-        // Dùng `newAnimeSearchResponse` cho tất cả thể loại
         provider.newAnimeSearchResponse(title, href, tvType) {
             this.posterUrl = posterUrl
 
-            // Thêm trạng thái lồng tiếng/phụ đề (mặc định là Vietsub)
-            this.dubStatus = setOf(DubStatus.Subbed)
+            // SỬA LỖI 1: Chuyển sang EnumSet
+            this.dubStatus = setOf(DubStatus.Subbed).toEnumSet()
 
-            // Nếu episodeCount hợp lệ, thêm thông tin số tập
             if (episodeCount != null) {
-                this.episodes = mapOf(
+                // SỬA LỖI 2: Chuyển sang MutableMap
+                this.episodes = mutableMapOf(
                     DubStatus.Subbed to episodeCount
                 )
             }
@@ -330,7 +323,6 @@ class AnimeVietsubProvider : MainAPI() {
         val status = this.getShowStatus(episodes.size)
         val finalTvType = this.determineFinalTvType(title, tags, episodes.size)
 
-        // Xử lý trường hợp "Anime sắp chiếu"
         if (tags.any { it.equals("Anime sắp chiếu", ignoreCase = true) }) {
             Log.i(name, "'$title' is an upcoming anime. Returning LoadResponse without episodes.")
             return provider.newAnimeLoadResponse(title, infoUrl, TvType.Anime) {
@@ -340,9 +332,7 @@ class AnimeVietsubProvider : MainAPI() {
             }
         }
 
-        // Dùng `newAnimeLoadResponse` cho tất cả thể loại (phim bộ, phim lẻ, anime...)
         return provider.newAnimeLoadResponse(title, infoUrl, finalTvType) {
-            // Gán các thông tin chung
             this.posterUrl = posterUrl
             this.plot = plot
             this.tags = tags
@@ -351,19 +341,19 @@ class AnimeVietsubProvider : MainAPI() {
             this.actors = actors
             this.recommendations = recommendations
 
-            // Kiểm tra để gán đúng loại dữ liệu (phim lẻ vs. phim bộ)
             val isMovie = finalTvType == TvType.Movie || finalTvType == TvType.AnimeMovie || episodes.size <= 1
 
             if (isMovie) {
-                // Nếu là phim lẻ, thêm link xem phim và thời lượng
                 val data = episodes.firstOrNull()?.data
                     ?: LinkData(this@toLoadResponse.getDataIdFallback(infoUrl) ?: "", "").toJson()
-                addLinks(DubStatus.Subbed, data) // Gán link xem phim cho trạng thái Subbed
+                
+                // SỬA LỖI 3: Thay thế addLinks bằng cách gán trực tiếp
+                this.apiName = name
+                this.dataUrl = data
 
                 val duration = this@toLoadResponse.extractDuration()
                 duration?.let { addDuration(it.toString()) }
             } else {
-                // Nếu là phim bộ, gán danh sách tập phim và trạng thái phim
                 this.episodes = mutableMapOf(DubStatus.Subbed to episodes)
                 this.showStatus = status
             }
@@ -373,7 +363,6 @@ class AnimeVietsubProvider : MainAPI() {
         return null
     }
 }
-
     private fun Document.extractPosterUrl(baseUrl: String): String? {
         val selectors = listOf(
             "meta[property=og:image]",
