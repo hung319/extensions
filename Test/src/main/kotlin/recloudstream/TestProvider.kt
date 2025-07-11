@@ -23,43 +23,39 @@ class AnimeHayProvider : MainAPI() {
     override val hasMainPage = true
 
     // ===================================================================================
-    // *** LOGIC SỬA LỖI VIDEO KẾT HỢP ***
+    // *** LOGIC SỬA LỖI VIDEO (DỊCH TỪ InterceptorUtilKt.java) ***
     // ===================================================================================
 
-    /**
-     * Lớp 1: Tìm và loại bỏ các byte rác ở đầu luồng video MPEG-TS.
-     */
-    private fun removeGarbageBytes(byteArray: ByteArray): ByteArray {
+    private fun removeGarbageBytes(body: ResponseBody): ByteArray {
+        val source = body.source()
+        source.request(Long.MAX_VALUE)
+        val buffer: Buffer = source.buffer.clone()
+        source.close()
+        val byteArray = buffer.readByteArray()
         if (byteArray.isEmpty()) return byteArray
+
         val packetSize = 188
-        val syncByte = 0x47.toByte()
+        val syncByte = 0x47.toByte() // 71
         var validStartPosition = 0
-        for (i in 0 until (byteArray.size - packetSize)) {
-            if (byteArray[i] == syncByte && byteArray[i + packetSize] == syncByte) {
+
+        // Vòng lặp để tìm vị trí bắt đầu của luồng TS hợp lệ
+        var i = 0
+        val searchLimit = byteArray.size - packetSize
+        while (i < searchLimit) {
+            val nextPacketPosition = i + packetSize
+            if (nextPacketPosition < byteArray.size && byteArray[i] == syncByte && byteArray[nextPacketPosition] == syncByte) {
                 validStartPosition = i
                 break
             }
+            i++
         }
+
         return if (validStartPosition > 0) {
-            Log.d(name, "Bước 1: Đã cắt bỏ $validStartPosition bytes rác.")
+            Log.d(name, "Tìm thấy và cắt bỏ $validStartPosition bytes rác.")
             Arrays.copyOfRange(byteArray, validStartPosition, byteArray.size)
         } else {
             byteArray
         }
-    }
-
-    /**
-     * Lớp 2: Giải mã dữ liệu đã được làm sạch bằng thuật toán XOR.
-     */
-    private fun decryptXOR(data: ByteArray): ByteArray {
-        val key = byteArrayOf(55, 33, 2, 1, 5, 4, 9, 8, 99, 3, 2, 5, 7, 8, 9, 10)
-        val limit = 1024
-        val length = if (data.size < limit) data.size else limit
-        for (i in 0 until length) {
-            data[i] = (data[i].toInt() xor key[i % key.size].toInt()).toByte()
-        }
-        Log.d(name, "Bước 2: Đã giải mã XOR $length bytes.")
-        return data
     }
 
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor {
@@ -75,15 +71,11 @@ class AnimeHayProvider : MainAPI() {
                 val body = response.body
                 if (body != null) {
                     try {
-                        val originalBytes = body.bytes()
-                        // Áp dụng 2 lớp bảo vệ
-                        val cleanedBytes = removeGarbageBytes(originalBytes)
-                        val decryptedBytes = decryptXOR(cleanedBytes)
-                        
-                        val newBody = ResponseBody.create(body.contentType(), decryptedBytes)
+                        val fixedBytes = removeGarbageBytes(body)
+                        val newBody = ResponseBody.create(body.contentType(), fixedBytes)
                         return@Interceptor response.newBuilder().body(newBody).build()
                     } catch (e: Exception) {
-                        Log.e(name, "Lỗi khi đang xử lý luồng video", e)
+                        Log.e(name, "Lỗi khi đang sửa luồng video", e)
                     } finally {
                         body.close()
                     }
@@ -100,7 +92,7 @@ class AnimeHayProvider : MainAPI() {
     private suspend fun getBaseUrl(): String {
         return mainUrl
     }
-    
+
     private fun fixUrl(url: String?, baseUrl: String): String? {
         if (url.isNullOrBlank()) return null
         return when {
@@ -123,7 +115,7 @@ class AnimeHayProvider : MainAPI() {
             hasNext = homePageList.isNotEmpty()
         )
     }
-    
+
     private fun Element.toSearchResponse(baseUrl: String): SearchResponse? {
         val href = fixUrl(this.selectFirst("a")?.attr("href"), baseUrl) ?: return null
         val title = this.selectFirst("div.name-movie")?.text()?.trim() ?: return null
@@ -199,7 +191,6 @@ class AnimeHayProvider : MainAPI() {
 
         if (scriptContent != null) {
             val tokLink = Regex("tik:\\s*'([^']*)'").find(scriptContent)?.groupValues?.get(1)
-
             tokLink?.takeIf { it.isNotBlank() }?.let { link ->
                 newExtractorLink(
                     source = "Server TOK",
