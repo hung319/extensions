@@ -235,44 +235,44 @@ class AnimeHayProvider : MainAPI() {
     }
     
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): SearchResponse? {
-        try {
-            val linkElement = this.selectFirst("> a[href]") ?: this.selectFirst("a[href*=thong-tin-phim]") ?: return null
-            val href = fixUrl(linkElement.attr("href"), baseUrl) ?: return null
-            val title = this.selectFirst("div.name-movie")?.text()?.trim()
-                ?: linkElement.attr("title")?.trim()
-                ?: return null
-            val posterUrl = this.selectFirst("img")?.let { it.attr("src").ifBlank { it.attr("data-src") } }
+    try {
+        val linkElement = this.selectFirst("> a[href]") ?: this.selectFirst("a[href*=thong-tin-phim]") ?: return null
+        val href = fixUrl(linkElement.attr("href"), baseUrl) ?: return null
+        val title = this.selectFirst("div.name-movie")?.text()?.trim()
+            ?: linkElement.attr("title")?.trim()
+            ?: return null
+        val posterUrl = this.selectFirst("img")?.let { it.attr("src").ifBlank { it.attr("data-src") } }
+        
+        val tvType = when {
+            href.contains("/phim/", ignoreCase = true) -> TvType.AnimeMovie
+            else -> TvType.Anime
+        }
+
+        // Biến này là kiểu `String?` (có thể null)
+        val episodeStatusText = this.selectFirst("span.ribbon-text, .episode-latest span")?.text()?.trim()
+
+        return provider.newAnimeSearchResponse(title, href, tvType) {
+            this.posterUrl = fixUrl(posterUrl, baseUrl)
             
-            val tvType = when {
-                href.contains("/phim/", ignoreCase = true) -> TvType.AnimeMovie
-                else -> TvType.Anime
-            }
+            // SỬA LỖI: Khối `?.let` đảm bảo code bên trong chỉ chạy khi episodeStatusText không null.
+            // Biến `text` bên trong khối này là kiểu `String` (an toàn, không thể null).
+            episodeStatusText?.let { text ->
+                if (text.isNotBlank()) {
+                    val epRegex = Regex("""(\d+)""")
+                    // `findAll(text)` giờ đây hoàn toàn an toàn.
+                    val episodeNumber = epRegex.findAll(text).lastOrNull()?.value?.toIntOrNull()
 
-            // This variable is nullable (String?) because selectFirst can fail
-            val episodeStatusText = this.selectFirst("span.ribbon-text, .episode-latest span")?.text()?.trim()
-
-            return provider.newAnimeSearchResponse(title, href, tvType) {
-                this.posterUrl = fixUrl(posterUrl, baseUrl)
-                
-                // SỬA LỖI: Dùng `?.let` để chỉ chạy code này khi episodeStatusText không phải là null.
-                // Bên trong khối `let`, `text` sẽ là kiểu String (không phải String?).
-                episodeStatusText?.let { text ->
-                    if (text.isNotBlank()) {
-                        val epRegex = Regex("""(\d+)""")
-                        // Bây giờ `findAll(text)` là an toàn vì `text` không thể là null.
-                        val episodeNumber = epRegex.findAll(text).lastOrNull()?.value?.toIntOrNull()
-
-                        if (episodeNumber != null) {
-                            this.episodes[DubStatus.Subbed] = episodeNumber
-                        }
+                    if (episodeNumber != null) {
+                        this.episodes[DubStatus.Subbed] = episodeNumber
                     }
                 }
             }
-        } catch (e: Exception) {
-            Log.e("AnimeHayProvider", "Error in toSearchResponse for element: ${this.html().take(100)}", e)
-            return null
         }
+    } catch (e: Exception) {
+        Log.e("AnimeHayProvider", "Error in toSearchResponse for element: ${this.html().take(100)}", e)
+        return null
     }
+}
     
     private suspend fun Document.toLoadResponse(provider: MainAPI, url: String, baseUrl: String): LoadResponse? {
         try {
