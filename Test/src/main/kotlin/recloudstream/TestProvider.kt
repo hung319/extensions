@@ -132,7 +132,7 @@ class AnimeHayProvider : MainAPI() {
         return try {
             val document = app.get(urlToFetch).document
             val homePageItems = document.select("div.movies-list div.movie-item")
-                .mapNotNull { it.toSearchResponse(this, siteBaseUrl) } // `this` là AnimeHayProvider
+                .mapNotNull { it.toSearchResponse(this, siteBaseUrl) }
             if (page > 1 && homePageItems.isEmpty()) {
                 return newHomePageResponse(emptyList(), false)
             }
@@ -154,7 +154,7 @@ class AnimeHayProvider : MainAPI() {
             val searchUrl = "$baseUrl/tim-kiem/${query.encodeUri()}.html"
             val document = app.get(searchUrl).document
             document.select("div.movies-list div.movie-item").mapNotNull {
-                it.toSearchResponse(this, baseUrl) // `this` là AnimeHayProvider
+                it.toSearchResponse(this, baseUrl)
             }
         } catch (e: Exception) {
             Log.e("AnimeHayProvider", "Error in search for query '$query'", e)
@@ -247,7 +247,9 @@ class AnimeHayProvider : MainAPI() {
                 else -> TvType.AnimeMovie
             }
             val animehayPoster = this.selectFirst("div.movie-poster img, div.head div.first img")?.attr("src")
-            val animehayFinalPosterUrl = fixUrl(animehayPoster, baseUrl)
+            // SỬA LỖI: Gọi đúng hàm fixUrlSafe
+            val animehayFinalPosterUrl = fixUrlSafe(animehayPoster, baseUrl)
+            
             val finalPosterUrl = if (mainTvType == TvType.Anime || mainTvType == TvType.AnimeMovie || mainTvType == TvType.OVA) {
                 getKitsuPoster(title) ?: animehayFinalPosterUrl
             } else {
@@ -293,7 +295,8 @@ class AnimeHayProvider : MainAPI() {
             }
 
             val episodes = this.select("div.list-episode a, div.list-item-episode a").mapNotNull { epLink ->
-                val epUrl = fixUrl(epLink.attr("href"), baseUrl)
+                // SỬA LỖI: Gọi đúng hàm fixUrlSafe
+                val epUrl = fixUrlSafe(epLink.attr("href"), baseUrl)
                 val epName = epLink.attr("title")?.trim().takeIf { !it.isNullOrBlank() } ?: epLink.text()
                 if (epUrl != null && epName.isNotBlank()) {
                     newEpisode(data = epUrl) { this.name = epName }
@@ -333,27 +336,17 @@ class AnimeHayProvider : MainAPI() {
 
     private fun String?.encodeUri(): String = URLEncoder.encode(this ?: "", "UTF-8")
     private fun Double?.toAnimeHayRatingInt(): Int? = this?.let { (it * 1000).roundToInt().coerceIn(0, 10000) }
-    private fun fixUrl(url: String?, baseUrl: String): String? {
-        if (url.isNullOrBlank()) return null
-        return try {
-            when {
-                url.startsWith("http") -> url
-                url.startsWith("//") -> "https:$url"
-                else -> URL(URL(baseUrl), url).toString()
-            }
-        } catch (e: Exception) {
-            if (url.startsWith("http")) url else null
-        }
-    }
+    
 } // KẾT THÚC LỚP AnimeHayProvider
 
 // ========================================================================================
-// HÀM HELPER ĐƯỢC DI CHUYỂN RA NGOÀI LỚP PROVIDER
+// HÀM HELPER
 // ========================================================================================
 private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): SearchResponse? {
     try {
         val linkElement = this.selectFirst("> a[href]") ?: this.selectFirst("a[href*=thong-tin-phim]") ?: return null
-        val href = provider.fixUrl(linkElement.attr("href"), baseUrl) ?: return null
+        // SỬA LỖI: Gọi đúng hàm fixUrlSafe
+        val href = fixUrlSafe(linkElement.attr("href"), baseUrl) ?: return null
         val title = this.selectFirst("div.name-movie")?.text()?.trim()
             ?: linkElement.attr("title")?.trim()
             ?: return null
@@ -367,7 +360,8 @@ private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): Search
         val episodeStatusText = this.selectFirst("span.ribbon-text, .episode-latest span")?.text()?.trim()
 
         return provider.newAnimeSearchResponse(title, href, tvType) {
-            this.posterUrl = provider.fixUrl(posterUrl, baseUrl)
+            // SỬA LỖI: Gọi đúng hàm fixUrlSafe
+            this.posterUrl = fixUrlSafe(posterUrl, baseUrl)
             
             episodeStatusText?.let { text ->
                 if (text.isNotBlank()) {
@@ -402,4 +396,18 @@ private fun skipByteError(responseBody: ResponseBody): ByteArray {
         }
     }
     return if (start > 0) byteArray.copyOfRange(start, byteArray.size) else byteArray
+}
+
+// SỬA LỖI: Đổi tên hàm để tránh xung đột với hàm có sẵn trong MainAPI
+private fun fixUrlSafe(url: String?, baseUrl: String): String? {
+    if (url.isNullOrBlank()) return null
+    return try {
+        when {
+            url.startsWith("http") -> url
+            url.startsWith("//") -> "https:$url"
+            else -> URL(URL(baseUrl), url).toString()
+        }
+    } catch (e: Exception) {
+        if (url.startsWith("http")) url else null
+    }
 }
