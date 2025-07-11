@@ -27,6 +27,7 @@ import javax.crypto.spec.SecretKeySpec
 import kotlin.math.roundToInt
 import kotlin.text.Charsets
 import kotlin.text.Regex
+import java.util.EnumSet
 
 class AnimeVietsubProvider : MainAPI() {
 
@@ -285,11 +286,10 @@ class AnimeVietsubProvider : MainAPI() {
         provider.newAnimeSearchResponse(title, href, tvType) {
             this.posterUrl = posterUrl
 
-            // SỬA LỖI 1: Chuyển sang EnumSet
-            this.dubStatus = setOf(DubStatus.Subbed).toEnumSet()
+            // SỬA LỖI 1: Dùng EnumSet.of() thay vì toEnumSet()
+            this.dubStatus = EnumSet.of(DubStatus.Subbed)
 
             if (episodeCount != null) {
-                // SỬA LỖI 2: Chuyển sang MutableMap
                 this.episodes = mutableMapOf(
                     DubStatus.Subbed to episodeCount
                 )
@@ -324,7 +324,6 @@ class AnimeVietsubProvider : MainAPI() {
         val finalTvType = this.determineFinalTvType(title, tags, episodes.size)
 
         if (tags.any { it.equals("Anime sắp chiếu", ignoreCase = true) }) {
-            Log.i(name, "'$title' is an upcoming anime. Returning LoadResponse without episodes.")
             return provider.newAnimeLoadResponse(title, infoUrl, TvType.Anime) {
                 this.posterUrl = posterUrl; this.plot = plot; this.tags = tags; this.year = year
                 this.rating = rating; this.actors = actors; this.recommendations = recommendations
@@ -346,10 +345,10 @@ class AnimeVietsubProvider : MainAPI() {
             if (isMovie) {
                 val data = episodes.firstOrNull()?.data
                     ?: LinkData(this@toLoadResponse.getDataIdFallback(infoUrl) ?: "", "").toJson()
-                
-                // SỬA LỖI 3: Thay thế addLinks bằng cách gán trực tiếp
-                this.apiName = name
-                this.dataUrl = data
+
+                // SỬA LỖI 2: Tạo một tập phim duy nhất cho phim lẻ thay vì dùng dataUrl
+                val movieEpisode = Episode(data = data, name = title)
+                this.episodes = mutableMapOf(DubStatus.Subbed to listOf(movieEpisode))
 
                 val duration = this@toLoadResponse.extractDuration()
                 duration?.let { addDuration(it.toString()) }
@@ -363,6 +362,7 @@ class AnimeVietsubProvider : MainAPI() {
         return null
     }
 }
+    
     private fun Document.extractPosterUrl(baseUrl: String): String? {
         val selectors = listOf(
             "meta[property=og:image]",
