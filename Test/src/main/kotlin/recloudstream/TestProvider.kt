@@ -213,53 +213,56 @@ class AnimeHayProvider : MainAPI() {
      * Hàm loadLinks đã được cập nhật và sửa lỗi
      */
     override suspend fun loadLinks(
-        data: String,
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        // Lấy nội dung trang xem phim
-        val response = app.get(data, referer = directUrl).text
-        val sources = mutableMapOf<String, String>()
+    data: String,
+    isCasting: Boolean,
+    subtitleCallback: (SubtitleFile) -> Unit,
+    callback: (ExtractorLink) -> Unit
+): Boolean {
+    // Lấy nội dung trang xem phim
+    val response = app.get(data, referer = directUrl).text
+    val sources = mutableMapOf<String, String>()
 
-        // 1. Server TOK
-        // Tìm link M3U8 từ biến 'tik' trong script
-        val tokLink = response.substringAfter("tik: '", "").substringBefore("',", "")
-        if (tokLink.isNotBlank()) {
-            sources["Server TOK"] = tokLink
-        }
-
-        // 2. Server GUN
-        // Tìm ID từ link 'gun.php' và xây dựng lại URL playlist
-        val gunId = response.substringAfter("$directUrl/gun.php?id=", "").substringBefore("&ep_id=", "")
-        if (gunId.isNotBlank()) {
-            sources["Server GUN"] = "https://pt.rapovideo.xyz/playlist/v2/$gunId/master.m3u8"
-        }
-
-        // 3. Server PHO
-        // Tìm ID từ link 'pho.php' và xây dựng lại URL playlist
-        val phoId = response.substringAfter("$directUrl/pho.php?id=", "").substringBefore("&ep_id=", "")
-        if (phoId.isNotBlank()) {
-            sources["Server PHO"] = "https://pt.rapovideo.xyz/playlist/$phoId/master.m3u8"
-        }
-
-        // Gửi tất cả các link đã tìm thấy về cho Cloudstream
-        sources.forEach { (serverName, url) ->
-            callback(
-                newExtractorLink(
-                    source = name, // Tên của provider
-                    name = serverName,
-                    url = url,
-                    referer = "$directUrl/",
-                    quality = Qualities.Unknown.value,
-                    type = ExtractorLinkType.M3U8
-                )
-            )
-        }
-        
-        // Trả về true nếu tìm thấy ít nhất một link
-        return sources.isNotEmpty()
+    // 1. Server TOK
+    // Tìm link M3U8 từ biến 'tik' trong script
+    val tokLink = response.substringAfter("tik: '", "").substringBefore("',", "")
+    if (tokLink.isNotBlank()) {
+        sources["Server TOK"] = tokLink
     }
+
+    // 2. Server GUN
+    // Tìm ID từ link 'gun.php' và xây dựng lại URL playlist
+    val gunId = response.substringAfter("$directUrl/gun.php?id=", "").substringBefore("&ep_id=", "")
+    if (gunId.isNotBlank()) {
+        sources["Server GUN"] = "https://pt.rapovideo.xyz/playlist/v2/$gunId/master.m3u8"
+    }
+
+    // 3. Server PHO
+    // Tìm ID từ link 'pho.php' và xây dựng lại URL playlist
+    val phoId = response.substringAfter("$directUrl/pho.php?id=", "").substringBefore("&ep_id=", "")
+    if (phoId.isNotBlank()) {
+        sources["Server PHO"] = "https://pt.rapovideo.xyz/playlist/$phoId/master.m3u8"
+    }
+
+    // Gửi tất cả các link đã tìm thấy về cho Cloudstream
+    sources.forEach { (serverName, url) ->
+        callback(
+            // SỬA LỖI: Đặt referer và quality vào trong khối lambda
+            newExtractorLink(
+                source = name, // Tên của provider
+                name = serverName,
+                url = url,
+                type = ExtractorLinkType.M3U8
+            ) {
+                // 'this' ở đây tham chiếu đến đối tượng ExtractorLink đang được tạo
+                this.referer = "$directUrl/"
+                this.quality = Qualities.Unknown.value
+            }
+        )
+    }
+    
+    // Trả về true nếu tìm thấy ít nhất một link
+    return sources.isNotEmpty()
+}
     
     /**
      * Interceptor để sửa lỗi phát video từ một số server. Rất quan trọng!
