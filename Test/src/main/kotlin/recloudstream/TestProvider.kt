@@ -397,52 +397,83 @@ class AnimeHayProvider : MainAPI() {
     }
 
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): SearchResponse? {
-        try {
-            var linkElement = this.selectFirst("> a[href]")
-            if (linkElement == null) {
-                linkElement = this.selectFirst("a[href*=thong-tin-phim]")
-            }
-
-            if (linkElement == null) {
-                Log.w("AnimeHayProvider", "toSearchResponse: Could not find suitable link element in item: ${this.html().take(100)}")
-                return null
-            }
-
-            val hrefRaw = linkElement.attr("href")
-            val href = fixUrl(hrefRaw, baseUrl)
-            if (href.isNullOrBlank()) {
-                Log.w("AnimeHayProvider", "toSearchResponse: Invalid or unfixable href '$hrefRaw'")
-                return null
-            }
-
-            val titleFromName = this.selectFirst("div.name-movie")?.text()?.trim()
-            val titleFromAttr = linkElement.attr("title")?.trim()
-            val title = titleFromName?.takeIf { it.isNotBlank() } ?: titleFromAttr
-            if (title.isNullOrBlank()) {
-                Log.w("AnimeHayProvider", "toSearchResponse: Could not find title for href: $href")
-                return null
-            }
-
-            val posterUrl = this.selectFirst("img")?.let { it.attr("src").ifBlank { it.attr("data-src") } }
-            val fixedPosterUrl = fixUrl(posterUrl, baseUrl)
-
-            val tvType = when {
-                href.contains("/phim/", ignoreCase = true) -> TvType.AnimeMovie
-                else -> TvType.Anime
-            }
-            
-            // ==================== THAY ĐỔI TẠI ĐÂY ====================
-            // Sử dụng newAnimeSearchResponse thay vì newMovieSearchResponse
-            return provider.newAnimeSearchResponse(title, href, tvType) {
-                this.posterUrl = fixedPosterUrl
-            }
-            // =========================================================
-
-        } catch (e: Exception) {
-            Log.e("AnimeHayProvider", "Error in toSearchResponse for element: ${this.html().take(100)}", e)
-            return null
+    try {
+        var linkElement = this.selectFirst("> a[href]")
+        if (linkElement == null) {
+            linkElement = this.selectFirst("a[href*=thong-tin-phim]")
         }
+        if (linkElement == null) return null
+
+        val href = fixUrl(linkElement.attr("href"), baseUrl) ?: return null
+        val title = linkElement.attr("title")?.trim()?.takeIf { it.isNotBlank() } 
+            ?: this.selectFirst("div.name-movie")?.text()?.trim() 
+            ?: return null
+
+        val posterUrl = fixUrl(this.selectFirst("img")?.let { it.attr("src").ifBlank { it.attr("data-src") } }, baseUrl)
+
+        // ==================== LOGIC XỬ LÝ EDGE CASE ====================
+        
+        val originalTagText = this.selectFirst("div.episode-latest span")?.text()?.trim()
+        var statusTag: String? = null
+
+        if (!originalTagText.isNullOrBlank()) {
+            val cleanText = originalTagText.replace(" ", "")
+
+            when {
+                // Xử lý các trường hợp đặc biệt như Special/OVA
+                cleanText.contains("SP/", ignoreCase = true) || cleanText.contains("OVA/", ignoreCase = true) -> {
+                    statusTag = "Hoàn thành"
+                }
+                
+                // Xử lý các định dạng "số/số", bao gồm cả số thập phân
+                cleanText.contains('/') -> {
+                    val parts = cleanText.split('/')
+                    if (parts.size == 2) {
+                        // Dùng toFloatOrNull để xử lý được cả "104" và "104.2"
+                        val currentEp = parts[0].toFloatOrNull()
+                        // Lấy phần số của tổng số tập (để loại bỏ các ký tự như "??")
+                        val totalEp = parts[1].filter { it.isDigit() || it == '.' }.toFloatOrNull()
+
+                        // Nếu cả hai đều là số hợp lệ và tập hiện tại >= tổng số tập
+                        if (currentEp != null && totalEp != null && currentEp >= totalEp) {
+                            statusTag = "Hoàn thành"
+                        }
+                    }
+                }
+
+                // Logic cũ cho phim lẻ và phim bị drop
+                cleanText.contains("phút", ignoreCase = true) -> {
+                     statusTag = "Hoàn thành"
+                }
+                cleanText.contains("drop", ignoreCase = true) -> {
+                    statusTag = "Bị Drop"
+                }
+            }
+        }
+
+        // Kết hợp tag gốc và tag trạng thái đã suy luận
+        val finalTag = buildList {
+            if (!originalTagText.isNullOrBlank()) add(originalTagText)
+            if (statusTag != null) add(statusTag)
+        }.joinToString(" • ").ifBlank { null }
+        
+        // =================================================================
+
+        val tvType = when {
+            href.contains("/phim/", ignoreCase = true) -> TvType.AnimeMovie
+            else -> TvType.Anime
+        }
+        
+        return provider.newAnimeSearchResponse(title, href, tvType) {
+            this.posterUrl = posterUrl
+            this.latestEpisode = finalTag
+        }
+
+    } catch (e: Exception) {
+        Log.e("AnimeHayProvider", "Error in toSearchResponse for element: ${this.html().take(150)}", e)
+        return null
     }
+}
     
     // ==================== THAY ĐỔI LỚN TẠI HÀM NÀY ====================
     private suspend fun Document.toLoadResponse(provider: MainAPI, url: String, baseUrl: String): LoadResponse? {
