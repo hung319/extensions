@@ -405,43 +405,34 @@ class AnimeHayProvider : MainAPI() {
         if (linkElement == null) return null
 
         val href = fixUrl(linkElement.attr("href"), baseUrl) ?: return null
+        
+        // Giữ lại tiêu đề gốc, không thay đổi
         val title = linkElement.attr("title")?.trim()?.takeIf { it.isNotBlank() } 
             ?: this.selectFirst("div.name-movie")?.text()?.trim() 
             ?: return null
 
         val posterUrl = fixUrl(this.selectFirst("img")?.let { it.attr("src").ifBlank { it.attr("data-src") } }, baseUrl)
 
-        // ==================== LOGIC XỬ LÝ EDGE CASE ====================
-        
+        // --- Logic suy luận trạng thái vẫn giữ nguyên ---
         val originalTagText = this.selectFirst("div.episode-latest span")?.text()?.trim()
         var statusTag: String? = null
 
         if (!originalTagText.isNullOrBlank()) {
             val cleanText = originalTagText.replace(" ", "")
-
             when {
-                // Xử lý các trường hợp đặc biệt như Special/OVA
                 cleanText.contains("SP/", ignoreCase = true) || cleanText.contains("OVA/", ignoreCase = true) -> {
                     statusTag = "Hoàn thành"
                 }
-                
-                // Xử lý các định dạng "số/số", bao gồm cả số thập phân
                 cleanText.contains('/') -> {
                     val parts = cleanText.split('/')
                     if (parts.size == 2) {
-                        // Dùng toFloatOrNull để xử lý được cả "104" và "104.2"
                         val currentEp = parts[0].toFloatOrNull()
-                        // Lấy phần số của tổng số tập (để loại bỏ các ký tự như "??")
                         val totalEp = parts[1].filter { it.isDigit() || it == '.' }.toFloatOrNull()
-
-                        // Nếu cả hai đều là số hợp lệ và tập hiện tại >= tổng số tập
                         if (currentEp != null && totalEp != null && currentEp >= totalEp) {
                             statusTag = "Hoàn thành"
                         }
                     }
                 }
-
-                // Logic cũ cho phim lẻ và phim bị drop
                 cleanText.contains("phút", ignoreCase = true) -> {
                      statusTag = "Hoàn thành"
                 }
@@ -451,23 +442,23 @@ class AnimeHayProvider : MainAPI() {
             }
         }
 
-        // Kết hợp tag gốc và tag trạng thái đã suy luận
         val finalTag = buildList {
             if (!originalTagText.isNullOrBlank()) add(originalTagText)
             if (statusTag != null) add(statusTag)
         }.joinToString(" • ").ifBlank { null }
         
-        // =================================================================
-
         val tvType = when {
             href.contains("/phim/", ignoreCase = true) -> TvType.AnimeMovie
             else -> TvType.Anime
         }
         
+        // ==================== GIẢI PHÁP CHÍNH XÁC ====================
         return provider.newAnimeSearchResponse(title, href, tvType) {
             this.posterUrl = posterUrl
-            this.latestEpisode = finalTag
+            // Gán tag vào thuộc tính 'otherName'. Đây là cách làm đúng nhất.
+            this.otherName = finalTag
         }
+        // =============================================================
 
     } catch (e: Exception) {
         Log.e("AnimeHayProvider", "Error in toSearchResponse for element: ${this.html().take(150)}", e)
