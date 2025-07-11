@@ -430,16 +430,21 @@ class AnimeHayProvider : MainAPI() {
                 href.contains("/phim/", ignoreCase = true) -> TvType.AnimeMovie
                 else -> TvType.Anime
             }
-
-            return provider.newMovieSearchResponse(title, href, tvType) {
+            
+            // ==================== THAY ĐỔI TẠI ĐÂY ====================
+            // Sử dụng newAnimeSearchResponse thay vì newMovieSearchResponse
+            return provider.newAnimeSearchResponse(title, href, tvType) {
                 this.posterUrl = fixedPosterUrl
             }
+            // =========================================================
+
         } catch (e: Exception) {
             Log.e("AnimeHayProvider", "Error in toSearchResponse for element: ${this.html().take(100)}", e)
             return null
         }
     }
-
+    
+    // ==================== THAY ĐỔI LỚN TẠI HÀM NÀY ====================
     private suspend fun Document.toLoadResponse(provider: MainAPI, url: String, baseUrl: String): LoadResponse? {
         try {
             val titleElement = this.selectFirst("h1.heading_movie")
@@ -449,6 +454,7 @@ class AnimeHayProvider : MainAPI() {
             }
             Log.d("AnimeHayProvider", "Parsing LoadResponse for: \"$title\"")
 
+            // --- Lấy tất cả thông tin cần thiết trước ---
             val genres = this.select("div.list_cate a")?.mapNotNull { it.text()?.trim() } ?: emptyList()
             val isChineseAnimation = genres.any { it.contains("CN Animation", ignoreCase = true) }
             val hasEpisodes = this.selectFirst("div.list-item-episode a") != null
@@ -464,33 +470,18 @@ class AnimeHayProvider : MainAPI() {
 
             val animehayPoster = this.selectFirst("div.head div.first img")?.attr("src")
             val animehayFinalPosterUrl = fixUrl(animehayPoster, baseUrl)
-            Log.d("AnimeHayProvider", "AnimeHay Poster URL (fixed): $animehayFinalPosterUrl")
-
             val finalPosterUrl = if (mainTvType == TvType.Anime || mainTvType == TvType.AnimeMovie || mainTvType == TvType.OVA) {
-                Log.d("AnimeHayProvider", "Attempting to fetch Kitsu poster for '$title' (Type: $mainTvType)")
-                val kitsuPoster = getKitsuPoster(title)
-                kitsuPoster ?: animehayFinalPosterUrl
+                getKitsuPoster(title) ?: animehayFinalPosterUrl
             } else {
-                Log.d("AnimeHayProvider", "Skipping Kitsu search for type $mainTvType")
                 animehayFinalPosterUrl
-            }
-
-            if (finalPosterUrl.isNullOrBlank()) {
-                Log.e("AnimeHayProvider", "Failed to get any valid poster for $title (AnimeHay fallback: $animehayFinalPosterUrl)")
-            } else if (finalPosterUrl != animehayFinalPosterUrl) {
-                Log.i("AnimeHayProvider", "Using Kitsu poster for \"$title\": $finalPosterUrl")
-            } else {
-                Log.i("AnimeHayProvider", "Using AnimeHay poster for \"$title\": $finalPosterUrl")
             }
 
             val description = this.selectFirst("div.desc > div:last-child")?.text()?.trim()
             val yearText = this.selectFirst("div.update_time div:nth-child(2)")?.text()?.trim()
             val year = yearText?.filter { it.isDigit() }?.toIntOrNull()
-            Log.d("AnimeHayProvider", "Parsed Year: $year (from text: '$yearText')")
 
             val ratingText = this.selectFirst("div.score div:nth-child(2)")?.text()?.trim()
             val rating = ratingText?.split("||")?.getOrNull(0)?.trim()?.toDoubleOrNull()?.takeIf { !it.isNaN() }?.toAnimeHayRatingInt()
-            Log.d("AnimeHayProvider", "Parsed Rating (0-10000): $rating (from text: '$ratingText')")
 
             val statusText = this.selectFirst("div.status div:nth-child(2)")?.text()?.trim()
             val status = when {
@@ -499,7 +490,6 @@ class AnimeHayProvider : MainAPI() {
                 statusText?.contains("Đang cập nhật", ignoreCase = true) == true -> ShowStatus.Ongoing
                 else -> null
             }
-            Log.d("AnimeHayProvider", "Parsed Status: $status (from text: '$statusText')")
 
             val episodes = this.select("div.list-item-episode a")?.mapNotNull { episodeLink ->
                 val epUrl = fixUrl(episodeLink.attr("href"), baseUrl)
@@ -515,39 +505,30 @@ class AnimeHayProvider : MainAPI() {
                     }
                 } else { null }
             }?.reversed() ?: emptyList()
-            Log.d("AnimeHayProvider", "Parsed ${episodes.size} episodes.")
 
             val recommendations = this.select("div.movie-recommend div.movie-item")?.mapNotNull {
                 it.toSearchResponse(provider, baseUrl)
             } ?: emptyList()
-            Log.d("AnimeHayProvider", "Parsed ${recommendations.size} recommendations.")
 
-            return if (hasEpisodes) {
-                Log.i("AnimeHayProvider", "Creating TvSeriesLoadResponse for \"$title\"")
-                provider.newTvSeriesLoadResponse(title, url, mainTvType, episodes = episodes) {
-                    this.posterUrl = finalPosterUrl
-                    this.plot = description
-                    this.tags = genres
-                    this.year = year
-                    this.rating = rating
-                    this.showStatus = status
-                    this.recommendations = recommendations
-                }
-            } else {
-                Log.i("AnimeHayProvider", "Creating MovieLoadResponse for \"$title\"")
-                val movieData = url
-                val durationText = this.selectFirst("div.duration div:nth-child(2)")?.text()?.trim()
-                val durationMinutes = durationText?.filter { it.isDigit() }?.toIntOrNull()
-                Log.d("AnimeHayProvider", "Parsed Duration (minutes): $durationMinutes (from text: '$durationText')")
+            // --- Sử dụng newAnimeLoadResponse cho cả phim bộ và phim lẻ ---
+            Log.i("AnimeHayProvider", "Creating AnimeLoadResponse for \"$title\"")
+            return provider.newAnimeLoadResponse(title, url, mainTvType) {
+                this.posterUrl = finalPosterUrl
+                this.plot = description
+                this.tags = genres
+                this.year = year
+                this.rating = rating
+                this.showStatus = status
+                this.recommendations = recommendations
 
-                provider.newMovieLoadResponse(title, url, mainTvType, movieData) {
-                    this.posterUrl = finalPosterUrl
-                    this.plot = description
-                    this.tags = genres
-                    this.year = year
-                    this.rating = rating
+                if (hasEpisodes) {
+                    // Nếu là phim bộ, thêm danh sách tập phim
+                    addEpisodes(DubStatus.Subbed, episodes)
+                } else {
+                    // Nếu là phim lẻ, thêm thời lượng
+                    val durationText = this@toLoadResponse.selectFirst("div.duration div:nth-child(2)")?.text()?.trim()
+                    val durationMinutes = durationText?.filter { it.isDigit() }?.toIntOrNull()
                     durationMinutes?.let { addDuration(it.toString()) }
-                    this.recommendations = recommendations
                 }
             }
         } catch (e: Exception) {
@@ -555,6 +536,7 @@ class AnimeHayProvider : MainAPI() {
             return null
         }
     }
+    // =================================================================
 
     private fun String?.encodeUri(): String {
         return try {
