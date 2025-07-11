@@ -20,6 +20,7 @@ import kotlin.math.roundToInt
 import okhttp3.Interceptor
 import okhttp3.Response
 import okhttp3.ResponseBody
+import java.util.EnumSet
 
 
 // *** THÊM KITSU DATA CLASSES ***
