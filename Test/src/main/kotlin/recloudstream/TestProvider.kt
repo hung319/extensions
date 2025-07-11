@@ -248,19 +248,20 @@ class AnimeHayProvider : MainAPI() {
                 else -> TvType.Anime
             }
 
-            // TÌM VÀ THÊM THÔNG TIN TẬP
             val episodeStatusText = this.selectFirst("span.ribbon-text, .episode-latest span")?.text()?.trim()
 
-            // Sử dụng newAnimeSearchResponse
             return provider.newAnimeSearchResponse(title, href, tvType) {
                 this.posterUrl = fixUrl(posterUrl, baseUrl)
                 
-                if (!episodeStatusText.isNullOrBlank()) {
-                    val epRegex = Regex("""(\d+)""")
-                    val episodeNumber = epRegex.findAll(episodeStatusText).lastOrNull()?.value?.toIntOrNull()
+                // SỬA LỖI: Sử dụng khối let an toàn để xử lý biến có thể là null
+                episodeStatusText?.let { text ->
+                    if (text.isNotBlank()) {
+                        val epRegex = Regex("""(\d+)""")
+                        val episodeNumber = epRegex.findAll(text).lastOrNull()?.value?.toIntOrNull()
 
-                    if (episodeNumber != null) {
-                        this.episodes[DubStatus.Subbed] = episodeNumber
+                        if (episodeNumber != null) {
+                            this.episodes[DubStatus.Subbed] = episodeNumber
+                        }
                     }
                 }
             }
@@ -272,34 +273,23 @@ class AnimeHayProvider : MainAPI() {
     
     private suspend fun Document.toLoadResponse(provider: MainAPI, url: String, baseUrl: String): LoadResponse? {
         try {
-            // CẬP NHẬT: Selector mới cho tiêu đề
             val title = this.selectFirst("h1.movie-title, h1.heading_movie")?.text()?.trim() ?: return null
-            
-            // CẬP NHẬT: Selector mới cho các thẻ loại
             val genres = this.select("div.meta-item:contains(Thể loại) a, div.list_cate a").mapNotNull { it.text()?.trim() }
-            
             val isChineseAnimation = genres.any { it.contains("CN Animation", ignoreCase = true) }
-            
-            // CẬP NHẬT: Selector mới cho danh sách tập
             val hasEpisodes = this.selectFirst("div.list-episode a, div.list-item-episode a") != null
-            
             val mainTvType = when {
                 hasEpisodes && isChineseAnimation -> TvType.Cartoon
                 hasEpisodes -> TvType.Anime
                 !hasEpisodes && isChineseAnimation -> TvType.Cartoon
                 else -> TvType.AnimeMovie
             }
-            
             val animehayPoster = this.selectFirst("div.movie-poster img, div.head div.first img")?.attr("src")
             val animehayFinalPosterUrl = fixUrl(animehayPoster, baseUrl)
-            
             val finalPosterUrl = if (mainTvType == TvType.Anime || mainTvType == TvType.AnimeMovie || mainTvType == TvType.OVA) {
                 getKitsuPoster(title) ?: animehayFinalPosterUrl
             } else {
                 animehayFinalPosterUrl
             }
-            
-            // CẬP NHẬT: Selector mới cho mô tả phim
             val description = this.selectFirst("div.film-description .content, div.desc > div:last-child")?.text()?.trim()
 
             // === CẬP NHẬT LOGIC QUAN TRỌNG: XỬ LÝ 2 LOẠI CẤU TRÚC HTML ===
