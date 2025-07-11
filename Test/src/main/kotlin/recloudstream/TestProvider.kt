@@ -132,26 +132,20 @@ class AnimeHayProvider : MainAPI() {
         val baseUrl = getBaseUrl()
         val initialDocument = app.get(url).document
 
-        // **LOGIC SỬA LỖI:**
-        // Kiểm tra xem URL hiện tại có phải là trang xem phim không.
-        // Nếu đúng, tìm link đến trang thông tin phim và tải lại document từ đó.
         val (documentToParse, seriesUrl) = if (url.contains("/xem-phim/")) {
             val seriesInfoHref = initialDocument.selectFirst("a[href*=/thong-tin-phim/]")?.attr("href")
             val seriesInfoUrl = fixUrl(seriesInfoHref, baseUrl)
-            
+
             if (seriesInfoUrl != null) {
-                // Tải document của trang thông tin phim
                 Pair(app.get(seriesInfoUrl).document, seriesInfoUrl)
             } else {
                 Log.e(name, "Không thể tìm thấy link về trang thông tin phim từ URL: $url")
-                return null // Không thể tiếp tục nếu không có trang thông tin
+                return null
             }
         } else {
-            // Nếu không phải trang xem phim, dùng document và url hiện tại
             Pair(initialDocument, url)
         }
 
-        // Từ đây, `documentToParse` chắc chắn là trang thông tin phim
         val title = documentToParse.selectFirst("h1.heading_movie")?.text()?.trim() ?: return null
         val plot = documentToParse.selectFirst("div.desc > div:last-child")?.text()?.trim()
         val posterUrl = fixUrl(documentToParse.selectFirst("div.head div.first img")?.attr("src"), baseUrl)
@@ -165,16 +159,15 @@ class AnimeHayProvider : MainAPI() {
             }
         }.reversed()
 
-        // Nếu không có tập phim, coi như là phim lẻ
         if (episodes.isEmpty()) {
-            return newMovieLoadResponse(title, seriesUrl, TvType.AnimeMovie) {
+            // CHANGED: Thêm `seriesUrl` làm tham số `dataUrl` bị thiếu
+            return newMovieLoadResponse(title, seriesUrl, TvType.AnimeMovie, seriesUrl) {
                 this.posterUrl = posterUrl
                 this.plot = plot
                 this.year = year
             }
         }
 
-        // Trả về kết quả cho phim bộ
         return newTvSeriesLoadResponse(title, seriesUrl, TvType.TvSeries, episodes) {
             this.posterUrl = posterUrl
             this.plot = plot
