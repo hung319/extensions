@@ -248,15 +248,18 @@ class AnimeHayProvider : MainAPI() {
                 else -> TvType.Anime
             }
 
+            // This variable is nullable (String?) because selectFirst can fail
             val episodeStatusText = this.selectFirst("span.ribbon-text, .episode-latest span")?.text()?.trim()
 
             return provider.newAnimeSearchResponse(title, href, tvType) {
                 this.posterUrl = fixUrl(posterUrl, baseUrl)
                 
-                // SỬA LỖI: Sử dụng khối let an toàn để xử lý biến có thể là null
+                // SỬA LỖI: Dùng `?.let` để chỉ chạy code này khi episodeStatusText không phải là null.
+                // Bên trong khối `let`, `text` sẽ là kiểu String (không phải String?).
                 episodeStatusText?.let { text ->
                     if (text.isNotBlank()) {
                         val epRegex = Regex("""(\d+)""")
+                        // Bây giờ `findAll(text)` là an toàn vì `text` không thể là null.
                         val episodeNumber = epRegex.findAll(text).lastOrNull()?.value?.toIntOrNull()
 
                         if (episodeNumber != null) {
@@ -292,13 +295,11 @@ class AnimeHayProvider : MainAPI() {
             }
             val description = this.selectFirst("div.film-description .content, div.desc > div:last-child")?.text()?.trim()
 
-            // === CẬP NHẬT LOGIC QUAN TRỌNG: XỬ LÝ 2 LOẠI CẤU TRÚC HTML ===
             var year: Int? = null
             var rating: Int? = null
             var status: ShowStatus? = null
             var durationMinutes: Int? = null
 
-            // Kiểm tra xem có phải cấu trúc mới không (dùng .meta-item)
             if (this.selectFirst(".meta-item") != null) {
                 this.select(".meta-item").forEach { element ->
                     val header = element.selectFirst("span")?.text()?.trim() ?: ""
@@ -318,7 +319,6 @@ class AnimeHayProvider : MainAPI() {
                     }
                 }
             } else {
-                // Nếu không, dùng selector cho cấu trúc cũ (như file fix.html)
                 year = this.selectFirst("div.update_time div:last-child")?.text()?.filter { it.isDigit() }?.toIntOrNull()
                 val ratingText = this.selectFirst("div.score div:last-child")?.text()?.trim()
                 rating = ratingText?.split("||")?.getOrNull(0)?.trim()?.toDoubleOrNull()?.toAnimeHayRatingInt()
@@ -331,7 +331,6 @@ class AnimeHayProvider : MainAPI() {
                 val durationText = this.selectFirst("div.duration div:last-child")?.text()?.trim()
                 durationMinutes = durationText?.filter { it.isDigit() }.toIntOrNull()
             }
-            // =================================================================
 
             val episodes = this.select("div.list-episode a, div.list-item-episode a").mapNotNull { epLink ->
                 val epUrl = fixUrl(epLink.attr("href"), baseUrl)
