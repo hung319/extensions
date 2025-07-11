@@ -316,6 +316,8 @@ class AnimeHayProvider : MainAPI() {
     subtitleCallback: (SubtitleFile) -> Unit,
     callback: (ExtractorLink) -> Unit
 ): Boolean {
+
+    val directUrl = URL(data).let { "${it.protocol}://${it.host}" }
     // Lấy nội dung trang xem phim
     val response = app.get(data, referer = directUrl).text
     val sources = mutableMapOf<String, String>()
