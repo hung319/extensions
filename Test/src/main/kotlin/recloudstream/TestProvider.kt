@@ -28,7 +28,6 @@ class Anime47Provider : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
 
-    // Lớp dữ liệu cho JSON được mã hóa
     private data class EncryptedSource(val ct: String, val iv: String, val s: String)
 
     private fun parseMovieCard(element: Element): SearchResponse? {
@@ -36,7 +35,6 @@ class Anime47Provider : MainAPI() {
         val href = movieLink.attr("href")?.let { fixUrl(it) }
         val title = movieLink.selectFirst(".movie-title-1")?.text()?.trim()
             ?: movieLink.attr("title")?.trim()
-
         val imageHolder = movieLink.selectFirst(".movie-thumbnail, .public-film-item-thumb")
         val image = getBackgroundImageUrl(imageHolder)
 
@@ -58,21 +56,18 @@ class Anime47Provider : MainAPI() {
         if (page > 1) return null
         val document = app.get(mainUrl).document
         val lists = mutableListOf<HomePageList>()
-
         val nominatedMovies = document.select("div.nominated-movie ul#movie-carousel-top li").mapNotNull {
             parseMovieCard(it)
         }
         if (nominatedMovies.isNotEmpty()) {
             lists.add(HomePageList("Phim Đề Cử", nominatedMovies))
         }
-
         val updatedMovies = document.select("div.update .content[data-name=all] ul.last-film-box li").mapNotNull {
             parseMovieCard(it)
         }
         if (updatedMovies.isNotEmpty()) {
             lists.add(HomePageList("Mới Cập Nhật", updatedMovies))
         }
-
         return if (lists.isEmpty()) null else HomePageResponse(lists)
     }
 
@@ -90,58 +85,54 @@ class Anime47Provider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url).document
-
-        val title = document.selectFirst("h1.movie-title span.title-1")?.text()?.trim() ?: "Không có tiêu đề"
-        val poster = fixUrlNull(document.selectFirst("div.movie-l-img img")?.attr("src"))
-        val description = document.selectFirst("div.news-article")?.text()?.trim()
-        val year = document.selectFirst("h1.movie-title span.title-year")?.text()
-            ?.replace(Regex("[()]"), "")?.trim()?.toIntOrNull()
-
-        val statusText = document.selectFirst("dl.movie-dl dt:contains(Trạng thái:) + dd")?.text()?.trim()
-        val status = when {
-            statusText?.contains("Hoàn thành", true) == true -> ShowStatus.Completed
-            statusText?.contains("/") == true -> {
-                val parts = statusText.split("/").mapNotNull { it.trim().toIntOrNull() }
-                if (parts.size == 2 && parts[0] == parts[1]) ShowStatus.Completed else ShowStatus.Ongoing
+        try {
+            val document = app.get(url).document
+            val title = document.selectFirst("h1.movie-title span.title-1")?.text()?.trim() ?: "Không có tiêu đề"
+            val poster = fixUrlNull(document.selectFirst("div.movie-l-img img")?.attr("src"))
+            val description = document.selectFirst("div.news-article")?.text()?.trim()
+            val year = document.selectFirst("h1.movie-title span.title-year")?.text()
+                ?.replace(Regex("[()]"), "")?.trim()?.toIntOrNull()
+            val statusText = document.selectFirst("dl.movie-dl dt:contains(Trạng thái:) + dd")?.text()?.trim()
+            val status = when {
+                statusText?.contains("Hoàn thành", true) == true -> ShowStatus.Completed
+                statusText?.contains("/") == true -> {
+                    val parts = statusText.split("/").mapNotNull { it.trim().toIntOrNull() }
+                    if (parts.size == 2 && parts[0] == parts[1]) ShowStatus.Completed else ShowStatus.Ongoing
+                }
+                statusText != null -> ShowStatus.Ongoing
+                else -> null
             }
-            statusText != null -> ShowStatus.Ongoing
-            else -> null
-        }
+            val genres = document.select("dl.movie-dl dt:contains(Thể loại:) + dd a")?.map { it.text() }
+            val scriptContent = document.select("script:containsData(let playButton)").html()
+            val anyEpisodesHtml = Regex("""anyEpisodes\s*=\s*'(.*?)';""").find(scriptContent)?.groupValues?.getOrNull(1)
+            val episodes = if (anyEpisodesHtml != null) {
+                Jsoup.parse(anyEpisodesHtml).select("div.episodes ul li a").mapNotNull {
+                    val epHref = it.attr("href")?.let { eUrl -> fixUrl(eUrl) }
+                    val epName = it.attr("title")?.trim() ?: it.text()?.trim()
+                    val epNum = epName?.toIntOrNull()
+                    if (epHref != null) Episode(data = epHref, name = "Tập $epName", episode = epNum) else null
+                }.reversed()
+            } else emptyList()
 
-        val genres = document.select("dl.movie-dl dt:contains(Thể loại:) + dd a")?.map { it.text() }
-
-        var episodes = listOf<Episode>()
-        val scriptContent = document.select("script:containsData(let playButton)").html()
-        val anyEpisodesHtml = Regex("""anyEpisodes\s*=\s*'(.*?)';""").find(scriptContent)?.groupValues?.getOrNull(1)
-
-        if (anyEpisodesHtml != null) {
-            episodes = Jsoup.parse(anyEpisodesHtml).select("div.episodes ul li a").mapNotNull {
-                val epHref = it.attr("href")?.let { eUrl -> fixUrl(eUrl) }
-                val epName = it.attr("title")?.trim() ?: it.text()?.trim()
-                val epNum = epName?.toIntOrNull()
-
-                if (epHref != null) {
-                    Episode(data = epHref, name = "Tập $epName", episode = epNum)
-                } else null
-            }.reversed()
-        }
-
-        return newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
-            this.posterUrl = poster
-            this.plot = description
-            this.year = year
-            this.showStatus = status
-            this.tags = genres
+            return newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
+                this.posterUrl = poster
+                this.plot = description
+                this.year = year
+                this.showStatus = status
+                this.tags = genres
+            }
+        } catch (e: Exception) {
+            Log.e(name, "Load error for $url", e)
+            return null
         }
     }
 
     private fun evpBytesToKey(password: ByteArray, salt: ByteArray, keySize: Int, ivSize: Int): Pair<ByteArray, ByteArray> {
         var derivedBytes = ByteArray(0)
-        var result: ByteArray
         val hasher = MessageDigest.getInstance("MD5")
         var data = ByteArray(0)
         while (derivedBytes.size < keySize + ivSize) {
+            var result: ByteArray
             hasher.update(data)
             hasher.update(password)
             hasher.update(salt)
@@ -157,20 +148,15 @@ class Anime47Provider : MainAPI() {
         return try {
             val encryptedJsonStr = String(Base64.decode(encryptedDataB64, Base64.DEFAULT))
             val encryptedSource = parseJson<EncryptedSource>(encryptedJsonStr)
-
             val salt = hexStringToByteArray(encryptedSource.s)
             val iv = hexStringToByteArray(encryptedSource.iv)
             val ciphertext = Base64.decode(encryptedSource.ct, Base64.DEFAULT)
-
             val (key, _) = evpBytesToKey(passwordStr.toByteArray(), salt, 32, 16)
-
             val secretKey = SecretKeySpec(key, "AES")
             val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
             cipher.init(Cipher.DECRYPT_MODE, secretKey, IvParameterSpec(iv))
             val decryptedBytes = cipher.doFinal(ciphertext)
-            val decryptedJsonStr = String(decryptedBytes)
-
-            parseJson<String>(decryptedJsonStr)
+            parseJson<String>(String(decryptedBytes))
         } catch (e: Exception) {
             Log.e(name, "Decryption error", e)
             null
@@ -200,25 +186,22 @@ class Anime47Provider : MainAPI() {
                 headers = mapOf("X-Requested-With" to "XMLHttpRequest")
             ).document
             val scriptContent = playerResponse.select("script:containsData(var thanhhoa)").html()
-
             val thanhhoaB64 = Regex("""var\s+thanhhoa\s*=\s*atob\(['"]([^'"]+)['"]\)""").find(scriptContent)?.groupValues?.getOrNull(1)
 
             if (thanhhoaB64 != null) {
                 val videoUrl = decryptSource(thanhhoaB64, "caphedaklak")
                 if (!videoUrl.isNullOrBlank()) {
-                    val link = newExtractorLink(
-                        source = this.name,
-                        name = "Server HLS",
-                        url = videoUrl,
-                        type = ExtractorLinkType.M3U8
-                    ) {
-                        this.referer = "$mainUrl/"
-                        this.quality = Qualities.Unknown.value
-                    }
-                    // Thêm interceptor vào link
-                    callback.invoke(link)
-
-                    // Lấy phụ đề
+                    callback.invoke(
+                        newExtractorLink(
+                            source = this.name,
+                            name = "Server HLS",
+                            url = videoUrl,
+                            type = ExtractorLinkType.M3U8
+                        ) {
+                            this.referer = "$mainUrl/"
+                            this.quality = Qualities.Unknown.value
+                        }
+                    )
                     Regex("""tracks:\s*(\[.*?\])""", RegexOption.DOT_MATCHES_ALL).find(scriptContent)?.groupValues?.getOrNull(1)?.let { tracksJson ->
                         Regex("""file:\s*["'](.*?)["'].*?label:\s*["'](.*?)["']""").findAll(tracksJson).forEach { match ->
                             subtitleCallback(SubtitleFile(match.groupValues[2], fixUrl(match.groupValues[1])))
@@ -233,9 +216,6 @@ class Anime47Provider : MainAPI() {
         return false
     }
 
-    /**
-     * Interceptor để sửa lỗi phát video từ một số server.
-     */
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
         return object : Interceptor {
             override fun intercept(chain: Interceptor.Chain): Response {
@@ -243,13 +223,11 @@ class Anime47Provider : MainAPI() {
                 val response = chain.proceed(request)
                 val url = request.url.toString()
 
-                // ==================== THAY ĐỔI TẠI ĐÂY ====================
-                // Kiểm tra nếu URL của segment chứa "nonprofit.asia" thì sẽ sửa lỗi
                 if (url.contains("nonprofit.asia")) {
-                // =========================================================
                     response.body?.let { body ->
                         try {
-                            val fixedBytes = skipByteError(body)
+                            // Gọi hàm sửa lỗi mới
+                            val fixedBytes = skipFirst7Bytes(body)
                             val newBody = fixedBytes.toResponseBody(body.contentType())
                             return response.newBuilder().body(newBody).build()
                         } catch (e: Exception) {
@@ -265,31 +243,21 @@ class Anime47Provider : MainAPI() {
 
 /**
  * Hàm phụ trợ cho interceptor, đặt ở ngoài class.
- * Dùng để sửa lỗi video bằng cách bỏ qua các byte lỗi ở đầu.
+ * Dùng để sửa lỗi video bằng cách bỏ qua 7 byte lỗi ở đầu.
  */
-private fun skipByteError(responseBody: ResponseBody): ByteArray {
-    val source = responseBody.source()
-    source.request(Long.MAX_VALUE) // Đảm bảo đọc hết dữ liệu vào buffer
-    val buffer = source.buffer.clone()
-    source.close()
+private fun skipFirst7Bytes(responseBody: ResponseBody): ByteArray {
+    // Đọc toàn bộ dữ liệu vào một mảng byte
+    val byteArray = responseBody.bytes()
+    val bytesToSkip = 7
 
-    val byteArray = buffer.readByteArray()
-    val tsPacketSize = 188
-    // Tìm vị trí bắt đầu của gói TS hợp lệ đầu tiên (bắt đầu bằng 0x47)
-    val syncByte = 0x47.toByte()
-
-    var start = 0
-    for (i in 0 until byteArray.size - tsPacketSize) {
-        if (byteArray[i] == syncByte && byteArray[i + tsPacketSize] == syncByte) {
-            start = i
-            break
-        }
-    }
-
-    return if (start > 0) {
-        Log.d("skipByteError", "Skipping $start bytes from video segment")
-        byteArray.copyOfRange(start, byteArray.size)
+    // Kiểm tra xem mảng có đủ lớn để cắt hay không
+    return if (byteArray.size > bytesToSkip) {
+        Log.d("ByteSkipper", "Segment size: ${byteArray.size}. Skipping first $bytesToSkip bytes.")
+        // Tạo một mảng mới bằng cách sao chép từ byte thứ 8 (index 7) đến hết
+        byteArray.copyOfRange(bytesToSkip, byteArray.size)
     } else {
+        // Nếu segment quá nhỏ, trả về mảng gốc để tránh lỗi
+        Log.w("ByteSkipper", "Segment size (${byteArray.size}) is too small to skip $bytesToSkip bytes.")
         byteArray
     }
 }
