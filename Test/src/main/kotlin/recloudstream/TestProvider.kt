@@ -411,52 +411,42 @@ class AnimeHayProvider : MainAPI() {
             ?: return null
 
         val posterUrl = fixUrl(this.selectFirst("img")?.let { it.attr("src").ifBlank { it.attr("data-src") } }, baseUrl)
-
-        // --- Logic suy luận trạng thái thông minh ---
         val originalTagText = this.selectFirst("div.episode-latest span")?.text()?.trim()
-        var statusTag: String? = null
 
-        if (!originalTagText.isNullOrBlank()) {
-            val cleanText = originalTagText.replace(" ", "")
-            when {
-                cleanText.contains("SP/", ignoreCase = true) || cleanText.contains("OVA/", ignoreCase = true) -> {
-                    statusTag = "Hoàn thành"
-                }
-                cleanText.contains('/') -> {
-                    val parts = cleanText.split('/')
-                    if (parts.size == 2) {
-                        val currentEp = parts[0].toFloatOrNull()
-                        val totalEp = parts[1].filter { it.isDigit() || it == '.' }.toFloatOrNull()
-                        if (currentEp != null && totalEp != null && currentEp >= totalEp) {
-                            statusTag = "Hoàn thành"
-                        }
-                    }
-                }
-                cleanText.contains("phút", ignoreCase = true) -> {
-                     statusTag = "Hoàn thành"
-                }
-                cleanText.contains("drop", ignoreCase = true) -> {
-                    statusTag = "Bị Drop"
-                }
-            }
-        }
-
-        // Kết hợp tag gốc và tag trạng thái đã suy luận
-        val finalTag = buildList {
-            if (!originalTagText.isNullOrBlank()) add(originalTagText)
-            if (statusTag != null) add(statusTag)
-        }.joinToString(" • ").ifBlank { null }
-        
         val tvType = when {
             href.contains("/phim/", ignoreCase = true) -> TvType.AnimeMovie
             else -> TvType.Anime
         }
         
-        // Gán tag vào thuộc tính 'otherName'
-        return provider.newAnimeSearchResponse(title, href, tvType) {
-            this.posterUrl = posterUrl
-            this.otherName = finalTag
+        // ==================== GIẢI PHÁP KẾT HỢP ====================
+
+        // Trường hợp là phim bộ (có dấu /)
+        if (!originalTagText.isNullOrBlank() && originalTagText.contains('/')) {
+            // Lấy số tập đầu tiên (tập hiện tại)
+            val episodeCount = originalTagText.split('/')[0]
+                                    .filter { it.isDigit() }
+                                    .toIntOrNull()
+
+            return provider.newAnimeSearchResponse(title, href, tvType) {
+                this.posterUrl = posterUrl
+                if (episodeCount != null) {
+                    // Gán số tập vào thuộc tính 'episodes'
+                    this.episodes = mutableMapOf(DubStatus.Subbed to episodeCount)
+                }
+            }
+        } 
+        // Trường hợp là phim lẻ hoặc các dạng tag khác
+        else {
+            val finalTitle = if (!originalTagText.isNullOrBlank()) {
+                "$title\n$originalTagText"
+            } else {
+                title
+            }
+            return provider.newAnimeSearchResponse(finalTitle, href, tvType) {
+                this.posterUrl = posterUrl
+            }
         }
+        // ==========================================================
 
     } catch (e: Exception) {
         Log.e("AnimeHayProvider", "Error in toSearchResponse for element: ${this.html().take(150)}", e)
