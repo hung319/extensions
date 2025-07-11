@@ -1,9 +1,13 @@
 package com.lagradost.recloudstream
 
 import android.util.Base64
+import android.util.Log
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
@@ -11,6 +15,10 @@ import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import java.security.MessageDigest
+import okhttp3.Interceptor
+import okhttp3.Response
+import okhttp3.ResponseBody
+import okhttp3.ResponseBody.Companion.toResponseBody
 
 class Anime47Provider : MainAPI() {
     override var mainUrl = "https://anime47.shop"
@@ -22,7 +30,6 @@ class Anime47Provider : MainAPI() {
 
     // Lớp dữ liệu cho JSON được mã hóa
     private data class EncryptedSource(val ct: String, val iv: String, val s: String)
-    // Lớp DecryptedSource không còn cần thiết
 
     private fun parseMovieCard(element: Element): SearchResponse? {
         val movieLink = element.selectFirst("a.movie-item") ?: return null
@@ -46,7 +53,7 @@ class Anime47Provider : MainAPI() {
             Regex("""background-image:\s*url\(['"]?(.*?)['"]?\)""").find(it)?.groupValues?.getOrNull(1)
         }
     }
-    
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         if (page > 1) return null
         val document = app.get(mainUrl).document
@@ -65,8 +72,8 @@ class Anime47Provider : MainAPI() {
         if (updatedMovies.isNotEmpty()) {
             lists.add(HomePageList("Mới Cập Nhật", updatedMovies))
         }
-        
-        return if(lists.isEmpty()) null else HomePageResponse(lists)
+
+        return if (lists.isEmpty()) null else HomePageResponse(lists)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -77,7 +84,7 @@ class Anime47Provider : MainAPI() {
                 parseMovieCard(it)
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e(name, "Search error", e)
             emptyList()
         }
     }
@@ -92,11 +99,10 @@ class Anime47Provider : MainAPI() {
             ?.replace(Regex("[()]"), "")?.trim()?.toIntOrNull()
 
         val statusText = document.selectFirst("dl.movie-dl dt:contains(Trạng thái:) + dd")?.text()?.trim()
-
         val status = when {
             statusText?.contains("Hoàn thành", true) == true -> ShowStatus.Completed
             statusText?.contains("/") == true -> {
-                val parts = statusText!!.split("/").mapNotNull { it.trim().toIntOrNull() }
+                val parts = statusText.split("/").mapNotNull { it.trim().toIntOrNull() }
                 if (parts.size == 2 && parts[0] == parts[1]) ShowStatus.Completed else ShowStatus.Ongoing
             }
             statusText != null -> ShowStatus.Ongoing
@@ -146,7 +152,7 @@ class Anime47Provider : MainAPI() {
         }
         return Pair(derivedBytes.copyOfRange(0, keySize), derivedBytes.copyOfRange(keySize, keySize + ivSize))
     }
-    
+
     private fun decryptSource(encryptedDataB64: String, passwordStr: String): String? {
         return try {
             val encryptedJsonStr = String(Base64.decode(encryptedDataB64, Base64.DEFAULT))
@@ -155,21 +161,18 @@ class Anime47Provider : MainAPI() {
             val salt = hexStringToByteArray(encryptedSource.s)
             val iv = hexStringToByteArray(encryptedSource.iv)
             val ciphertext = Base64.decode(encryptedSource.ct, Base64.DEFAULT)
-            
+
             val (key, _) = evpBytesToKey(passwordStr.toByteArray(), salt, 32, 16)
 
             val secretKey = SecretKeySpec(key, "AES")
             val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
             cipher.init(Cipher.DECRYPT_MODE, secretKey, IvParameterSpec(iv))
             val decryptedBytes = cipher.doFinal(ciphertext)
-
             val decryptedJsonStr = String(decryptedBytes)
 
-            // *** ĐÂY LÀ DÒNG THAY ĐỔI QUAN TRỌNG NHẤT ***
-            // Phân tích kết quả như một chuỗi String, không phải một đối tượng.
             parseJson<String>(decryptedJsonStr)
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e(name, "Decryption error", e)
             null
         }
     }
@@ -182,18 +185,28 @@ class Anime47Provider : MainAPI() {
         return data
     }
 
-    override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
         try {
             val episodeId = data.substringAfterLast('/').substringBefore('.').trim()
-            val playerResponse = app.post("$mainUrl/player/player.php", data = mapOf("ID" to episodeId, "SV" to "4"), referer = data, headers = mapOf("X-Requested-With" to "XMLHttpRequest")).document
+            val playerResponse = app.post(
+                "$mainUrl/player/player.php",
+                data = mapOf("ID" to episodeId, "SV" to "4"),
+                referer = data,
+                headers = mapOf("X-Requested-With" to "XMLHttpRequest")
+            ).document
             val scriptContent = playerResponse.select("script:containsData(var thanhhoa)").html()
-            
+
             val thanhhoaB64 = Regex("""var\s+thanhhoa\s*=\s*atob\(['"]([^'"]+)['"]\)""").find(scriptContent)?.groupValues?.getOrNull(1)
 
             if (thanhhoaB64 != null) {
                 val videoUrl = decryptSource(thanhhoaB64, "caphedaklak")
                 if (!videoUrl.isNullOrBlank()) {
-                    callback(newExtractorLink(
+                    val link = newExtractorLink(
                         source = this.name,
                         name = "Server HLS",
                         url = videoUrl,
@@ -201,8 +214,11 @@ class Anime47Provider : MainAPI() {
                     ) {
                         this.referer = "$mainUrl/"
                         this.quality = Qualities.Unknown.value
-                    })
+                    }
+                    // Thêm interceptor vào link
+                    callback.invoke(link)
 
+                    // Lấy phụ đề
                     Regex("""tracks:\s*(\[.*?\])""", RegexOption.DOT_MATCHES_ALL).find(scriptContent)?.groupValues?.getOrNull(1)?.let { tracksJson ->
                         Regex("""file:\s*["'](.*?)["'].*?label:\s*["'](.*?)["']""").findAll(tracksJson).forEach { match ->
                             subtitleCallback(SubtitleFile(match.groupValues[2], fixUrl(match.groupValues[1])))
@@ -212,8 +228,68 @@ class Anime47Provider : MainAPI() {
                 }
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e(name, "loadLinks error", e)
         }
         return false
+    }
+
+    /**
+     * Interceptor để sửa lỗi phát video từ một số server.
+     */
+    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
+        return object : Interceptor {
+            override fun intercept(chain: Interceptor.Chain): Response {
+                val request = chain.request()
+                val response = chain.proceed(request)
+                val url = request.url.toString()
+
+                // ==================== THAY ĐỔI TẠI ĐÂY ====================
+                // Kiểm tra nếu URL của segment chứa "nonprofit.asia" thì sẽ sửa lỗi
+                if (url.contains("nonprofit.asia")) {
+                // =========================================================
+                    response.body?.let { body ->
+                        try {
+                            val fixedBytes = skipByteError(body)
+                            val newBody = fixedBytes.toResponseBody(body.contentType())
+                            return response.newBuilder().body(newBody).build()
+                        } catch (e: Exception) {
+                            Log.e(name, "Interceptor error", e)
+                        }
+                    }
+                }
+                return response
+            }
+        }
+    }
+}
+
+/**
+ * Hàm phụ trợ cho interceptor, đặt ở ngoài class.
+ * Dùng để sửa lỗi video bằng cách bỏ qua các byte lỗi ở đầu.
+ */
+private fun skipByteError(responseBody: ResponseBody): ByteArray {
+    val source = responseBody.source()
+    source.request(Long.MAX_VALUE) // Đảm bảo đọc hết dữ liệu vào buffer
+    val buffer = source.buffer.clone()
+    source.close()
+
+    val byteArray = buffer.readByteArray()
+    val tsPacketSize = 188
+    // Tìm vị trí bắt đầu của gói TS hợp lệ đầu tiên (bắt đầu bằng 0x47)
+    val syncByte = 0x47.toByte()
+
+    var start = 0
+    for (i in 0 until byteArray.size - tsPacketSize) {
+        if (byteArray[i] == syncByte && byteArray[i + tsPacketSize] == syncByte) {
+            start = i
+            break
+        }
+    }
+
+    return if (start > 0) {
+        Log.d("skipByteError", "Skipping $start bytes from video segment")
+        byteArray.copyOfRange(start, byteArray.size)
+    } else {
+        byteArray
     }
 }
