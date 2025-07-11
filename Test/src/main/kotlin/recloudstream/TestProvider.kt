@@ -416,7 +416,7 @@ class AnimeHayProvider : MainAPI() {
             this.posterUrl = posterUrl
             
             // 1. Hiển thị tag "Phụ đề"
-            this.dubStatus = EnumSet.of(DubStatus.Subbed)
+            //this.dubStatus = EnumSet.of(DubStatus.Subbed)
 
             val episodeText = element.selectFirst("div.episode-latest span")?.text()?.trim()
             if (episodeText != null) {
