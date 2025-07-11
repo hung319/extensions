@@ -406,14 +406,13 @@ class AnimeHayProvider : MainAPI() {
 
         val href = fixUrl(linkElement.attr("href"), baseUrl) ?: return null
         
-        // Giữ lại tiêu đề gốc, không thay đổi
         val title = linkElement.attr("title")?.trim()?.takeIf { it.isNotBlank() } 
             ?: this.selectFirst("div.name-movie")?.text()?.trim() 
             ?: return null
 
         val posterUrl = fixUrl(this.selectFirst("img")?.let { it.attr("src").ifBlank { it.attr("data-src") } }, baseUrl)
 
-        // --- Logic suy luận trạng thái vẫn giữ nguyên ---
+        // --- Logic suy luận trạng thái thông minh ---
         val originalTagText = this.selectFirst("div.episode-latest span")?.text()?.trim()
         var statusTag: String? = null
 
@@ -442,6 +441,7 @@ class AnimeHayProvider : MainAPI() {
             }
         }
 
+        // Kết hợp tag gốc và tag trạng thái đã suy luận
         val finalTag = buildList {
             if (!originalTagText.isNullOrBlank()) add(originalTagText)
             if (statusTag != null) add(statusTag)
@@ -452,13 +452,11 @@ class AnimeHayProvider : MainAPI() {
             else -> TvType.Anime
         }
         
-        // ==================== GIẢI PHÁP CHÍNH XÁC ====================
+        // Gán tag vào thuộc tính 'otherName'
         return provider.newAnimeSearchResponse(title, href, tvType) {
             this.posterUrl = posterUrl
-            // Gán tag vào thuộc tính 'otherName'. Đây là cách làm đúng nhất.
             this.otherName = finalTag
         }
-        // =============================================================
 
     } catch (e: Exception) {
         Log.e("AnimeHayProvider", "Error in toSearchResponse for element: ${this.html().take(150)}", e)
