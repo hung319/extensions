@@ -234,9 +234,6 @@ class AnimeHayProvider : MainAPI() {
         }
     }
     
-    /**
-    * HÀM ĐƯỢC CẬP NHẬT ĐỂ HIỂN THỊ TẬP MỚI
-    */
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): SearchResponse? {
         try {
             val linkElement = this.selectFirst("> a[href]") ?: this.selectFirst("a[href*=thong-tin-phim]") ?: return null
@@ -252,18 +249,13 @@ class AnimeHayProvider : MainAPI() {
             }
 
             // TÌM VÀ THÊM THÔNG TIN TẬP
-            val episodeStatusText = this.selectFirst("span.ribbon-text")?.text()?.trim()
+            val episodeStatusText = this.selectFirst("span.ribbon-text, .episode-latest span")?.text()?.trim()
 
             // Sử dụng newAnimeSearchResponse
             return provider.newAnimeSearchResponse(title, href, tvType) {
                 this.posterUrl = fixUrl(posterUrl, baseUrl)
                 
                 if (!episodeStatusText.isNullOrBlank()) {
-                    // SỬA LỖI: Bỏ dòng `this.quality` vì `SearchQuality.Custom` không tồn tại.
-                    // Giao diện sẽ tự hiển thị số tập từ map `episodes`.
-
-                    // Cải thiện logic để lấy số tập cuối cùng trong chuỗi
-                    // (xử lý "Tập 24" -> 24, "Full 12/12" -> 12)
                     val epRegex = Regex("""(\d+)""")
                     val episodeNumber = epRegex.findAll(episodeStatusText).lastOrNull()?.value?.toIntOrNull()
 
@@ -277,46 +269,92 @@ class AnimeHayProvider : MainAPI() {
             return null
         }
     }
-
+    
     private suspend fun Document.toLoadResponse(provider: MainAPI, url: String, baseUrl: String): LoadResponse? {
         try {
-            val title = this.selectFirst("h1.heading_movie")?.text()?.trim() ?: return null
-            val genres = this.select("div.list_cate a").mapNotNull { it.text()?.trim() }
+            // CẬP NHẬT: Selector mới cho tiêu đề
+            val title = this.selectFirst("h1.movie-title, h1.heading_movie")?.text()?.trim() ?: return null
+            
+            // CẬP NHẬT: Selector mới cho các thẻ loại
+            val genres = this.select("div.meta-item:contains(Thể loại) a, div.list_cate a").mapNotNull { it.text()?.trim() }
+            
             val isChineseAnimation = genres.any { it.contains("CN Animation", ignoreCase = true) }
-            val hasEpisodes = this.selectFirst("div.list-item-episode a") != null
+            
+            // CẬP NHẬT: Selector mới cho danh sách tập
+            val hasEpisodes = this.selectFirst("div.list-episode a, div.list-item-episode a") != null
+            
             val mainTvType = when {
                 hasEpisodes && isChineseAnimation -> TvType.Cartoon
                 hasEpisodes -> TvType.Anime
                 !hasEpisodes && isChineseAnimation -> TvType.Cartoon
                 else -> TvType.AnimeMovie
             }
-            val animehayPoster = this.selectFirst("div.head div.first img")?.attr("src")
+            
+            val animehayPoster = this.selectFirst("div.movie-poster img, div.head div.first img")?.attr("src")
             val animehayFinalPosterUrl = fixUrl(animehayPoster, baseUrl)
+            
             val finalPosterUrl = if (mainTvType == TvType.Anime || mainTvType == TvType.AnimeMovie || mainTvType == TvType.OVA) {
                 getKitsuPoster(title) ?: animehayFinalPosterUrl
             } else {
                 animehayFinalPosterUrl
             }
-            val description = this.selectFirst("div.desc > div:last-child")?.text()?.trim()
-            val year = this.selectFirst("div.update_time div:nth-child(2)")?.text()?.trim()?.filter { it.isDigit() }?.toIntOrNull()
-            val ratingText = this.selectFirst("div.score div:nth-child(2)")?.text()?.trim()
-            val rating = ratingText?.split("||")?.getOrNull(0)?.trim()?.toDoubleOrNull()?.toAnimeHayRatingInt()
-            val statusText = this.selectFirst("div.status div:nth-child(2)")?.text()?.trim()
-            val status = when {
-                statusText?.contains("Hoàn thành", ignoreCase = true) == true -> ShowStatus.Completed
-                statusText?.contains("Đang", ignoreCase = true) == true -> ShowStatus.Ongoing
-                else -> null
+            
+            // CẬP NHẬT: Selector mới cho mô tả phim
+            val description = this.selectFirst("div.film-description .content, div.desc > div:last-child")?.text()?.trim()
+
+            // === CẬP NHẬT LOGIC QUAN TRỌNG: XỬ LÝ 2 LOẠI CẤU TRÚC HTML ===
+            var year: Int? = null
+            var rating: Int? = null
+            var status: ShowStatus? = null
+            var durationMinutes: Int? = null
+
+            // Kiểm tra xem có phải cấu trúc mới không (dùng .meta-item)
+            if (this.selectFirst(".meta-item") != null) {
+                this.select(".meta-item").forEach { element ->
+                    val header = element.selectFirst("span")?.text()?.trim() ?: ""
+                    val body = element.selectFirst("span:last-child")?.text()?.trim() ?: ""
+                    
+                    when {
+                        header.contains("Năm", true) -> year = body.filter { it.isDigit() }.toIntOrNull()
+                        header.contains("Điểm", true) -> rating = body.split("||").getOrNull(0)?.trim()?.toDoubleOrNull()?.toAnimeHayRatingInt()
+                        header.contains("Trạng thái", true) -> {
+                            status = when {
+                                body.contains("Hoàn thành", ignoreCase = true) -> ShowStatus.Completed
+                                body.contains("Đang", ignoreCase = true) -> ShowStatus.Ongoing
+                                else -> null
+                            }
+                        }
+                        header.contains("Thời lượng", true) -> durationMinutes = body.filter { it.isDigit() }.toIntOrNull()
+                    }
+                }
+            } else {
+                // Nếu không, dùng selector cho cấu trúc cũ (như file fix.html)
+                year = this.selectFirst("div.update_time div:last-child")?.text()?.filter { it.isDigit() }?.toIntOrNull()
+                val ratingText = this.selectFirst("div.score div:last-child")?.text()?.trim()
+                rating = ratingText?.split("||")?.getOrNull(0)?.trim()?.toDoubleOrNull()?.toAnimeHayRatingInt()
+                val statusText = this.selectFirst("div.status div:last-child")?.text()?.trim()
+                status = when {
+                    statusText?.contains("Hoàn thành", ignoreCase = true) == true -> ShowStatus.Completed
+                    statusText?.contains("Đang", ignoreCase = true) == true -> ShowStatus.Ongoing
+                    else -> null
+                }
+                val durationText = this.selectFirst("div.duration div:last-child")?.text()?.trim()
+                durationMinutes = durationText?.filter { it.isDigit() }.toIntOrNull()
             }
-            val episodes = this.select("div.list-item-episode a").mapNotNull { epLink ->
+            // =================================================================
+
+            val episodes = this.select("div.list-episode a, div.list-item-episode a").mapNotNull { epLink ->
                 val epUrl = fixUrl(epLink.attr("href"), baseUrl)
                 val epName = epLink.attr("title")?.trim().takeIf { !it.isNullOrBlank() } ?: epLink.text()
                 if (epUrl != null && epName.isNotBlank()) {
                     newEpisode(data = epUrl) { this.name = epName }
                 } else null
             }.reversed()
+            
             val recommendations = this.select("div.movie-recommend div.movie-item").mapNotNull {
                 it.toSearchResponse(provider, baseUrl)
             }
+            
             return if (hasEpisodes) {
                 provider.newTvSeriesLoadResponse(title, url, mainTvType, episodes) {
                     this.posterUrl = finalPosterUrl
@@ -328,7 +366,6 @@ class AnimeHayProvider : MainAPI() {
                     this.recommendations = recommendations
                 }
             } else {
-                val durationMinutes = this.selectFirst("div.duration div:nth-child(2)")?.text()?.filter { it.isDigit() }?.toIntOrNull()
                 provider.newMovieLoadResponse(title, url, mainTvType, url) {
                     this.posterUrl = finalPosterUrl
                     this.plot = description
