@@ -11,8 +11,8 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import okhttp3.Interceptor
-import okhttp3.ResponseBody.Companion.toResponseBody
+import okhttp3.Interceptor // Import cần thiết
+import okhttp3.ResponseBody.Companion.toResponseBody // Import cần thiết
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.MalformedURLException
@@ -42,41 +42,97 @@ class AnimeHayProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA, TvType.Cartoon)
     override var lang = "vi"
     override val hasMainPage = true
+
+    // =================================================================================================
+    // *** BẮT ĐẦU PHẦN SỬA LỖI: TIÊM INTERCEPTOR TOÀN CỤC ***
+    // =================================================================================================
+    
+    // Dùng để đảm bảo Interceptor chỉ được tiêm một lần duy nhất
+    companion object {
+        private var decrypterInjected = false
+    }
+
+    // init sẽ được gọi khi provider này được khởi tạo
+    init {
+        injectDecrypter()
+    }
+    
+    /**
+     * Hàm giải mã XOR.
+     * @param data Dữ liệu cần giải mã (dạng ByteArray).
+     * @return Dữ liệu đã được giải mã.
+     */
+    private fun decryptXOR(data: ByteArray): ByteArray {
+        val key = byteArrayOf(55, 33, 2, 1, 5, 4, 9, 8, 99, 3, 2, 5, 7, 8, 9, 10)
+        val limit = 1024 
+        val length = if (data.size < limit) data.size else limit
+        
+        for (i in 0 until length) {
+            data[i] = (data[i].toInt() xor key[i % key.size].toInt()).toByte()
+        }
+        return data
+    }
+    
+    /**
+     * Hàm này sẽ thêm bộ giải mã vào trình xử lý mạng chung của Cloudstream.
+     * Đây là cách để đảm bảo nó được thực thi.
+     */
+    private fun injectDecrypter() {
+        // Chỉ chạy một lần
+        if (decrypterInjected) return
+
+        Log.d("AnimeHayProvider", "Bắt đầu tiêm Interceptor giải mã toàn cục.")
+        try {
+            // Thêm Interceptor vào client http chính của ứng dụng
+            app.client = app.client.newBuilder().addInterceptor { chain ->
+                val request = chain.request()
+                val response = chain.proceed(request)
+                val url = request.url.toString()
+
+                val isIbyte = url.contains("ibyteimg.com", ignoreCase = true)
+                val isTiktok = url.contains(".tiktokcdn.", ignoreCase = true)
+                val isSegment = url.contains("segment.cloudbeta.win/file/segment/", ignoreCase = true)
+                val isHtmlToken = url.contains(".html?token=", ignoreCase = true)
+                
+                val needsFix = isIbyte || isTiktok || (isSegment && !isHtmlToken)
+
+                if (needsFix) {
+                    Log.d("AnimeHayProvider", "Interceptor TOÀN CỤC đang chạy trên URL: $url")
+                    val originalBody = response.body ?: return@addInterceptor response
+                    try {
+                        val encryptedBytes = originalBody.bytes()
+                        if (encryptedBytes.isNotEmpty()) {
+                            val decryptedBytes = decryptXOR(encryptedBytes)
+                            val newBody = decryptedBytes.toResponseBody(originalBody.contentType())
+                            return@addInterceptor response.newBuilder().body(newBody).build()
+                        }
+                    } catch (e: Exception) {
+                        Log.e("AnimeHayProvider", "Interceptor toàn cục thất bại khi giải mã", e)
+                    }
+                }
+                response
+            }.build()
+
+            decrypterInjected = true
+            Log.d("AnimeHayProvider", "Đã tiêm Interceptor giải mã toàn cục thành công.")
+        } catch (e: Exception) {
+            Log.e("AnimeHayProvider", "Thất bại khi tiêm Interceptor toàn cục", e)
+        }
+    }
+    
+    // XÓA BỎ HÀM getVideoInterceptor CŨ VÌ NÓ KHÔNG ĐƯỢC GỌI
+    // override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? { ... }
+
+    // =================================================================================================
+    // *** KẾT THÚC PHẦN SỬA LỖI ***
+    // =================================================================================================
+    
     private var currentActiveUrl = "https://animehay.bid"
     private var domainCheckPerformed = false
     private val domainCheckUrl = mainUrl
 
-    // =================================================================================================
-    // *** PHẦN KIỂM TRA DEBUG ***
-    // =================================================================================================
-    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
-        return Interceptor { chain ->
-            val request = chain.request()
-            val url = request.url.toString()
-
-            val isIbyte = url.contains("ibyteimg.com", ignoreCase = true)
-            val isTiktok = url.contains(".tiktokcdn.", ignoreCase = true)
-            val isSegment = url.contains("segment.cloudbeta.win/file/segment/", ignoreCase = true)
-            val isHtmlToken = url.contains(".html?token=", ignoreCase = true)
-            
-            val needsFix = isIbyte || isTiktok || (isSegment && !isHtmlToken)
-
-            if (needsFix) {
-                // === MÃ KIỂM TRA: CỐ TÌNH GÂY LỖI ĐỂ XEM INTERCEPTOR CÓ CHẠY KHÔNG ===
-                throw Exception("ANIMEHAY_DEBUG_INTERCEPTOR_IS_WORKING")
-            }
-            
-            chain.proceed(request)
-        }
-    }
-    // =================================================================================================
-    // *** KẾT THÚC PHẦN KIỂM TRA DEBUG ***
-    // =================================================================================================
-
     private suspend fun getBaseUrl(): String {
-        if (domainCheckPerformed) {
-            return currentActiveUrl
-        }
+        if (domainCheckPerformed) { return currentActiveUrl }
         var finalNewDomain: String? = null
         try {
             val response = app.get(domainCheckUrl, allowRedirects = true)
@@ -196,7 +252,6 @@ class AnimeHayProvider : MainAPI() {
             val pageHtml = document.html()
             val baseUrl = getBaseUrl()
 
-            // 1. Server TOK
             val m3u8Link = Regex("""tik:\s*['"]([^'"]+)['"]""").find(combinedScript)?.groupValues?.get(1)?.trim()
             if (!m3u8Link.isNullOrEmpty()) {
                 callback(
@@ -205,42 +260,6 @@ class AnimeHayProvider : MainAPI() {
                         this.referer = baseUrl 
                     }
                 )
-                foundLinks = true
-            }
-
-            // Các server khác...
-            listOf("gun", "pho").forEach { server ->
-                val idRegex = Regex("""src=["'](https?://[^"']*$server\.php\?id=([^&"']+)&[^"']*)["']""")
-                var match = idRegex.find(combinedScript) ?: idRegex.find(pageHtml)
-                var link = match?.groupValues?.get(1)?.let{ fixUrl(it, baseUrl) }
-                var id = match?.groupValues?.get(2)
-
-                if (link.isNullOrEmpty() || id.isNullOrEmpty()) {
-                    val iframe = document.selectFirst("iframe#${server}_if[src*=$server.php]")
-                    link = iframe?.attr("src")?.let{ fixUrl(it, baseUrl) }
-                    if (!link.isNullOrEmpty()) {
-                        id = Regex(""".*$server\.php\?id=([^&"']+)""").find(link)?.groupValues?.get(1)
-                        if (id.isNullOrEmpty()) link = null
-                    }
-                }
-                if (!link.isNullOrEmpty() && !id.isNullOrEmpty()) {
-                    val playlistVersion = if (server == "gun") "v2/" else ""
-                    val finalM3u8Link = "https://pt.rapovideo.xyz/playlist/$playlistVersion$id/master.m3u8"
-                    callback(
-                        newExtractorLink(source = finalM3u8Link, name = "Server ${server.uppercase()}", url = finalM3u8Link, type = ExtractorLinkType.M3U8) {
-                            this.quality = Qualities.Unknown.value
-                            this.referer = link
-                        }
-                    )
-                    foundLinks = true
-                }
-            }
-
-            val hydraxLink = (Regex("""src=["']([^"']*playhydrax\.com[^"']*)["']""").find(combinedScript)?.groupValues?.get(1)
-                ?: document.selectFirst("iframe[src*=playhydrax.com]")?.attr("src"))?.let { fixUrl(it, baseUrl) }
-            
-            if (!hydraxLink.isNullOrEmpty()) {
-                loadExtractor(hydraxLink, data, subtitleCallback, callback)
                 foundLinks = true
             }
 
