@@ -38,7 +38,6 @@ class LongTiengPhimProvider : MainAPI() {
 
         return newMovieSearchResponse(title, href, TvType.Movie) {
             this.posterUrl = posterUrl
-            // Lỗi xảy ra ở đây, đã xóa dòng `this.addDubStatus(true)`
         }
     }
 
@@ -62,11 +61,14 @@ class LongTiengPhimProvider : MainAPI() {
         }
 
         // Lấy danh sách tập phim
-        val episodes = document.select("div#halim-list-server ul.halim-list-eps li.halim-episode a").map {
-            Episode(it.attr("href"), it.text().trim())
+        val episodes = document.select("div#halim-list-server ul.halim-list-eps li.halim-episode a").mapNotNull {
+            // SỬA LỖI: Loại bỏ khoảng trắng khỏi URL của tập phim
+            val episodeUrl = it.attr("href").replace(" ", "")
+            Episode(episodeUrl, it.text().trim())
         }.ifEmpty {
-            // Xử lý trường hợp phim lẻ không có danh sách tập
-            val watchUrl = url.replace(mainUrl, "$mainUrl/watch")
+            // Cải thiện logic cho phim lẻ: tạo URL xem phim đúng định dạng
+            val slug = url.trim('/').substringAfterLast('/')
+            val watchUrl = "$mainUrl/watch/$slug-eps-1-server-1"
             listOf(Episode(watchUrl, "Xem phim"))
         }
 
@@ -85,7 +87,9 @@ class LongTiengPhimProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val watchPageSource = app.get(data).text
+        // SỬA LỖI: Đảm bảo URL được truyền vào đây cũng không có khoảng trắng
+        val fixedData = data.replace(" ", "")
+        val watchPageSource = app.get(fixedData).text
 
         // Trích xuất các giá trị cần thiết cho AJAX request
         val postId = Regex("""'postid':\s*'(\d+)'""").find(watchPageSource)?.groupValues?.get(1)
@@ -104,7 +108,7 @@ class LongTiengPhimProvider : MainAPI() {
         val playerScript = app.post(
             "$mainUrl/wp-admin/admin-ajax.php",
             data = postData,
-            referer = data,
+            referer = fixedData, // Dùng URL đã sửa lỗi
             headers = mapOf("X-Requested-With" to "XMLHttpRequest")
         ).text
 
