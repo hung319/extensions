@@ -3,7 +3,8 @@ package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.loadExtractor
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
 import android.util.Base64
 
@@ -29,11 +30,11 @@ class Av123Provider : MainAPI() {
         return newHomePageResponse(request.name, home)
     }
 
-    // ##### HÀM ĐÃ ĐƯỢC SỬA LỖI #####
     private fun Element.toSearchResult(): SearchResponse? {
         val a = this.selectFirst("a") ?: return null
-        // Sửa lỗi tạo URL bằng cách thêm mã ngôn ngữ (lang)
-        val href = fixUrl(a.attr("href").let { if (it.startsWith("/")) it else "/$lang/$it" })
+        val href = fixUrl(a.attr("href").let {
+             if (it.startsWith("http")) it else "$mainUrl$it"
+        })
         if (href.isBlank()) return null
 
         val title = this.selectFirst("div.detail a")?.text()?.trim() ?: return null
@@ -53,7 +54,6 @@ class Av123Provider : MainAPI() {
         }
     }
 
-    // ##### HÀM ĐÃ ĐƯỢC CẬP NHẬT #####
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
@@ -62,7 +62,6 @@ class Av123Provider : MainAPI() {
         val tags = document.select("span.genre a").map { it.text() }
         val description = document.selectFirst("div.description p")?.text()
 
-        // Thêm phương thức dự phòng để lấy movieId, tăng độ tin cậy
         val movieId = document.selectFirst("#page-video")
             ?.attr("v-scope")
             ?.substringAfter("Movie({id: ")
@@ -92,6 +91,26 @@ class Av123Provider : MainAPI() {
         return result.toString()
     }
 
+    private fun deobfuscateScript(p: String, a: Int, c: Int, k: List<String>): String {
+        var pStr = p
+        val d = mutableMapOf<String, String>()
+
+        fun e(c_val: Int): String {
+            return if (c_val < a) "" else e(c_val / a) +
+                    (if (c_val % a > 35) (c_val % a + 29).toChar().toString() else (c_val % a).toString(36))
+        }
+
+        var cVar = c
+        while (cVar-- > 0) {
+            d[e(cVar)] = if (k.getOrNull(cVar) != null && k[cVar].isNotEmpty()) k[cVar] else e(cVar)
+        }
+        
+        for (key in d.keys) {
+            pStr = pStr.replace(Regex("\\b$key\\b"), d[key]!!)
+        }
+        return pStr
+    }
+
     override suspend fun loadLinks(
         data: String, // movieId
         isCasting: Boolean,
@@ -99,14 +118,49 @@ class Av123Provider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val apiUrl = "$mainUrl/$lang/ajax/v/$data/videos"
-        val res = app.get(apiUrl).parsedSafe<ApiResponse>()
+        val apiRes = app.get(apiUrl).parsedSafe<ApiResponse>()
 
-        res?.result?.watch?.apmap { watchItem ->
-            val encodedUrl = watchItem.url ?: return@apmap
-            val decodedPath = xorDecode(encodedUrl)
-            val iframeUrl = "https://surrit.store$decodedPath"
+        apiRes?.result?.watch?.forEach { watchItem ->
+            try {
+                val encodedUrl = watchItem.url ?: return@forEach
+                val decodedPath = xorDecode(encodedUrl)
+                val iframeUrl = "https://surrit.store$decodedPath"
+                val iframeContent = app.get(iframeUrl, referer = mainUrl).text
 
-            loadExtractor(iframeUrl, mainUrl, subtitleCallback, callback)
+                val evalRegex = Regex("""eval\(function\(p,a,c,k,e,d\)\{(.+?)\((.+)\)\)""")
+                val match = evalRegex.find(iframeContent) ?: return@forEach
+                val captured = match.groupValues[2]
+
+                val paramsRegex = Regex("""'(.+)',(\d+),(\d+),'(.+?)'\.split\('\|'\)""")
+                val paramsMatch = paramsRegex.find(captured) ?: return@forEach
+
+                val p = paramsMatch.groupValues[1]
+                val a = paramsMatch.groupValues[2].toInt()
+                val c = paramsMatch.groupValues[3].toInt()
+                val k = paramsMatch.groupValues[4].split("|")
+
+                val deobfuscated = deobfuscateScript(p, a, c, k)
+                
+                val m3u8Regex = Regex("""(https?://[^\s'"]+\.m3u8)""")
+                val m3u8Match = m3u8Regex.find(deobfuscated)
+                val m3u8Url = m3u8Match?.groupValues?.get(1)
+
+                if (m3u8Url != null) {
+                    // ##### DÒNG ĐÃ ĐƯỢC SỬA LẠI THEO ĐÚNG CẤU TRÚC MỚI #####
+                    callback.invoke(
+                        ExtractorLink(
+                            source = this.name,
+                            name = "123AV",
+                            url = m3u8Url,
+                            referer = iframeUrl,
+                            quality = Qualities.Unknown.value,
+                            type = ExtractorLinkType.M3U8 // Sử dụng type thay cho isM3u8
+                        )
+                    )
+                }
+            } catch (e: Exception) {
+                // Ignore and continue
+            }
         }
         return true
     }
