@@ -1,10 +1,13 @@
+// Save this file as XpornTo.kt
 package recloudstream
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType // Import for the enum
+import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
 
-open class XpornTo : MainAPI() {
+class XpornTo : MainAPI() {
     override var mainUrl = "https://xporn.to"
     override var name = "Xporn.to"
     override val hasMainPage = true
@@ -14,53 +17,97 @@ open class XpornTo : MainAPI() {
         TvType.NSFW
     )
 
-    override val mainPage = mainPageOf(
-        "/" to "Latest Videos",
-    )
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val document = app.get("$mainUrl/page/$page/").document
+        val homePageList = ArrayList<HomePageList>()
 
-    override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url).document
-        val items = document.select("div.videos__inner > div.post, main#main > div.articles > article").mapNotNull {
+        val mainVideos = document.select("div.videos__inner > div.video").mapNotNull {
             it.toSearchResult()
         }
+        if (mainVideos.isNotEmpty()) {
+            homePageList.add(HomePageList("Latest Videos", mainVideos))
+        }
 
-        return newVideoSearchLoadResponse(name, url, TvType.NSFW, items)
+        return HomePageResponse(homePageList)
+    }
+
+    private fun Element.toSearchResult(): SearchResponse? {
+        val title = this.selectFirst("h3.video__title")?.text()?.trim() ?: return null
+        val href = this.selectFirst("a.video__link")?.attr("href") ?: return null
+        val posterUrl = this.selectFirst("img.video__poster--image")?.attr("src")
+
+        return newTvSeriesSearchResponse(title, href, TvType.NSFW) {
+            this.posterUrl = posterUrl
+        }
     }
     
+    private fun Element.toSearchArticleResult(): SearchResponse? {
+        val title = this.selectFirst("h2.article__title a")?.text()?.trim() ?: return null
+        val href = this.selectFirst("a")?.attr("href") ?: return null
+        val posterUrl = this.selectFirst("img")?.attr("src")
+
+        return newTvSeriesSearchResponse(title, href, TvType.NSFW) {
+            this.posterUrl = posterUrl
+        }
+    }
+
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/?s=$query&post_type=video"
         val document = app.get(searchUrl).document
-        val results = document.select("main#main > div.articles > article").mapNotNull {
-            it.toSearchResult()
+
+        return document.select("article.video").mapNotNull {
+            it.toSearchArticleResult()
         }
-        return results
+    }
+
+    override suspend fun load(url: String): LoadResponse? {
+        val document = app.get(url).document
+
+        val title = document.selectFirst("h1.single-video__title")?.text()?.trim() ?: "No title"
+        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
+        val description = document.selectFirst("div.single-video__description > div > p")?.text()
+        val tags = document.select("div.st-post-tags a").map { it.text() }
+
+        // Extract the `data` parameter from the iframe src
+        val iframeSrc = document.selectFirst("p > iframe")?.attr("src") ?: return null
+        val dataParam = iframeSrc.substringAfter("data=", "")
+
+        if (dataParam.isBlank()) return null
+
+        val episodes = listOf(
+            newEpisode(dataParam) { // Pass only the data parameter to loadLinks
+                this.name = title
+                this.description = description
+            }
+        )
+
+        return newTvSeriesLoadResponse(title, url, TvType.NSFW, episodes) {
+            this.posterUrl = poster
+            this.plot = description
+            this.tags = tags
+        }
     }
 
     override suspend fun loadLinks(
-        data: String,
+        data: String, // This is the `data` parameter, e.g., "707597804a4106d6c217fa74667d75bf"
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data).document
+        // Directly construct the final M3U8 URL
+        val videoUrl = "https://xporn.xtremestream.xyz/player/xs1.php?data=$data"
+        val referer = "https://xporn.xtremestream.xyz/"
 
-        // Tìm thẻ iframe và lấy src
-        val iframeSrc = document.selectFirst("div.single-video__head iframe")?.attr("src") ?: return false
-
-        // Dùng loadExtractor để xử lý URL từ iframe, nó sẽ tự động tìm trình trích xuất phù hợp
-        return loadExtractor(iframeSrc, data, subtitleCallback, callback)
-    }
-
-    private fun Element.toSearchResult(): SearchResponse? {
-        val linkElement = this.selectFirst("a.masvideos-LoopVideo-link") ?: return null
-        val href = linkElement.attr("href")
-        if (href.isBlank()) return null
-        
-        val title = this.selectFirst("h3.video__title, h2.article__title a")?.text() ?: return null
-        val posterUrl = this.selectFirst("img.video__poster--image, img.article__attachment--thumbnail img")?.attr("src")
-
-        return newMovieSearchResponse(title, href, TvType.NSFW) {
-            this.posterUrl = posterUrl
-        }
+        callback.invoke(
+            ExtractorLink(
+                source = this.name,
+                name = "${this.name} - Auto",
+                url = videoUrl,
+                referer = referer,
+                quality = Qualities.Unknown.value,
+                type = ExtractorLinkType.M3U8 // <<<< CHANGED HERE
+            )
+        )
+        return true
     }
 }
