@@ -382,7 +382,7 @@ class MotChillProvider : MainAPI() {
         }
         return foundAnyLink
     }
-
+    
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor {
         return object : Interceptor {
             override fun intercept(chain: Interceptor.Chain): Response {
@@ -410,29 +410,18 @@ class MotChillProvider : MainAPI() {
     }
 }
 
-/**
-* =============================================
-* === HÀM SKIPBYTEERROR ĐÃ ĐƯỢC CẬP NHẬT ===
-* =============================================
-* Hàm phụ trợ cho interceptor.
-* Dùng để sửa lỗi video bằng cách tìm và cắt bỏ file PNG được chèn vào đầu segment.
-*/
 private fun skipByteError(responseBody: ResponseBody): ByteArray {
     val bytes = responseBody.bytes()
     
-    // Chuỗi byte đặc trưng của chunk IEND trong file PNG, đây là điểm kết thúc của file ảnh
-    // IEND®B`‚ -> 49 45 4E 44 AE 42 60 82
-    val pngEndSignature = byteArrayOf(0x49, 0x45, 0x4E, 0x44, -82, 0x42, 0x60, -126).toByteArray()
+    // IEND®B`‚ -> 49 45 4E 44 AE 42 60 82 (hex)
+    val pngEndSignature = byteArrayOf(0x49, 0x45, 0x4E, 0x44, -82, 0x42, 0x60, -126)
 
-    // Tìm vị trí của chuỗi byte này
     val index = bytes.indexOf(pngEndSignature)
 
-    // Nếu tìm thấy, cắt mảng byte ngay sau chuỗi này.
-    // Nếu không tìm thấy, trả về mảng byte gốc để tránh lỗi.
     return if (index != -1) {
         bytes.copyOfRange(index + pngEndSignature.size, bytes.size)
     } else {
-        // Fallback: nếu không tìm thấy signature, thử lại logic cũ
+        // Fallback
         val length = bytes.size - 188
         var start = 0
         for (i in 0 until length) {
@@ -446,7 +435,6 @@ private fun skipByteError(responseBody: ResponseBody): ByteArray {
     }
 }
 
-// Hàm extension để tìm chuỗi byte, cần thiết cho logic ở trên
 private fun ByteArray.indexOf(sub: ByteArray): Int {
     if (sub.isEmpty()) return 0
     for (i in 0 until this.size - sub.size + 1) {
