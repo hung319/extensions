@@ -20,9 +20,13 @@ import java.security.Security
 import java.util.Base64
 import org.bouncycastle.jce.provider.BouncyCastleProvider
 
+import okhttp3.Interceptor
+import okhttp3.Response
+import okhttp3.ResponseBody
+import okhttp3.ResponseBody.Companion.toResponseBody
+
 class MotChillProvider : MainAPI() {
-    // === ĐÃ CẬP NHẬT ===
-    override var mainUrl = "https://www.motchill95.com" 
+    override var mainUrl = "https://www.motchill95.com"
     override var name = "MotChill"
     override val hasMainPage = true
     override var lang = "vi"
@@ -245,7 +249,7 @@ class MotChillProvider : MainAPI() {
             }
         }
         val currentSyncData = mutableMapOf("url" to url)
-        
+
         if (isTvSeries || (episodes.size > 1 && !episodes.all { it.name == title })) {
             return newTvSeriesLoadResponse(
                 name = title,
@@ -324,11 +328,6 @@ class MotChillProvider : MainAPI() {
         return false
     }
 
-    // =================================================================
-    // GHI CHÚ QUAN TRỌNG
-    // Hàm `loadLinks` dưới đây có logic đã LỖI THỜI so với trang motchill95.com
-    // Nó cần được VIẾT LẠI để ưu tiên lấy link từ JWPlayer như đã phân tích.
-    // =================================================================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -356,7 +355,7 @@ class MotChillProvider : MainAPI() {
             println("$name: Could not get iframeUrlPlayerPage from $data. Trying initial JWPlayer fallback.")
             return false
         }
-        
+
         val absoluteIframeUrlPlayerPage = fixUrl(iframeUrlPlayerPage)
         println("$name: Player Page URL (player.html): $absoluteIframeUrlPlayerPage")
         val playerPageDocument = app.get(absoluteIframeUrlPlayerPage, interceptor = cfKiller, referer = data).document
@@ -375,7 +374,7 @@ class MotChillProvider : MainAPI() {
 
             if (!serverUrlStringFromButton.isNullOrBlank()) {
                 val fullServerUrlTarget = fixUrl(serverUrlStringFromButton)
-                
+
                 if (this.extractAndSubmitM3u8(serverName, fullServerUrlTarget, absoluteIframeUrlPlayerPage, callback)) {
                     foundAnyLink = true
                 }
@@ -383,4 +382,57 @@ class MotChillProvider : MainAPI() {
         }
         return foundAnyLink
     }
+    
+    /**
+    * Interceptor để sửa lỗi phát video bằng cách bỏ qua các byte lỗi ở đầu.
+    */
+    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor {
+        return object : Interceptor {
+            override fun intercept(chain: Interceptor.Chain): Response {
+                val request = chain.request()
+                val response = chain.proceed(request)
+                val url = request.url.toString()
+
+                // === ĐÃ CẬP NHẬT: GIỮ NGUYÊN LOGIC GỐC TỪ ANIMEHAY ===
+                if (url.contains("ibyteimg.com") ||
+                    url.contains(".tiktokcdn.") ||
+                    (url.contains("segment.cloudbeta.win/file/segment/") && url.contains(".html?token="))
+                ) {
+                    response.body?.let { body ->
+                        try {
+                            val fixedBytes = skipByteError(body)
+                            val newBody = fixedBytes.toResponseBody(body.contentType())
+                            return response.newBuilder().body(newBody).build()
+                        } catch (e: Exception) {
+                            // Bỏ qua và trả về response gốc nếu có lỗi
+                        }
+                    }
+                }
+                return response
+            }
+        }
+    }
+}
+
+/**
+* Hàm phụ trợ cho interceptor.
+* Dùng để sửa lỗi video bằng cách bỏ qua các byte lỗi ở đầu.
+*/
+private fun skipByteError(responseBody: ResponseBody): ByteArray {
+    val source = responseBody.source()
+    source.request(Long.MAX_VALUE)
+    val buffer = source.buffer.clone()
+    source.close()
+
+    val byteArray = buffer.readByteArray()
+    val length = byteArray.size - 188
+    var start = 0
+    for (i in 0 until length) {
+        val nextIndex = i + 188
+        if (nextIndex < byteArray.size && byteArray[i].toInt() == 71 && byteArray[nextIndex].toInt() == 71) {
+            start = i
+            break
+        }
+    }
+    return if (start > 0) byteArray.copyOfRange(start, byteArray.size) else byteArray
 }
