@@ -56,8 +56,11 @@ class LongTiengPhimProvider : MainAPI() {
         val poster = document.selectFirst("img.movie-thumb")?.attr("src")
         val plot = document.selectFirst("div.entry-content > article")?.text()?.trim()
         val year = document.selectFirst("a[href*=/release/]")?.text()?.trim()?.toIntOrNull()
+        
+        // <--- YÊU CẦU 1 & 2: Lấy danh sách thẻ (tag) để xử lý
         val tags = document.select("div.more-info a[rel=category-tag]").map { it.text() }
 
+        // <--- YÊU CẦU 2: Kiểm tra nếu có tag "Phim Hoạt Hình" thì gán TvType.Anime
         val isAnime = tags.any { it.contains("Hoạt Hình", ignoreCase = true) }
         val tvType = if (isAnime) TvType.Anime else TvType.TvSeries
 
@@ -82,6 +85,7 @@ class LongTiengPhimProvider : MainAPI() {
             this.posterUrl = poster
             this.plot = plot
             this.year = year
+            // <--- YÊU CẦU 1: Gán danh sách thẻ (tag) vào kết quả trả về
             this.tags = tags
             this.recommendations = recommendations
         }
@@ -117,11 +121,10 @@ class LongTiengPhimProvider : MainAPI() {
         val videoUrlRegex = Regex("""file":"([^"]+)"""", RegexOption.DOT_MATCHES_ALL)
         val match = videoUrlRegex.find(playerScript) ?: return false
 
-        // SỬA LỖI: Chỉ xóa các ký tự xuống dòng, giữ lại khoảng trắng
         val videoUrl = match.groupValues[1]
-            .replace("\\/", "/") // Thay thế `\/` thành `/`
-            .replace("\n", "")      // Xóa ký tự xuống dòng
-            .replace("\r", "")      // Xóa ký tự xuống dòng (cho Windows)
+            .replace("\\/", "/")
+            .replace("\n", "")
+            .replace("\r", "")
 
         if (!videoUrl.startsWith("http")) return false
 
