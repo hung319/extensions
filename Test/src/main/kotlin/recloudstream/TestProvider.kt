@@ -3,7 +3,7 @@ package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType // Import for the enum
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
 
@@ -13,19 +13,23 @@ class XpornTo : MainAPI() {
     override val hasMainPage = true
     override var lang = "en"
     override val hasDownloadSupport = true
+    // The content type is NSFW, which is appropriate. The response objects will be of the "Movie" type.
     override val supportedTypes = setOf(
         TvType.NSFW
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get("$mainUrl/page/$page/").document
+        val url = if (page == 1) mainUrl else "$mainUrl/page/$page/"
+        val document = app.get(url).document
+        
         val homePageList = ArrayList<HomePageList>()
 
         val mainVideos = document.select("div.videos__inner > div.video").mapNotNull {
             it.toSearchResult()
         }
+        
         if (mainVideos.isNotEmpty()) {
-            homePageList.add(HomePageList("Latest Videos", mainVideos))
+            homePageList.add(HomePageList("Latest Videos", mainVideos, true))
         }
 
         return HomePageResponse(homePageList)
@@ -36,7 +40,8 @@ class XpornTo : MainAPI() {
         val href = this.selectFirst("a.video__link")?.attr("href") ?: return null
         val posterUrl = this.selectFirst("img.video__poster--image")?.attr("src")
 
-        return newTvSeriesSearchResponse(title, href, TvType.NSFW) {
+        // Changed to newMovieSearchResponse
+        return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
         }
     }
@@ -46,7 +51,8 @@ class XpornTo : MainAPI() {
         val href = this.selectFirst("a")?.attr("href") ?: return null
         val posterUrl = this.selectFirst("img")?.attr("src")
 
-        return newTvSeriesSearchResponse(title, href, TvType.NSFW) {
+        // Changed to newMovieSearchResponse
+        return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
         }
     }
@@ -68,33 +74,31 @@ class XpornTo : MainAPI() {
         val description = document.selectFirst("div.single-video__description > div > p")?.text()
         val tags = document.select("div.st-post-tags a").map { it.text() }
 
-        // Extract the `data` parameter from the iframe src
         val iframeSrc = document.selectFirst("p > iframe")?.attr("src") ?: return null
         val dataParam = iframeSrc.substringAfter("data=", "")
 
         if (dataParam.isBlank()) return null
+        
+        val recommendations = document.select("section.single-video__related div.video").mapNotNull {
+            it.toSearchResult()
+        }
 
-        val episodes = listOf(
-            newEpisode(dataParam) { // Pass only the data parameter to loadLinks
-                this.name = title
-                this.description = description
-            }
-        )
-
-        return newTvSeriesLoadResponse(title, url, TvType.NSFW, episodes) {
+        // Changed to newMovieLoadResponse
+        // No longer need an "episodes" list, just pass the data parameter directly.
+        return newMovieLoadResponse(title, url, TvType.NSFW, dataParam) {
             this.posterUrl = poster
             this.plot = description
             this.tags = tags
+            this.recommendations = recommendations
         }
     }
 
     override suspend fun loadLinks(
-        data: String, // This is the `data` parameter, e.g., "707597804a4106d6c217fa74667d75bf"
+        data: String, // This is the `data` parameter from newMovieLoadResponse
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Directly construct the final M3U8 URL
         val videoUrl = "https://xporn.xtremestream.xyz/player/xs1.php?data=$data"
         val referer = "https://xporn.xtremestream.xyz/"
 
@@ -105,7 +109,7 @@ class XpornTo : MainAPI() {
                 url = videoUrl,
                 referer = referer,
                 quality = Qualities.Unknown.value,
-                type = ExtractorLinkType.M3U8 // <<<< CHANGED HERE
+                type = ExtractorLinkType.M3U8
             )
         )
         return true
