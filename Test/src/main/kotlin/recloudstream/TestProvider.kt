@@ -1,59 +1,53 @@
-// Package recloudstream
 package recloudstream
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-import android.util.Base64
+import com.lagradost.cloudstream3.models.ExtractorLink
+import com.lagradost.cloudstream3.models.Qualities
+import com.lagradost.cloudstream3.models.SubtitleFile
+import com.lagradost.cloudstream3.models.TvType
 
-class Av123Provider : MainAPI() {
-    override var mainUrl = "https://www1.123av.com"
-    override var name = "123AV"
+class LongTiengPhimProvider : MainAPI() {
+    // Thông tin cơ bản về provider
+    override var mainUrl = "https://longtiengphim.com"
+    override var name = "Lồng Tiếng Phim"
     override val hasMainPage = true
     override var lang = "vi"
-    override val supportedTypes = setOf(TvType.NSFW)
+    override val supportedTypes = setOf(
+        TvType.Movie,
+        TvType.TvSeries
+    )
 
+    // Danh sách trang chính
     override val mainPage = mainPageOf(
-        "dm5/new-release" to "Mới phát hành",
-        "dm6/recent-update" to "Cập nhật gần đây",
-        "dm5/trending" to "Đang thịnh hành"
+        "$mainUrl/tat-ca-phim/page/" to "Tất Cả Phim",
+        "$mainUrl/phim-chieu-rap/page/" to "Phim Chiếu Rạp",
+        "$mainUrl/phim-hoat-hinh/page/" to "Phim Hoạt Hình",
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = "$mainUrl/$lang/${request.data}?page=$page"
-        val document = app.get(url).document
-        val home = document.select("div.box-item-list div.box-item").mapNotNull {
+        val document = app.get(request.data + page).document
+        val home = document.select("div.halim_box > article").mapNotNull {
             it.toSearchResult()
         }
         return newHomePageResponse(request.name, home)
     }
 
+    // Hàm chuyển đổi element thành kết quả tìm kiếm
     private fun Element.toSearchResult(): SearchResponse? {
-        val a = this.selectFirst("a") ?: return null
-        val hrefRaw = a.attr("href")
-        val href = if (hrefRaw.startsWith("http")) {
-            hrefRaw
-        } else {
-            "$mainUrl/$lang/${hrefRaw.removePrefix("/")}"
-        }
+        val title = this.selectFirst("h2.entry-title")?.text()?.trim() ?: return null
+        val href = this.selectFirst("a.halim-thumb")?.attr("href") ?: return null
+        val posterUrl = this.selectFirst("figure.film-poster img, figure.lazy.img-responsive")?.attr("src") ?: this.selectFirst("img")?.attr("src")
 
-        if (href.isBlank()) return null
-
-        val title = this.selectFirst("div.detail a")?.text()?.trim() ?: return null
-        val posterUrl = this.selectFirst("div.thumb img")?.attr("data-src")
-
-        return newMovieSearchResponse(title, href, TvType.NSFW) {
+        return newMovieSearchResponse(title, href, TvType.Movie) {
             this.posterUrl = posterUrl
         }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$mainUrl/$lang/search?keyword=$query"
-        val document = app.get(url).document
-
-        return document.select("div.box-item-list div.box-item").mapNotNull {
+        val document = app.get("$mainUrl/?s=$query").document
+        return document.select("div.halim_box > article").mapNotNull {
             it.toSearchResult()
         }
     }
@@ -61,126 +55,79 @@ class Av123Provider : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
-        val title = document.selectFirst("h1")?.text()?.trim() ?: return null
-        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
-        val tags = document.select("span.genre a").map { it.text() }
-        val description = document.selectFirst("div.description p")?.text()
+        val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: return null
+        val poster = document.selectFirst("img.movie-thumb")?.attr("src")
+        val plot = document.selectFirst("div.entry-content > article")?.text()?.trim()
+        val year = document.selectFirst("a[href*=/release/]")?.text()?.trim()?.toIntOrNull()
+        val tags = document.select("div.more-info a[rel=category-tag]").map { it.text() }
+        val recommendations = document.select("div#halim_related_movies-3 article").mapNotNull {
+            it.toSearchResult()
+        }
 
-        val movieId = document.selectFirst("#page-video")
-            ?.attr("v-scope")
-            ?.substringAfter("Movie({id: ")
-            ?.substringBefore(",")
-            ?.trim()
-            ?: document.selectFirst(".favourite")
-            ?.attr("v-scope")
-            ?.substringAfter("movie', ")
-            ?.substringBefore(",")
-            ?.trim()
-            ?: return null
+        // Lấy danh sách tập phim
+        val episodes = document.select("div#halim-list-server ul.halim-list-eps li.halim-episode a").map {
+            Episode(it.attr("href"), it.text().trim())
+        }.ifEmpty {
+            // Xử lý trường hợp phim lẻ không có danh sách tập
+            val watchUrl = url.replace(mainUrl, "$mainUrl/watch")
+            listOf(Episode(watchUrl, "Xem phim"))
+        }
 
-        return newMovieLoadResponse(title, url, TvType.NSFW, movieId) {
+        return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
             this.posterUrl = poster
-            this.plot = description
+            this.plot = plot
+            this.year = year
             this.tags = tags
+            this.recommendations = recommendations
+            addDubStatus(true)
         }
-    }
-    
-    // ##### HÀM GIẢI MÃ ĐÃ ĐƯỢC VIẾT LẠI CHÍNH XÁC #####
-    private fun xorDecode(input: String): String {
-        val key = "MW4gC3v5a1q2E6Z"
-        try {
-            val decodedBytes = Base64.decode(input, Base64.DEFAULT)
-            val resultBytes = ByteArray(decodedBytes.size)
-
-            for (i in decodedBytes.indices) {
-                resultBytes[i] = (decodedBytes[i].toInt() xor key[i % key.length].code).toByte()
-            }
-            return String(resultBytes, Charsets.UTF_8)
-        } catch (e: Exception) {
-            // Trả về chuỗi rỗng nếu có lỗi để tránh làm hỏng luồng
-            return ""
-        }
-    }
-
-    private fun deobfuscateScript(p: String, a: Int, c: Int, k: List<String>): String {
-        var pStr = p
-        val d = mutableMapOf<String, String>()
-
-        fun e(c_val: Int): String {
-            return if (c_val < a) "" else e(c_val / a) +
-                    (if (c_val % a > 35) (c_val % a + 29).toChar().toString() else (c_val % a).toString(36))
-        }
-
-        var cVar = c
-        while (cVar-- > 0) {
-            d[e(cVar)] = if (k.getOrNull(cVar) != null && k[cVar].isNotEmpty()) k[cVar] else e(cVar)
-        }
-        
-        for (key in d.keys) {
-            pStr = pStr.replace(Regex("\\b$key\\b"), d[key]!!)
-        }
-        return pStr
     }
 
     override suspend fun loadLinks(
-        data: String, // movieId
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        try {
-            val apiUrl = "$mainUrl/$lang/ajax/v/$data/videos"
-            val apiRes = app.get(apiUrl).parsedSafe<ApiResponse>()
-                ?: return false // Không tìm thấy thì bỏ qua
+        val watchPageSource = app.get(data).text
 
-            apiRes.result?.watch?.forEach { watchItem ->
-                val encodedUrl = watchItem.url ?: return@forEach
-                val decodedPath = xorDecode(encodedUrl)
-                
-                if (decodedPath.isBlank() || !decodedPath.startsWith("/")) return@forEach
+        // Trích xuất các giá trị cần thiết cho AJAX request
+        val postId = Regex("""'postid':\s*'(\d+)'""").find(watchPageSource)?.groupValues?.get(1)
+            ?: Regex("""post_id:\s*(\d+)""").find(watchPageSource)?.groupValues?.get(1)
+            ?: return false
+        val nonce = Regex(""""nonce":"([^"]+)"""").find(watchPageSource)?.groupValues?.get(1) ?: return false
 
-                val iframeUrl = "https://surrit.store$decodedPath"
-                val iframeContent = app.get(iframeUrl, referer = mainUrl).text
-                
-                val evalRegex = Regex("""eval\(function\(p,a,c,k,e,d\)\{(.+?)\((.+)\)\)""")
-                val match = evalRegex.find(iframeContent) ?: return@forEach
-                val captured = match.groupValues[2]
+        // Dữ liệu gửi đi trong POST request
+        val postData = mapOf(
+            "action" to "halim_ajax_player",
+            "nonce" to nonce,
+            "postid" to postId,
+        )
 
-                val paramsRegex = Regex("""'(.+)',(\d+),(\d+),'(.+?)'\.split\('\|'\)""")
-                val paramsMatch = paramsRegex.find(captured) ?: return@forEach
+        // Gửi POST request để lấy script của player
+        val playerScript = app.post(
+            "$mainUrl/wp-admin/admin-ajax.php",
+            data = postData,
+            referer = data,
+            headers = mapOf("X-Requested-With" to "XMLHttpRequest")
+        ).text
 
-                val p = paramsMatch.groupValues[1]
-                val a = paramsMatch.groupValues[2].toInt()
-                val c = paramsMatch.groupValues[3].toInt()
-                val k = paramsMatch.groupValues[4].split("|")
+        // Dùng Regex để tìm URL video .mp4
+        val videoUrl = Regex("""file":"(https?://[^"]+?\.mp4)"""")
+            .find(playerScript)?.groupValues?.get(1)?.replace("\\", "")
+            ?: return false
 
-                val deobfuscated = deobfuscateScript(p, a, c, k)
-                
-                val m3u8Regex = Regex("""(https?://[^\s'"]+\.m3u8)""")
-                val m3u8Match = m3u8Regex.find(deobfuscated)
-                val m3u8Url = m3u8Match?.groupValues?.get(1)
-
-                if (m3u8Url != null) {
-                    callback.invoke(
-                        ExtractorLink(
-                            source = this.name,
-                            name = "123AV",
-                            url = m3u8Url,
-                            referer = iframeUrl,
-                            quality = Qualities.Unknown.value,
-                            type = ExtractorLinkType.M3U8
-                        )
-                    )
-                }
-            }
-        } catch (e: Exception) {
-            // In lỗi ra log để gỡ lỗi nếu cần, nhưng không làm crash plugin
-            e.printStackTrace()
-        }
+        callback(
+            ExtractorLink(
+                source = this.name,
+                name = "Server Lồng Tiếng",
+                url = videoUrl,
+                referer = "$mainUrl/",
+                quality = Qualities.Unknown.value,
+                // Cập nhật: Sử dụng ExtractorLinkType.VIDEO cho file .mp4
+                type = ExtractorLinkType.VIDEO,
+            )
+        )
         return true
     }
-
-    data class WatchItem(val url: String?)
-    data class ApiResult(val watch: List<WatchItem>?)
-    data class ApiResponse(val result: ApiResult?)
 }
