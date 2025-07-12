@@ -85,23 +85,19 @@ class Av123Provider : MainAPI() {
         }
     }
 
-    // ##### HÀM ĐÃ ĐƯỢC SỬA LỖI LOGIC GIẢI MÃ #####
     private fun xorDecode(input: String): String {
         val key = "MW4gC3v5a1q2E6Z"
         try {
-            // Giải mã Base64 thành mảng byte
             val decodedBytes = Base64.decode(input, Base64.URL_SAFE or Base64.NO_WRAP)
-            // Chuyển mảng byte thành chuỗi bằng charset ISO-8859-1 để mô phỏng chính xác atob() của JS
             val decodedString = String(decodedBytes, Charsets.ISO_8859_1)
             
             val result = StringBuilder()
-            // Thực hiện XOR trên mã của từng ký tự
             for (i in decodedString.indices) {
                 result.append((decodedString[i].code xor key[i % key.length].code).toChar())
             }
             return result.toString()
         } catch (e: Exception) {
-            return "" // Trả về chuỗi rỗng nếu có lỗi
+            return "" 
         }
     }
     
@@ -131,25 +127,27 @@ class Av123Provider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val apiUrl = "$mainUrl/$lang/ajax/v/$data/videos"
-        val apiRes = app.get(apiUrl).parsedSafe<ApiResponse>()
+        // Bọc toàn bộ hàm trong try-catch để bắt tất cả các lỗi có thể xảy ra
+        try {
+            val apiUrl = "$mainUrl/$lang/ajax/v/$data/videos"
+            val apiRes = app.get(apiUrl).parsedSafe<ApiResponse>()
+                ?: throw Exception("API trả về null hoặc không thể phân tích cú pháp.")
 
-        apiRes?.result?.watch?.forEach { watchItem ->
-            try {
+            apiRes.result?.watch?.forEach { watchItem ->
                 val encodedUrl = watchItem.url ?: return@forEach
                 val decodedPath = xorDecode(encodedUrl)
                 
-                if (decodedPath.isBlank()) return@forEach
+                if (decodedPath.isBlank()) throw Exception("Đường dẫn giải mã rỗng. EncodedUrl: $encodedUrl")
 
                 val iframeUrl = "https://surrit.store$decodedPath"
                 val iframeContent = app.get(iframeUrl, referer = mainUrl).text
                 
                 val evalRegex = Regex("""eval\(function\(p,a,c,k,e,d\)\{(.+?)\((.+)\)\)""")
-                val match = evalRegex.find(iframeContent) ?: return@forEach
+                val match = evalRegex.find(iframeContent) ?: throw Exception("Không tìm thấy script eval trong iframe.")
                 val captured = match.groupValues[2]
 
                 val paramsRegex = Regex("""'(.+)',(\d+),(\d+),'(.+?)'\.split\('\|'\)""")
-                val paramsMatch = paramsRegex.find(captured) ?: return@forEach
+                val paramsMatch = paramsRegex.find(captured) ?: throw Exception("Không tìm thấy tham số script.")
 
                 val p = paramsMatch.groupValues[1]
                 val a = paramsMatch.groupValues[2].toInt()
@@ -160,25 +158,25 @@ class Av123Provider : MainAPI() {
                 
                 val m3u8Regex = Regex("""(https?://[^\s'"]+\.m3u8)""")
                 val m3u8Match = m3u8Regex.find(deobfuscated)
-                val m3u8Url = m3u8Match?.groupValues?.get(1)
+                val m3u8Url = m3u8Match?.groupValues?.get(1) ?: throw Exception("Không tìm thấy link m3u8. Script đã giải mã: $deobfuscated")
 
-                if (m3u8Url != null) {
-                    callback.invoke(
-                        ExtractorLink(
-                            source = this.name,
-                            name = "123AV",
-                            url = m3u8Url,
-                            referer = iframeUrl,
-                            quality = Qualities.Unknown.value,
-                            type = ExtractorLinkType.M3U8
-                        )
+
+                callback.invoke(
+                    ExtractorLink(
+                        source = this.name,
+                        name = "123AV",
+                        url = m3u8Url,
+                        referer = iframeUrl,
+                        quality = Qualities.Unknown.value,
+                        type = ExtractorLinkType.M3U8
                     )
-                }
-            } catch (e: Exception) {
-                // Bỏ qua lỗi và tiếp tục với các video khác nếu có
+                )
             }
+            return true
+        } catch (e: Exception) {
+            // Văng lỗi ra ngoài để hiển thị trong log, bao gồm cả thông báo lỗi gốc
+            throw Exception("Lỗi trong loadLinks: ${e.message}")
         }
-        return true
     }
 
     data class WatchItem(val url: String?)
