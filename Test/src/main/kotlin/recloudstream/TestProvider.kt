@@ -62,11 +62,9 @@ class LongTiengPhimProvider : MainAPI() {
 
         // Lấy danh sách tập phim
         val episodes = document.select("div#halim-list-server ul.halim-list-eps li.halim-episode a").mapNotNull {
-            // SỬA LỖI: Loại bỏ khoảng trắng khỏi URL của tập phim
             val episodeUrl = it.attr("href").replace(" ", "")
             Episode(episodeUrl, it.text().trim())
         }.ifEmpty {
-            // Cải thiện logic cho phim lẻ: tạo URL xem phim đúng định dạng
             val slug = url.trim('/').substringAfterLast('/')
             val watchUrl = "$mainUrl/watch/$slug-eps-1-server-1"
             listOf(Episode(watchUrl, "Xem phim"))
@@ -87,7 +85,6 @@ class LongTiengPhimProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // SỬA LỖI: Đảm bảo URL được truyền vào đây cũng không có khoảng trắng
         val fixedData = data.replace(" ", "")
         val watchPageSource = app.get(fixedData).text
 
@@ -108,14 +105,20 @@ class LongTiengPhimProvider : MainAPI() {
         val playerScript = app.post(
             "$mainUrl/wp-admin/admin-ajax.php",
             data = postData,
-            referer = fixedData, // Dùng URL đã sửa lỗi
+            referer = fixedData, 
             headers = mapOf("X-Requested-With" to "XMLHttpRequest")
         ).text
 
         // Dùng Regex để tìm URL video .mp4
-        val videoUrl = Regex("""file":"(https?://[^"]+?\.mp4)"""")
-            .find(playerScript)?.groupValues?.get(1)?.replace("\\", "")
-            ?: return false
+        val videoUrlRegex = Regex("""file":"(https?://[^"]+?\.mp4)""")
+        val match = videoUrlRegex.find(playerScript)
+
+        // THÊM GỠ LỖI: Nếu không tìm thấy link, sẽ throw Exception để hiện log chi tiết
+        if (match == null) {
+            throw Exception("DEBUG: Không tìm thấy link MP4 trong player script. Nội dung script nhận được là: \n\n$playerScript")
+        }
+        
+        val videoUrl = match.groupValues[1].replace("\\", "")
 
         callback(
             ExtractorLink(
