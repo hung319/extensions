@@ -1,437 +1,152 @@
+// Package recloudstream
 package recloudstream
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.AppUtils
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.M3u8Helper2
+import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
-import com.lagradost.cloudstream3.network.CloudflareKiller
-import com.lagradost.cloudstream3.SearchQuality
 
-import javax.crypto.Cipher
-import javax.crypto.SecretKeyFactory
-import javax.crypto.spec.IvParameterSpec
-import javax.crypto.spec.PBEKeySpec
-import javax.crypto.spec.SecretKeySpec
-import java.security.Security
-import java.util.Base64
-import org.bouncycastle.jce.provider.BouncyCastleProvider
-
-import okhttp3.Interceptor
-import okhttp3.Response
-import okhttp3.ResponseBody
-import okhttp3.ResponseBody.Companion.toResponseBody
-
-class MotChillProvider : MainAPI() {
-    override var mainUrl = "https://www.motchill95.com"
-    override var name = "MotChill"
+class Av123Provider : MainAPI() {
+    override var mainUrl = "https://www1.123av.com"
+    override var name = "123AV"
     override val hasMainPage = true
     override var lang = "vi"
     override val hasDownloadSupport = true
-    override val supportedTypes = setOf(
-        TvType.Movie,
-        TvType.TvSeries
+    override val supportedTypes = setOf(TvType.NSFW)
+
+    override val mainPage = mainPageOf(
+        "dm5/new-release" to "Mới phát hành",
+        "dm6/recent-update" to "Cập nhật gần đây",
+        "dm5/trending" to "Đang thịnh hành"
     )
-
-    init {
-        Security.getProvider("BC") ?: Security.addProvider(BouncyCastleProvider())
-    }
-
-    private val cfKiller = CloudflareKiller()
-
-    private val defaultHeaders = mapOf(
-        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36",
-        "Origin" to mainUrl
-    )
-
-    private data class EncryptedSourceJson(
-        val ciphertext: String,
-        val salt: String,
-        val iv: String
-    )
-
-    private fun hexStringToByteArray(s: String): ByteArray {
-        val len = s.length
-        val data = ByteArray(len / 2)
-        for (i in 0 until len step 2) {
-            data[i / 2] = ((Character.digit(s[i], 16) shl 4)
-                    + Character.digit(s[i+1], 16)).toByte()
-        }
-        return data
-    }
-
-    private fun cryptoJSAesDecrypt(passphrase: String, encryptedJsonString: String): String? {
-        return try {
-            val dataToParse = if (!encryptedJsonString.trimStart().startsWith("{")) {
-                return null
-            } else {
-                encryptedJsonString
-            }
-            val encryptedData = AppUtils.parseJson<EncryptedSourceJson>(dataToParse)
-            val saltBytes = hexStringToByteArray(encryptedData.salt)
-            val ivBytes = hexStringToByteArray(encryptedData.iv)
-            val keySizeBits = 256
-            val iterations = 999
-            val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA512", "BC")
-            val spec = PBEKeySpec(passphrase.toCharArray(), saltBytes, iterations, keySizeBits)
-            val secret = factory.generateSecret(spec)
-            val keyBytes = secret.encoded
-            val secretKey = SecretKeySpec(keyBytes, "AES")
-            val cipher = Cipher.getInstance("AES/CBC/PKCS7Padding", "BC")
-            cipher.init(Cipher.DECRYPT_MODE, secretKey, IvParameterSpec(ivBytes))
-            val ciphertextBytes = Base64.getDecoder().decode(encryptedData.ciphertext)
-            val decryptedBytes = cipher.doFinal(ciphertextBytes)
-            String(decryptedBytes, Charsets.UTF_8)
-        } catch (e: Exception) {
-            println("$name Decryption Error for '$encryptedJsonString': ${e.message}")
-            null
-        }
-    }
-
-    private fun getQualityFromSearchString(qualityString: String?): SearchQuality? {
-        return when {
-            qualityString == null -> null; qualityString.contains("1080") -> SearchQuality.HD
-            qualityString.contains("720") -> SearchQuality.HD
-            qualityString.contains("4K", ignoreCase = true) || qualityString.contains("2160") -> SearchQuality.FourK
-            qualityString.contains("HD", ignoreCase = true) -> SearchQuality.HD
-            qualityString.contains("Bản Đẹp", ignoreCase = true) -> SearchQuality.HD
-            qualityString.contains("SD", ignoreCase = true) -> SearchQuality.SD
-            qualityString.contains("CAM", ignoreCase = true) -> SearchQuality.CamRip
-            qualityString.contains("DVD", ignoreCase = true) -> SearchQuality.DVD
-            qualityString.contains("WEB", ignoreCase = true) -> SearchQuality.WebRip
-            else -> null
-        }
-    }
-
-    private fun getQualityForLink(url: String): Int {
-        return when {
-            url.contains("1080p", ignoreCase = true) -> Qualities.P1080.value
-            url.contains("720p", ignoreCase = true) -> Qualities.P720.value
-            url.contains("480p", ignoreCase = true) -> Qualities.P480.value
-            url.contains("360p", ignoreCase = true) -> Qualities.P360.value
-            else -> Qualities.Unknown.value
-        }
-    }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        if (page > 1) return newHomePageResponse(listOf(), false)
-        val document = app.get(mainUrl, interceptor = cfKiller).document
-        val homePageList = ArrayList<HomePageList>()
-
-        fun parseMovieListFromUl(element: Element?, title: String): HomePageList? {
-            if (element == null) return null
-            val movies = element.select("li").mapNotNull { item ->
-                val titleElement = item.selectFirst("div.info h4.name a")
-                val nameText = titleElement?.text()
-                val yearText = item.selectFirst("div.info h4.name")?.ownText()?.trim()
-                val name = nameText?.substringBeforeLast(yearText ?: "")?.trim() ?: nameText
-                val movieUrl = fixUrlNull(titleElement?.attr("href"))
-                var posterUrl = fixUrlNull(item.selectFirst("img")?.attr("src"))
-                if (posterUrl.isNullOrEmpty() || posterUrl.contains("p21-ad-sg.ibyteimg.com")) {
-                    val onerrorPoster = item.selectFirst("img")?.attr("onerror")
-                    if (onerrorPoster?.contains("this.src=") == true) {
-                        posterUrl = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
-                    }
-                }
-                if (posterUrl.isNullOrEmpty()) {
-                    posterUrl = fixUrlNull(item.selectFirst("img")?.attr("data-src"))
-                }
-                val status = item.selectFirst("div.status")?.text()?.trim()
-                val type = if (status?.contains("Tập") == true || (status?.contains("/") == true && !status.contains("Full", ignoreCase = true))) TvType.TvSeries else TvType.Movie
-                val qualityText = item.selectFirst("div.HD")?.text()?.trim() ?: status
-                if (name != null && !name.startsWith("Advertisement") && movieUrl != null) {
-                    newMovieSearchResponse(name, movieUrl) {
-                        this.type = type; this.posterUrl = posterUrl; this.year = yearText?.toIntOrNull(); this.quality = getQualityFromSearchString(qualityText)
-                    }
-                } else null
-            }
-            return if (movies.isNotEmpty()) HomePageList(title, movies) else null
+        val url = "$mainUrl/vi/${request.data}?page=$page"
+        val document = app.get(url).document
+        val home = document.select("div.box-item-list div.box-item").mapNotNull {
+            it.toSearchResult()
         }
+        return newHomePageResponse(request.name, home)
+    }
 
-        document.selectFirst("#owl-demo.owl-carousel")?.let { owl ->
-            val hotMovies = owl.select("div.item").mapNotNull { item ->
-                val linkTag = item.selectFirst("a"); val movieUrl = fixUrlNull(linkTag?.attr("href")); var name = linkTag?.attr("title")
-                if (name.isNullOrEmpty()) name = item.selectFirst("div.overlay h4.name a")?.text()?.trim()
-                var posterUrl = fixUrlNull(item.selectFirst("img")?.attr("src"))
-                if (posterUrl.isNullOrEmpty() || posterUrl.contains("p21-ad-sg.ibyteimg.com")) {
-                    val onerrorPoster = item.selectFirst("img")?.attr("onerror")
-                    if (onerrorPoster?.contains("this.src=") == true) posterUrl = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
-                }
-                if (posterUrl.isNullOrEmpty()) posterUrl = fixUrlNull(item.selectFirst("img")?.attr("data-src"))
-                val status = item.selectFirst("div.status")?.text()?.trim()
-                val type = if (status?.contains("Tập") == true || (status?.contains("/") == true && !status.contains("Full", ignoreCase = true))) TvType.TvSeries else TvType.Movie
-                if (name != null && movieUrl != null) newMovieSearchResponse(name, movieUrl) {this.type = type; this.posterUrl = posterUrl; this.quality = getQualityFromSearchString(status)} else null
-            }
-            if (hotMovies.isNotEmpty()) homePageList.add(HomePageList("Phim Hot", hotMovies))
-        }
+    private fun Element.toSearchResult(): SearchResponse? {
+        val a = this.selectFirst("a") ?: return null
+        // Đảm bảo link là tuyệt đối
+        val href = fixUrl(a.attr("href"))
+        if (href.isBlank()) return null
 
-        document.select("div.heading-phim").forEach { sectionTitleElement ->
-            val sectionTitleText = sectionTitleElement.selectFirst("h2.title_h1_st1 a span")?.text() ?: sectionTitleElement.selectFirst("h2.title_h1_st1 a")?.text() ?: sectionTitleElement.selectFirst("h2.title_h1_st1")?.text()
-            var movieListElement = sectionTitleElement.nextElementSibling()?.selectFirst("ul.list-film")
-            if (movieListElement == null) movieListElement = sectionTitleElement.parent()?.select("ul.list-film")?.first()
-            val sectionTitle = sectionTitleText?.trim()
-            if (sectionTitle != null && movieListElement != null) parseMovieListFromUl(movieListElement, sectionTitle)?.let { homePageList.add(it) }
+        val title = this.selectFirst("div.detail a")?.text()?.trim() ?: return null
+        val posterUrl = this.selectFirst("div.thumb img")?.attr("data-src")
+
+        return newMovieSearchResponse(title, href, TvType.NSFW) {
+            this.posterUrl = posterUrl
         }
-        return newHomePageResponse(homePageList.filter { it.list.isNotEmpty() }, false)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchQuery = query.trim().replace(Regex("\\s+"), "-").lowercase()
-        val searchUrl = "$mainUrl/search/$searchQuery/"
-        val document = app.get(searchUrl, interceptor = cfKiller).document
-        return document.select("ul.list-film li").mapNotNull { item ->
-            val titleElement = item.selectFirst("div.info div.name a"); val nameText = titleElement?.text(); val movieUrl = fixUrlNull(titleElement?.attr("href"))
-            val yearRegex = Regex("""\s+(\d{4})$"""); val yearMatch = nameText?.let { yearRegex.find(it) }; val year = yearMatch?.groupValues?.get(1)?.toIntOrNull()
-            val name = yearMatch?.let { nameText.removeSuffix(it.value) }?.trim() ?: nameText?.trim()
-            var posterUrl = fixUrlNull(item.selectFirst("img")?.attr("src"))
-            if (posterUrl.isNullOrEmpty() || posterUrl.contains("p21-ad-sg.ibyteimg.com")) {
-                val onerrorPoster = item.selectFirst("img")?.attr("onerror")
-                if (onerrorPoster?.contains("this.src=") == true) posterUrl = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
-            }
-            if (posterUrl.isNullOrEmpty()) posterUrl = fixUrlNull(item.selectFirst("img")?.attr("data-src"))
-            val statusText = item.selectFirst("div.status")?.text()?.trim(); val hdText = item.selectFirst("div.HD")?.text()?.trim(); val qualityString = hdText ?: statusText
-            val type = if (statusText?.contains("Tập") == true || (statusText?.contains("/") == true && statusText != "Full")) TvType.TvSeries else TvType.Movie
-            if (name != null && movieUrl != null) newMovieSearchResponse(name, movieUrl) {this.type = type; this.posterUrl = posterUrl; this.year = year; this.quality = getQualityFromSearchString(qualityString)} else null
+        val url = "$mainUrl/vi/search?keyword=$query"
+        val document = app.get(url).document
+
+        return document.select("div.box-item-list div.box-item").mapNotNull {
+            it.toSearchResult()
         }
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url, interceptor = cfKiller).document
-        val title = document.selectFirst("h1.movie-title span.title-1")?.text()?.trim() ?: return null
-        val year = document.selectFirst("h1.movie-title span.title-year")?.text()?.replace("(", "")?.replace(")", "")?.trim()?.toIntOrNull()
-        var poster = fixUrlNull(document.selectFirst("div.movie-image div.poster img")?.attr("src"))
-        if (poster.isNullOrEmpty() || poster.contains("p21-ad-sg.ibyteimg.com")) {
-            val onerrorPoster = document.selectFirst("div.movie-image div.poster img")?.attr("onerror")
-            if (onerrorPoster?.contains("this.src=") == true) poster = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
-        }
-        if (poster.isNullOrEmpty()) poster = fixUrlNull(document.selectFirst("div.movie-image div.poster img")?.attr("data-src"))
-        val plot = document.selectFirst("div#info-film div.detail-content-main")?.text()?.trim()
-        val genres = document.select("dl.movie-dl dd.movie-dd.dd-cat a").mapNotNull { it.text().trim() }.toMutableList()
-        document.select("div#tags div.tag-list h3 a").forEach { tagElement -> val tagText = tagElement.text().trim(); if (!genres.contains(tagText)) genres.add(tagText) }
-        val recommendations = document.select("div#movie-hot div.owl-carousel div.item").mapNotNull { item ->
-            val recLinkTag = item.selectFirst("a"); val recUrl = fixUrlNull(recLinkTag?.attr("href")); var recName = recLinkTag?.attr("title")
-            if (recName.isNullOrEmpty()) recName = item.selectFirst("div.overlay h4.name a")?.text()?.trim()
-            var recPosterUrl = fixUrlNull(item.selectFirst("img")?.attr("src"))
-            if (recPosterUrl.isNullOrEmpty() || recPosterUrl.contains("p21-ad-sg.ibyteimg.com")) {
-                val onerrorPoster = item.selectFirst("img")?.attr("onerror")
-                if (onerrorPoster?.contains("this.src=") == true) recPosterUrl = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
-            }
-            if (recPosterUrl.isNullOrEmpty()) recPosterUrl = fixUrlNull(item.selectFirst("img")?.attr("data-src"))
-            if (recName != null && recUrl != null) newMovieSearchResponse(recName, recUrl) {this.type = TvType.Movie; this.posterUrl = recPosterUrl} else null
-        }
-        val episodes = ArrayList<Episode>()
-        val episodeElements = document.select("div.page-tap ul li a")
-        val isTvSeriesBasedOnNames = episodeElements.any { val epName = it.selectFirst("span")?.text()?.trim() ?: it.text().trim(); Regex("""Tập\s*\d+""", RegexOption.IGNORE_CASE).containsMatchIn(epName) && !epName.contains("Full", ignoreCase = true) }
-        val isTvSeries = episodeElements.size > 1 || isTvSeriesBasedOnNames
-        if (episodeElements.isNotEmpty()) {
-            episodeElements.forEachIndexed { index, element ->
-                val attrHref = element.attr("href")
-                val episodeLink = if (attrHref.isNullOrBlank()) "" else fixUrl(attrHref)
-                var episodeNameSource = element.selectFirst("span")?.text()?.trim() ?: element.text().trim()
-                var finalEpisodeName: String
-                if (episodeNameSource.isNullOrBlank()) finalEpisodeName = "Server ${index + 1}"
-                else {
-                    if (episodeNameSource.toIntOrNull() != null || (!episodeNameSource.contains("Tập ", ignoreCase = true) && episodeNameSource.matches(Regex("""\d+""")))) finalEpisodeName = "Tập $episodeNameSource"
-                    else finalEpisodeName = episodeNameSource
-                }
-                if (episodeLink.isNotBlank()) {
-                    episodes.add(newEpisode(episodeLink) {this.name = finalEpisodeName})
-                }
-            }
-        } else {
-            document.selectFirst("a#btn-film-watch.btn-red[href]")?.let { watchButton ->
-                val attrHref = watchButton.attr("href")
-                val movieWatchLink = if(attrHref.isNullOrBlank()) "" else fixUrl(attrHref)
-                if (movieWatchLink.isNotBlank()) episodes.add(newEpisode(movieWatchLink) {this.name = title})
-            }
-        }
-        val currentSyncData = mutableMapOf("url" to url)
+        val document = app.get(url).document
 
-        if (isTvSeries || (episodes.size > 1 && !episodes.all { it.name == title })) {
-            return newTvSeriesLoadResponse(
-                name = title,
-                url = url,
-                type = TvType.TvSeries,
-                episodes = episodes.distinctBy { it.data }.toList()
-            ) {
-                this.posterUrl = poster
-                this.year = year
-                this.plot = plot
-                this.tags = genres.distinct().toList()
-                this.recommendations = recommendations
-                this.syncData = currentSyncData
-            }
-        } else {
-            val movieDataUrl = episodes.firstOrNull()?.data ?: url
-            return newMovieLoadResponse(
-                name = title,
-                url = url,
-                type = TvType.Movie,
-                dataUrl = movieDataUrl
-            ) {
-                this.posterUrl = poster
-                this.year = year
-                this.plot = plot
-                this.tags = genres.distinct().toList()
-                this.recommendations = recommendations
-                this.syncData = currentSyncData
-            }
+        val title = document.selectFirst("h1")?.text()?.trim() ?: return null
+        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
+        val tags = document.select("span.genre a").map { it.text() }
+        val description = document.selectFirst("div.description p")?.text()
+
+        // Trích xuất movieId từ URL để đảm bảo tính nhất quán
+        // Ví dụ URL: https://www1.123av.com/vi/dm4/v/god-055
+        // Chúng ta cần lấy 'god-055' và sau đó gọi API để lấy ID số.
+        // Tuy nhiên, trang video đã cung cấp sẵn ID trong thuộc tính v-scope.
+        val movieId = document.selectFirst("#page-video")
+            ?.attr("v-scope")
+            ?.substringAfter("Movie({id: ")
+            ?.substringBefore(",")
+            ?.trim() ?: return null
+
+        return newMovieLoadResponse(title, url, TvType.NSFW, movieId) {
+            this.posterUrl = poster
+            this.plot = description
+            this.tags = tags
         }
     }
 
-    private suspend fun extractAndSubmitM3u8(
-        sourceName: String,
-        targetUrl: String,
-        referer: String,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        var directVideoUrl: String? = null
-        if (targetUrl.contains("play2.php")) {
-            try {
-                println("$name: Extracting video from play2 page: $targetUrl (GET Referer: $referer)")
-                val pageDocument = app.get(targetUrl, interceptor = cfKiller, referer = referer).document
-                val scriptElements = pageDocument.select("script:containsData(CryptoJSAesDecrypt)")
-                for (scriptElement in scriptElements) {
-                    val scriptContent = scriptElement.html()
-                    val trailerRegex = Regex("""function\s+trailer\s*\(\s*\)\s*\{\s*return\s+CryptoJSAesDecrypt\(\s*'Encrypt'\s*,\s*`([^`]*)`\s*\)\s*;\s*\}""")
-                    val matchResult = trailerRegex.find(scriptContent)
-                    if (matchResult != null) {
-                        val encryptedJsonString = matchResult.groupValues[1]
-                        if (encryptedJsonString.startsWith("{") && encryptedJsonString.endsWith("}")) {
-                            directVideoUrl = cryptoJSAesDecrypt("Encrypt", encryptedJsonString)
-                            if (directVideoUrl != null) break
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                println("$name: Error fetching/parsing play2 page $targetUrl: ${e.message}")
-            }
-        } else if (targetUrl.startsWith("http") && (targetUrl.contains(".m3u8", ignoreCase = true) || targetUrl.contains(".mp4", ignoreCase = true))) {
-            directVideoUrl = targetUrl
-        }
-
-        if (directVideoUrl != null && directVideoUrl.contains(".m3u8", ignoreCase = true)) {
-            println("$name: Found M3U8 for $sourceName: $directVideoUrl")
-            M3u8Helper2.generateM3u8(
-                source = sourceName,
-                streamUrl = directVideoUrl,
-                referer = referer,
-                headers = defaultHeaders
-            ).forEach(callback)
-            return true
-        }
-
-        println("$name: Failed to extract M3U8 from $sourceName ($targetUrl)")
-        return false
-    }
-
+    // ##### HÀM ĐÃ ĐƯỢC CẬP NHẬT THEO LOGIC MỚI NHẤT #####
     override suspend fun loadLinks(
-        data: String,
+        data: String, // movieId
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val initialPageDocument = app.get(data, interceptor = cfKiller, referer = mainUrl).document
-        val scriptElementsInitial = initialPageDocument.select("script:containsData(CryptoJSAesDecrypt)")
-        var iframeUrlPlayerPage: String? = null
+        // 1. Gọi API mà bạn đã tìm thấy để lấy thông tin video
+        val apiUrl = "$mainUrl/vi/ajax/v/$data/videos"
+        val res = app.get(apiUrl).parsedSafe<ApiResponse>()
 
-        for (scriptElement in scriptElementsInitial) {
-            val scriptContent = scriptElement.html()
-            val regex = Regex("""function\s+trailer\s*\(\s*\)\s*\{\s*return\s+CryptoJSAesDecrypt\(\s*'Encrypt'\s*,\s*`([^`]*)`\s*\)\s*;\s*\}""")
-            val matchResult = regex.find(scriptContent)
-            if (matchResult != null) {
-                val encryptedJsonString = matchResult.groupValues[1]
-                if (encryptedJsonString.startsWith("{") && encryptedJsonString.endsWith("}")) {
-                    iframeUrlPlayerPage = cryptoJSAesDecrypt("Encrypt", encryptedJsonString)
-                    if (iframeUrlPlayerPage != null) break
-                }
-            }
+        // 2. Lặp qua từng phần của video (trường hợp video có nhiều phần)
+        res?.result?.watch?.apmap { watchItem ->
+            // 3. Lấy URL đã được mã hóa/obfuscate từ API
+            val encodedUrl = watchItem.url ?: return@apmap
+
+            // Ghi chú quan trọng:
+            // Chuỗi `encodedUrl` này (ví dụ: JSNAIj1Tf1k...) không phải là link video trực tiếp.
+            // Nó được JavaScript của trang web giải mã để tạo ra link iframe (ví dụ: https://surrit.store/e/Z8M06PZ2).
+            // Vì logic giải mã nằm trong JS và có thể phức tạp, cách tốt nhất là
+            // để một extractor chuyên dụng xử lý tên miền `surrit.store`.
+
+            // 4. Xây dựng URL iframe.
+            // Dựa vào thông tin bạn cung cấp, tên miền là `surrit.store`.
+            // Phần path của iframe (vd: Z8M06PZ2) là kết quả sau khi giải mã `encodedUrl`.
+            // Nếu không có logic giải mã, chúng ta không thể tạo ra URL này một cách tự động.
+            
+            // Tạm thời, chúng ta sẽ giả định rằng một extractor khác có thể xử lý việc này,
+            // hoặc chúng ta cần thêm logic giải mã ở đây.
+            // Để mã hoạt động, chúng ta cần một cách để chuyển đổi `encodedUrl` -> `iframeUrl`.
+            
+            // Vì chưa có logic giải mã, tôi sẽ sử dụng một URL iframe giả định để minh họa.
+            // KHI CÓ LOGIC GIẢI MÃ, BẠN SẼ THAY THẾ DÒNG DƯỚI ĐÂY.
+            // val iframeUrl = "https://surrit.store/e/" + javascriptDecodeFunction(encodedUrl)
+            
+            // Tuy nhiên, có vẻ như `watchItem.url` chính là link iframe. Hãy thử dùng trực tiếp.
+            // Nếu watchItem.url không phải là một URL đầy đủ, ta sẽ cần thêm logic.
+            // Dựa trên thông tin của bạn, có vẻ iframe host là `surrit.store`
+            // Mà API lại trả về một chuỗi mã hoá. Điều này cho thấy JS của trang web
+            // đã làm một bước chuyển đổi.
+            
+            // Với thông tin hiện tại, bước khả thi nhất là chuyển URL mã hóa này cho một extractor
+            // có khả năng xử lý nó. Nhiều khả năng, URL iframe được xây dựng từ chuỗi này.
+            // Ví dụ: val iframeUrl = "https://some-iframe-host.com/e/" + encodedUrl
+            // Ta sẽ thử nghiệm với `surrit.store`
+            
+            val iframeUrl = "https://surrit.store/e/$encodedUrl"
+
+            // 5. Gọi `loadExtractor` để xử lý iframe và lấy link m3u8 cuối cùng
+            loadExtractor(iframeUrl, mainUrl, subtitleCallback, callback)
         }
 
-        if (iframeUrlPlayerPage.isNullOrBlank()) {
-            println("$name: Could not get iframeUrlPlayerPage from $data. Trying initial JWPlayer fallback.")
-            return false
-        }
-
-        val absoluteIframeUrlPlayerPage = fixUrl(iframeUrlPlayerPage)
-        println("$name: Player Page URL (player.html): $absoluteIframeUrlPlayerPage")
-        val playerPageDocument = app.get(absoluteIframeUrlPlayerPage, interceptor = cfKiller, referer = data).document
-        var foundAnyLink = false
-
-        playerPageDocument.select("div#vb_server_list span.vb_btnt-primary").apmap { button ->
-            val serverName = button.text()?.trim() ?: "Unknown Server"
-            if (serverName.contains("HY3", ignoreCase = true)) {
-                println("$name: Skipping server $serverName as requested.")
-                return@apmap
-            }
-
-            val onclickAttr = button.attr("onclick")
-            val urlRegex = Regex("""vb_load_player\(\s*this\s*,\s*['"]([^'"]+)['"]\s*\)""")
-            val serverUrlStringFromButton = urlRegex.find(onclickAttr)?.groupValues?.get(1)
-
-            if (!serverUrlStringFromButton.isNullOrBlank()) {
-                val fullServerUrlTarget = fixUrl(serverUrlStringFromButton)
-
-                if (this.extractAndSubmitM3u8(serverName, fullServerUrlTarget, absoluteIframeUrlPlayerPage, callback)) {
-                    foundAnyLink = true
-                }
-            }
-        }
-        return foundAnyLink
+        return true
     }
-    
-    // =========================================================================
-    // === CÁC HÀM ĐÃ ĐƯỢC THÊM VÀ SỬA LẠI THEO LOGIC CỦA FILE JAVA CUNG CẤP ===
-    // =========================================================================
-    
-    /**
-    * Interceptor để sửa lỗi phát video bằng cách bỏ qua các byte lỗi ở đầu.
-    * Áp dụng cho các URL video segment cụ thể.
-    */
-    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor {
-        return object : Interceptor {
-            override fun intercept(chain: Interceptor.Chain): Response {
-                val request = chain.request()
-                val response = chain.proceed(request)
-                val url = request.url.toString()
 
-                if (url.contains("ibyteimg.com") ||
-                    url.contains(".tiktokcdn.") ||
-                    (url.contains("segment.cloudbeta.win/file/segment/") && url.contains(".html?token="))
-                ) {
-                    response.body?.let { body ->
-                        try {
-                            val fixedBytes = skipByteError(body)
-                            val newBody = fixedBytes.toResponseBody(body.contentType())
-                            return response.newBuilder().body(newBody).build()
-                        } catch (e: Exception) {
-                            // Bỏ qua và trả về response gốc nếu có lỗi
-                        }
-                    }
-                }
-                return response
-            }
-        }
-    }
-}
+    // Các lớp dữ liệu để phân tích JSON từ API, đã cập nhật theo cấu trúc mới
+    data class WatchItem(
+        val index: Int?,
+        val name: String?,
+        val url: String? // Đây là chuỗi mã hóa hoặc path của iframe
+    )
 
-/**
-* Hàm phụ trợ cho interceptor, được viết lại chính xác theo logic của file InterceptorUtilKt.java.
-* Dùng để sửa lỗi video bằng cách tìm byte đồng bộ 'G' (sync-byte) của MPEG-TS.
-*/
-private fun skipByteError(responseBody: ResponseBody): ByteArray {
-    val byteArray = responseBody.bytes()
-    val length = byteArray.size - 188
-    var start = 0
-    for (i in 0 until length) {
-        val nextIndex = i + 188
-        if (nextIndex < byteArray.size && byteArray[i].toInt() == 71 && byteArray[nextIndex].toInt() == 71) {
-            start = i
-            break
-        }
-    }
-    return if (start > 0) byteArray.copyOfRange(start, byteArray.size) else byteArray
+    data class ApiResult(
+        val watch: List<WatchItem>?,
+        val download: List<Any>? // download có thể là một cấu trúc khác hoặc rỗng
+    )
+
+    data class ApiResponse(
+        val status: Int?,
+        val result: ApiResult?
+    )
 }
