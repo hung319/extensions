@@ -128,7 +128,7 @@ class LongTiengPhimProvider : MainAPI() {
                 url = videoUrl,
                 referer = "$mainUrl/",
                 quality = Qualities.Unknown.value,
-                type = if (isM3u8) ExtractorLinkType.HLS else ExtractorLinkType.VIDEO,
+                type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
             )
         )
         return true
