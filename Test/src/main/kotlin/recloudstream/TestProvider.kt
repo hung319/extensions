@@ -57,24 +57,16 @@ class LongTiengPhimProvider : MainAPI() {
         val plot = document.selectFirst("div.entry-content > article")?.text()?.trim()
         val year = document.selectFirst("a[href*=/release/]")?.text()?.trim()?.toIntOrNull()
 
-        // === CẢI TIẾN LOGIC NHẬN DIỆN ANIME ===
-        var tags: List<String>
-        var isAnime: Boolean
-
-        // Cách 1: Tìm các thẻ (tag) hiển thị trên trang
-        val visibleTags = document.select("div.more-info a[rel=category-tag]")
-        if (visibleTags.isNotEmpty()) {
-            tags = visibleTags.map { it.text() }
-            isAnime = tags.any { it.contains("Hoạt Hình", ignoreCase = true) }
-        } else {
-            // Cách 2 (Dự phòng): Nếu không thấy thẻ, đọc dữ liệu từ thẻ meta ẩn
-            val metaTagContent = document.selectFirst("meta[property=article:section]")?.attr("content") ?: ""
-            tags = metaTagContent.split(',').map { it.trim() }
-            isAnime = metaTagContent.contains("Hoạt Hình", ignoreCase = true)
-        }
-
+        // === CẬP NHẬT: Lấy tag trực tiếp từ thẻ meta "article:section" ===
+        val tags = document.selectFirst("meta[property=article:section]")
+            ?.attr("content")
+            ?.split(',')
+            ?.map { it.trim() }
+            ?: emptyList()
+        
+        val isAnime = tags.any { it.contains("Hoạt Hình", ignoreCase = true) }
         val tvType = if (isAnime) TvType.Anime else TvType.TvSeries
-        // =======================================
+        // ==============================================================
 
         val recommendations = document.select("div#halim_related_movies-3 article").mapNotNull {
             it.toSearchResult(tvType)
