@@ -3,6 +3,7 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
+import kotlin.text.RegexOption
 
 class LongTiengPhimProvider : MainAPI() {
     // Thông tin cơ bản về provider
@@ -30,7 +31,6 @@ class LongTiengPhimProvider : MainAPI() {
         return newHomePageResponse(request.name, home)
     }
 
-    // Hàm chuyển đổi element thành kết quả tìm kiếm
     private fun Element.toSearchResult(): SearchResponse? {
         val title = this.selectFirst("h2.entry-title")?.text()?.trim() ?: return null
         val href = this.selectFirst("a.halim-thumb")?.attr("href") ?: return null
@@ -60,7 +60,6 @@ class LongTiengPhimProvider : MainAPI() {
             it.toSearchResult()
         }
 
-        // Lấy danh sách tập phim
         val episodes = document.select("div#halim-list-server ul.halim-list-eps li.halim-episode a").mapNotNull {
             val episodeUrl = it.attr("href").replace(" ", "")
             Episode(episodeUrl, it.text().trim())
@@ -88,37 +87,32 @@ class LongTiengPhimProvider : MainAPI() {
         val fixedData = data.replace(" ", "")
         val watchPageSource = app.get(fixedData).text
 
-        // Trích xuất các giá trị cần thiết cho AJAX request
         val postId = Regex("""'postid':\s*'(\d+)'""").find(watchPageSource)?.groupValues?.get(1)
             ?: Regex("""post_id:\s*(\d+)""").find(watchPageSource)?.groupValues?.get(1)
             ?: return false
         val nonce = Regex(""""nonce":"([^"]+)"""").find(watchPageSource)?.groupValues?.get(1) ?: return false
 
-        // Dữ liệu gửi đi trong POST request
         val postData = mapOf(
             "action" to "halim_ajax_player",
             "nonce" to nonce,
             "postid" to postId,
         )
 
-        // Gửi POST request để lấy script của player
         val playerScript = app.post(
             "$mainUrl/wp-admin/admin-ajax.php",
             data = postData,
-            referer = fixedData, 
+            referer = fixedData,
             headers = mapOf("X-Requested-With" to "XMLHttpRequest")
         ).text
 
-        // Dùng Regex để tìm URL video .mp4
-        val videoUrlRegex = Regex("""file":"(https?://[^"]+?\.mp4)""")
-        val match = videoUrlRegex.find(playerScript)
+        // SỬA LỖI: Thêm RegexOption.DOT_MATCHES_ALL để tìm kiếm trên nhiều dòng
+        val videoUrlRegex = Regex("""file":"(https?://[^"]+?\.mp4)"""", RegexOption.DOT_MATCHES_ALL)
+        val match = videoUrlRegex.find(playerScript) ?: return false // Nếu không tìm thấy, thoát ra
 
-        // THÊM GỠ LỖI: Nếu không tìm thấy link, sẽ throw Exception để hiện log chi tiết
-        if (match == null) {
-            throw Exception("DEBUG: Không tìm thấy link MP4 trong player script. Nội dung script nhận được là: \n\n$playerScript")
-        }
-        
-        val videoUrl = match.groupValues[1].replace("\\", "")
+        // Trích xuất URL và nối các dòng bị ngắt lại
+        val videoUrl = match.groupValues[1]
+            .replace("\\", "") // Xóa dấu gạch chéo ngược
+            .replace(Regex("""\s+"""), "") // Xóa tất cả khoảng trắng và ký tự xuống dòng
 
         callback(
             ExtractorLink(
