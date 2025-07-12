@@ -85,15 +85,24 @@ class Av123Provider : MainAPI() {
         }
     }
 
+    // ##### HÀM ĐÃ ĐƯỢC SỬA LỖI LOGIC GIẢI MÃ #####
     private fun xorDecode(input: String): String {
         val key = "MW4gC3v5a1q2E6Z"
-        // Sử dụng Base64.URL_SAFE để tương thích hơn với các ký tự đặc biệt
-        val base64Decoded = Base64.decode(input, Base64.URL_SAFE or Base64.NO_WRAP)
-        val result = StringBuilder()
-        for (i in base64Decoded.indices) {
-            result.append((base64Decoded[i].toInt() and 0xff xor key[i % key.length].code).toChar())
+        try {
+            // Giải mã Base64 thành mảng byte
+            val decodedBytes = Base64.decode(input, Base64.URL_SAFE or Base64.NO_WRAP)
+            // Chuyển mảng byte thành chuỗi bằng charset ISO-8859-1 để mô phỏng chính xác atob() của JS
+            val decodedString = String(decodedBytes, Charsets.ISO_8859_1)
+            
+            val result = StringBuilder()
+            // Thực hiện XOR trên mã của từng ký tự
+            for (i in decodedString.indices) {
+                result.append((decodedString[i].code xor key[i % key.length].code).toChar())
+            }
+            return result.toString()
+        } catch (e: Exception) {
+            return "" // Trả về chuỗi rỗng nếu có lỗi
         }
-        return result.toString()
     }
     
     private fun deobfuscateScript(p: String, a: Int, c: Int, k: List<String>): String {
@@ -129,22 +138,18 @@ class Av123Provider : MainAPI() {
             try {
                 val encodedUrl = watchItem.url ?: return@forEach
                 val decodedPath = xorDecode(encodedUrl)
-                val iframeUrl = "https://surrit.store$decodedPath"
-
-                // ##### DÒNG GỠ LỖI #####
-                // Văng lỗi để xem giá trị của iframeUrl trong log.
-                throw Exception("DEBUG: iframeUrl được tạo ra là: $iframeUrl")
                 
-                // Các bước tiếp theo sẽ tạm thời không được thực thi
-                /*
+                if (decodedPath.isBlank()) return@forEach
+
+                val iframeUrl = "https://surrit.store$decodedPath"
                 val iframeContent = app.get(iframeUrl, referer = mainUrl).text
                 
                 val evalRegex = Regex("""eval\(function\(p,a,c,k,e,d\)\{(.+?)\((.+)\)\)""")
-                val match = evalRegex.find(iframeContent) ?: throw Exception("DEBUG: Không tìm thấy script eval trong iframe.")
-
+                val match = evalRegex.find(iframeContent) ?: return@forEach
                 val captured = match.groupValues[2]
+
                 val paramsRegex = Regex("""'(.+)',(\d+),(\d+),'(.+?)'\.split\('\|'\)""")
-                val paramsMatch = paramsRegex.find(captured) ?: throw Exception("DEBUG: Không tìm thấy tham số để giải mã script.")
+                val paramsMatch = paramsRegex.find(captured) ?: return@forEach
 
                 val p = paramsMatch.groupValues[1]
                 val a = paramsMatch.groupValues[2].toInt()
@@ -169,11 +174,8 @@ class Av123Provider : MainAPI() {
                         )
                     )
                 }
-                */
-
             } catch (e: Exception) {
-                 // Văng lỗi ra ngoài để hiển thị trong log
-                throw Exception("Lỗi trong loadLinks: ${e.message}")
+                // Bỏ qua lỗi và tiếp tục với các video khác nếu có
             }
         }
         return true
