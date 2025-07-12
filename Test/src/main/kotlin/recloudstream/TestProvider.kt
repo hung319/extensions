@@ -84,28 +84,23 @@ class Av123Provider : MainAPI() {
             this.tags = tags
         }
     }
-
-    // ##### HÀM ĐÃ ĐƯỢC VIẾT LẠI CẨN THẬN HƠN #####
+    
+    // ##### CẬP NHẬT LOGIC GỠ LỖI #####
     private fun xorDecode(input: String): String {
         val key = "MW4gC3v5a1q2E6Z"
+        var decodedString = ""
         try {
-            // Bước 1: Giải mã Base64 về mảng byte
-            val decodedBytes: ByteArray = Base64.decode(input, Base64.DEFAULT)
-            // Bước 2: Chuẩn bị một mảng byte mới để chứa kết quả sau khi XOR
-            val resultBytes = ByteArray(decodedBytes.size)
-
-            // Bước 3: Lặp qua từng byte và thực hiện phép toán XOR
-            for (i in decodedBytes.indices) {
-                val decodedByteAsUnsignedInt = decodedBytes[i].toInt() and 0xFF
-                val keyCharAsInt = key[i % key.length].code
-                val xorResult = decodedByteAsUnsignedInt xor keyCharAsInt
-                resultBytes[i] = xorResult.toByte()
+            val decodedBytes = Base64.decode(input, Base64.DEFAULT)
+            decodedString = String(decodedBytes, Charsets.ISO_8859_1)
+            
+            val result = StringBuilder()
+            for (i in decodedString.indices) {
+                result.append((decodedString[i].code xor key[i % key.length].code).toChar())
             }
-            // Bước 4: Chuyển toàn bộ mảng byte kết quả thành chuỗi bằng bảng mã UTF-8
-            return String(resultBytes, Charsets.UTF_8)
-
+            return result.toString()
         } catch (e: Exception) {
-            throw Exception("Lỗi khi giải mã xorDecode: ${e.message} trên input: $input")
+            // Văng lỗi với thông tin chi tiết nhất có thể để gỡ lỗi
+            throw Exception("Lỗi xorDecode. Input: '$input'. Key: '$key'. DecodedString: '$decodedString'. Error: ${e.message}")
         }
     }
     
@@ -135,6 +130,7 @@ class Av123Provider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // Giữ lại try-catch để bắt lỗi tổng thể
         try {
             val apiUrl = "$mainUrl/$lang/ajax/v/$data/videos"
             val apiRes = app.get(apiUrl).parsedSafe<ApiResponse>()
@@ -144,9 +140,11 @@ class Av123Provider : MainAPI() {
                 val encodedUrl = watchItem.url ?: return@forEach
                 val decodedPath = xorDecode(encodedUrl)
                 
-                if (decodedPath.isBlank() || !decodedPath.startsWith("/")) throw Exception("Đường dẫn giải mã không hợp lệ. Kết quả: '$decodedPath'")
-
-                // Trang iframe bây giờ được xác định là player.123av.me
+                if (decodedPath.isBlank() || !decodedPath.startsWith("/")) {
+                    throw Exception("Đường dẫn giải mã không hợp lệ. Kết quả: '$decodedPath'")
+                }
+                
+                // Host của iframe đã đổi thành player.123av.me
                 val iframeUrl = "https://player.123av.me$decodedPath"
                 val iframeContent = app.get(iframeUrl, referer = mainUrl).text
                 
