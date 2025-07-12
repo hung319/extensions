@@ -13,30 +13,35 @@ class LongTiengPhimProvider : MainAPI() {
     override var lang = "vi"
     override val supportedTypes = setOf(
         TvType.Movie,
-        TvType.TvSeries
+        TvType.TvSeries,
+        TvType.Anime // Thêm Anime vào các loại được hỗ trợ
     )
 
-    // Danh sách trang chính
+    // Danh sách trang chính đã được cập nhật
     override val mainPage = mainPageOf(
         "$mainUrl/tat-ca-phim/page/" to "Tất Cả Phim",
-        "$mainUrl/phim-chieu-rap/page/" to "Phim Chiếu Rạp",
+        // Đã loại bỏ "Phim Chiếu Rạp"
         "$mainUrl/phim-hoat-hinh/page/" to "Phim Hoạt Hình",
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(request.data + page).document
         val home = document.select("div.halim_box > article").mapNotNull {
-            it.toSearchResult()
+            // Xác định loại nội dung dựa trên tên của trang chính
+            val tvType = if (request.name == "Phim Hoạt Hình") TvType.Anime else TvType.Movie
+            it.toSearchResult(tvType)
         }
         return newHomePageResponse(request.name, home)
     }
 
-    private fun Element.toSearchResult(): SearchResponse? {
+    // Cập nhật hàm toSearchResult để nhận TvType
+    private fun Element.toSearchResult(tvType: TvType = TvType.Movie): SearchResponse? {
         val title = this.selectFirst("h2.entry-title")?.text()?.trim() ?: return null
         val href = this.selectFirst("a.halim-thumb")?.attr("href") ?: return null
         val posterUrl = this.selectFirst("figure.film-poster img, figure.lazy.img-responsive")?.attr("src") ?: this.selectFirst("img")?.attr("src")
 
-        return newMovieSearchResponse(title, href, TvType.Movie) {
+        // Sử dụng tvType được truyền vào
+        return newMovieSearchResponse(title, href, tvType) {
             this.posterUrl = posterUrl
         }
     }
@@ -44,7 +49,8 @@ class LongTiengPhimProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val document = app.get("$mainUrl/?s=$query").document
         return document.select("div.halim_box > article").mapNotNull {
-            it.toSearchResult()
+            // Kết quả tìm kiếm mặc định là Movie, vì khó xác định loại từ đây
+            it.toSearchResult(TvType.Movie)
         }
     }
 
@@ -56,8 +62,13 @@ class LongTiengPhimProvider : MainAPI() {
         val plot = document.selectFirst("div.entry-content > article")?.text()?.trim()
         val year = document.selectFirst("a[href*=/release/]")?.text()?.trim()?.toIntOrNull()
         val tags = document.select("div.more-info a[rel=category-tag]").map { it.text() }
+        
+        // Xác định loại nội dung dựa trên thẻ tag
+        val isAnime = tags.any { it.contains("Hoạt Hình", ignoreCase = true) }
+        val tvType = if (isAnime) TvType.Anime else TvType.TvSeries
+
         val recommendations = document.select("div#halim_related_movies-3 article").mapNotNull {
-            it.toSearchResult()
+            it.toSearchResult(tvType)
         }
 
         val episodes = document.select("div#halim-list-server ul.halim-list-eps li.halim-episode a").mapNotNull {
@@ -69,7 +80,8 @@ class LongTiengPhimProvider : MainAPI() {
             listOf(Episode(watchUrl, "Xem phim"))
         }
 
-        return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+        // Sử dụng tvType đã xác định khi tải chi tiết phim
+        return newTvSeriesLoadResponse(title, url, tvType, episodes) {
             this.posterUrl = poster
             this.plot = plot
             this.year = year
@@ -105,18 +117,13 @@ class LongTiengPhimProvider : MainAPI() {
             headers = mapOf("X-Requested-With" to "XMLHttpRequest")
         ).text
 
-        // CẢI TIẾN REGEX:
-        // Pattern này sẽ tìm bất cứ thứ gì nằm giữa 'file":"' và '"' tiếp theo.
-        // Nó linh hoạt hơn, không yêu cầu link phải là .mp4 hay http.
         val videoUrlRegex = Regex("""file":"([^"]+)"""", RegexOption.DOT_MATCHES_ALL)
         val match = videoUrlRegex.find(playerScript) ?: return false
 
-        // Trích xuất URL và làm sạch nó một cách cẩn thận
         val videoUrl = match.groupValues[1]
-            .replace("\\/", "/") // Chỉ thay thế `\/` thành `/`
-            .replace(Regex("""\s+"""), "") // Xóa tất cả khoảng trắng và ký tự xuống dòng
+            .replace("\\/", "/")
+            .replace(Regex("""\s+"""), "")
 
-        // Kiểm tra xem URL có hợp lệ không sau khi làm sạch
         if (!videoUrl.startsWith("http")) return false
 
         val isM3u8 = videoUrl.contains(".m3u8")
