@@ -30,11 +30,9 @@ class Av123Provider : MainAPI() {
         return newHomePageResponse(request.name, home)
     }
 
-    // ##### HÀM ĐÃ ĐƯỢC SỬA LỖI URL #####
     private fun Element.toSearchResult(): SearchResponse? {
         val a = this.selectFirst("a") ?: return null
         val hrefRaw = a.attr("href")
-        // Sửa lỗi ghép URL, đảm bảo có dấu "/" và mã ngôn ngữ
         val href = if (hrefRaw.startsWith("http")) {
             hrefRaw
         } else {
@@ -131,14 +129,15 @@ class Av123Provider : MainAPI() {
                 val encodedUrl = watchItem.url ?: return@forEach
                 val decodedPath = xorDecode(encodedUrl)
                 val iframeUrl = "https://surrit.store$decodedPath"
+
                 val iframeContent = app.get(iframeUrl, referer = mainUrl).text
-
+                
                 val evalRegex = Regex("""eval\(function\(p,a,c,k,e,d\)\{(.+?)\((.+)\)\)""")
-                val match = evalRegex.find(iframeContent) ?: return@forEach
-                val captured = match.groupValues[2]
+                val match = evalRegex.find(iframeContent) ?: throw Exception("DEBUG: Không tìm thấy script eval trong iframe.")
 
+                val captured = match.groupValues[2]
                 val paramsRegex = Regex("""'(.+)',(\d+),(\d+),'(.+?)'\.split\('\|'\)""")
-                val paramsMatch = paramsRegex.find(captured) ?: return@forEach
+                val paramsMatch = paramsRegex.find(captured) ?: throw Exception("DEBUG: Không tìm thấy tham số để giải mã script.")
 
                 val p = paramsMatch.groupValues[1]
                 val a = paramsMatch.groupValues[2].toInt()
@@ -162,9 +161,14 @@ class Av123Provider : MainAPI() {
                             type = ExtractorLinkType.M3U8
                         )
                     )
+                } else {
+                    // ##### DÒNG GỠ LỖI #####
+                    // Nếu không tìm thấy link m3u8, văng lỗi chứa script đã giải mã để kiểm tra
+                    throw Exception("DEBUG: Không tìm thấy link .m3u8. Script đã giải mã: $deobfuscated")
                 }
             } catch (e: Exception) {
-                // Bỏ qua lỗi và tiếp tục
+                 // Văng lỗi ra ngoài để hiển thị trong log
+                throw Exception("Lỗi trong loadLinks: ${e.message}")
             }
         }
         return true
