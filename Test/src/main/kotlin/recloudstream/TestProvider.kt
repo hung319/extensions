@@ -85,10 +85,12 @@ class Av123Provider : MainAPI() {
         }
     }
 
+    // ##### HÀM ĐÃ ĐƯỢC SỬA LỖI GIẢI MÃ BASE64 #####
     private fun xorDecode(input: String): String {
         val key = "MW4gC3v5a1q2E6Z"
         try {
-            val decodedBytes = Base64.decode(input, Base64.URL_SAFE or Base64.NO_WRAP)
+            // SỬA LỖI: Dùng Base64.DEFAULT thay vì URL_SAFE
+            val decodedBytes = Base64.decode(input, Base64.DEFAULT)
             val decodedString = String(decodedBytes, Charsets.ISO_8859_1)
             
             val result = StringBuilder()
@@ -97,7 +99,8 @@ class Av123Provider : MainAPI() {
             }
             return result.toString()
         } catch (e: Exception) {
-            return "" 
+            // Ném lỗi ra ngoài để dễ debug hơn thay vì trả về chuỗi rỗng
+            throw Exception("Lỗi khi giải mã xorDecode: ${e.message}")
         }
     }
     
@@ -127,7 +130,6 @@ class Av123Provider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Bọc toàn bộ hàm trong try-catch để bắt tất cả các lỗi có thể xảy ra
         try {
             val apiUrl = "$mainUrl/$lang/ajax/v/$data/videos"
             val apiRes = app.get(apiUrl).parsedSafe<ApiResponse>()
@@ -174,7 +176,6 @@ class Av123Provider : MainAPI() {
             }
             return true
         } catch (e: Exception) {
-            // Văng lỗi ra ngoài để hiển thị trong log, bao gồm cả thông báo lỗi gốc
             throw Exception("Lỗi trong loadLinks: ${e.message}")
         }
     }
