@@ -57,16 +57,34 @@ class LongTiengPhimProvider : MainAPI() {
         val plot = document.selectFirst("div.entry-content > article")?.text()?.trim()
         val year = document.selectFirst("a[href*=/release/]")?.text()?.trim()?.toIntOrNull()
 
-        // === CẬP NHẬT: Lấy tag trực tiếp từ thẻ meta "article:section" ===
-        val tags = document.selectFirst("meta[property=article:section]")
-            ?.attr("content")
-            ?.split(',')
-            ?.map { it.trim() }
-            ?: emptyList()
+        // === LOGIC LẤY TAG 3 BƯỚC TỐI ƯU ===
+        var tags: List<String> = emptyList()
+
+        // 1. Ưu tiên #1: Lấy từ JSON-LD script
+        val jsonLdScript = document.selectFirst("script[type='application/ld+json']")?.data()
+        if (!jsonLdScript.isNullOrBlank()) {
+            val articleSectionJson = Regex(""""articleSection":\[(.*?)\]""").find(jsonLdScript)?.groupValues?.get(1)
+            if (!articleSectionJson.isNullOrBlank()) {
+                tags = articleSectionJson.replace("\"", "").split(',').map { it.trim() }
+            }
+        }
+
+        // 2. Ưu tiên #2: Nếu bước 1 thất bại, lấy từ thẻ meta
+        if (tags.isEmpty()) {
+            val metaTagContent = document.selectFirst("meta[property=article:section]")?.attr("content")
+            if (!metaTagContent.isNullOrBlank()) {
+                tags = metaTagContent.split(',').map { it.trim() }
+            }
+        }
+
+        // 3. Ưu tiên #3: Nếu cả 2 bước trên thất bại, lấy từ thẻ a hiển thị
+        if (tags.isEmpty()) {
+            tags = document.select("div.more-info a[rel=category-tag]").map { it.text() }
+        }
         
         val isAnime = tags.any { it.contains("Hoạt Hình", ignoreCase = true) }
         val tvType = if (isAnime) TvType.Anime else TvType.TvSeries
-        // ==============================================================
+        // ===================================
 
         val recommendations = document.select("div#halim_related_movies-3 article").mapNotNull {
             it.toSearchResult(tvType)
