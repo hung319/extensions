@@ -13,7 +13,6 @@ class XpornTo : MainAPI() {
     override val hasMainPage = true
     override var lang = "en"
     override val hasDownloadSupport = true
-    // The content type is NSFW, which is appropriate. The response objects will be of the "Movie" type.
     override val supportedTypes = setOf(
         TvType.NSFW
     )
@@ -21,18 +20,19 @@ class XpornTo : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page == 1) mainUrl else "$mainUrl/page/$page/"
         val document = app.get(url).document
-        
-        val homePageList = ArrayList<HomePageList>()
 
         val mainVideos = document.select("div.videos__inner > div.video").mapNotNull {
             it.toSearchResult()
         }
         
-        if (mainVideos.isNotEmpty()) {
-            homePageList.add(HomePageList("Latest Videos", mainVideos, true))
-        }
+        // Determine if there is a next page. If mainVideos is not empty, it's likely there is.
+        val hasNext = mainVideos.isNotEmpty()
 
-        return HomePageResponse(homePageList)
+        // Create a HomePageList and pass it to newHomePageResponse
+        val homePageList = HomePageList("Latest Videos", mainVideos)
+
+        // Pass the hasNext value to the response
+        return newHomePageResponse(listOf(homePageList), hasNext)
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
@@ -40,7 +40,6 @@ class XpornTo : MainAPI() {
         val href = this.selectFirst("a.video__link")?.attr("href") ?: return null
         val posterUrl = this.selectFirst("img.video__poster--image")?.attr("src")
 
-        // Changed to newMovieSearchResponse
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
         }
@@ -51,7 +50,6 @@ class XpornTo : MainAPI() {
         val href = this.selectFirst("a")?.attr("href") ?: return null
         val posterUrl = this.selectFirst("img")?.attr("src")
 
-        // Changed to newMovieSearchResponse
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
         }
@@ -83,8 +81,6 @@ class XpornTo : MainAPI() {
             it.toSearchResult()
         }
 
-        // Changed to newMovieLoadResponse
-        // No longer need an "episodes" list, just pass the data parameter directly.
         return newMovieLoadResponse(title, url, TvType.NSFW, dataParam) {
             this.posterUrl = poster
             this.plot = description
@@ -94,7 +90,7 @@ class XpornTo : MainAPI() {
     }
 
     override suspend fun loadLinks(
-        data: String, // This is the `data` parameter from newMovieLoadResponse
+        data: String, 
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
