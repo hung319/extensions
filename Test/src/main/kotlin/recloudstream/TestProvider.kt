@@ -217,9 +217,6 @@ class Anime47Provider : MainAPI() {
         return false
     }
 
-    // ======================================================================
-    // == LOGIC SỬA LỖI VIDEO TỐT NHẤT ==
-    // ======================================================================
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
         return object : Interceptor {
             override fun intercept(chain: Interceptor.Chain): Response {
@@ -227,15 +224,14 @@ class Anime47Provider : MainAPI() {
                 val response = chain.proceed(request)
                 val url = request.url.toString()
 
-                // Chỉ áp dụng cho domain cụ thể
                 if (url.contains("nonprofit.asia")) {
                     response.body?.let { body ->
                         try {
-                            val fixedBytes = skipByteError(body) // Dùng hàm helper
+                            val fixedBytes = skipByteError(body)
                             val newBody = fixedBytes.toResponseBody(body.contentType())
                             return response.newBuilder().body(newBody).build()
                         } catch (e: Exception) {
-                            // Bỏ qua và trả về response gốc nếu có lỗi
+                            // Bỏ qua nếu có lỗi
                         }
                     }
                 }
@@ -246,27 +242,36 @@ class Anime47Provider : MainAPI() {
 }
 
 /**
- * Hàm phụ trợ để sửa lỗi video bằng cách bỏ qua các byte lỗi ở đầu.
- * Đặt ở bên ngoài class.
+ * Hàm phụ trợ để sửa lỗi video.
+ * LOGIC MỚI: Kết hợp xóa 7 byte đầu và tìm kiếm sync byte.
  */
 private fun skipByteError(responseBody: ResponseBody): ByteArray {
     val source = responseBody.source()
-    // Yêu cầu buffer chứa toàn bộ dữ liệu
     source.request(Long.MAX_VALUE) 
     val buffer = source.buffer.clone()
     source.close()
 
     val byteArray = buffer.readByteArray()
-    // Tìm MPEG-TS sync byte (0x47), có giá trị là 71 trong hệ thập phân
-    val syncByte: Byte = 71
-    val syncByteIndex = byteArray.indexOf(syncByte)
 
-    // Nếu tìm thấy sync byte và nó không nằm ở đầu file (có dữ liệu rác)
+    // 1. Kiểm tra xem file có đủ dài để cắt không
+    if (byteArray.size <= 7) {
+        return byteArray // Trả về nguyên gốc nếu quá ngắn
+    }
+
+    // 2. Cắt bỏ 7 byte đầu tiên
+    val trimmedByteArray = byteArray.copyOfRange(7, byteArray.size)
+
+    // 3. Trên phần còn lại, tìm MPEG-TS sync byte (0x47)
+    val syncByte: Byte = 71 
+    val syncByteIndex = trimmedByteArray.indexOf(syncByte)
+
+    // 4. Trả về kết quả cuối cùng
     return if (syncByteIndex > 0) {
-        // Trả về một mảng byte mới bắt đầu từ sync byte
-        byteArray.copyOfRange(syncByteIndex, byteArray.size)
+        // Nếu vẫn còn rác sau 7 byte đầu, cắt tiếp
+        trimmedByteArray.copyOfRange(syncByteIndex, trimmedByteArray.size)
     } else {
-        // Nếu không có lỗi hoặc sync byte ở đầu, trả về mảng gốc
-        byteArray
+        // Nếu không còn rác (syncByteIndex = 0) hoặc không tìm thấy (-1),
+        // trả về mảng đã được cắt 7 byte.
+        trimmedByteArray
     }
 }
