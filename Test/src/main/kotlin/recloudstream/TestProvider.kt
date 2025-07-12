@@ -30,11 +30,17 @@ class Av123Provider : MainAPI() {
         return newHomePageResponse(request.name, home)
     }
 
+    // ##### HÀM ĐÃ ĐƯỢC SỬA LỖI URL #####
     private fun Element.toSearchResult(): SearchResponse? {
         val a = this.selectFirst("a") ?: return null
-        val href = fixUrl(a.attr("href").let {
-             if (it.startsWith("http")) it else "$mainUrl$it"
-        })
+        val hrefRaw = a.attr("href")
+        // Sửa lỗi ghép URL, đảm bảo có dấu "/" và mã ngôn ngữ
+        val href = if (hrefRaw.startsWith("http")) {
+            hrefRaw
+        } else {
+            "$mainUrl/$lang/${hrefRaw.removePrefix("/")}"
+        }
+
         if (href.isBlank()) return null
 
         val title = this.selectFirst("div.detail a")?.text()?.trim() ?: return null
@@ -90,7 +96,7 @@ class Av123Provider : MainAPI() {
         }
         return result.toString()
     }
-
+    
     private fun deobfuscateScript(p: String, a: Int, c: Int, k: List<String>): String {
         var pStr = p
         val d = mutableMapOf<String, String>()
@@ -146,7 +152,6 @@ class Av123Provider : MainAPI() {
                 val m3u8Url = m3u8Match?.groupValues?.get(1)
 
                 if (m3u8Url != null) {
-                    // ##### DÒNG ĐÃ ĐƯỢC SỬA LẠI THEO ĐÚNG CẤU TRÚC MỚI #####
                     callback.invoke(
                         ExtractorLink(
                             source = this.name,
@@ -154,12 +159,12 @@ class Av123Provider : MainAPI() {
                             url = m3u8Url,
                             referer = iframeUrl,
                             quality = Qualities.Unknown.value,
-                            type = ExtractorLinkType.M3U8 // Sử dụng type thay cho isM3u8
+                            type = ExtractorLinkType.M3U8
                         )
                     )
                 }
             } catch (e: Exception) {
-                // Ignore and continue
+                // Bỏ qua lỗi và tiếp tục
             }
         }
         return true
