@@ -382,10 +382,7 @@ class MotChillProvider : MainAPI() {
         }
         return foundAnyLink
     }
-    
-    /**
-    * Interceptor để sửa lỗi phát video bằng cách bỏ qua các byte lỗi ở đầu.
-    */
+
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor {
         return object : Interceptor {
             override fun intercept(chain: Interceptor.Chain): Response {
@@ -393,7 +390,6 @@ class MotChillProvider : MainAPI() {
                 val response = chain.proceed(request)
                 val url = request.url.toString()
 
-                // === ĐÃ CẬP NHẬT: GIỮ NGUYÊN LOGIC GỐC TỪ ANIMEHAY ===
                 if (url.contains("ibyteimg.com") ||
                     url.contains(".tiktokcdn.") ||
                     (url.contains("segment.cloudbeta.win/file/segment/") && url.contains(".html?token="))
@@ -415,24 +411,53 @@ class MotChillProvider : MainAPI() {
 }
 
 /**
+* =============================================
+* === HÀM SKIPBYTEERROR ĐÃ ĐƯỢC CẬP NHẬT ===
+* =============================================
 * Hàm phụ trợ cho interceptor.
-* Dùng để sửa lỗi video bằng cách bỏ qua các byte lỗi ở đầu.
+* Dùng để sửa lỗi video bằng cách tìm và cắt bỏ file PNG được chèn vào đầu segment.
 */
 private fun skipByteError(responseBody: ResponseBody): ByteArray {
-    val source = responseBody.source()
-    source.request(Long.MAX_VALUE)
-    val buffer = source.buffer.clone()
-    source.close()
+    val bytes = responseBody.bytes()
+    
+    // Chuỗi byte đặc trưng của chunk IEND trong file PNG, đây là điểm kết thúc của file ảnh
+    // IEND®B`‚ -> 49 45 4E 44 AE 42 60 82
+    val pngEndSignature = byteArrayOf(0x49, 0x45, 0x4E, 0x44, -82, 0x42, 0x60, -126).toByteArray()
 
-    val byteArray = buffer.readByteArray()
-    val length = byteArray.size - 188
-    var start = 0
-    for (i in 0 until length) {
-        val nextIndex = i + 188
-        if (nextIndex < byteArray.size && byteArray[i].toInt() == 71 && byteArray[nextIndex].toInt() == 71) {
-            start = i
-            break
+    // Tìm vị trí của chuỗi byte này
+    val index = bytes.indexOf(pngEndSignature)
+
+    // Nếu tìm thấy, cắt mảng byte ngay sau chuỗi này.
+    // Nếu không tìm thấy, trả về mảng byte gốc để tránh lỗi.
+    return if (index != -1) {
+        bytes.copyOfRange(index + pngEndSignature.size, bytes.size)
+    } else {
+        // Fallback: nếu không tìm thấy signature, thử lại logic cũ
+        val length = bytes.size - 188
+        var start = 0
+        for (i in 0 until length) {
+            val nextIndex = i + 188
+            if (nextIndex < bytes.size && bytes[i].toInt() == 71 && bytes[nextIndex].toInt() == 71) {
+                start = i
+                break
+            }
         }
+        if (start > 0) bytes.copyOfRange(start, bytes.size) else bytes
     }
-    return if (start > 0) byteArray.copyOfRange(start, byteArray.size) else byteArray
+}
+
+// Hàm extension để tìm chuỗi byte, cần thiết cho logic ở trên
+private fun ByteArray.indexOf(sub: ByteArray): Int {
+    if (sub.isEmpty()) return 0
+    for (i in 0 until this.size - sub.size + 1) {
+        var found = true
+        for (j in sub.indices) {
+            if (this[i + j] != sub[j]) {
+                found = false
+                break
+            }
+        }
+        if (found) return i
+    }
+    return -1
 }
