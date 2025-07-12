@@ -105,14 +105,21 @@ class LongTiengPhimProvider : MainAPI() {
             headers = mapOf("X-Requested-With" to "XMLHttpRequest")
         ).text
 
-        // SỬA LỖI: Thêm RegexOption.DOT_MATCHES_ALL để tìm kiếm trên nhiều dòng
-        val videoUrlRegex = Regex("""file":"(https?://[^"]+?\.mp4)"""", RegexOption.DOT_MATCHES_ALL)
-        val match = videoUrlRegex.find(playerScript) ?: return false // Nếu không tìm thấy, thoát ra
+        // CẢI TIẾN REGEX:
+        // Pattern này sẽ tìm bất cứ thứ gì nằm giữa 'file":"' và '"' tiếp theo.
+        // Nó linh hoạt hơn, không yêu cầu link phải là .mp4 hay http.
+        val videoUrlRegex = Regex("""file":"([^"]+)"""", RegexOption.DOT_MATCHES_ALL)
+        val match = videoUrlRegex.find(playerScript) ?: return false
 
-        // Trích xuất URL và nối các dòng bị ngắt lại
+        // Trích xuất URL và làm sạch nó một cách cẩn thận
         val videoUrl = match.groupValues[1]
-            .replace("\\", "") // Xóa dấu gạch chéo ngược
+            .replace("\\/", "/") // Chỉ thay thế `\/` thành `/`
             .replace(Regex("""\s+"""), "") // Xóa tất cả khoảng trắng và ký tự xuống dòng
+
+        // Kiểm tra xem URL có hợp lệ không sau khi làm sạch
+        if (!videoUrl.startsWith("http")) return false
+
+        val isM3u8 = videoUrl.contains(".m3u8")
 
         callback(
             ExtractorLink(
@@ -121,7 +128,7 @@ class LongTiengPhimProvider : MainAPI() {
                 url = videoUrl,
                 referer = "$mainUrl/",
                 quality = Qualities.Unknown.value,
-                type = ExtractorLinkType.VIDEO,
+                type = if (isM3u8) ExtractorLinkType.HLS else ExtractorLinkType.VIDEO,
             )
         )
         return true
