@@ -383,6 +383,14 @@ class MotChillProvider : MainAPI() {
         return foundAnyLink
     }
     
+    // =========================================================================
+    // === CÁC HÀM ĐÃ ĐƯỢC THÊM VÀ SỬA LẠI THEO LOGIC CỦA FILE JAVA CUNG CẤP ===
+    // =========================================================================
+    
+    /**
+    * Interceptor để sửa lỗi phát video bằng cách bỏ qua các byte lỗi ở đầu.
+    * Áp dụng cho các URL video segment cụ thể.
+    */
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor {
         return object : Interceptor {
             override fun intercept(chain: Interceptor.Chain): Response {
@@ -410,42 +418,20 @@ class MotChillProvider : MainAPI() {
     }
 }
 
+/**
+* Hàm phụ trợ cho interceptor, được viết lại chính xác theo logic của file InterceptorUtilKt.java.
+* Dùng để sửa lỗi video bằng cách tìm byte đồng bộ 'G' (sync-byte) của MPEG-TS.
+*/
 private fun skipByteError(responseBody: ResponseBody): ByteArray {
-    val bytes = responseBody.bytes()
-    
-    // IEND®B`‚ -> 49 45 4E 44 AE 42 60 82 (hex)
-    val pngEndSignature = byteArrayOf(0x49, 0x45, 0x4E, 0x44, -82, 0x42, 0x60, -126)
-
-    val index = bytes.indexOf(pngEndSignature)
-
-    return if (index != -1) {
-        bytes.copyOfRange(index + pngEndSignature.size, bytes.size)
-    } else {
-        // Fallback
-        val length = bytes.size - 188
-        var start = 0
-        for (i in 0 until length) {
-            val nextIndex = i + 188
-            if (nextIndex < bytes.size && bytes[i].toInt() == 71 && bytes[nextIndex].toInt() == 71) {
-                start = i
-                break
-            }
+    val byteArray = responseBody.bytes()
+    val length = byteArray.size - 188
+    var start = 0
+    for (i in 0 until length) {
+        val nextIndex = i + 188
+        if (nextIndex < byteArray.size && byteArray[i].toInt() == 71 && byteArray[nextIndex].toInt() == 71) {
+            start = i
+            break
         }
-        if (start > 0) bytes.copyOfRange(start, bytes.size) else bytes
     }
-}
-
-private fun ByteArray.indexOf(sub: ByteArray): Int {
-    if (sub.isEmpty()) return 0
-    for (i in 0 until this.size - sub.size + 1) {
-        var found = true
-        for (j in sub.indices) {
-            if (this[i + j] != sub[j]) {
-                found = false
-                break
-            }
-        }
-        if (found) return i
-    }
-    return -1
+    return if (start > 0) byteArray.copyOfRange(start, byteArray.size) else byteArray
 }
