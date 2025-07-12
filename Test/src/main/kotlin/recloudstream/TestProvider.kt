@@ -85,25 +85,24 @@ class Av123Provider : MainAPI() {
         }
     }
     
-    // ##### CẬP NHẬT LOGIC GỠ LỖI #####
+    // ##### HÀM ĐÃ ĐƯỢC VIẾT LẠI HOÀN CHỈNH #####
     private fun xorDecode(input: String): String {
         val key = "MW4gC3v5a1q2E6Z"
-        var decodedString = ""
         try {
             val decodedBytes = Base64.decode(input, Base64.DEFAULT)
-            decodedString = String(decodedBytes, Charsets.ISO_8859_1)
-            
-            val result = StringBuilder()
-            for (i in decodedString.indices) {
-                result.append((decodedString[i].code xor key[i % key.length].code).toChar())
+            val resultBytes = ByteArray(decodedBytes.size)
+
+            for (i in decodedBytes.indices) {
+                // Thực hiện XOR trực tiếp trên giá trị byte
+                resultBytes[i] = (decodedBytes[i].toInt() xor key[i % key.length].code).toByte()
             }
-            return result.toString()
+            // Chỉ chuyển thành chuỗi sau khi đã hoàn tất XOR
+            return String(resultBytes, Charsets.UTF_8)
         } catch (e: Exception) {
-            // Văng lỗi với thông tin chi tiết nhất có thể để gỡ lỗi
-            throw Exception("Lỗi xorDecode. Input: '$input'. Key: '$key'. DecodedString: '$decodedString'. Error: ${e.message}")
+            throw Exception("Lỗi khi giải mã xorDecode: ${e.message} trên input: $input")
         }
     }
-    
+
     private fun deobfuscateScript(p: String, a: Int, c: Int, k: List<String>): String {
         var pStr = p
         val d = mutableMapOf<String, String>()
@@ -130,7 +129,6 @@ class Av123Provider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Giữ lại try-catch để bắt lỗi tổng thể
         try {
             val apiUrl = "$mainUrl/$lang/ajax/v/$data/videos"
             val apiRes = app.get(apiUrl).parsedSafe<ApiResponse>()
