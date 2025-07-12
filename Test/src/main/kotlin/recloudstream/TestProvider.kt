@@ -14,33 +14,29 @@ class LongTiengPhimProvider : MainAPI() {
     override val supportedTypes = setOf(
         TvType.Movie,
         TvType.TvSeries,
-        TvType.Anime // Thêm Anime vào các loại được hỗ trợ
+        TvType.Anime
     )
 
-    // Danh sách trang chính đã được cập nhật
+    // Danh sách trang chính
     override val mainPage = mainPageOf(
         "$mainUrl/tat-ca-phim/page/" to "Tất Cả Phim",
-        // Đã loại bỏ "Phim Chiếu Rạp"
         "$mainUrl/phim-hoat-hinh/page/" to "Phim Hoạt Hình",
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(request.data + page).document
         val home = document.select("div.halim_box > article").mapNotNull {
-            // Xác định loại nội dung dựa trên tên của trang chính
             val tvType = if (request.name == "Phim Hoạt Hình") TvType.Anime else TvType.Movie
             it.toSearchResult(tvType)
         }
         return newHomePageResponse(request.name, home)
     }
 
-    // Cập nhật hàm toSearchResult để nhận TvType
     private fun Element.toSearchResult(tvType: TvType = TvType.Movie): SearchResponse? {
         val title = this.selectFirst("h2.entry-title")?.text()?.trim() ?: return null
         val href = this.selectFirst("a.halim-thumb")?.attr("href") ?: return null
         val posterUrl = this.selectFirst("figure.film-poster img, figure.lazy.img-responsive")?.attr("src") ?: this.selectFirst("img")?.attr("src")
 
-        // Sử dụng tvType được truyền vào
         return newMovieSearchResponse(title, href, tvType) {
             this.posterUrl = posterUrl
         }
@@ -49,7 +45,6 @@ class LongTiengPhimProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val document = app.get("$mainUrl/?s=$query").document
         return document.select("div.halim_box > article").mapNotNull {
-            // Kết quả tìm kiếm mặc định là Movie, vì khó xác định loại từ đây
             it.toSearchResult(TvType.Movie)
         }
     }
@@ -63,7 +58,6 @@ class LongTiengPhimProvider : MainAPI() {
         val year = document.selectFirst("a[href*=/release/]")?.text()?.trim()?.toIntOrNull()
         val tags = document.select("div.more-info a[rel=category-tag]").map { it.text() }
         
-        // Xác định loại nội dung dựa trên thẻ tag
         val isAnime = tags.any { it.contains("Hoạt Hình", ignoreCase = true) }
         val tvType = if (isAnime) TvType.Anime else TvType.TvSeries
 
@@ -73,14 +67,19 @@ class LongTiengPhimProvider : MainAPI() {
 
         val episodes = document.select("div#halim-list-server ul.halim-list-eps li.halim-episode a").mapNotNull {
             val episodeUrl = it.attr("href").replace(" ", "")
-            Episode(episodeUrl, it.text().trim())
+            // SỬA LỖI: Dùng hàm newEpisode thay cho hàm tạo cũ
+            newEpisode(episodeUrl) {
+                this.name = it.text().trim()
+            }
         }.ifEmpty {
             val slug = url.trim('/').substringAfterLast('/')
             val watchUrl = "$mainUrl/watch/$slug-eps-1-server-1"
-            listOf(Episode(watchUrl, "Xem phim"))
+            // SỬA LỖI: Dùng hàm newEpisode thay cho hàm tạo cũ
+            listOf(newEpisode(watchUrl) {
+                this.name = "Xem phim"
+            })
         }
-
-        // Sử dụng tvType đã xác định khi tải chi tiết phim
+        
         return newTvSeriesLoadResponse(title, url, tvType, episodes) {
             this.posterUrl = poster
             this.plot = plot
