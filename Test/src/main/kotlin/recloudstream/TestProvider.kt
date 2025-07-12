@@ -1,15 +1,8 @@
 package recloudstream
 
-// Lỗi 1: Sửa lại các import không chính xác
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-
-// Xóa các import trỏ đến ".models" không còn tồn tại
-// import com.lagradost.cloudstream3.models.ExtractorLink
-// import com.lagradost.cloudstream3.models.Qualities
-// import com.lagradost.cloudstream3.models.SubtitleFile
-// import com.lagradost.cloudstream3.models.TvType
 
 class LongTiengPhimProvider : MainAPI() {
     // Thông tin cơ bản về provider
@@ -43,10 +36,9 @@ class LongTiengPhimProvider : MainAPI() {
         val href = this.selectFirst("a.halim-thumb")?.attr("href") ?: return null
         val posterUrl = this.selectFirst("figure.film-poster img, figure.lazy.img-responsive")?.attr("src") ?: this.selectFirst("img")?.attr("src")
 
-        // Khi tạo kết quả tìm kiếm, ta có thể thêm trạng thái lồng tiếng ở đây
         return newMovieSearchResponse(title, href, TvType.Movie) {
             this.posterUrl = posterUrl
-            this.addDubStatus(true) // Cho biết phim này có lồng tiếng
+            // Lỗi xảy ra ở đây, đã xóa dòng `this.addDubStatus(true)`
         }
     }
 
@@ -84,7 +76,6 @@ class LongTiengPhimProvider : MainAPI() {
             this.year = year
             this.tags = tags
             this.recommendations = recommendations
-            // Lỗi 2: Xóa bỏ dòng `addDubStatus(true)` không hợp lệ khỏi đây
         }
     }
 
