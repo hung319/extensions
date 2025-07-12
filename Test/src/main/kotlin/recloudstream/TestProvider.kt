@@ -57,7 +57,7 @@ class LongTiengPhimProvider : MainAPI() {
         val plot = document.selectFirst("div.entry-content > article")?.text()?.trim()
         val year = document.selectFirst("a[href*=/release/]")?.text()?.trim()?.toIntOrNull()
         val tags = document.select("div.more-info a[rel=category-tag]").map { it.text() }
-        
+
         val isAnime = tags.any { it.contains("Hoạt Hình", ignoreCase = true) }
         val tvType = if (isAnime) TvType.Anime else TvType.TvSeries
 
@@ -67,19 +67,17 @@ class LongTiengPhimProvider : MainAPI() {
 
         val episodes = document.select("div#halim-list-server ul.halim-list-eps li.halim-episode a").mapNotNull {
             val episodeUrl = it.attr("href").replace(" ", "")
-            // SỬA LỖI: Dùng hàm newEpisode thay cho hàm tạo cũ
             newEpisode(episodeUrl) {
                 this.name = it.text().trim()
             }
         }.ifEmpty {
             val slug = url.trim('/').substringAfterLast('/')
             val watchUrl = "$mainUrl/watch/$slug-eps-1-server-1"
-            // SỬA LỖI: Dùng hàm newEpisode thay cho hàm tạo cũ
             listOf(newEpisode(watchUrl) {
                 this.name = "Xem phim"
             })
         }
-        
+
         return newTvSeriesLoadResponse(title, url, tvType, episodes) {
             this.posterUrl = poster
             this.plot = plot
@@ -119,9 +117,11 @@ class LongTiengPhimProvider : MainAPI() {
         val videoUrlRegex = Regex("""file":"([^"]+)"""", RegexOption.DOT_MATCHES_ALL)
         val match = videoUrlRegex.find(playerScript) ?: return false
 
+        // SỬA LỖI: Chỉ xóa các ký tự xuống dòng, giữ lại khoảng trắng
         val videoUrl = match.groupValues[1]
-            .replace("\\/", "/")
-            .replace(Regex("""\s+"""), "")
+            .replace("\\/", "/") // Thay thế `\/` thành `/`
+            .replace("\n", "")      // Xóa ký tự xuống dòng
+            .replace("\r", "")      // Xóa ký tự xuống dòng (cho Windows)
 
         if (!videoUrl.startsWith("http")) return false
 
