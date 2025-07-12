@@ -3,7 +3,6 @@ package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
 import android.util.Base64
@@ -22,7 +21,7 @@ class Av123Provider : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = "$mainUrl/vi/${request.data}?page=$page"
+        val url = "$mainUrl/$lang/${request.data}?page=$page"
         val document = app.get(url).document
         val home = document.select("div.box-item-list div.box-item").mapNotNull {
             it.toSearchResult()
@@ -30,9 +29,11 @@ class Av123Provider : MainAPI() {
         return newHomePageResponse(request.name, home)
     }
 
+    // ##### HÀM ĐÃ ĐƯỢC SỬA LỖI #####
     private fun Element.toSearchResult(): SearchResponse? {
         val a = this.selectFirst("a") ?: return null
-        val href = fixUrl(a.attr("href"))
+        // Sửa lỗi tạo URL bằng cách thêm mã ngôn ngữ (lang)
+        val href = fixUrl(a.attr("href").let { if (it.startsWith("/")) it else "/$lang/$it" })
         if (href.isBlank()) return null
 
         val title = this.selectFirst("div.detail a")?.text()?.trim() ?: return null
@@ -44,7 +45,7 @@ class Av123Provider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$mainUrl/vi/search?keyword=$query"
+        val url = "$mainUrl/$lang/search?keyword=$query"
         val document = app.get(url).document
 
         return document.select("div.box-item-list div.box-item").mapNotNull {
@@ -52,6 +53,7 @@ class Av123Provider : MainAPI() {
         }
     }
 
+    // ##### HÀM ĐÃ ĐƯỢC CẬP NHẬT #####
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
@@ -60,11 +62,18 @@ class Av123Provider : MainAPI() {
         val tags = document.select("span.genre a").map { it.text() }
         val description = document.selectFirst("div.description p")?.text()
 
+        // Thêm phương thức dự phòng để lấy movieId, tăng độ tin cậy
         val movieId = document.selectFirst("#page-video")
             ?.attr("v-scope")
             ?.substringAfter("Movie({id: ")
             ?.substringBefore(",")
-            ?.trim() ?: return null
+            ?.trim()
+            ?: document.selectFirst(".favourite")
+            ?.attr("v-scope")
+            ?.substringAfter("movie', ")
+            ?.substringBefore(",")
+            ?.trim()
+            ?: return null
 
         return newMovieLoadResponse(title, url, TvType.NSFW, movieId) {
             this.posterUrl = poster
@@ -73,7 +82,6 @@ class Av123Provider : MainAPI() {
         }
     }
 
-    // Hàm giải mã XOR
     private fun xorDecode(input: String): String {
         val key = "MW4gC3v5a1q2E6Z"
         val base64Decoded = Base64.decode(input, Base64.DEFAULT)
@@ -90,26 +98,19 @@ class Av123Provider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // 1. Gọi API để lấy URL đã được mã hóa
-        val apiUrl = "$mainUrl/vi/ajax/v/$data/videos"
+        val apiUrl = "$mainUrl/$lang/ajax/v/$data/videos"
         val res = app.get(apiUrl).parsedSafe<ApiResponse>()
 
-        // 2. Lặp qua từng phần của video
         res?.result?.watch?.apmap { watchItem ->
             val encodedUrl = watchItem.url ?: return@apmap
-
-            // 3. Giải mã URL bằng logic đã tìm thấy
             val decodedPath = xorDecode(encodedUrl)
             val iframeUrl = "https://surrit.store$decodedPath"
 
-            // 4. Sử dụng loadExtractor để lấy link m3u8 cuối cùng
             loadExtractor(iframeUrl, mainUrl, subtitleCallback, callback)
         }
-
         return true
     }
 
-    // Các lớp dữ liệu để phân tích JSON
     data class WatchItem(val url: String?)
     data class ApiResult(val watch: List<WatchItem>?)
     data class ApiResponse(val result: ApiResult?)
