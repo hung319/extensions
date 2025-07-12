@@ -87,10 +87,11 @@ class Av123Provider : MainAPI() {
 
     private fun xorDecode(input: String): String {
         val key = "MW4gC3v5a1q2E6Z"
-        val base64Decoded = Base64.decode(input, Base64.DEFAULT)
+        // Sử dụng Base64.URL_SAFE để tương thích hơn với các ký tự đặc biệt
+        val base64Decoded = Base64.decode(input, Base64.URL_SAFE or Base64.NO_WRAP)
         val result = StringBuilder()
         for (i in base64Decoded.indices) {
-            result.append((base64Decoded[i].toInt() xor key[i % key.length].code).toChar())
+            result.append((base64Decoded[i].toInt() and 0xff xor key[i % key.length].code).toChar())
         }
         return result.toString()
     }
@@ -130,6 +131,12 @@ class Av123Provider : MainAPI() {
                 val decodedPath = xorDecode(encodedUrl)
                 val iframeUrl = "https://surrit.store$decodedPath"
 
+                // ##### DÒNG GỠ LỖI #####
+                // Văng lỗi để xem giá trị của iframeUrl trong log.
+                throw Exception("DEBUG: iframeUrl được tạo ra là: $iframeUrl")
+                
+                // Các bước tiếp theo sẽ tạm thời không được thực thi
+                /*
                 val iframeContent = app.get(iframeUrl, referer = mainUrl).text
                 
                 val evalRegex = Regex("""eval\(function\(p,a,c,k,e,d\)\{(.+?)\((.+)\)\)""")
@@ -161,11 +168,9 @@ class Av123Provider : MainAPI() {
                             type = ExtractorLinkType.M3U8
                         )
                     )
-                } else {
-                    // ##### DÒNG GỠ LỖI #####
-                    // Nếu không tìm thấy link m3u8, văng lỗi chứa script đã giải mã để kiểm tra
-                    throw Exception("DEBUG: Không tìm thấy link .m3u8. Script đã giải mã: $deobfuscated")
                 }
+                */
+
             } catch (e: Exception) {
                  // Văng lỗi ra ngoài để hiển thị trong log
                 throw Exception("Lỗi trong loadLinks: ${e.message}")
