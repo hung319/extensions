@@ -18,6 +18,7 @@ import com.lagradost.cloudstream3.AcraApplication.Companion.getKey
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import kotlinx.coroutines.*
+import com.h4rs.BuildConfig
 
 class SyncSettingsFragment(private val plugin: Plugin) : BottomSheetDialogFragment() {
     private fun <T : View> View.findView(name: String): T {
