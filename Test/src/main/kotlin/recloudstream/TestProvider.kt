@@ -85,22 +85,27 @@ class Av123Provider : MainAPI() {
         }
     }
 
-    // ##### HÀM ĐÃ ĐƯỢC SỬA LỖI GIẢI MÃ BASE64 #####
+    // ##### HÀM ĐÃ ĐƯỢC VIẾT LẠI CẨN THẬN HƠN #####
     private fun xorDecode(input: String): String {
         val key = "MW4gC3v5a1q2E6Z"
         try {
-            // SỬA LỖI: Dùng Base64.DEFAULT thay vì URL_SAFE
-            val decodedBytes = Base64.decode(input, Base64.DEFAULT)
-            val decodedString = String(decodedBytes, Charsets.ISO_8859_1)
-            
-            val result = StringBuilder()
-            for (i in decodedString.indices) {
-                result.append((decodedString[i].code xor key[i % key.length].code).toChar())
+            // Bước 1: Giải mã Base64 về mảng byte
+            val decodedBytes: ByteArray = Base64.decode(input, Base64.DEFAULT)
+            // Bước 2: Chuẩn bị một mảng byte mới để chứa kết quả sau khi XOR
+            val resultBytes = ByteArray(decodedBytes.size)
+
+            // Bước 3: Lặp qua từng byte và thực hiện phép toán XOR
+            for (i in decodedBytes.indices) {
+                val decodedByteAsUnsignedInt = decodedBytes[i].toInt() and 0xFF
+                val keyCharAsInt = key[i % key.length].code
+                val xorResult = decodedByteAsUnsignedInt xor keyCharAsInt
+                resultBytes[i] = xorResult.toByte()
             }
-            return result.toString()
+            // Bước 4: Chuyển toàn bộ mảng byte kết quả thành chuỗi bằng bảng mã UTF-8
+            return String(resultBytes, Charsets.UTF_8)
+
         } catch (e: Exception) {
-            // Ném lỗi ra ngoài để dễ debug hơn thay vì trả về chuỗi rỗng
-            throw Exception("Lỗi khi giải mã xorDecode: ${e.message}")
+            throw Exception("Lỗi khi giải mã xorDecode: ${e.message} trên input: $input")
         }
     }
     
@@ -139,9 +144,10 @@ class Av123Provider : MainAPI() {
                 val encodedUrl = watchItem.url ?: return@forEach
                 val decodedPath = xorDecode(encodedUrl)
                 
-                if (decodedPath.isBlank()) throw Exception("Đường dẫn giải mã rỗng. EncodedUrl: $encodedUrl")
+                if (decodedPath.isBlank() || !decodedPath.startsWith("/")) throw Exception("Đường dẫn giải mã không hợp lệ. Kết quả: '$decodedPath'")
 
-                val iframeUrl = "https://surrit.store$decodedPath"
+                // Trang iframe bây giờ được xác định là player.123av.me
+                val iframeUrl = "https://player.123av.me$decodedPath"
                 val iframeContent = app.get(iframeUrl, referer = mainUrl).text
                 
                 val evalRegex = Regex("""eval\(function\(p,a,c,k,e,d\)\{(.+?)\((.+)\)\)""")
