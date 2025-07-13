@@ -4,6 +4,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.network.CloudflareKiller
 import org.jsoup.nodes.Element
 
 class AnimetmProvider : MainAPI() {
@@ -17,48 +18,33 @@ class AnimetmProvider : MainAPI() {
         TvType.AnimeMovie,
     )
 
-    // *** ĐÃ CẬP NHẬT LOGIC ĐỂ XỬ LÝ NHIỀU CẤU TRÚC HTML ***
-    private fun Element.toSearchResult(): SearchResponse? {
-        // Thử cấu trúc 1: div.film-item
-        val filmLink = this.selectFirst("a.film-item-link")
-        if (filmLink != null) {
-            val href = fixUrl(filmLink.attr("href"))
-            val title = filmLink.attr("title")
-            val posterUrl = this.selectFirst("img.film-item-img")?.attr("src")
-            return newAnimeSearchResponse(title, href, TvType.Anime) {
-                this.posterUrl = posterUrl
-            }
-        }
+    // Khởi tạo CloudflareKiller để tái sử dụng
+    private val killer = CloudflareKiller()
 
-        // Thử cấu trúc 2: div.tray-item
-        val trayLink = this.selectFirst("a")
-        if (trayLink != null) {
-            val href = fixUrl(trayLink.attr("href"))
-            val title = this.selectFirst(".tray-item-title")?.text() ?: return null
-            val posterUrl = this.selectFirst("img.tray-item-thumbnail")?.attr("src")
-            return newAnimeSearchResponse(title, href, TvType.Anime) {
-                this.posterUrl = posterUrl
-            }
+    // Hàm phân tích kết quả tìm kiếm và trang chủ
+    private fun Element.toSearchResult(): SearchResponse? {
+        val link = this.selectFirst("a.film-poster-ahref") ?: return null
+        val href = fixUrl(link.attr("href"))
+        val title = link.attr("title")
+        val posterUrl = this.selectFirst("img.film-poster-img")?.attr("data-src")
+
+        return newAnimeSearchResponse(title, href, TvType.Anime) {
+            this.posterUrl = posterUrl
         }
-        
-        return null
     }
 
+    // Hàm chung để lấy dữ liệu từ các trang danh sách
     private suspend fun getPage(url: String): List<SearchResponse> {
-        val document = app.get(url).document
-        // *** SỬ DỤNG BỘ CHỌN KẾT HỢP ĐỂ TÌM TẤT CẢ CÁC MỤC PHIM ***
-        return document.select("div.film-item, div.tray-item").mapNotNull {
+        // Sử dụng interceptor để tự động vượt qua Cloudflare
+        val document = app.get(url, interceptor = killer).document
+        return document.select("div.flw-item").mapNotNull {
             it.toSearchResult()
         }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val home = getPage("$mainUrl/moi-cap-nhat?page=$page")
-        // Chỉ trả về nếu tìm thấy kết quả để tránh lỗi "does not have any items"
-        if (home.isNotEmpty()) {
-            return newHomePageResponse("Phim Mới Cập Nhật", home)
-        }
-        return newHomePageResponse("Trang chủ", emptyList())
+        return newHomePageResponse("Phim Mới Cập Nhật", home)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -66,14 +52,15 @@ class AnimetmProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url).document
-        val title = document.selectFirst("h1.film-title")?.text()?.trim() ?: "Không rõ"
+        val document = app.get(url, interceptor = killer).document
+        val title = document.selectFirst("h2.film-name")?.text()?.trim() ?: "Không rõ"
 
         return newAnimeLoadResponse(title, url, TvType.Anime) {
-            posterUrl = document.selectFirst("img.film-thumbnail-img")?.attr("src")
-            plot = document.selectFirst("div.film-description")?.text()?.trim()
+            posterUrl = document.selectFirst("img.film-poster-img")?.attr("src")
+            plot = document.selectFirst("div.film-description > div.text")?.text()?.trim()
 
-            val episodes = document.select("div.episode-item a").map {
+            // Selector cho danh sách tập
+            val episodes = document.select("a.ssl-item.ep-item").map {
                 newEpisode(it.attr("href")) {
                     name = it.attr("title")
                 }
@@ -89,22 +76,26 @@ class AnimetmProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val episodePage = app.get(data).document
-        val iframeSrc = episodePage.selectFirst("div#player-wrapper iframe")?.attr("src") 
-            ?: return false
+        val episodePage = app.get(data, interceptor = killer).document
+        
+        // Trích xuất link iframe từ biến Javascript
+        val scriptContent = episodePage.select("script").html()
+        val iframeSrc = Regex("""var \$checkLink2 = "([^"]+)";""").find(scriptContent)?.groupValues?.get(1)
 
-        val m3u8Url = "$iframeSrc/master.m3u8"
-
-        callback.invoke(
-            ExtractorLink(
-                source = this.name,
-                name = "Server Abyss",
-                url = m3u8Url,
-                referer = "$mainUrl/",
-                quality = Qualities.P1080.value,
-                type = ExtractorLinkType.M3U8 
+        if (iframeSrc != null && iframeSrc.isNotBlank()) {
+            val m3u8Url = "$iframeSrc/master.m3u8"
+            callback.invoke(
+                ExtractorLink(
+                    source = this.name,
+                    name = "Server Abyss",
+                    url = m3u8Url,
+                    referer = "$mainUrl/",
+                    quality = Qualities.P1080.value,
+                    type = ExtractorLinkType.M3U8 
+                )
             )
-        )
-        return true
+            return true
+        }
+        return false
     }
 }
