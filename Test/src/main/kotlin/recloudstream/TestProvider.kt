@@ -1,11 +1,13 @@
 // Tên file: JAVtifulProvider.kt
-package recloudstream // <-- ĐÃ THAY ĐỔI
+package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.utils.getQualityFromName
-import com.lagradost.cloudstream3.utils.ExtractorLinkType // <-- Thêm import
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.google.gson.annotations.SerializedName
 
 class JAVtifulProvider : MainAPI() {
     override var mainUrl = "https://javtiful.com"
@@ -93,32 +95,56 @@ class JAVtifulProvider : MainAPI() {
         }
     }
 
+    // Định nghĩa một data class để parse JSON trả về từ API
+    private data class CdnResponse(
+        @SerializedName("playlists") val playlists: String?
+    )
+
+    // Hàm lấy link video trực tiếp đã được cập nhật
     override suspend fun loadLinks(
-        data: String,
+        data: String, // `url` từ `load()`
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val responseText = app.get(data).text
-        val hlsRegex = Regex("""source:\s*['"](https?://[^'"]+\.m3u8)['"]""")
-        val matchResult = hlsRegex.find(responseText)
-        
-        val videoUrl = matchResult?.groups?.get(1)?.value
+        // Tải trang video để lấy thông tin cần thiết
+        val document = app.get(data).document
 
-        if (videoUrl != null) {
-            callback.invoke(
-                ExtractorLink(
-                    source = this.name,
-                    name = "JAVtiful Server",
-                    url = videoUrl,
-                    referer = "$mainUrl/",
-                    quality = Qualities.Unknown.value,
-                    type = ExtractorLinkType.VIDEO // <-- ĐÃ THAY ĐỔI
-                )
+        // 1. Trích xuất video_id từ URL (data)
+        val videoId = Regex("""/video/(\d+)/""").find(data)?.groupValues?.get(1) ?: return false
+
+        // 2. Trích xuất token từ thẻ div
+        val token = document.selectFirst("#token_full")?.attr("data-csrf-token") ?: return false
+
+        // 3. Chuẩn bị dữ liệu và header để gửi yêu cầu POST
+        val postUrl = "$mainUrl/ajax/get_cdn"
+        val postData = mapOf(
+            "video_id" to videoId,
+            "pid_c" to "",
+            "token" to token
+        )
+        val headers = mapOf("Referer" to data)
+
+        // 4. Gửi yêu cầu POST và nhận kết quả
+        val ajaxResponse = app.post(postUrl, headers = headers, data = postData).text
+
+        // 5. Parse JSON để lấy link video
+        val cdnResponse = parseJson<CdnResponse>(ajaxResponse)
+        val videoUrl = cdnResponse.playlists ?: return false
+
+        // 6. Trả về link video cho player
+        callback.invoke(
+            ExtractorLink(
+                source = this.name,
+                name = "Javtiful CDN",
+                url = videoUrl,
+                referer = mainUrl, // Luôn đặt referer để đảm bảo link hoạt động
+                quality = Qualities.Unknown.value,
+                // Dùng ExtractorLinkType.VIDEO cho link MP4/m3u8...
+                type = ExtractorLinkType.VIDEO 
             )
-            return true
-        }
-
-        return false
+        )
+        
+        return true
     }
 }
