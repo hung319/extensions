@@ -44,7 +44,6 @@ class AnimetmProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        // *** ĐÃ SỬA LẠI URL TÌM KIẾM CHO CHÍNH XÁC ***
         val searchUrl = "$mainUrl/search?keysearch=$query"
         return getPage(searchUrl)
     }
@@ -57,7 +56,8 @@ class AnimetmProvider : MainAPI() {
             posterUrl = document.selectFirst("img.film-poster-img")?.attr("src")
             plot = document.selectFirst("div.film-description > div.text")?.text()?.trim()
 
-            val episodes = document.select("a.ssl-item.ep-item").map {
+            // *** ĐÃ CẬP NHẬT BỘ CHỌN (SELECTOR) ĐỂ LẤY DANH SÁCH TẬP CHÍNH XÁC HƠN ***
+            val episodes = document.select("div.ep-range a.ssl-item").map {
                 newEpisode(it.attr("href")) {
                     name = it.attr("title")
                 }
