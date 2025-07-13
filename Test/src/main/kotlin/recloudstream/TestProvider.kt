@@ -7,6 +7,7 @@ import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.google.gson.annotations.SerializedName
+import com.lagradost.cloudstream3.utils.Qualities 
 
 class JAVtifulProvider : MainAPI() {
     override var mainUrl = "https://javtiful.com"
@@ -43,12 +44,12 @@ class JAVtifulProvider : MainAPI() {
         return newHomePageResponse(request.name, home, hasNext = home.isNotEmpty())
     }
 
-    // Hàm tiện ích để lấy enum SearchQuality từ chuỗi
+    // Sửa lỗi: Chỉ map các hằng số tồn tại trong enum SearchQuality
     private fun getSearchQuality(qualityString: String?): SearchQuality? {
         return when (qualityString?.uppercase()) {
-            "FHD" -> SearchQuality.FullHd
-            "HD" -> SearchQuality.Hd
-            else -> null // Trả về null nếu không xác định
+            "HD" -> SearchQuality.HD
+            // "FHD" không có trong enum, nên để null để tránh lỗi
+            else -> null
         }
     }
 
@@ -69,7 +70,6 @@ class JAVtifulProvider : MainAPI() {
 
         return newMovieSearchResponse(title, fullHref, TvType.Movie) {
             this.posterUrl = posterUrl
-            // Sửa lỗi: Dùng hàm tiện ích getSearchQuality để lấy enum
             this.quality = getSearchQuality(qualityString)
         }
     }
@@ -135,8 +135,7 @@ class JAVtifulProvider : MainAPI() {
                 name = "Javtiful CDN",
                 url = videoUrl,
                 referer = mainUrl,
-                // Sửa lỗi: Dùng -1 cho chất lượng không xác định
-                quality = -1, 
+                quality = Qualities.Unknown.value, 
                 type = ExtractorLinkType.VIDEO
             )
         )
