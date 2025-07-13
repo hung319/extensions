@@ -44,7 +44,9 @@ class AnimetmProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        return getPage("$mainUrl/tim-kiem?keyword=$query")
+        // *** ĐÃ SỬA LẠI URL TÌM KIẾM CHO CHÍNH XÁC ***
+        val searchUrl = "$mainUrl/search?keysearch=$query"
+        return getPage(searchUrl)
     }
 
     override suspend fun load(url: String): LoadResponse {
@@ -72,10 +74,8 @@ class AnimetmProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val episodePage = app.get(data, interceptor = killer).document
-
-        // Trích xuất link iframe từ biến Javascript
+        
         val scriptContent = episodePage.select("script").html()
-        // *** ĐÃ SỬA LỖI CÚ PHÁP REGEX ***
         val iframeSrc = Regex("""var ${'$'}checkLink2 = "([^"]+)";""").find(scriptContent)?.groupValues?.get(1)
 
         if (iframeSrc != null && iframeSrc.isNotBlank()) {
