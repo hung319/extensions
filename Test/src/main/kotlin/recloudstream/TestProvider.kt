@@ -15,9 +15,8 @@ class JAVtifulProvider : MainAPI() {
     override val hasMainPage = true
     override var lang = "vi"
     
-    // Chỉ hỗ trợ duy nhất TvType.NSFW
     override val supportedTypes = setOf(
-        TvType.NSFW 
+        TvType.NSFW
     )
 
     override val mainPage = mainPageOf(
@@ -75,8 +74,8 @@ class JAVtifulProvider : MainAPI() {
         
         val qualityString = card.selectFirst("span.label-hd")?.text()?.trim()
 
-        // Sửa lỗi: Ép kiểu dữ liệu về TvType.NSFW
-        return newAnimeSearchResponse(title, fullHref, TvType.NSFW) {
+        // Sửa lỗi: Dùng lại `newMovieSearchResponse` cho phim lẻ
+        return newMovieSearchResponse(title, fullHref, TvType.NSFW) {
             this.posterUrl = posterUrl
             this.quality = getSearchQuality(qualityString)
         }
@@ -103,8 +102,8 @@ class JAVtifulProvider : MainAPI() {
         val tags = document.select(".video-details__item:contains(từ khóa) a").map { it.text() }
         val recommendations = document.select("#related-actress .splide__slide, .related-videos .col").mapNotNull { it.toSearchResult() }
 
-        // Sửa lỗi: Ép kiểu dữ liệu về TvType.NSFW
-        return newAnimeLoadResponse(title, url, TvType.NSFW) {
+        // Sửa lỗi: Dùng lại `newMovieLoadResponse` cho phim lẻ, truyền data vào tham số thứ 4
+        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = posterUrl
             this.plot = null
             this.tags = tags
