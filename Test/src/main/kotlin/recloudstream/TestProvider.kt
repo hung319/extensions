@@ -7,8 +7,6 @@ import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.google.gson.annotations.SerializedName
-import com.lagradost.cloudstream3.SearchQuality // <-- Thêm import
-import com.lagradost.cloudstream3.Qualities     // <-- Thêm import
 
 class JAVtifulProvider : MainAPI() {
     override var mainUrl = "https://javtiful.com"
@@ -31,10 +29,10 @@ class JAVtifulProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        val url = if (page == 1) {
-            mainUrl + request.data
+        val url = if (page > 1) {
+            "${mainUrl}${request.data}?page=$page"
         } else {
-            mainUrl + request.data + "?page=$page"
+            "${mainUrl}${request.data}"
         }
         val document = app.get(url).document
         
@@ -43,6 +41,15 @@ class JAVtifulProvider : MainAPI() {
         }
 
         return newHomePageResponse(request.name, home, hasNext = home.isNotEmpty())
+    }
+
+    // Hàm tiện ích để lấy enum SearchQuality từ chuỗi
+    private fun getSearchQuality(qualityString: String?): SearchQuality? {
+        return when (qualityString?.uppercase()) {
+            "FHD" -> SearchQuality.FullHd
+            "HD" -> SearchQuality.Hd
+            else -> null // Trả về null nếu không xác định
+        }
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
@@ -62,8 +69,8 @@ class JAVtifulProvider : MainAPI() {
 
         return newMovieSearchResponse(title, fullHref, TvType.Movie) {
             this.posterUrl = posterUrl
-            // Sửa lỗi 1: Dùng SearchQuality.find() để lấy enum chất lượng
-            this.quality = SearchQuality.find(qualityString) 
+            // Sửa lỗi: Dùng hàm tiện ích getSearchQuality để lấy enum
+            this.quality = getSearchQuality(qualityString)
         }
     }
 
@@ -128,8 +135,8 @@ class JAVtifulProvider : MainAPI() {
                 name = "Javtiful CDN",
                 url = videoUrl,
                 referer = mainUrl,
-                // Sửa lỗi 2: Giờ Qualities đã được import và có thể sử dụng
-                quality = Qualities.Unknown.value,
+                // Sửa lỗi: Dùng -1 cho chất lượng không xác định
+                quality = -1, 
                 type = ExtractorLinkType.VIDEO
             )
         )
