@@ -25,9 +25,15 @@ class AnimetmProvider : MainAPI() {
         val href = fixUrl(link.attr("href"))
         val title = link.attr("title")
         val posterUrl = this.selectFirst("img.film-poster-img")?.attr("data-src")
+        
+        val episodesText = this.selectFirst("div.tick-rate")?.text()
+        val episodeCount = episodesText?.substringBefore("/")?.trim()?.toIntOrNull()
 
         return newAnimeSearchResponse(title, href, TvType.Anime) {
             this.posterUrl = posterUrl
+            if (episodeCount != null) {
+                this.addDubStatus(DubStatus.Subbed, episodeCount)
+            }
         }
     }
 
@@ -73,7 +79,6 @@ class AnimetmProvider : MainAPI() {
                 addEpisodes(DubStatus.Subbed, episodes)
             }
 
-            // *** ĐÃ THÊM DANH SÁCH PHIM ĐỀ XUẤT ***
             recommendations = document.select("section.block_area_category div.flw-item").mapNotNull {
                 it.toSearchResult()
             }
