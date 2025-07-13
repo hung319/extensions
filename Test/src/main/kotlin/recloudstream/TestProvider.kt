@@ -64,12 +64,18 @@ class AnimetmProvider : MainAPI() {
                 val episodeListDocument = app.get(episodePageUrl, interceptor = killer).document
                 
                 val episodes = episodeListDocument.select("div.ep-range a.ssl-item").map {
+                    val episodeNumber = it.attr("title")
                     newEpisode(it.attr("href")) {
-                        name = it.attr("title")
+                        name = "Tập $episodeNumber"
                     }
                 }.reversed()
                 
                 addEpisodes(DubStatus.Subbed, episodes)
+            }
+
+            // *** ĐÃ THÊM DANH SÁCH PHIM ĐỀ XUẤT ***
+            recommendations = document.select("section.block_area_category div.flw-item").mapNotNull {
+                it.toSearchResult()
             }
         }
     }
@@ -82,9 +88,7 @@ class AnimetmProvider : MainAPI() {
     ): Boolean {
         val episodePage = app.get(data, interceptor = killer).document
         val scriptContent = episodePage.select("script").html()
-
-        // *** ĐÃ CẬP NHẬT REGEX ĐỂ LINH HOẠT HƠN ***
-        // Tìm tất cả các biến checkLink và ưu tiên link của abyss-cdn
+        
         val iframeSrc = Regex("""checkLink\d*\s*=\s*"([^"]+)"""")
             .findAll(scriptContent)
             .map { it.groupValues[1] }
