@@ -3,7 +3,6 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
-// Thêm import cụ thể cho ExtractorLinkType
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import org.jsoup.nodes.Element
 
@@ -18,31 +17,36 @@ class AnimetmProvider : MainAPI() {
         TvType.AnimeMovie,
     )
 
+    // Sửa lại selector để khớp với cấu trúc HTML mới
     private fun Element.toSearchResult(): SearchResponse {
-        val link = this.selectFirst("a.film-item-link")
-        val href = fixUrl(link?.attr("href").toString())
-        val title = link?.attr("title").toString()
-        val posterUrl = this.selectFirst("img.film-item-img")?.attr("src")
+        val linkElement = this.selectFirst("a")
+        val href = fixUrl(linkElement?.attr("href").toString())
+        val title = this.selectFirst("div.tray-item-title")?.text() ?: "Không rõ"
+        val posterUrl = this.selectFirst("img.tray-item-thumbnail")?.attr("src")
         
         return newAnimeSearchResponse(title, href, TvType.Anime) {
             this.posterUrl = posterUrl
         }
     }
-
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get("$mainUrl/danh-sach?page=$page").document
-        val home = document.select("div.film-item").map {
+    
+    // Hàm chung để lấy dữ liệu từ trang danh sách và trang tìm kiếm
+    private suspend fun getPage(url: String): List<SearchResponse> {
+        val document = app.get(url).document
+        // Selector chính xác cho các mục phim là 'div.tray-item'
+        return document.select("div.tray-item").map {
             it.toSearchResult()
         }
+    }
+
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        // Lấy danh sách phim mới từ trang chủ hoặc trang danh sách
+        val home = getPage("$mainUrl/danh-sach?page=$page")
+        // Trả về một hàng duy nhất có tên "Phim Mới Cập Nhật"
         return newHomePageResponse("Phim Mới Cập Nhật", home)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/tim-kiem?keyword=$query"
-        val document = app.get(searchUrl).document
-        return document.select("div.film-item").map {
-            it.toSearchResult()
-        }
+        return getPage("$mainUrl/tim-kiem?keyword=$query")
     }
 
     override suspend fun load(url: String): LoadResponse {
@@ -82,7 +86,6 @@ class AnimetmProvider : MainAPI() {
                 url = m3u8Url,
                 referer = "$mainUrl/",
                 quality = Qualities.P1080.value,
-                // Sử dụng ExtractorLinkType sau khi đã import
                 type = ExtractorLinkType.M3U8 
             )
         )
