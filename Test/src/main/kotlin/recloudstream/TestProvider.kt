@@ -17,7 +17,6 @@ class AnimetmProvider : MainAPI() {
         TvType.AnimeMovie,
     )
 
-    // Sửa lại selector để khớp với cấu trúc HTML mới
     private fun Element.toSearchResult(): SearchResponse {
         val linkElement = this.selectFirst("a")
         val href = fixUrl(linkElement?.attr("href").toString())
@@ -29,19 +28,16 @@ class AnimetmProvider : MainAPI() {
         }
     }
     
-    // Hàm chung để lấy dữ liệu từ trang danh sách và trang tìm kiếm
     private suspend fun getPage(url: String): List<SearchResponse> {
         val document = app.get(url).document
-        // Selector chính xác cho các mục phim là 'div.tray-item'
         return document.select("div.tray-item").map {
             it.toSearchResult()
         }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Lấy danh sách phim mới từ trang chủ hoặc trang danh sách
-        val home = getPage("$mainUrl/danh-sach?page=$page")
-        // Trả về một hàng duy nhất có tên "Phim Mới Cập Nhật"
+        // *** ĐÃ CẬP NHẬT URL CHO TRANG "MỚI CẬP NHẬT" ***
+        val home = getPage("$mainUrl/moi-cap-nhat?page=$page")
         return newHomePageResponse("Phim Mới Cập Nhật", home)
     }
 
