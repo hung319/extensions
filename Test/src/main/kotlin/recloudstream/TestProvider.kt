@@ -17,28 +17,48 @@ class AnimetmProvider : MainAPI() {
         TvType.AnimeMovie,
     )
 
-    private fun Element.toSearchResult(): SearchResponse {
-        val linkElement = this.selectFirst("a")
-        val href = fixUrl(linkElement?.attr("href").toString())
-        val title = this.selectFirst("div.tray-item-title")?.text() ?: "Không rõ"
-        val posterUrl = this.selectFirst("img.tray-item-thumbnail")?.attr("src")
-        
-        return newAnimeSearchResponse(title, href, TvType.Anime) {
-            this.posterUrl = posterUrl
+    // *** ĐÃ CẬP NHẬT LOGIC ĐỂ XỬ LÝ NHIỀU CẤU TRÚC HTML ***
+    private fun Element.toSearchResult(): SearchResponse? {
+        // Thử cấu trúc 1: div.film-item
+        val filmLink = this.selectFirst("a.film-item-link")
+        if (filmLink != null) {
+            val href = fixUrl(filmLink.attr("href"))
+            val title = filmLink.attr("title")
+            val posterUrl = this.selectFirst("img.film-item-img")?.attr("src")
+            return newAnimeSearchResponse(title, href, TvType.Anime) {
+                this.posterUrl = posterUrl
+            }
         }
+
+        // Thử cấu trúc 2: div.tray-item
+        val trayLink = this.selectFirst("a")
+        if (trayLink != null) {
+            val href = fixUrl(trayLink.attr("href"))
+            val title = this.selectFirst(".tray-item-title")?.text() ?: return null
+            val posterUrl = this.selectFirst("img.tray-item-thumbnail")?.attr("src")
+            return newAnimeSearchResponse(title, href, TvType.Anime) {
+                this.posterUrl = posterUrl
+            }
+        }
+        
+        return null
     }
-    
+
     private suspend fun getPage(url: String): List<SearchResponse> {
         val document = app.get(url).document
-        return document.select("div.tray-item").map {
+        // *** SỬ DỤNG BỘ CHỌN KẾT HỢP ĐỂ TÌM TẤT CẢ CÁC MỤC PHIM ***
+        return document.select("div.film-item, div.tray-item").mapNotNull {
             it.toSearchResult()
         }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // *** ĐÃ CẬP NHẬT URL CHO TRANG "MỚI CẬP NHẬT" ***
         val home = getPage("$mainUrl/moi-cap-nhat?page=$page")
-        return newHomePageResponse("Phim Mới Cập Nhật", home)
+        // Chỉ trả về nếu tìm thấy kết quả để tránh lỗi "does not have any items"
+        if (home.isNotEmpty()) {
+            return newHomePageResponse("Phim Mới Cập Nhật", home)
+        }
+        return newHomePageResponse("Trang chủ", emptyList())
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
