@@ -7,15 +7,17 @@ import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.google.gson.annotations.SerializedName
-import com.lagradost.cloudstream3.utils.Qualities 
+import com.lagradost.cloudstream3.utils.Qualities
 
 class JAVtifulProvider : MainAPI() {
     override var mainUrl = "https://javtiful.com"
     override var name = "JAVtiful"
     override val hasMainPage = true
-    override var lang = "ja"
+    override var lang = "vi"
+    
+    // Chỉ hỗ trợ duy nhất TvType.NSFW
     override val supportedTypes = setOf(
-        TvType.NSFW
+        TvType.NSFW 
     )
 
     override val mainPage = mainPageOf(
@@ -43,21 +45,26 @@ class JAVtifulProvider : MainAPI() {
 
         return newHomePageResponse(request.name, home, hasNext = home.isNotEmpty())
     }
-
-    // Sửa lỗi: Chỉ map các hằng số tồn tại trong enum SearchQuality
+    
     private fun getSearchQuality(qualityString: String?): SearchQuality? {
         return when (qualityString?.uppercase()) {
-            "HD" -> SearchQuality.HD
-            // "FHD" không có trong enum, nên để null để tránh lỗi
+            "HD", "FHD" -> SearchQuality.HD
             else -> null
         }
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
         val card = this.selectFirst("div.card") ?: return null
-        val link = card.selectFirst("a.video-tmb") ?: return null
+        
+        if (card.selectFirst("span.badge:contains(SPONSOR)") != null) {
+            return null
+        }
 
+        val link = card.selectFirst("a.video-tmb") ?: return null
         val href = link.attr("href")
+
+        if (!href.contains("javtiful.com")) return null
+
         val fullHref = if (href.startsWith("http")) href else "$mainUrl$href"
 
         val title = card.selectFirst("a.video-link")?.attr("title")?.trim() ?: return null
@@ -68,7 +75,8 @@ class JAVtifulProvider : MainAPI() {
         
         val qualityString = card.selectFirst("span.label-hd")?.text()?.trim()
 
-        return newMovieSearchResponse(title, fullHref, TvType.Movie) {
+        // Sửa lỗi: Ép kiểu dữ liệu về TvType.NSFW
+        return newAnimeSearchResponse(title, fullHref, TvType.NSFW) {
             this.posterUrl = posterUrl
             this.quality = getSearchQuality(qualityString)
         }
@@ -93,9 +101,10 @@ class JAVtifulProvider : MainAPI() {
         }
 
         val tags = document.select(".video-details__item:contains(từ khóa) a").map { it.text() }
-        val recommendations = document.select("#related-actress .splide__slide").mapNotNull { it.toSearchResult() }
+        val recommendations = document.select("#related-actress .splide__slide, .related-videos .col").mapNotNull { it.toSearchResult() }
 
-        return newMovieLoadResponse(title, url, TvType.Movie, url) {
+        // Sửa lỗi: Ép kiểu dữ liệu về TvType.NSFW
+        return newAnimeLoadResponse(title, url, TvType.NSFW) {
             this.posterUrl = posterUrl
             this.plot = null
             this.tags = tags
