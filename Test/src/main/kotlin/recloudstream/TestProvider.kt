@@ -49,21 +49,32 @@ class AnimetmProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
+        // Step 1: Tải trang thông tin phim để lấy metadata
         val document = app.get(url, interceptor = killer).document
         val title = document.selectFirst("h2.film-name")?.text()?.trim() ?: "Không rõ"
+        val poster = document.selectFirst("div.anisc-poster img")?.attr("src")
+        val plot = document.selectFirst("div.film-description > div.text")?.text()?.trim()
+
+        // Step 2: Tìm link đến trang xem phim (thường là tập mới nhất)
+        val episodePageUrl = document.selectFirst("a.btn-play")?.attr("href")
 
         return newAnimeLoadResponse(title, url, TvType.Anime) {
-            posterUrl = document.selectFirst("img.film-poster-img")?.attr("src")
-            plot = document.selectFirst("div.film-description > div.text")?.text()?.trim()
+            this.posterUrl = poster
+            this.plot = plot
 
-            // *** ĐÃ CẬP NHẬT BỘ CHỌN (SELECTOR) ĐỂ LẤY DANH SÁCH TẬP CHÍNH XÁC HƠN ***
-            val episodes = document.select("div.ep-range a.ssl-item").map {
-                newEpisode(it.attr("href")) {
-                    name = it.attr("title")
-                }
-            }.reversed()
-
-            addEpisodes(DubStatus.Subbed, episodes)
+            if (episodePageUrl != null) {
+                // Step 3: Tải trang xem phim để lấy danh sách tập đầy đủ
+                val episodeListDocument = app.get(episodePageUrl, interceptor = killer).document
+                
+                // Step 4: Lấy danh sách tập từ trang xem phim
+                val episodes = episodeListDocument.select("div.ep-range a.ssl-item").map {
+                    newEpisode(it.attr("href")) {
+                        name = it.attr("title")
+                    }
+                }.reversed()
+                
+                addEpisodes(DubStatus.Subbed, episodes)
+            }
         }
     }
 
