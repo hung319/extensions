@@ -1,15 +1,13 @@
-// Đặt tệp này trong thư mục gốc của các provider trong dự án ReCloudStream.
 package recloudstream
 
-// Sử dụng lại các import gốc của CloudStream 3
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
+// Thêm import cụ thể cho ExtractorLinkType
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import org.jsoup.nodes.Element
 
-// Define the provider class, inheriting from MainAPI
 class AnimetmProvider : MainAPI() {
-    // Set basic information for the provider
     override var name = "AnimeTM"
     override var mainUrl = "https://animetm.tv"
     override var lang = "vi"
@@ -20,20 +18,17 @@ class AnimetmProvider : MainAPI() {
         TvType.AnimeMovie,
     )
 
-    // Helper function to parse search results from HTML
     private fun Element.toSearchResult(): SearchResponse {
         val link = this.selectFirst("a.film-item-link")
         val href = fixUrl(link?.attr("href").toString())
         val title = link?.attr("title").toString()
         val posterUrl = this.selectFirst("img.film-item-img")?.attr("src")
         
-        // Use the newAnimeSearchResponse function
         return newAnimeSearchResponse(title, href, TvType.Anime) {
             this.posterUrl = posterUrl
         }
     }
 
-    // Load the main page content (latest anime)
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get("$mainUrl/danh-sach?page=$page").document
         val home = document.select("div.film-item").map {
@@ -42,7 +37,6 @@ class AnimetmProvider : MainAPI() {
         return newHomePageResponse("Phim Mới Cập Nhật", home)
     }
 
-    // Perform a search query
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/tim-kiem?keyword=$query"
         val document = app.get(searchUrl).document
@@ -51,12 +45,10 @@ class AnimetmProvider : MainAPI() {
         }
     }
 
-    // Load details for a specific anime and its episode list
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
         val title = document.selectFirst("h1.film-title")?.text()?.trim() ?: "Không rõ"
 
-        // Use the newAnimeLoadResponse function
         return newAnimeLoadResponse(title, url, TvType.Anime) {
             posterUrl = document.selectFirst("img.film-thumbnail-img")?.attr("src")
             plot = document.selectFirst("div.film-description")?.text()?.trim()
@@ -65,14 +57,12 @@ class AnimetmProvider : MainAPI() {
                 newEpisode(it.attr("href")) {
                     name = it.attr("title")
                 }
-            }.reversed() // Reverse to show oldest episode first
+            }.reversed()
 
-            // Add episodes within the initializer block
             addEpisodes(DubStatus.Subbed, episodes)
         }
     }
 
-    // Extract the video link from an episode page
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -92,8 +82,7 @@ class AnimetmProvider : MainAPI() {
                 url = m3u8Url,
                 referer = "$mainUrl/",
                 quality = Qualities.P1080.value,
-                // Assuming the custom build still uses ExtractorLinkType
-                // If this causes an error, it might need to be reverted to isM3u8
+                // Sử dụng ExtractorLinkType sau khi đã import
                 type = ExtractorLinkType.M3U8 
             )
         )
