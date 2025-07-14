@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import org.jsoup.nodes.Element
 
 class Yanhh3dProvider : MainAPI() {
@@ -15,7 +16,7 @@ class Yanhh3dProvider : MainAPI() {
     override val supportedTypes = setOf(
         TvType.Cartoon,
         TvType.Anime,
-        TvType.TVSeries
+        TvType.TvSeries
     )
 
     // ============================ HOMEPAGE ============================
@@ -44,11 +45,12 @@ class Yanhh3dProvider : MainAPI() {
         val title = this.selectFirst("h3.film-name a")?.text()?.trim() ?: return null
         val href = this.selectFirst("a.film-poster-ahref")?.attr("href") ?: return null
         val posterUrl = this.selectFirst("img.film-poster-img")?.attr("data-src")
-        val episode = this.selectFirst("div.tick-rate")?.text()?.trim()
+        val episodeStr = this.selectFirst("div.tick-rate")?.text()?.trim()
+        val episodeNum = episodeStr?.let { Regex("""\d+""").find(it)?.value?.toIntOrNull() }
 
         return newAnimeSearchResponse(title, href, TvType.Anime) {
             this.posterUrl = posterUrl
-            addDubStatus(dubExist = true, subExist = true, episode)
+            addDubStatus(dubExist = true, subExist = true, episodeNum)
         }
     }
 
@@ -85,7 +87,7 @@ class Yanhh3dProvider : MainAPI() {
             Episode(epUrl, name)
         }.reversed()
 
-        return newTvSeriesLoadResponse(title, url, TvType.TVSeries, episodesThuyetMinh + episodesVietSub) {
+        return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodesThuyetMinh + episodesVietSub) {
             this.posterUrl = poster
             this.year = year
             this.plot = plot
@@ -111,15 +113,17 @@ class Yanhh3dProvider : MainAPI() {
             if (fboMatch != null) {
                 val fboJson = fboMatch.destructured.component1()
                 val fboLinks = parseJson<List<FboSource>>(fboJson)
-                fboLinks.firstOrNull()?.file?.let {
+                fboLinks.firstOrNull()?.file?.let { fileUrl ->
                     callback.invoke(
-                        ExtractorLink(
-                            this.name,
-                            "FBO (HD+)",
-                            it,
-                            referer = mainUrl,
-                            quality = Qualities.P1080.value
-                        )
+                        newExtractorLink(
+                            source = this.name,
+                            name = "FBO (HD+)",
+                            url = fileUrl,
+                            type = ExtractorLinkType.VIDEO // Sửa lại thành VIDEO
+                        ) {
+                            this.referer = mainUrl
+                            this.quality = Qualities.P1080.value
+                        }
                     )
                 }
             }
@@ -147,7 +151,7 @@ class Yanhh3dProvider : MainAPI() {
                         loadExtractor(unshortened, subtitleCallback, callback)
                     }
                 } else {
-                     loadExtractor(link, subtitleCallback, callback)
+                     loadExtractor(link, serverName, subtitleCallback, callback)
                 }
             }
         }
