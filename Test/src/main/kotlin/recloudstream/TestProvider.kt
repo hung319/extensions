@@ -132,7 +132,7 @@ class Yanhh3dProvider : MainAPI() {
         }
 
         // --- Trích xuất các link iframe khác ---
-        val linkRegex = Regex("""var \$checkLink(\d+)\s*=\s*"(.*?)";""")
+        val linkRegex = Regex("""checkLink(\d+)\s*=\s*["'](.*?)["']""")
         val serverRegex = Regex("""id="sv_LINK(\d+)"\s*name="LINK\d+">(.*?)<""")
 
         val servers = serverRegex.findAll(document.html()).map {
@@ -143,7 +143,6 @@ class Yanhh3dProvider : MainAPI() {
 
         linkRegex.findAll(script).forEach { match ->
             val (id, link) = match.destructured
-            // Sửa lỗi: Đảm bảo sử dụng biến `link`
             if (link.isNotBlank()) {
                 val serverName = servers[id] ?: "Server $id"
                  if(link.contains("short.icu")) { // Handle short link
