@@ -119,7 +119,6 @@ class Yanhh3dProvider : MainAPI() {
     private suspend fun extractLinksFromPage(
         url: String,
         prefix: String,
-        subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
         try {
@@ -150,21 +149,26 @@ class Yanhh3dProvider : MainAPI() {
                         if (link.contains("short.icu")) {
                             link = app.get(link, allowRedirects = false).headers["location"] ?: return@forEach
                         }
+                        
                         val finalUrl = fixUrl(link)
-
-                        // Ping link trước khi thêm
-                        if (app.head(finalUrl).isSuccessful) {
-                            if (serverName.equals("2K", true)) {
-                                loadExtractor(finalUrl, mainUrl, subtitleCallback, callback)
-                            } else if (finalUrl.contains("abyss-cdn.ink")) {
+                        
+                        when {
+                            finalUrl.contains("abyss-cdn.ink") -> {
                                 callback(newExtractorLink(this.name, finalName, "$finalUrl/master.m3u8", type = ExtractorLinkType.M3U8))
-                            } else {
+                            }
+                            // Sửa: Thêm logic chuyển đổi /play/ thành /read/
+                            finalUrl.contains("/play-hls/play/") -> {
+                                val streamUrl = finalUrl.replace("/play/", "/read/")
+                                callback(newExtractorLink(this.name, finalName, streamUrl, type = ExtractorLinkType.M3U8))
+                            }
+                            // Các server còn lại là link trực tiếp (FBO,...)
+                            else -> {
                                 callback(newExtractorLink(this.name, finalName, finalUrl))
                             }
                         }
                     }
                 } catch (e: Exception) {
-                    // Bỏ qua nếu có lỗi ở một server
+                    e.printStackTrace()
                 }
             }
         } catch (e: Exception) {
@@ -184,8 +188,8 @@ class Yanhh3dProvider : MainAPI() {
         val subUrl = "$mainUrl/sever2$path"
 
         coroutineScope {
-            launch { extractLinksFromPage(dubUrl, "TM", subtitleCallback, callback) }
-            launch { extractLinksFromPage(subUrl, "VS", subtitleCallback, callback) }
+            launch { extractLinksFromPage(dubUrl, "TM", callback) }
+            launch { extractLinksFromPage(subUrl, "VS", callback) }
         }
         return true
     }
