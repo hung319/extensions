@@ -56,7 +56,7 @@ class Yanhh3dProvider : MainAPI() {
         val document = app.get(searchUrl).document
         return document.select("div.film_list-wrap div.flw-item").mapNotNull { it.toSearchResult() }
     }
-    
+
     private fun getEpisodeData(doc: Document?, type: String): List<Pair<String, String>> {
         val selector = if (type == "TM") "div#top-comment div.ss-list a.ssl-item" else "div#new-comment div.ss-list a.ssl-item"
         return doc?.select(selector)
@@ -80,7 +80,7 @@ class Yanhh3dProvider : MainAPI() {
 
         val dubWatchUrl = fixUrlNull(document.selectFirst("a.btn-play")?.attr("href"))
         val subWatchUrl = fixUrlNull(document.selectFirst("a.custom-button-sub")?.attr("href"))
-        
+
         val episodes = coroutineScope {
             val dubDataDeferred = async { dubWatchUrl?.let { getEpisodeData(app.get(it).document, "TM") } ?: emptyList() }
             val subDataDeferred = async { subWatchUrl?.let { getEpisodeData(app.get(it).document, "VS") } ?: emptyList() }
@@ -136,7 +136,6 @@ class Yanhh3dProvider : MainAPI() {
 
             linkRegex.findAll(script).forEach { match ->
                 val id = match.groupValues[1].uppercase()
-                // Sửa lỗi: Khai báo `link` là `var` để có thể gán lại giá trị
                 var link = match.groupValues[2]
 
                 val serverName = servers[id]
@@ -149,7 +148,7 @@ class Yanhh3dProvider : MainAPI() {
                         link = app.get(link, allowRedirects = false).headers["location"] ?: return@forEach
                     }
 
-                    if (serverName.equals("HD", true) && link.startsWith("/play-fb-v7/")) {
+                    if (serverName.equals("HD", true)) {
                         try {
                             val nestedDoc = app.get(fixUrl(link)).document
                             val fboRegex = Regex("""var cccc = "(.*?)"""")
@@ -161,9 +160,8 @@ class Yanhh3dProvider : MainAPI() {
                             e.printStackTrace()
                         }
                     } else if (link.contains("abyss-cdn.ink")) {
-                        callback(newExtractorLink(this.name, finalName, "$link/master.m3u8") {
-                            isM3u8 = true
-                        })
+                        // Sửa lỗi: Dùng `type = ExtractorLinkType.M3U8`
+                        callback(newExtractorLink(this.name, finalName, "$link/master.m3u8", type = ExtractorLinkType.M3U8))
                     } else {
                         callback(newExtractorLink(this.name, finalName, fixUrl(link)))
                     }
