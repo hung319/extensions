@@ -56,7 +56,7 @@ class Yanhh3dProvider : MainAPI() {
         val document = app.get(searchUrl).document
         return document.select("div.film_list-wrap div.flw-item").mapNotNull { it.toSearchResult() }
     }
-
+    
     private fun getEpisodeData(doc: Document?, type: String): List<Pair<String, String>> {
         val selector = if (type == "TM") "div#top-comment div.ss-list a.ssl-item" else "div#new-comment div.ss-list a.ssl-item"
         return doc?.select(selector)
@@ -80,7 +80,7 @@ class Yanhh3dProvider : MainAPI() {
 
         val dubWatchUrl = fixUrlNull(document.selectFirst("a.btn-play")?.attr("href"))
         val subWatchUrl = fixUrlNull(document.selectFirst("a.custom-button-sub")?.attr("href"))
-
+        
         val episodes = coroutineScope {
             val dubDataDeferred = async { dubWatchUrl?.let { getEpisodeData(app.get(it).document, "TM") } ?: emptyList() }
             val subDataDeferred = async { subWatchUrl?.let { getEpisodeData(app.get(it).document, "VS") } ?: emptyList() }
@@ -119,6 +119,7 @@ class Yanhh3dProvider : MainAPI() {
     private suspend fun extractLinksFromPage(
         url: String,
         prefix: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
         try {
@@ -139,7 +140,10 @@ class Yanhh3dProvider : MainAPI() {
                 var link = match.groupValues[2]
 
                 val serverName = servers[id]
-                if (serverName.isNullOrBlank() || serverName.contains("Link10")) return@forEach
+                // Bỏ qua nếu không có nút bấm, là Link10, hoặc là server HD
+                if (serverName.isNullOrBlank() || serverName.contains("Link10", true) || serverName.equals("HD", true)) {
+                    return@forEach
+                }
 
                 if (link.isNotBlank()) {
                     val finalName = "$prefix - $serverName"
@@ -148,21 +152,18 @@ class Yanhh3dProvider : MainAPI() {
                         link = app.get(link, allowRedirects = false).headers["location"] ?: return@forEach
                     }
 
-                    if (serverName.equals("HD", true)) {
-                        try {
-                            val nestedDoc = app.get(fixUrl(link)).document
-                            val fboRegex = Regex("""var cccc = "(.*?)"""")
-                            val fboUrl = fboRegex.find(nestedDoc.html())?.groupValues?.get(1)
-                            if (fboUrl != null && fboUrl.isNotBlank()) {
-                                callback(newExtractorLink(this.name, finalName, fboUrl))
-                            }
-                        } catch (e: Exception) {
-                            e.printStackTrace()
-                        }
-                    } else if (link.contains("abyss-cdn.ink")) {
-                        // Sửa lỗi: Dùng `type = ExtractorLinkType.M3U8`
-                        callback(newExtractorLink(this.name, finalName, "$link/master.m3u8", type = ExtractorLinkType.M3U8))
-                    } else {
+                    // Xử lý server 2K bằng loadExtractor
+                    if (serverName.equals("2K", true)) {
+                        loadExtractor(fixUrl(link), mainUrl, subtitleCallback, callback)
+                    }
+                    // Xử lý Abyss CDN
+                    else if (link.contains("abyss-cdn.ink")) {
+                        callback(newExtractorLink(this.name, finalName, "$link/master.m3u8") {
+                            isM3u8 = true
+                        })
+                    }
+                    // Các server còn lại là link trực tiếp (FBO, HYD)
+                    else {
                         callback(newExtractorLink(this.name, finalName, fixUrl(link)))
                     }
                 }
@@ -184,8 +185,8 @@ class Yanhh3dProvider : MainAPI() {
         val subUrl = "$mainUrl/sever2$path"
 
         coroutineScope {
-            launch { extractLinksFromPage(dubUrl, "TM", callback) }
-            launch { extractLinksFromPage(subUrl, "VS", callback) }
+            launch { extractLinksFromPage(dubUrl, "TM", subtitleCallback, callback) }
+            launch { extractLinksFromPage(subUrl, "VS", subtitleCallback, callback) }
         }
         return true
     }
