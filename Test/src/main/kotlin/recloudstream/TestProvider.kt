@@ -116,12 +116,20 @@ class Yanhh3dProvider : MainAPI() {
         }
     }
 
-    private suspend fun extractLinksFromPage(
-        url: String,
-        prefix: String,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ) {
+    private suspend fun addLink(url: String, name: String, isM3u8: Boolean, callback: (ExtractorLink) -> Unit) {
+        try {
+            // "Ping" tới server để kiểm tra link có hợp lệ không
+            if (app.head(url).isSuccessful) {
+                callback(newExtractorLink(this.name, name, url, referer = mainUrl) {
+                    this.isM3u8 = isM3u8
+                })
+            }
+        } catch (e: Exception) {
+            // Bỏ qua nếu link lỗi
+        }
+    }
+
+    private suspend fun extractLinksFromPage(url: String, prefix: String, callback: (ExtractorLink) -> Unit) {
         try {
             val document = app.get(url, timeout = 10L).document
             val script = document.select("script").find {
@@ -140,10 +148,8 @@ class Yanhh3dProvider : MainAPI() {
                 var link = match.groupValues[2]
 
                 val serverName = servers[id]
-                // Bỏ qua nếu không có nút bấm, là Link10, hoặc là server HD
-                if (serverName.isNullOrBlank() || serverName.contains("Link10", true) || serverName.equals("HD", true)) {
-                    return@forEach
-                }
+                val ignoredServers = setOf("HD", "LINK10", "HYD", "NC")
+                if (serverName.isNullOrBlank() || id in ignoredServers) return@forEach
 
                 if (link.isNotBlank()) {
                     val finalName = "$prefix - $serverName"
@@ -152,19 +158,13 @@ class Yanhh3dProvider : MainAPI() {
                         link = app.get(link, allowRedirects = false).headers["location"] ?: return@forEach
                     }
 
-                    // Xử lý server 2K bằng loadExtractor
-                    if (serverName.equals("2K", true)) {
-                        loadExtractor(fixUrl(link), mainUrl, subtitleCallback, callback)
-                    }
-                    // Xử lý Abyss CDN
-                    else if (link.contains("abyss-cdn.ink")) {
-                        callback(newExtractorLink(this.name, finalName, "$link/master.m3u8") {
-                            isM3u8 = true
-                        })
-                    }
-                    // Các server còn lại là link trực tiếp (FBO, HYD)
-                    else {
-                        callback(newExtractorLink(this.name, finalName, fixUrl(link)))
+                    when {
+                        link.contains("abyss-cdn.ink") -> {
+                            addLink("$link/master.m3u8", finalName, true, callback)
+                        }
+                        else -> { // FBO và các link trực tiếp khác
+                            addLink(fixUrl(link), finalName, false, callback)
+                        }
                     }
                 }
             }
@@ -185,8 +185,8 @@ class Yanhh3dProvider : MainAPI() {
         val subUrl = "$mainUrl/sever2$path"
 
         coroutineScope {
-            launch { extractLinksFromPage(dubUrl, "TM", subtitleCallback, callback) }
-            launch { extractLinksFromPage(subUrl, "VS", subtitleCallback, callback) }
+            launch { extractLinksFromPage(dubUrl, "TM", callback) }
+            launch { extractLinksFromPage(subUrl, "VS", callback) }
         }
         return true
     }
