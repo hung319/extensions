@@ -125,39 +125,24 @@ class Yanhh3dProvider : MainAPI() {
             val document = app.get(url, timeout = 10L).document
             val script = document.select("script").find { it.data().contains("var \$fb =") }?.data() ?: return
 
-            var fboUrl: String? = null
-            try {
-                val checkFboRegex = Regex("""var\s*\${'$'}checkFbo\s*=\s*['"](.*?)['"]""")
-                fboUrl = checkFboRegex.find(script)?.groupValues?.get(1)
-                if (fboUrl.isNullOrBlank()) {
-                    val fboRegex = Regex("""source_fbo:\s*\[\{"file":"(.*?)"\}\]""")
-                    fboUrl = fboRegex.find(script)?.groupValues?.get(1)
-                }
-                if (!fboUrl.isNullOrBlank()) {
-                    callback.invoke(
-                        newExtractorLink(this.name, "$prefix - FBO (HD+)", fboUrl, type = ExtractorLinkType.VIDEO) {
-                            this.referer = mainUrl
-                        }
-                    )
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-
-            // Regex để lấy link từ các biến checkLink...
-            val linkRegex = Regex("""var\s*\${'$'}check(Link\w*)\s*=\s*["'](.*?)["']""")
-            // Lấy map của tất cả các server và tên của chúng
+            // 1. Lấy tất cả tên server từ nút bấm trên web
             val servers = document.select("a.btn3dsv").associate {
-                it.attr("name") to it.text()
+                it.attr("name").uppercase() to it.text() // Chuyển key thành chữ hoa
             }
+            
+            // 2. Regex tổng quát để tìm tất cả các biến $check...
+            val linkRegex = Regex("""var\s*\${'$'}check(\w+)\s*=\s*['"](.*?)['"];""")
 
+            // 3. Quét script và khớp link với tên server
             linkRegex.findAll(script).forEach { match ->
-                // `id` sẽ là "Link1", "Link2", "DLM"...
-                val (id, link) = match.destructured
+                val id = match.groupValues[1]       // "Fbo", "Link2", "Link7"
+                val link = match.groupValues[2]     // URL
+
                 if (link.isNotBlank()) {
-                    // SỬA LỖI: Chuyển `id` thành chữ hoa để khớp với `name` của nút (LINK1, LINK2...)
-                    val serverName = servers[id.uppercase()] ?: id 
+                    // Dùng id (đã chuyển thành chữ hoa) để tìm tên server trong map
+                    val serverName = servers[id.uppercase()] ?: id
                     val finalName = "$prefix - $serverName"
+
                     val tempLink = if (link.contains("short.icu")) {
                         app.get(link, allowRedirects = false).headers["location"]
                     } else {
@@ -196,6 +181,4 @@ class Yanhh3dProvider : MainAPI() {
 
         return true
     }
-
-    data class FboSource(@JsonProperty("file") val file: String?)
 }
