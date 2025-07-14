@@ -18,19 +18,16 @@ class HHKungfuProvider : MainAPI() {
         TvType.Cartoon
     )
 
-    // Bước 1: Định nghĩa các mục ở trang chính bằng `mainPage`
     override val mainPage = mainPageOf(
         "moi-cap-nhat/page/" to "Mới cập nhật",
         "top-xem-nhieu/page/" to "Top Xem Nhiều",
         "hoan-thanh/page/" to "Hoàn Thành",
     )
 
-    // Bước 2: Dùng `getMainPage` để xử lý logic cho các mục trên
-    override suspend fun getMainPage(
+    override suspend fun mainPageLoad(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        // request.data sẽ chứa đường dẫn từ mainPage (ví dụ: "moi-cap-nhat/page/")
         val url = "$mainUrl/${request.data}$page"
         val document = app.get(url).document
 
@@ -38,13 +35,11 @@ class HHKungfuProvider : MainAPI() {
             it.toSearchResponse()
         }
         
-        // Kiểm tra xem có trang tiếp theo không
         val hasNext = document.selectFirst("a.next.page-numbers") != null
 
-        // Trả về kết quả cho CloudStream
         return newHomePageResponse(
             list = HomePageList(
-                name = request.name, // Tên của mục (ví dụ: "Mới cập nhật")
+                name = request.name,
                 list = home
             ),
             hasNext = hasNext
@@ -85,6 +80,8 @@ class HHKungfuProvider : MainAPI() {
         }
     }
 
+    private data class EpisodeInfo(val url: String, val serverLabel: String)
+
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
@@ -93,30 +90,42 @@ class HHKungfuProvider : MainAPI() {
         val plot = document.selectFirst(".entry-content p")?.text()?.trim()
         val tags = document.select(".list_cate a").map { it.text() }
 
-        val episodes = ArrayList<Episode>()
+        val episodeMap = mutableMapOf<String, MutableList<EpisodeInfo>>()
         val serverBlocks = document.select(".halim-server")
+        val numberRegex = Regex("""\d+""")
 
         serverBlocks.forEach { server ->
-            val serverName = server.selectFirst(".halim-server-name")?.text()?.replace("#", "")?.trim() ?: "Server"
-            val episodeElements = server.select("ul.halim-list-eps li a")
+            val serverName = server.selectFirst(".halim-server-name")?.text()
+            val serverLabel = when {
+                serverName?.contains("Vietsub", true) == true -> "VS"
+                serverName?.contains("Thuyết Minh", true) == true -> "TM"
+                else -> "RAW"
+            }
 
-            episodeElements.forEach { ep ->
-                val epUrl = ep.attr("href")
+            server.select("ul.halim-list-eps li a").forEach { ep ->
                 val epName = ep.selectFirst("span")?.text() ?: ep.text()
-                episodes.add(
-                    newEpisode(epUrl) {
-                        name = if (serverBlocks.size > 1) "$epName - $serverName" else epName
-                        this.data = epUrl
-                    }
-                )
+                val epKey = numberRegex.find(epName)?.value ?: epName 
+                val epUrl = ep.attr("href")
+                
+                episodeMap.getOrPut(epKey) { mutableListOf() }.add(EpisodeInfo(epUrl, serverLabel))
             }
         }
+        
+        val episodes = episodeMap.entries.map { (epKey, infoList) ->
+            val representativeUrl = infoList.first().url
+            val serverTags = infoList.joinToString(separator = "+") { it.serverLabel }.let { "($it)" }
+            
+            newEpisode(representativeUrl) {
+                this.name = "Tập $epKey $serverTags"
+                this.data = representativeUrl
+            }
+        }.sortedByDescending { it.name.substringAfter("Tập ").substringBefore(" ").toIntOrNull() }
 
         val recommendations = document.select("section#halim-related-movies article.thumb").mapNotNull {
             it.toSearchResponse()
         }
 
-        return newTvSeriesLoadResponse(title, url, TvType.Cartoon, episodes.reversed()) {
+        return newTvSeriesLoadResponse(title, url, TvType.Cartoon, episodes) {
             this.posterUrl = poster ?: ""
             this.plot = plot
             this.tags = tags
@@ -138,11 +147,14 @@ class HHKungfuProvider : MainAPI() {
         val sv = activeEpisode.attr("data-sv")
         val serverButtons = watchPageDoc.select("#halim-ajax-list-server .get-eps")
 
+        // Xác định tiền tố TM hoặc VS dựa trên server `sv`
+        val langPrefix = if (sv == "2") "TM " else "VS "
+
         var foundLinks = false
         serverButtons.apmap { button ->
             try {
                 val type = button.attr("data-type")
-                val serverName = button.text()
+                val serverName = button.text() // Ví dụ: "VIP 1"
                 val playerAjaxUrl = "$mainUrl/player/player.php"
                 val ajaxResponse = app.get(
                     playerAjaxUrl,
@@ -170,7 +182,8 @@ class HHKungfuProvider : MainAPI() {
                     callback.invoke(
                         ExtractorLink(
                             source = this.name,
-                            name = serverName,
+                            // Thêm tiền tố vào tên server
+                            name = "$langPrefix$serverName", 
                             url = fullM3u8Url,
                             referer = iframeSrc,
                             quality = Qualities.Unknown.value,
