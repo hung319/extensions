@@ -32,7 +32,8 @@ class Yanhh3dProvider : MainAPI() {
         val url = "$mainUrl/moi-cap-nhat?page=$page"
         val document = app.get(url).document
         val newMovies = document.select("div.film_list-wrap div.flw-item").mapNotNull { it.toSearchResult() }
-        return HomePageResponse(listOf(HomePageList("Phim Mới Cập Nhật", newMovies)), hasNext = newMovies.isNotEmpty())
+        // Sửa: Dùng hàm mới để không còn cảnh báo
+        return newHomePageResponse(listOf(HomePageList("Phim Mới Cập Nhật", newMovies)), hasNextPage = newMovies.isNotEmpty())
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
@@ -81,6 +82,9 @@ class Yanhh3dProvider : MainAPI() {
         val dubWatchUrl = fixUrlNull(document.selectFirst("a.btn-play")?.attr("href"))
         val subWatchUrl = fixUrlNull(document.selectFirst("a.custom-button-sub")?.attr("href"))
         
+        // Thêm: Lấy danh sách phim đề cử
+        val recommendations = document.select("section.block_area_category div.flw-item").mapNotNull { it.toSearchResult() }
+        
         val episodes = coroutineScope {
             val dubDataDeferred = async { dubWatchUrl?.let { getEpisodeData(app.get(it).document, "TM") } ?: emptyList() }
             val subDataDeferred = async { subWatchUrl?.let { getEpisodeData(app.get(it).document, "VS") } ?: emptyList() }
@@ -101,24 +105,28 @@ class Yanhh3dProvider : MainAPI() {
                 }
                 val episodeName = "Tập $name $tag".trim()
                 val episodeUrl = info.dubUrl ?: info.subUrl!!
-                Episode(episodeUrl, episodeName)
-            }.sortedBy { episode -> episode.name?.let { name -> Regex("""\d+""").find(name)?.value?.toIntOrNull() } }
+                // Sửa: Dùng hàm mới để không còn cảnh báo
+                newEpisode(episodeUrl) { this.name = episodeName }
+            }.sortedBy { it.name.let { name -> Regex("""\d+""").find(name)?.value?.toIntOrNull() } }
         }
 
         if (episodes.isEmpty()) {
             return newMovieLoadResponse(title, url, TvType.Cartoon, dubWatchUrl ?: subWatchUrl ?: url) {
                 this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = tags
+                this.recommendations = recommendations
             }
         }
         
         return newTvSeriesLoadResponse(title, url, TvType.Cartoon, episodes) {
             this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = tags
+            this.recommendations = recommendations
         }
     }
 
     private suspend fun extractLinksFromPage(
         url: String,
         prefix: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
         try {
@@ -131,17 +139,19 @@ class Yanhh3dProvider : MainAPI() {
             val servers = document.select("a.btn3dsv").associate {
                 it.attr("name").uppercase() to it.text()
             }
-
             val linkRegex = Regex("""var\s*\${'$'}check(\w+)\s*=\s*['"](.*?)['"];""")
 
             linkRegex.findAll(script).forEach { match ->
                 try {
                     val id = match.groupValues[1].uppercase()
                     var link = match.groupValues[2]
-                    
+
                     val serverName = servers[id]
-                    val ignoredIds = setOf("LINK1", "LINK10", "HYD", "NC")
-                    if (serverName.isNullOrBlank() || id in ignoredIds) return@forEach
+                    // Sửa: Thêm HYD vào danh sách bỏ qua
+                    val ignoredServers = setOf("HD", "Link10", "HYD", "NC")
+                    if (serverName.isNullOrBlank() || serverName in ignoredServers || id in ignoredServers) {
+                        return@forEach
+                    }
 
                     if (link.isNotBlank()) {
                         val finalName = "$prefix - $serverName"
@@ -152,19 +162,12 @@ class Yanhh3dProvider : MainAPI() {
                         
                         val finalUrl = fixUrl(link)
                         
-                        when {
-                            finalUrl.contains("abyss-cdn.ink") -> {
-                                callback(newExtractorLink(this.name, finalName, "$finalUrl/master.m3u8", type = ExtractorLinkType.M3U8))
-                            }
-                            // Sửa: Thêm logic chuyển đổi /play/ thành /read/
-                            finalUrl.contains("/play-hls/play/") -> {
-                                val streamUrl = finalUrl.replace("/play/", "/read/")
-                                callback(newExtractorLink(this.name, finalName, streamUrl, type = ExtractorLinkType.M3U8))
-                            }
-                            // Các server còn lại là link trực tiếp (FBO,...)
-                            else -> {
-                                callback(newExtractorLink(this.name, finalName, finalUrl))
-                            }
+                        if (finalUrl.contains("abyss-cdn.ink")) {
+                            callback(newExtractorLink(this.name, finalName, "$finalUrl/master.m3u8", type = ExtractorLinkType.M3U8))
+                        } else {
+                            // Dùng loadExtractor cho các iframe còn lại như Dailymotion(2K)
+                            // và các link trực tiếp như FBO(HD+)
+                            loadExtractor(finalUrl, mainUrl, subtitleCallback, callback)
                         }
                     }
                 } catch (e: Exception) {
@@ -188,8 +191,8 @@ class Yanhh3dProvider : MainAPI() {
         val subUrl = "$mainUrl/sever2$path"
 
         coroutineScope {
-            launch { extractLinksFromPage(dubUrl, "TM", callback) }
-            launch { extractLinksFromPage(subUrl, "VS", callback) }
+            launch { extractLinksFromPage(dubUrl, "TM", subtitleCallback, callback) }
+            launch { extractLinksFromPage(subUrl, "VS", subtitleCallback, callback) }
         }
         return true
     }
