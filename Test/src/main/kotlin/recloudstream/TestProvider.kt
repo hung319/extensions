@@ -7,6 +7,7 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch // Thêm import còn thiếu
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URI
@@ -56,7 +57,8 @@ class Yanhh3dProvider : MainAPI() {
 
     // ============================ LOAD DETAILS ============================
     private fun getEpisodesFromWatchPage(doc: Document?, type: String): List<Episode> {
-        return doc?.select("div.ss-list a.ssl-item")?.map {
+        val selector = if (type == "TM") "div#top-comment" else "div#new-comment"
+        return doc?.select("$selector div.ss-list a.ssl-item")?.map {
             val epUrl = it.attr("href")
             val name = "Tập " + it.selectFirst(".ssli-order")?.text()?.trim() + " ($type)"
             Episode(epUrl, name)
@@ -72,25 +74,22 @@ class Yanhh3dProvider : MainAPI() {
         val tags = document.select("div.anisc-info a.genre").map { it.text() }
         val year = document.select("div.anisc-info span.item-head:contains(Năm:) + span.name")?.text()?.toIntOrNull()
 
-        // Lấy link tới trang xem phim của cả TM và VS
         val dubWatchUrl = document.selectFirst("a.btn-play")?.attr("href")
         val subWatchUrl = document.selectFirst("a.custom-button-sub")?.attr("href")
 
         var episodes = emptyList<Episode>()
 
         coroutineScope {
-            // Tải song song cả 2 trang để lấy danh sách tập
             val dubEpisodesDeferred = async {
-                dubWatchUrl?.let { getEpisodesFromWatchPage(app.get(it).document, "TM") } ?: emptyList()
+                dubWatchUrl?.let { getEpisodesFromWatchPage(app.get(it).document.selectFirst("div#top-comment")?.parent(), "TM") } ?: emptyList()
             }
             val subEpisodesDeferred = async {
-                subWatchUrl?.let { getEpisodesFromWatchPage(app.get(it).document, "VS") } ?: emptyList()
+                subWatchUrl?.let { getEpisodesFromWatchPage(app.get(it).document.selectFirst("div#new-comment")?.parent(), "VS") } ?: emptyList()
             }
 
             val dubEpisodes = dubEpisodesDeferred.await()
             val subEpisodes = subEpisodesDeferred.await()
 
-            // Chỉ hiển thị danh sách tập của bên nào nhiều hơn, ưu tiên TM nếu bằng nhau
             episodes = if (subEpisodes.size > dubEpisodes.size) subEpisodes else dubEpisodes
         }
 
@@ -107,14 +106,15 @@ class Yanhh3dProvider : MainAPI() {
     private suspend fun extractLinksFromPage(
         url: String,
         prefix: String,
+        subtitleCallback: (SubtitleFile) -> Unit, // Sửa lỗi: Thêm subtitleCallback
         callback: (ExtractorLink) -> Unit
     ) {
         try {
-            val document = app.get(url, timeout = 10L).document //
+            val document = app.get(url, timeout = 10L).document
             val script = document.select("script")
                 .find { it.data().contains("var \$fb =") }?.data() ?: return
 
-            // --- FBO extractor ---
+            // FBO extractor
             try {
                 val fboJsonRegex = Regex("""source_fbo: (\[.*?\])""")
                 val fboMatch = fboJsonRegex.find(script)
@@ -135,18 +135,15 @@ class Yanhh3dProvider : MainAPI() {
                         )
                     }
                 }
-            } catch (e: Exception) {
-                // Ignore if FBO fails
+            } catch (_: Exception) {
             }
 
-            // --- Iframe links extractor ---
+            // Iframe links extractor
             val linkRegex = Regex("""checkLink(\d+)\s*=\s*["'](.*?)["']""")
             val serverRegex = Regex("""id="sv_LINK(\d+)"\s*name="LINK\d+">(.*?)<""")
 
             val servers = serverRegex.findAll(document.html()).map {
-                val id = it.groupValues[1]
-                val name = it.groupValues[2]
-                id to name
+                it.groupValues[1] to it.groupValues[2]
             }.toMap()
 
             linkRegex.findAll(script).forEach { match ->
@@ -154,18 +151,17 @@ class Yanhh3dProvider : MainAPI() {
                 if (link.isNotBlank()) {
                     val serverName = servers[id] ?: "Server $id"
                     val finalName = "$prefix - $serverName"
-                    if (link.contains("short.icu")) { // Handle short link
-                        val unshortened = app.get(link, allowRedirects = false).headers["location"]
-                        if (unshortened != null) {
-                            loadExtractor(unshortened, mainUrl, subtitleCallback, callback, name = finalName)
+                    if (link.contains("short.icu")) {
+                        app.get(link, allowRedirects = false).headers["location"]?.let {
+                            loadExtractor(it, mainUrl, subtitleCallback, callback, finalName) // Sửa lỗi: truyền subtitleCallback
                         }
                     } else {
-                        loadExtractor(link, mainUrl, subtitleCallback, callback, name = finalName)
+                        loadExtractor(link, mainUrl, subtitleCallback, callback, finalName) // Sửa lỗi: truyền subtitleCallback
                     }
                 }
             }
-        } catch (e: Exception) {
-            // Fails silently if a server (e.g. VS or TM) doesn't exist
+        } catch (_: Exception) {
+            // Fails silently
         }
     }
 
@@ -176,21 +172,18 @@ class Yanhh3dProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Lấy path, loại bỏ /sever2/ nếu có
         val path = URI(data).path.removePrefix("/sever2")
 
         val dubUrl = "$mainUrl$path"
         val subUrl = "$mainUrl/sever2$path"
 
-        // Ping và lấy link từ cả 2 server TM và VS song song
         coroutineScope {
-            launch { extractLinksFromPage(dubUrl, "TM", callback) }
-            launch { extractLinksFromPage(subUrl, "VS", callback) }
+            launch { extractLinksFromPage(dubUrl, "TM", subtitleCallback, callback) }
+            launch { extractLinksFromPage(subUrl, "VS", subtitleCallback, callback) }
         }
 
         return true
     }
 
-    // Data class for parsing FBO JSON
     data class FboSource(@JsonProperty("file") val file: String?)
 }
