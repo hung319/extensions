@@ -19,9 +19,7 @@ class Yanhh3dProvider : MainAPI() {
     override val hasMainPage = true
     override var lang = "vi"
     override val hasDownloadSupport = true
-    override val supportedTypes = setOf(
-        TvType.Cartoon
-    )
+    override val supportedTypes = setOf(TvType.Cartoon)
 
     private fun toSearchQuality(qualityString: String?): SearchQuality? {
         return when {
@@ -62,19 +60,23 @@ class Yanhh3dProvider : MainAPI() {
         val document = app.get(searchUrl).document
         return document.select("div.film_list-wrap div.flw-item").mapNotNull { it.toSearchResult() }
     }
-
-    private fun getEpisodesFromDoc(doc: Document?): List<Episode> {
-        return doc?.select("div#top-comment div.ss-list a.ssl-item, div#new-comment div.ss-list a.ssl-item")
-            ?.distinctBy { it.selectFirst(".ssli-order")?.text() }
+    
+    // Sửa: Hàm mới trả về dữ liệu thô để hợp nhất
+    private fun getEpisodeData(doc: Document?): List<Pair<String, String>> {
+        return doc?.select("div.ss-list a.ssl-item")
             ?.mapNotNull {
                 val epUrl = it.attr("href")
                 val orderText = it.selectFirst(".ssli-order")?.text()?.trim()
                 if (epUrl.isNullOrBlank() || orderText.isNullOrBlank()) return@mapNotNull null
-                
-                val name = "Tập $orderText"
-                Episode(fixUrl(epUrl), name)
-            }?.reversed() ?: emptyList()
+                Pair(orderText, fixUrl(epUrl))
+            } ?: emptyList()
     }
+
+    // Class để lưu trữ thông tin của một tập phim sau khi hợp nhất
+    private data class MergedEpisodeInfo(
+        var dubUrl: String? = null,
+        var subUrl: String? = null
+    )
 
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
@@ -86,31 +88,46 @@ class Yanhh3dProvider : MainAPI() {
 
         val dubWatchUrl = fixUrlNull(document.selectFirst("a.btn-play")?.attr("href"))
         val subWatchUrl = fixUrlNull(document.selectFirst("a.custom-button-sub")?.attr("href"))
+        
+        // Sửa: Logic hợp nhất danh sách tập phim
+        val episodes = coroutineScope {
+            val dubDataDeferred = async { dubWatchUrl?.let { getEpisodeData(app.get(it).document) } ?: emptyList() }
+            val subDataDeferred = async { subWatchUrl?.let { getEpisodeData(app.get(it).document) } ?: emptyList() }
 
-        var episodes: List<Episode> = emptyList()
+            val dubData = dubDataDeferred.await()
+            val subData = subDataDeferred.await()
 
-        coroutineScope {
-            val dubEpisodesDeferred = async { dubWatchUrl?.let { getEpisodesFromDoc(app.get(it).document) } ?: emptyList() }
-            val subEpisodesDeferred = async { subWatchUrl?.let { getEpisodesFromDoc(app.get(it).document) } ?: emptyList() }
-            val dubEpisodes = dubEpisodesDeferred.await()
-            val subEpisodes = subEpisodesDeferred.await()
-            episodes = if (subEpisodes.size > dubEpisodes.size) subEpisodes else dubEpisodes
+            val mergedMap = mutableMapOf<String, MergedEpisodeInfo>()
+
+            dubData.forEach { (name, epUrl) ->
+                mergedMap.getOrPut(name) { MergedEpisodeInfo() }.dubUrl = epUrl
+            }
+            subData.forEach { (name, epUrl) ->
+                mergedMap.getOrPut(name) { MergedEpisodeInfo() }.subUrl = epUrl
+            }
+
+            mergedMap.map { (name, info) ->
+                val tag = when {
+                    info.dubUrl != null && info.subUrl != null -> "(TM+VS)"
+                    info.dubUrl != null -> "(TM)"
+                    info.subUrl != null -> "(VS)"
+                    else -> ""
+                }
+                val episodeName = "Tập $name $tag".trim()
+                // Ưu tiên link TM làm data chính, vì loadLinks sẽ kiểm tra cả 2
+                val episodeUrl = info.dubUrl ?: info.subUrl!!
+                Episode(episodeUrl, episodeName)
+            }.sortedBy { it.name.let { Regex("""\d+""").find(it)?.value?.toIntOrNull() } }
         }
 
         if (episodes.isEmpty()) {
             return newMovieLoadResponse(title, url, TvType.Cartoon, dubWatchUrl ?: subWatchUrl ?: url) {
-                this.posterUrl = poster
-                this.year = year
-                this.plot = plot
-                this.tags = tags
+                this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = tags
             }
         }
         
         return newTvSeriesLoadResponse(title, url, TvType.Cartoon, episodes) {
-            this.posterUrl = poster
-            this.year = year
-            this.plot = plot
-            this.tags = tags
+            this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = tags
         }
     }
 
@@ -128,14 +145,13 @@ class Yanhh3dProvider : MainAPI() {
                     fboLinks.firstOrNull()?.file?.let { fileUrl ->
                         callback.invoke(
                             newExtractorLink(this.name, "$prefix - FBO (HD+)", fileUrl, type = ExtractorLinkType.VIDEO) {
-                                this.referer = mainUrl
-                                this.quality = Qualities.P1080.value
+                                this.referer = mainUrl; this.quality = Qualities.P1080.value
                             }
                         )
                     }
                 }
             } catch (e: Exception) {
-                logError(e) 
+                e.printStackTrace() // Sửa: Dùng printStackTrace() để đảm bảo log được ghi lại
             }
 
             val linkRegex = Regex("""checkLink(\d+)\s*=\s*["'](.*?)["']""")
@@ -163,18 +179,16 @@ class Yanhh3dProvider : MainAPI() {
                 }
             }
         } catch (e: Exception) {
-            logError(e)
+            e.printStackTrace()
         }
     }
 
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
-        // Sửa: Xử lý các URL không chuẩn, chỉ lấy phần path hợp lệ
         val path = try {
             URI(data).path.removePrefix("/sever2")
         } catch (e: Exception) {
-            return false // Trả về false nếu URL không hợp lệ
+            return false
         }
-
         if (path.isBlank()) return false
         
         val dubUrl = "$mainUrl$path"
