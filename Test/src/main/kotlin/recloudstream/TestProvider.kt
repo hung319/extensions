@@ -18,6 +18,26 @@ class HHKungfuProvider : MainAPI() {
         TvType.Cartoon
     )
 
+    // Đã loại bỏ "Trang chủ" khỏi danh sách này
+    override val mainPage = mainPageOf(
+        "$mainUrl/moi-cap-nhat/page/" to "Mới cập nhật",
+        "$mainUrl/top-xem-nhieu/page/" to "Top Xem Nhiều",
+        "$mainUrl/hoan-thanh/page/" to "Hoàn Thành",
+    )
+
+    override suspend fun mainPageLoad(
+        page: Int,
+        request: MainPageRequest
+    ): HomePageResponse {
+        val url = request.data + page
+        val document = app.get(url).document
+
+        val home = document.select("div.halim_box article.thumb").mapNotNull {
+            it.toSearchResponse()
+        }
+        return newHomePageResponse(request.name, home)
+    }
+
     private fun Element.toSearchResponse(): SearchResponse? {
         val a = this.selectFirst("a.halim-thumb") ?: return null
         val href = a.attr("href")
@@ -29,13 +49,11 @@ class HHKungfuProvider : MainAPI() {
             this.posterUrl = posterUrl ?: ""
 
             if (episodeText != null) {
-                // Phân tích để lấy số tập
                 val episodeRegex = Regex("""\d+""")
                 episodeRegex.find(episodeText)?.value?.toIntOrNull()?.let {
                     this.episodes = it
                 }
-
-                // SỬA LỖI Ở ĐÂY: Dùng đúng giá trị từ enum SearchQuality
+                
                 this.quality = when {
                     episodeText.contains("4K", true) -> SearchQuality.FourK
                     episodeText.contains("FULL HD", true) -> SearchQuality.HD
@@ -44,24 +62,6 @@ class HHKungfuProvider : MainAPI() {
                 }
             }
         }
-    }
-
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get("$mainUrl/page/$page").document
-        val homePageList = ArrayList<HomePageList>()
-
-        val sections = document.select("section.hot-movies")
-        sections.forEach { section ->
-            val title = section.selectFirst("h3.section-title span")?.text() ?: "Không có tiêu đề"
-            val movies = section.select("article.thumb").mapNotNull {
-                it.toSearchResponse()
-            }
-            if (movies.isNotEmpty()) {
-                homePageList.add(HomePageList(title, movies))
-            }
-        }
-
-        return HomePageResponse(homePageList)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -99,10 +99,15 @@ class HHKungfuProvider : MainAPI() {
             }
         }
 
+        val recommendations = document.select("section#halim-related-movies article.thumb").mapNotNull {
+            it.toSearchResponse()
+        }
+
         return newTvSeriesLoadResponse(title, url, TvType.Cartoon, episodes.reversed()) {
             this.posterUrl = poster
             this.plot = plot
             this.tags = tags
+            this.recommendations = recommendations
         }
     }
 
