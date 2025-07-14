@@ -102,8 +102,8 @@ class Yanhh3dProvider : MainAPI() {
                 this.tags = tags
             }
         }
-
-        return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+        
+        return newTvSeriesLoadResponse(title, url, TvType.Cartoon, episodes) {
             this.posterUrl = poster
             this.year = year
             this.plot = plot
@@ -116,8 +116,8 @@ class Yanhh3dProvider : MainAPI() {
             val document = app.get(url, timeout = 10L).document
             val script = document.select("script").find { it.data().contains("var \$fb =") }?.data() ?: return
 
+            // SỬA: Dùng throw e để hiển thị lỗi chi tiết khi gỡ lỗi
             try {
-                // Sửa: Regex linh hoạt hơn với khoảng trắng
                 val fboJsonRegex = Regex("""source_fbo:\s*(\[.*?\])""")
                 val fboMatch = fboJsonRegex.find(script)
                 if (fboMatch != null) {
@@ -133,7 +133,7 @@ class Yanhh3dProvider : MainAPI() {
                     }
                 }
             } catch (e: Exception) {
-                // Sửa: Dùng throw Exception để hiện lỗi chi tiết khi gỡ lỗi
+                // Buộc hiển thị lỗi để gỡ lỗi server HD+
                 throw e
             }
 
@@ -162,7 +162,7 @@ class Yanhh3dProvider : MainAPI() {
                 }
             }
         } catch (e: Exception) {
-            throw e // Hiển thị lỗi ra ngoài nếu toàn bộ quá trình thất bại
+            // Không làm gì để các server khác vẫn có thể được tải
         }
     }
 
