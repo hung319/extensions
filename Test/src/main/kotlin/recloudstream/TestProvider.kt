@@ -23,12 +23,26 @@ class HHKungfuProvider : MainAPI() {
         val href = a.attr("href")
         val title = this.selectFirst("h2.entry-title")?.text() ?: return null
         val posterUrl = this.selectFirst("img.wp-post-image")?.attr("src")
-        val episode = this.selectFirst("span.episode")?.text()
+        val episodeText = this.selectFirst("span.episode")?.text()
 
         return newTvSeriesSearchResponse(title, href, TvType.Cartoon) {
-            // SỬA LỖI Ở ĐÂY: Thêm toán tử Elvis `?: ""` để xử lý trường hợp null
             this.posterUrl = posterUrl ?: ""
-            addQuality(episode)
+
+            if (episodeText != null) {
+                // Phân tích để lấy số tập
+                val episodeRegex = Regex("""\d+""")
+                episodeRegex.find(episodeText)?.value?.toIntOrNull()?.let {
+                    this.episodes = it
+                }
+
+                // SỬA LỖI Ở ĐÂY: Dùng đúng giá trị từ enum SearchQuality
+                this.quality = when {
+                    episodeText.contains("4K", true) -> SearchQuality.FourK
+                    episodeText.contains("FULL HD", true) -> SearchQuality.HD
+                    episodeText.contains("HD", true) -> SearchQuality.HD
+                    else -> null
+                }
+            }
         }
     }
 
