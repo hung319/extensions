@@ -119,34 +119,45 @@ class Yanhh3dProvider : MainAPI() {
     private suspend fun extractLinksFromPage(
         url: String,
         prefix: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
         try {
             val document = app.get(url, timeout = 10L).document
             val script = document.select("script").find { it.data().contains("var \$fb") }?.data() ?: return
 
-            document.select("a.btn3dsv").apmap { btn ->
-                val serverName = btn.text()
-                val idKey = btn.attr("name")
+            val servers = document.select("a.btn3dsv").associate {
+                it.attr("name").uppercase() to it.text()
+            }
 
-                if (serverName.contains("Link10", true)) return@apmap
+            val linkRegex = Regex("""var\s*\${'$'}check(\w+)\s*=\s*['"](.*?)['"];""")
 
-                val linkRegex = Regex("""var\s*\${'$'}check$idKey\s*=\s*['"](.*?)['"];""")
-                val link = linkRegex.find(script)?.groupValues?.get(1)
-                if (link.isNullOrBlank()) return@apmap
+            linkRegex.findAll(script).forEach { match ->
+                val id = match.groupValues[1].uppercase()
+                val link = match.groupValues[2]
 
-                val finalName = "$prefix - $serverName"
-                
-                // Sửa lỗi: Dùng newExtractorLink cho tất cả các trường hợp để tránh lỗi cú pháp
-                val tempLink = if (link.contains("short.icu")) {
-                    app.get(link, allowRedirects = false).headers["location"]
-                } else {
-                    link
-                }
-                if (tempLink != null) {
-                    callback(newExtractorLink(this.name, finalName, fixUrl(tempLink)) {
-                        this.referer = mainUrl
-                    })
+                val serverName = servers[id]
+                if (serverName.isNullOrBlank() || serverName.contains("Link10")) return@forEach
+
+                if (link.isNotBlank()) {
+                    val finalName = "$prefix - $serverName"
+                    if (id == "LINK1" && link.startsWith("/play-fb-v7/")) {
+                        try {
+                            val nestedDoc = app.get(fixUrl(link)).document
+                            val fboRegex = Regex("""var cccc = "(.*?)"""")
+                            fboRegex.find(nestedDoc.html())?.groupValues?.get(1)?.let { fboUrl ->
+                                callback(newExtractorLink(this.name, finalName, fboUrl) {
+                                    this.referer = mainUrl
+                                })
+                            }
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        }
+                    } else {
+                        loadExtractor(fixUrl(link), mainUrl, subtitleCallback, callback) {
+                            this.name = finalName
+                        }
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -166,9 +177,8 @@ class Yanhh3dProvider : MainAPI() {
         val subUrl = "$mainUrl/sever2$path"
 
         coroutineScope {
-            // Sửa: Bỏ subtitleCallback vì không dùng đến trong hàm extractLinksFromPage
-            launch { extractLinksFromPage(dubUrl, "TM", callback) }
-            launch { extractLinksFromPage(subUrl, "VS", callback) }
+            launch { extractLinksFromPage(dubUrl, "TM", subtitleCallback, callback) }
+            launch { extractLinksFromPage(subUrl, "VS", subtitleCallback, callback) }
         }
         return true
     }
