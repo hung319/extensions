@@ -7,7 +7,7 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch // Thêm import còn thiếu
+import kotlinx.coroutines.launch
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URI
@@ -56,7 +56,7 @@ class Yanhh3dProvider : MainAPI() {
     }
 
     // ============================ LOAD DETAILS ============================
-    private fun getEpisodesFromWatchPage(doc: Document?, type: String): List<Episode> {
+    private fun getEpisodesFromDoc(doc: Document?, type: String): List<Episode> {
         val selector = if (type == "TM") "div#top-comment" else "div#new-comment"
         return doc?.select("$selector div.ss-list a.ssl-item")?.map {
             val epUrl = it.attr("href")
@@ -77,14 +77,14 @@ class Yanhh3dProvider : MainAPI() {
         val dubWatchUrl = document.selectFirst("a.btn-play")?.attr("href")
         val subWatchUrl = document.selectFirst("a.custom-button-sub")?.attr("href")
 
-        var episodes = emptyList<Episode>()
+        var episodes: List<Episode> = emptyList()
 
         coroutineScope {
             val dubEpisodesDeferred = async {
-                dubWatchUrl?.let { getEpisodesFromWatchPage(app.get(it).document.selectFirst("div#top-comment")?.parent(), "TM") } ?: emptyList()
+                dubWatchUrl?.let { getEpisodesFromDoc(app.get(it).document, "TM") } ?: emptyList()
             }
             val subEpisodesDeferred = async {
-                subWatchUrl?.let { getEpisodesFromWatchPage(app.get(it).document.selectFirst("div#new-comment")?.parent(), "VS") } ?: emptyList()
+                subWatchUrl?.let { getEpisodesFromDoc(app.get(it).document, "VS") } ?: emptyList()
             }
 
             val dubEpisodes = dubEpisodesDeferred.await()
@@ -92,7 +92,6 @@ class Yanhh3dProvider : MainAPI() {
 
             episodes = if (subEpisodes.size > dubEpisodes.size) subEpisodes else dubEpisodes
         }
-
 
         return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
             this.posterUrl = poster
@@ -106,7 +105,6 @@ class Yanhh3dProvider : MainAPI() {
     private suspend fun extractLinksFromPage(
         url: String,
         prefix: String,
-        subtitleCallback: (SubtitleFile) -> Unit, // Sửa lỗi: Thêm subtitleCallback
         callback: (ExtractorLink) -> Unit
     ) {
         try {
@@ -135,28 +133,33 @@ class Yanhh3dProvider : MainAPI() {
                         )
                     }
                 }
-            } catch (_: Exception) {
-            }
+            } catch (_: Exception) {}
 
             // Iframe links extractor
             val linkRegex = Regex("""checkLink(\d+)\s*=\s*["'](.*?)["']""")
             val serverRegex = Regex("""id="sv_LINK(\d+)"\s*name="LINK\d+">(.*?)<""")
 
-            val servers = serverRegex.findAll(document.html()).map {
+            val servers = serverRegex.findAll(document.html()).associate {
                 it.groupValues[1] to it.groupValues[2]
-            }.toMap()
+            }
 
             linkRegex.findAll(script).forEach { match ->
                 val (id, link) = match.destructured
                 if (link.isNotBlank()) {
                     val serverName = servers[id] ?: "Server $id"
                     val finalName = "$prefix - $serverName"
-                    if (link.contains("short.icu")) {
-                        app.get(link, allowRedirects = false).headers["location"]?.let {
-                            loadExtractor(it, mainUrl, subtitleCallback, callback, finalName) // Sửa lỗi: truyền subtitleCallback
-                        }
+
+                    // Sửa lỗi: Không dùng loadExtractor, thay bằng newExtractorLink
+                    val finalLink = if (link.contains("short.icu")) {
+                        app.get(link, allowRedirects = false).headers["location"]
                     } else {
-                        loadExtractor(link, mainUrl, subtitleCallback, callback, finalName) // Sửa lỗi: truyền subtitleCallback
+                        link
+                    }
+                    
+                    if(finalLink != null){
+                         callback(
+                            newExtractorLink(this.name, finalName, finalLink, referer = mainUrl)
+                        )
                     }
                 }
             }
@@ -178,8 +181,8 @@ class Yanhh3dProvider : MainAPI() {
         val subUrl = "$mainUrl/sever2$path"
 
         coroutineScope {
-            launch { extractLinksFromPage(dubUrl, "TM", subtitleCallback, callback) }
-            launch { extractLinksFromPage(subUrl, "VS", subtitleCallback, callback) }
+            launch { extractLinksFromPage(dubUrl, "TM", callback) }
+            launch { extractLinksFromPage(subUrl, "VS", callback) }
         }
 
         return true
