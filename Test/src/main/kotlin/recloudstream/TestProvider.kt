@@ -18,34 +18,32 @@ class HHKungfuProvider : MainAPI() {
         TvType.Cartoon
     )
 
-    // Sửa lỗi #1: Quay lại sử dụng `getMainPage` để tương thích
-    override suspend fun getMainPage(
+    override val mainPage = mainPageOf(
+        "moi-cap-nhat/page/" to "Mới cập nhật",
+        "top-xem-nhieu/page/" to "Top Xem Nhiều",
+        "hoan-thanh/page/" to "Hoàn Thành",
+    )
+
+    override suspend fun mainPageLoad(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        val homePageList = mutableListOf<HomePageList>()
-        
-        // Cấu trúc lại trang chính để tải đồng thời nhiều mục
-        // Sử dụng apmap để tải song song, tăng tốc độ
-        listOf(
-            "moi-cap-nhat/page/" to "Mới cập nhật",
-            "top-xem-nhieu/page/" to "Top Xem Nhiều",
-            "hoan-thanh/page/" to "Hoàn Thành",
-        ).apmap { (path, name) ->
-            try {
-                val doc = app.get("$mainUrl/$path$page").document
-                val movies = doc.select("div.halim_box article.thumb").mapNotNull { element ->
-                    element.toSearchResponse()
-                }
-                if (movies.isNotEmpty()) {
-                    homePageList.add(HomePageList(name, movies))
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
+        val url = "$mainUrl/${request.data}$page"
+        val document = app.get(url).document
 
-        return HomePageResponse(homePageList)
+        val home = document.select("div.halim_box article.thumb").mapNotNull {
+            it.toSearchResponse()
+        }
+        
+        val hasNext = document.selectFirst("a.next.page-numbers") != null
+
+        return newHomePageResponse(
+            list = HomePageList(
+                name = request.name,
+                list = home
+            ),
+            hasNext = hasNext
+        )
     }
 
     private fun Element.toSearchResponse(): SearchResponse? {
@@ -117,11 +115,10 @@ class HHKungfuProvider : MainAPI() {
             val representativeUrl = infoList.first().url
             val serverTags = infoList.joinToString(separator = "+") { it.serverLabel }.let { "($it)" }
             
+            // Đã dọn dẹp lại, bỏ dòng `this.data = ...` dư thừa
             newEpisode(representativeUrl) {
                 this.name = "Tập $epKey $serverTags"
-                this.data = representativeUrl
             }
-        // Sửa lỗi #2: Thêm `?: 0` để xử lý trường hợp tên tập không có số
         }.sortedByDescending { it.name.substringAfter("Tập ").substringBefore(" ").toIntOrNull() ?: 0 }
 
         val recommendations = document.select("section#halim-related-movies article.thumb").mapNotNull {
