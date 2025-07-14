@@ -61,7 +61,6 @@ class Yanhh3dProvider : MainAPI() {
         return document.select("div.film_list-wrap div.flw-item").mapNotNull { it.toSearchResult() }
     }
     
-    // Sửa: Hàm mới trả về dữ liệu thô để hợp nhất
     private fun getEpisodeData(doc: Document?): List<Pair<String, String>> {
         return doc?.select("div.ss-list a.ssl-item")
             ?.mapNotNull {
@@ -72,7 +71,6 @@ class Yanhh3dProvider : MainAPI() {
             } ?: emptyList()
     }
 
-    // Class để lưu trữ thông tin của một tập phim sau khi hợp nhất
     private data class MergedEpisodeInfo(
         var dubUrl: String? = null,
         var subUrl: String? = null
@@ -89,7 +87,6 @@ class Yanhh3dProvider : MainAPI() {
         val dubWatchUrl = fixUrlNull(document.selectFirst("a.btn-play")?.attr("href"))
         val subWatchUrl = fixUrlNull(document.selectFirst("a.custom-button-sub")?.attr("href"))
         
-        // Sửa: Logic hợp nhất danh sách tập phim
         val episodes = coroutineScope {
             val dubDataDeferred = async { dubWatchUrl?.let { getEpisodeData(app.get(it).document) } ?: emptyList() }
             val subDataDeferred = async { subWatchUrl?.let { getEpisodeData(app.get(it).document) } ?: emptyList() }
@@ -114,10 +111,10 @@ class Yanhh3dProvider : MainAPI() {
                     else -> ""
                 }
                 val episodeName = "Tập $name $tag".trim()
-                // Ưu tiên link TM làm data chính, vì loadLinks sẽ kiểm tra cả 2
                 val episodeUrl = info.dubUrl ?: info.subUrl!!
                 Episode(episodeUrl, episodeName)
-            }.sortedBy { it.name.let { Regex("""\d+""").find(it)?.value?.toIntOrNull() } }
+            // Sửa lỗi: Thêm `?` để xử lý an toàn trường hợp tên tập là null
+            }.sortedBy { episode -> episode.name?.let { name -> Regex("""\d+""").find(name)?.value?.toIntOrNull() } }
         }
 
         if (episodes.isEmpty()) {
@@ -151,7 +148,7 @@ class Yanhh3dProvider : MainAPI() {
                     }
                 }
             } catch (e: Exception) {
-                e.printStackTrace() // Sửa: Dùng printStackTrace() để đảm bảo log được ghi lại
+                e.printStackTrace()
             }
 
             val linkRegex = Regex("""checkLink(\d+)\s*=\s*["'](.*?)["']""")
