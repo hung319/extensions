@@ -1,197 +1,148 @@
 package recloudstream
 
+import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
+import com.lagradost.cloudstream3.plugins.Plugin
+import android.content.Context
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
-import org.jsoup.nodes.Document
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
-import java.net.URI
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
 
-class Yanhh3dProvider : MainAPI() {
-    override var mainUrl = "https://yanhh3d.vip"
-    override var name = "YanHH3D"
-    override val hasMainPage = true
+@CloudstreamPlugin
+class HHKungfuProvider : Plugin() {
+    override var name = "HHKungfu"
+    override var mainUrl = "https://hhkungfu.ee"
     override var lang = "vi"
-    override val hasDownloadSupport = true
-    override val supportedTypes = setOf(TvType.Cartoon)
+    override val hasMainPage = true
+    override val supportedTypes = setOf(
+        TvType.Cartoon // Chỉ sử dụng TvType.Cartoon theo yêu cầu
+    )
 
-    private fun toSearchQuality(qualityString: String?): SearchQuality? {
-        return when {
-            qualityString == null -> null
-            qualityString.contains("4K") || qualityString.contains("UHD") -> SearchQuality.FourK
-            qualityString.contains("1080") || qualityString.contains("FullHD") -> SearchQuality.HD
-            qualityString.contains("720") -> SearchQuality.HD
-            qualityString.contains("HD") -> SearchQuality.HD
-            else -> null
+    override fun getLoadProfile(name: String, url: String, data: String, isCasting: Boolean): Boolean {
+        return false
+    }
+
+    // Helper function to parse movie items, reusable for homepage and search
+    private fun Element.toSearchResponse(): SearchResponse? {
+        val a = this.selectFirst("a.halim-thumb") ?: return null
+        val href = a.attr("href")
+        val title = this.selectFirst("h2.entry-title")?.text() ?: return null
+        val posterUrl = this.selectFirst("img.wp-post-image")?.attr("src")
+        val episode = this.selectFirst("span.episode")?.text()
+
+        // Sử dụng newTvSeriesSearchResponse vì đây là phim bộ, với type là Cartoon
+        return newTvSeriesSearchResponse(title, href, TvType.Cartoon) {
+            this.posterUrl = posterUrl
+            addQuality(episode)
         }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = "$mainUrl/moi-cap-nhat?page=$page"
-        val document = app.get(url).document
-        val newMovies = document.select("div.film_list-wrap div.flw-item").mapNotNull { it.toSearchResult() }
-        // Sửa: Dùng đúng tên tham số `hasNext`
-        return newHomePageResponse(listOf(HomePageList("Phim Mới Cập Nhật", newMovies)), hasNext = newMovies.isNotEmpty())
-    }
+        val document = app.get("$mainUrl/page/$page").document
+        val homePageList = ArrayList<HomePageList>()
 
-    private fun Element.toSearchResult(): SearchResponse? {
-        val titleElement = this.selectFirst("h3.film-name a") ?: return null
-        val title = titleElement.text().trim()
-        val href = fixUrl(titleElement.attr("href"))
-        val posterUrl = fixUrlNull(this.selectFirst("img.film-poster-img")?.attr("data-src"))
-        val episodeStr = this.selectFirst("div.tick-rate")?.text()?.trim()
-        val episodeNum = episodeStr?.let { Regex("""\d+""").find(it)?.value?.toIntOrNull() }
-        val qualityText = this.selectFirst(".tick-dub")?.text()?.trim()
-
-        return newAnimeSearchResponse(title, href, TvType.Cartoon) {
-            this.posterUrl = posterUrl
-            this.quality = toSearchQuality(qualityText)
-            addDubStatus(dubExist = true, subExist = true, episodeNum)
+        val sections = document.select("section.hot-movies")
+        sections.forEach { section ->
+            val title = section.selectFirst("h3.section-title span")?.text() ?: "Không có tiêu đề"
+            val movies = section.select("article.thumb").mapNotNull {
+                it.toSearchResponse()
+            }
+            if (movies.isNotEmpty()) {
+                homePageList.add(HomePageList(title, movies))
+            }
         }
+
+        return HomePageResponse(homePageList)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/search?keysearch=$query"
+        val searchUrl = "$mainUrl/?s=$query"
         val document = app.get(searchUrl).document
-        return document.select("div.film_list-wrap div.flw-item").mapNotNull { it.toSearchResult() }
+        return document.select("#loop-content article.thumb").mapNotNull {
+            it.toSearchResponse()
+        }
     }
-    
-    private fun getEpisodeData(doc: Document?, type: String): List<Pair<String, String>> {
-        val selector = if (type == "TM") "div#top-comment div.ss-list a.ssl-item" else "div#new-comment div.ss-list a.ssl-item"
-        return doc?.select(selector)
-            ?.mapNotNull {
-                val epUrl = it.attr("href")
-                val orderText = it.selectFirst(".ssli-order")?.text()?.trim()
-                if (epUrl.isNullOrBlank() || orderText.isNullOrBlank()) return@mapNotNull null
-                Pair(orderText, fixUrl(epUrl))
-            } ?: emptyList()
-    }
-
-    private data class MergedEpisodeInfo(var dubUrl: String? = null, var subUrl: String? = null)
 
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
-        val title = document.selectFirst("h2.film-name")?.text()?.trim() ?: return null
-        val poster = fixUrlNull(document.selectFirst("div.anisc-poster img")?.attr("src") ?: document.selectFirst("meta[property=og:image]")?.attr("content"))
-        val plot = document.selectFirst("div.film-description div.text")?.text()?.trim()
-        val tags = document.select("div.anisc-info a.genre").map { it.text() }
-        val year = document.select("div.anisc-info span.item-head:contains(Năm:) + span.name")?.text()?.toIntOrNull()
 
-        val dubWatchUrl = fixUrlNull(document.selectFirst("a.btn-play")?.attr("href"))
-        val subWatchUrl = fixUrlNull(document.selectFirst("a.custom-button-sub")?.attr("href"))
+        val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: return null
+        val poster = document.selectFirst(".movie-poster img")?.attr("src")
+        val plot = document.selectFirst(".entry-content p")?.text()?.trim()
+        val tags = document.select(".list_cate a").map { it.text() }
         
-        val recommendations = document.select("section.block_area_category div.flw-item").mapNotNull { it.toSearchResult() }
+        val episodes = ArrayList<Episode>()
+        val serverBlocks = document.select(".halim-server")
         
-        val episodes = coroutineScope {
-            val dubDataDeferred = async { dubWatchUrl?.let { getEpisodeData(app.get(it).document, "TM") } ?: emptyList() }
-            val subDataDeferred = async { subWatchUrl?.let { getEpisodeData(app.get(it).document, "VS") } ?: emptyList() }
-
-            val dubData = dubDataDeferred.await()
-            val subData = subDataDeferred.await()
-
-            val mergedMap = mutableMapOf<String, MergedEpisodeInfo>()
-            dubData.forEach { (name, epUrl) -> mergedMap.getOrPut(name) { MergedEpisodeInfo() }.dubUrl = epUrl }
-            subData.forEach { (name, epUrl) -> mergedMap.getOrPut(name) { MergedEpisodeInfo() }.subUrl = epUrl }
-
-            mergedMap.map { (name, info) ->
-                val tag = when {
-                    info.dubUrl != null && info.subUrl != null -> "(TM+VS)"
-                    info.dubUrl != null -> "(TM)"
-                    info.subUrl != null -> "(VS)"
-                    else -> ""
-                }
-                val episodeName = "Tập $name $tag".trim()
-                val episodeUrl = info.dubUrl ?: info.subUrl!!
-                newEpisode(episodeUrl) { this.name = episodeName }
-            // Sửa: Logic sắp xếp an toàn hơn để không còn lỗi
-            }.sortedBy { episode ->
-                episode.name?.let { Regex("""\d+""").find(it)?.value?.toIntOrNull() } ?: 0
+        serverBlocks.forEach { server ->
+            val serverName = server.selectFirst(".halim-server-name")?.text()?.replace("#", "")?.trim() ?: "Server"
+            val episodeElements = server.select("ul.halim-list-eps li a")
+            
+            episodeElements.forEach { ep ->
+                val epUrl = ep.attr("href")
+                val epName = ep.selectFirst("span")?.text() ?: ep.text()
+                episodes.add(
+                    newEpisode(epUrl) {
+                        name = if (serverBlocks.size > 1) "$epName - $serverName" else epName
+                        this.data = epUrl
+                    }
+                )
             }
         }
 
-        if (episodes.isEmpty()) {
-            return newMovieLoadResponse(title, url, TvType.Cartoon, dubWatchUrl ?: subWatchUrl ?: url) {
-                this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = tags
-                this.recommendations = recommendations
-            }
-        }
-        
-        return newTvSeriesLoadResponse(title, url, TvType.Cartoon, episodes) {
-            this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = tags
-            this.recommendations = recommendations
+        return newTvSeriesLoadResponse(title, url, TvType.Cartoon, episodes.reversed()) {
+            this.posterUrl = poster
+            this.plot = plot
+            this.tags = tags
         }
     }
-
-    private suspend fun extractLinksFromPage(
-        url: String,
-        prefix: String,
+    
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
-    ) {
-        try {
-            val document = app.get(url, timeout = 10L).document
-            val script = document.select("script").find {
-                val data = it.data()
-                data.contains("checkLink") || data.contains("checkFbo")
-            }?.data() ?: return
-
-            val servers = document.select("a.btn3dsv").associate {
-                it.attr("name").uppercase() to it.text()
-            }
-            val linkRegex = Regex("""var\s*\${'$'}check(\w+)\s*=\s*['"](.*?)['"];""")
-
-            linkRegex.findAll(script).forEach { match ->
-                try {
-                    val id = match.groupValues[1].uppercase()
-                    var link = match.groupValues[2]
-                    
-                    val serverName = servers[id]
-                    val ignoredServers = setOf("HD", "Link10", "HYD", "NC")
-                    if (serverName.isNullOrBlank() || serverName in ignoredServers) return@forEach
-
-                    if (link.isNotBlank()) {
-                        val finalName = "$prefix - $serverName"
-
-                        if (link.contains("short.icu")) {
-                            link = app.get(link, allowRedirects = false).headers["location"] ?: return@forEach
-                        }
-                        
-                        val finalUrl = fixUrl(link)
-                        
-                        if (app.head(finalUrl).isSuccessful) {
-                            if (finalUrl.contains("abyss-cdn.ink")) {
-                                callback(newExtractorLink(this.name, finalName, "$finalUrl/master.m3u8", type = ExtractorLinkType.M3U8))
-                            } else {
-                                loadExtractor(finalUrl, mainUrl, subtitleCallback, callback)
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
-        val path = try {
-            URI(data).path.removePrefix("/sever2")
-        } catch (e: Exception) {
-            return false
-        }
-        if (path.isBlank()) return false
+    ): Boolean {
+        val watchPageDoc = app.get(data).document
         
-        val dubUrl = "$mainUrl$path"
-        val subUrl = "$mainUrl/sever2$path"
+        val activeEpisode = watchPageDoc.selectFirst(".halim-episode.active a") ?: return false
+        val postId = activeEpisode.attr("data-post-id")
+        val chapterSt = activeEpisode.attr("data-ep")
+        val sv = activeEpisode.attr("data-sv")
 
-        coroutineScope {
-            launch { extractLinksFromPage(dubUrl, "TM", subtitleCallback, callback) }
-            launch { extractLinksFromPage(subUrl, "VS", subtitleCallback, callback) }
+        val serverTypes = watchPageDoc.select("#halim-ajax-list-server .get-eps").map {
+            it.attr("data-type")
         }
-        return true
+        
+        var foundLinks = false
+        serverTypes.apmap { type ->
+             try {
+                val playerAjaxUrl = "$mainUrl/player/player.php"
+                val ajaxResponse = app.get(
+                    playerAjaxUrl, 
+                    params = mapOf(
+                        "action" to "dox_ajax_player",
+                        "post_id" to postId,
+                        "chapter_st" to chapterSt,
+                        "type" to type,
+                        "sv" to sv
+                    ),
+                    headers = mapOf("X-Requested-With" to "XMLHttpRequest") // Thêm header này
+                ).document
+
+                val iframeSrc = ajaxResponse.selectFirst("iframe")?.attr("src")
+                if (iframeSrc != null) {
+                    loadExtractor(iframeSrc, data, subtitleCallback, callback)?.let {
+                        foundLinks = true
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+
+        return foundLinks
     }
 }
