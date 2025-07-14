@@ -22,23 +22,14 @@ class Yanhh3dProvider : MainAPI() {
     // ============================ HOMEPAGE ============================
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(mainUrl).document
-        val homePageList = ArrayList<HomePageList>()
-
-        // Phim mới cập nhật
-        val newMovies = document.select("div.film_list-wrap div.flw-item")
-        if (newMovies.isNotEmpty()) {
-            val movies = newMovies.mapNotNull { it.toSearchResult() }
-            homePageList.add(HomePageList("Phim Mới Cập Nhật", movies))
+        
+        // Chỉ lấy mục Phim Mới Cập Nhật
+        val newMovies = document.select("div.film_list-wrap div.flw-item").mapNotNull { 
+            it.toSearchResult() 
         }
 
-        // Phim đề cử (Trending)
-        val trendingMovies = document.select("div#trending-home div.flw-item.swiper-slide")
-        if (trendingMovies.isNotEmpty()) {
-            val movies = trendingMovies.mapNotNull { it.toSearchResult() }
-            homePageList.add(HomePageList("Phim Đề Cử", movies))
-        }
-
-        return HomePageResponse(homePageList)
+        // Đã loại bỏ mục Phim Đề Cử theo yêu cầu
+        return HomePageResponse(listOf(HomePageList("Phim Mới Cập Nhật", newMovies)))
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
@@ -66,6 +57,7 @@ class Yanhh3dProvider : MainAPI() {
 
     // ============================ LOAD DETAILS ============================
     override suspend fun load(url: String): LoadResponse? {
+        // 1. Tải trang thông tin phim để lấy metadata
         val document = app.get(url).document
 
         val title = document.selectFirst("h2.film-name")?.text()?.trim() ?: return null
@@ -75,13 +67,24 @@ class Yanhh3dProvider : MainAPI() {
         val tags = document.select("div.anisc-info a.genre").map { it.text() }
         val year = document.select("div.anisc-info span.item-head:contains(Năm:) + span.name")?.text()?.toIntOrNull()
 
-        val episodesThuyetMinh = document.select("div#top-comment div.ss-list a.ssl-item").map {
+        // 2. Lấy link trang xem phim từ nút "Xem Thuyết Minh"
+        val watchPageUrl = document.selectFirst("a.btn.btn-play")?.attr("href")
+        
+        // 3. Tải trang xem phim để lấy danh sách tập đầy đủ
+        val episodeDocument = if (watchPageUrl != null) {
+            app.get(watchPageUrl).document
+        } else {
+            // Nếu không có nút xem phim, dùng trang hiện tại (trường hợp phim lẻ)
+            document
+        }
+
+        val episodesThuyetMinh = episodeDocument.select("div#top-comment div.ss-list a.ssl-item").map {
             val epUrl = it.attr("href")
             val name = "Tập " + it.selectFirst(".ssli-order")?.text()?.trim() + " (TM)"
             Episode(epUrl, name)
         }.reversed()
 
-        val episodesVietSub = document.select("div#new-comment div.ss-list a.ssl-item").map {
+        val episodesVietSub = episodeDocument.select("div#new-comment div.ss-list a.ssl-item").map {
             val epUrl = it.attr("href")
             val name = "Tập " + it.selectFirst(".ssli-order")?.text()?.trim() + " (VS)"
             Episode(epUrl, name)
