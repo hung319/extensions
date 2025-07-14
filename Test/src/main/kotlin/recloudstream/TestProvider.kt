@@ -125,40 +125,31 @@ class Yanhh3dProvider : MainAPI() {
             val document = app.get(url, timeout = 10L).document
             val script = document.select("script").find { it.data().contains("var \$fb =") }?.data() ?: return
 
-            // === Lấy link FBO (HD+) ===
-            // Cách 1: Từ biến $checkFbo
+            // Sửa: Logic lấy FBO (HD+) mới, tối ưu và ổn định hơn
+            var fboUrl: String? = null
             try {
+                // Ưu tiên lấy từ biến $checkFbo trước
                 val checkFboRegex = Regex("""var\s*\${'$'}checkFbo\s*=\s*['"](.*?)['"]""")
-                checkFboRegex.find(script)?.groupValues?.get(1)?.let { fileUrl ->
-                    if (fileUrl.isNotBlank()) {
-                        callback.invoke(
-                            newExtractorLink(this.name, "$prefix - FBO (HD+)", fileUrl, type = ExtractorLinkType.VIDEO) {
-                                this.referer = mainUrl
-                            }
-                        )
-                    }
+                fboUrl = checkFboRegex.find(script)?.groupValues?.get(1)
+
+                // Nếu không có, thử lấy từ object source_fbo
+                if (fboUrl.isNullOrBlank()) {
+                    val fboRegex = Regex("""source_fbo:\s*\[\{"file":"(.*?)"\}\]""")
+                    fboUrl = fboRegex.find(script)?.groupValues?.get(1)
+                }
+
+                if (!fboUrl.isNullOrBlank()) {
+                    callback.invoke(
+                        newExtractorLink(this.name, "$prefix - FBO (HD+)", fboUrl, type = ExtractorLinkType.VIDEO) {
+                            this.referer = mainUrl
+                        }
+                    )
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
             }
 
-            // Cách 2: Từ object source_fbo
-            try {
-                val fboRegex = Regex("""source_fbo:\s*\[\{"file":"(.*?)"\}\]""")
-                fboRegex.find(script)?.groupValues?.get(1)?.let { fileUrl ->
-                    if (fileUrl.isNotBlank()) {
-                        callback.invoke(
-                            newExtractorLink(this.name, "$prefix - FBO (HD+)", fileUrl, type = ExtractorLinkType.VIDEO) {
-                                this.referer = mainUrl
-                            }
-                        )
-                    }
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-
-            // === Lấy các server còn lại ===
+            // Lấy các server còn lại
             val linkRegex = Regex("""checkLink(\d+)\s*=\s*["'](.*?)["']""")
             val serverRegex = Regex("""id="sv_LINK(\d+)"\s*name="LINK\d+">(.*?)<""")
             val servers = serverRegex.findAll(document.html()).associate { it.groupValues[1] to it.groupValues[2] }
