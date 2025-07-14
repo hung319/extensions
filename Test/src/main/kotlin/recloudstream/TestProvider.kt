@@ -1,6 +1,5 @@
 package recloudstream
 
-import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
 import android.content.Context
 import com.lagradost.cloudstream3.*
@@ -10,8 +9,8 @@ import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
 import java.net.URI
 
-@CloudstreamPlugin
-class HHKungfuProvider : Plugin() {
+// Lớp "Công nhân" - Kế thừa từ MainAPI và chứa toàn bộ logic
+class HHKungfuProvider : MainAPI() {
     override var name = "HHKungfu"
     override var mainUrl = "https://hhkungfu.ee"
     override var lang = "vi"
@@ -19,10 +18,6 @@ class HHKungfuProvider : Plugin() {
     override val supportedTypes = setOf(
         TvType.Cartoon
     )
-
-    override fun getLoadProfile(name: String, url: String, data: String, isCasting: Boolean): Boolean {
-        return false
-    }
 
     private fun Element.toSearchResponse(): SearchResponse? {
         val a = this.selectFirst("a.halim-thumb") ?: return null
@@ -147,7 +142,7 @@ class HHKungfuProvider : Plugin() {
                             url = fullM3u8Url,
                             referer = iframeSrc,
                             quality = Qualities.Unknown.value,
-                            type = ExtractorLinkType.M3U8 // Sửa lại thành M3U8
+                            type = ExtractorLinkType.M3U8
                         )
                     )
                     foundLinks = true
