@@ -56,7 +56,7 @@ class Yanhh3dProvider : MainAPI() {
         val document = app.get(searchUrl).document
         return document.select("div.film_list-wrap div.flw-item").mapNotNull { it.toSearchResult() }
     }
-
+    
     private fun getEpisodeData(doc: Document?, type: String): List<Pair<String, String>> {
         val selector = if (type == "TM") "div#top-comment div.ss-list a.ssl-item" else "div#new-comment div.ss-list a.ssl-item"
         return doc?.select(selector)
@@ -80,7 +80,7 @@ class Yanhh3dProvider : MainAPI() {
 
         val dubWatchUrl = fixUrlNull(document.selectFirst("a.btn-play")?.attr("href"))
         val subWatchUrl = fixUrlNull(document.selectFirst("a.custom-button-sub")?.attr("href"))
-
+        
         val episodes = coroutineScope {
             val dubDataDeferred = async { dubWatchUrl?.let { getEpisodeData(app.get(it).document, "TM") } ?: emptyList() }
             val subDataDeferred = async { subWatchUrl?.let { getEpisodeData(app.get(it).document, "VS") } ?: emptyList() }
@@ -123,25 +123,22 @@ class Yanhh3dProvider : MainAPI() {
     ) {
         try {
             val document = app.get(url, timeout = 10L).document
-            // Sửa: Tìm script một cách linh hoạt hơn
             val script = document.select("script").find {
                 val data = it.data()
                 data.contains("checkLink") || data.contains("checkFbo")
             }?.data() ?: return
 
-            // Lấy map của tất cả các server và tên của chúng
             val servers = document.select("a.btn3dsv").associate {
                 it.attr("name").uppercase() to it.text()
             }
 
-            // Regex tổng quát để tìm tất cả các biến $check...
             val linkRegex = Regex("""var\s*\${'$'}check(\w+)\s*=\s*['"](.*?)['"];""")
 
             linkRegex.findAll(script).forEach { match ->
                 val id = match.groupValues[1].uppercase()
+                // Sửa lỗi: Khai báo `link` là `var` để có thể gán lại giá trị
                 var link = match.groupValues[2]
 
-                // Lấy tên server từ map, nếu không có nút hoặc là Link10 thì bỏ qua
                 val serverName = servers[id]
                 if (serverName.isNullOrBlank() || serverName.contains("Link10")) return@forEach
 
@@ -152,31 +149,23 @@ class Yanhh3dProvider : MainAPI() {
                         link = app.get(link, allowRedirects = false).headers["location"] ?: return@forEach
                     }
 
-                    when {
-                        // Server HD là trang trung gian
-                        serverName.equals("HD", true) -> {
-                            try {
-                                val nestedDoc = app.get(fixUrl(link)).document
-                                val fboRegex = Regex("""var cccc = "(.*?)"""")
-                                fboRegex.find(nestedDoc.html())?.groupValues?.get(1)?.let { fboUrl ->
-                                    if (fboUrl.isNotBlank()) {
-                                        callback(newExtractorLink(this.name, finalName, fboUrl))
-                                    }
-                                }
-                            } catch (e: Exception) {
-                                e.printStackTrace()
+                    if (serverName.equals("HD", true) && link.startsWith("/play-fb-v7/")) {
+                        try {
+                            val nestedDoc = app.get(fixUrl(link)).document
+                            val fboRegex = Regex("""var cccc = "(.*?)"""")
+                            val fboUrl = fboRegex.find(nestedDoc.html())?.groupValues?.get(1)
+                            if (fboUrl != null && fboUrl.isNotBlank()) {
+                                callback(newExtractorLink(this.name, finalName, fboUrl))
                             }
+                        } catch (e: Exception) {
+                            e.printStackTrace()
                         }
-                        // Server Abyss CDN
-                        link.contains("abyss-cdn.ink") -> {
-                            callback(newExtractorLink(this.name, finalName, "$link/master.m3u8") {
-                                isM3u8 = true
-                            })
-                        }
-                        // Server FBO và HYD là link trực tiếp
-                        else -> {
-                            callback(newExtractorLink(this.name, finalName, link))
-                        }
+                    } else if (link.contains("abyss-cdn.ink")) {
+                        callback(newExtractorLink(this.name, finalName, "$link/master.m3u8") {
+                            isM3u8 = true
+                        })
+                    } else {
+                        callback(newExtractorLink(this.name, finalName, fixUrl(link)))
                     }
                 }
             }
