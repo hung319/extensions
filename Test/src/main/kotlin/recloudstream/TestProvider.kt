@@ -5,10 +5,10 @@ import com.lagradost.cloudstream3.plugins.Plugin
 import android.content.Context
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.loadExtractor
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import com.lagradost.cloudstream3.utils.AppUtils.toJson
+import java.net.URI
 
 @CloudstreamPlugin
 class HHKungfuProvider : Plugin() {
@@ -17,14 +17,13 @@ class HHKungfuProvider : Plugin() {
     override var lang = "vi"
     override val hasMainPage = true
     override val supportedTypes = setOf(
-        TvType.Cartoon // Chỉ sử dụng TvType.Cartoon theo yêu cầu
+        TvType.Cartoon
     )
 
     override fun getLoadProfile(name: String, url: String, data: String, isCasting: Boolean): Boolean {
         return false
     }
 
-    // Helper function to parse movie items, reusable for homepage and search
     private fun Element.toSearchResponse(): SearchResponse? {
         val a = this.selectFirst("a.halim-thumb") ?: return null
         val href = a.attr("href")
@@ -32,7 +31,6 @@ class HHKungfuProvider : Plugin() {
         val posterUrl = this.selectFirst("img.wp-post-image")?.attr("src")
         val episode = this.selectFirst("span.episode")?.text()
 
-        // Sử dụng newTvSeriesSearchResponse vì đây là phim bộ, với type là Cartoon
         return newTvSeriesSearchResponse(title, href, TvType.Cartoon) {
             this.posterUrl = posterUrl
             addQuality(episode)
@@ -72,14 +70,14 @@ class HHKungfuProvider : Plugin() {
         val poster = document.selectFirst(".movie-poster img")?.attr("src")
         val plot = document.selectFirst(".entry-content p")?.text()?.trim()
         val tags = document.select(".list_cate a").map { it.text() }
-        
+
         val episodes = ArrayList<Episode>()
         val serverBlocks = document.select(".halim-server")
-        
+
         serverBlocks.forEach { server ->
             val serverName = server.selectFirst(".halim-server-name")?.text()?.replace("#", "")?.trim() ?: "Server"
             val episodeElements = server.select("ul.halim-list-eps li a")
-            
+
             episodeElements.forEach { ep ->
                 val epUrl = ep.attr("href")
                 val epName = ep.selectFirst("span")?.text() ?: ep.text()
@@ -98,7 +96,7 @@ class HHKungfuProvider : Plugin() {
             this.tags = tags
         }
     }
-    
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -106,22 +104,21 @@ class HHKungfuProvider : Plugin() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val watchPageDoc = app.get(data).document
-        
+
         val activeEpisode = watchPageDoc.selectFirst(".halim-episode.active a") ?: return false
         val postId = activeEpisode.attr("data-post-id")
         val chapterSt = activeEpisode.attr("data-ep")
         val sv = activeEpisode.attr("data-sv")
+        val serverButtons = watchPageDoc.select("#halim-ajax-list-server .get-eps")
 
-        val serverTypes = watchPageDoc.select("#halim-ajax-list-server .get-eps").map {
-            it.attr("data-type")
-        }
-        
         var foundLinks = false
-        serverTypes.apmap { type ->
-             try {
+        serverButtons.apmap { button ->
+            try {
+                val type = button.attr("data-type")
+                val serverName = button.text()
                 val playerAjaxUrl = "$mainUrl/player/player.php"
                 val ajaxResponse = app.get(
-                    playerAjaxUrl, 
+                    playerAjaxUrl,
                     params = mapOf(
                         "action" to "dox_ajax_player",
                         "post_id" to postId,
@@ -129,14 +126,31 @@ class HHKungfuProvider : Plugin() {
                         "type" to type,
                         "sv" to sv
                     ),
-                    headers = mapOf("X-Requested-With" to "XMLHttpRequest") // Thêm header này
+                    headers = mapOf("X-Requested-With" to "XMLHttpRequest")
                 ).document
 
-                val iframeSrc = ajaxResponse.selectFirst("iframe")?.attr("src")
-                if (iframeSrc != null) {
-                    loadExtractor(iframeSrc, data, subtitleCallback, callback)?.let {
-                        foundLinks = true
-                    }
+                val iframeSrc = ajaxResponse.selectFirst("iframe")?.attr("src") ?: return@apmap
+                
+                val extractorPageSource = app.get(iframeSrc, referer = data).text
+                
+                val fileRegex = Regex("""sources:\s*\[\{\s*type:\s*"hls",\s*file:\s*"(.*?)"""")
+                val relativeLink = fileRegex.find(extractorPageSource)?.groupValues?.get(1)
+
+                if (relativeLink != null) {
+                    val domain = URI(iframeSrc).let { "${it.scheme}://${it.host}" }
+                    val fullM3u8Url = if (relativeLink.startsWith("http")) relativeLink else domain + relativeLink
+
+                    callback.invoke(
+                        ExtractorLink(
+                            source = this.name,
+                            name = serverName,
+                            url = fullM3u8Url,
+                            referer = iframeSrc,
+                            quality = Qualities.Unknown.value,
+                            type = ExtractorLinkType.M3U8 // Sửa lại thành M3U8
+                        )
+                    )
+                    foundLinks = true
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
