@@ -116,20 +116,11 @@ class Yanhh3dProvider : MainAPI() {
         }
     }
 
-    private suspend fun addLink(url: String, name: String, isM3u8: Boolean, callback: (ExtractorLink) -> Unit) {
-        try {
-            // "Ping" tới server để kiểm tra link có hợp lệ không
-            if (app.head(url).isSuccessful) {
-                callback(newExtractorLink(this.name, name, url, referer = mainUrl) {
-                    this.isM3u8 = isM3u8
-                })
-            }
-        } catch (e: Exception) {
-            // Bỏ qua nếu link lỗi
-        }
-    }
-
-    private suspend fun extractLinksFromPage(url: String, prefix: String, callback: (ExtractorLink) -> Unit) {
+    private suspend fun extractLinksFromPage(
+        url: String,
+        prefix: String,
+        callback: (ExtractorLink) -> Unit
+    ) {
         try {
             val document = app.get(url, timeout = 10L).document
             val script = document.select("script").find {
@@ -144,28 +135,37 @@ class Yanhh3dProvider : MainAPI() {
             val linkRegex = Regex("""var\s*\${'$'}check(\w+)\s*=\s*['"](.*?)['"];""")
 
             linkRegex.findAll(script).forEach { match ->
-                val id = match.groupValues[1].uppercase()
-                var link = match.groupValues[2]
+                try {
+                    val id = match.groupValues[1].uppercase()
+                    var link = match.groupValues[2]
 
-                val serverName = servers[id]
-                val ignoredServers = setOf("HD", "LINK10", "HYD", "NC")
-                if (serverName.isNullOrBlank() || id in ignoredServers) return@forEach
+                    val serverName = servers[id]
+                    val ignoredIds = setOf("LINK1", "LINK10", "HYD", "NC")
+                    if (serverName.isNullOrBlank() || id in ignoredIds) return@forEach
 
-                if (link.isNotBlank()) {
-                    val finalName = "$prefix - $serverName"
+                    if (link.isNotBlank()) {
+                        val finalName = "$prefix - $serverName"
 
-                    if (link.contains("short.icu")) {
-                        link = app.get(link, allowRedirects = false).headers["location"] ?: return@forEach
-                    }
-
-                    when {
-                        link.contains("abyss-cdn.ink") -> {
-                            addLink("$link/master.m3u8", finalName, true, callback)
+                        if (link.contains("short.icu")) {
+                            link = app.get(link, allowRedirects = false).headers["location"] ?: return@forEach
                         }
-                        else -> { // FBO và các link trực tiếp khác
-                            addLink(fixUrl(link), finalName, false, callback)
+
+                        val finalUrl = fixUrl(link)
+                        // "Ping" link trước khi thêm
+                        if (app.head(finalUrl).isSuccessful) {
+                            if (finalUrl.contains("abyss-cdn.ink")) {
+                                callback(newExtractorLink(this.name, finalName, "$finalUrl/master.m3u8", type = ExtractorLinkType.M3U8) {
+                                    referer = mainUrl
+                                })
+                            } else {
+                                callback(newExtractorLink(this.name, finalName, finalUrl) {
+                                    referer = mainUrl
+                                })
+                            }
                         }
                     }
+                } catch (e: Exception) {
+                    // Bỏ qua nếu có lỗi ở một server
                 }
             }
         } catch (e: Exception) {
