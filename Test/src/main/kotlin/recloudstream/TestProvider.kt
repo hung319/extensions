@@ -61,6 +61,7 @@ class Yanhh3dProvider : MainAPI() {
         return document.select("div.film_list-wrap div.flw-item").mapNotNull { it.toSearchResult() }
     }
     
+    // Sửa: Thêm tham số `type` để lấy đúng danh sách tập
     private fun getEpisodeData(doc: Document?, type: String): List<Pair<String, String>> {
         val selector = if (type == "TM") "div#top-comment div.ss-list a.ssl-item" else "div#new-comment div.ss-list a.ssl-item"
         return doc?.select(selector)
@@ -86,6 +87,7 @@ class Yanhh3dProvider : MainAPI() {
         val subWatchUrl = fixUrlNull(document.selectFirst("a.custom-button-sub")?.attr("href"))
         
         val episodes = coroutineScope {
+            // Sửa: Truyền đúng `type` vào hàm getEpisodeData
             val dubDataDeferred = async { dubWatchUrl?.let { getEpisodeData(app.get(it).document, "TM") } ?: emptyList() }
             val subDataDeferred = async { subWatchUrl?.let { getEpisodeData(app.get(it).document, "VS") } ?: emptyList() }
 
@@ -125,27 +127,30 @@ class Yanhh3dProvider : MainAPI() {
             val document = app.get(url, timeout = 10L).document
             val script = document.select("script").find { it.data().contains("var \$fb =") }?.data() ?: return
 
-            // 1. Lấy tất cả tên server từ nút bấm trên web
-            // Key sẽ là chữ hoa để dễ so sánh, vd: "FBO", "LINK2", "DLM"
-            val servers = document.select("a.btn3dsv").associate {
-                it.attr("name").uppercase() to it.text()
+            try {
+                // Sửa: Dùng Regex trực tiếp để lấy link FBO, ổn định hơn parseJson
+                val fboRegex = Regex("""source_fbo:\s*\[\{"file":"(.*?)"\}\]""")
+                val fboMatch = fboRegex.find(script)
+                fboMatch?.groupValues?.get(1)?.let { fileUrl ->
+                    callback.invoke(
+                        newExtractorLink(this.name, "$prefix - FBO (HD+)", fileUrl, type = ExtractorLinkType.VIDEO) {
+                            this.referer = mainUrl; this.quality = Qualities.P1080.value
+                        }
+                    )
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
-            
-            // 2. Regex tổng quát để tìm tất cả các biến $check...
-            // Nó sẽ bắt được `Fbo`, `Link2`, `DLM`... vào group 1
-            val linkRegex = Regex("""var\s*\${'$'}check(\w+)\s*=\s*['"](.*?)['"];""")
 
-            // 3. Quét script và khớp link với tên server
+            val linkRegex = Regex("""checkLink(\d+)\s*=\s*["'](.*?)["']""")
+            val serverRegex = Regex("""id="sv_LINK(\d+)"\s*name="LINK\d+">(.*?)<""")
+            val servers = serverRegex.findAll(document.html()).associate { it.groupValues[1] to it.groupValues[2] }
+
             linkRegex.findAll(script).forEach { match ->
-                val id = match.groupValues[1]       // Vd: "Fbo", "Link2", "DLM"
-                val link = match.groupValues[2]     // URL của server
-
+                val (id, link) = match.destructured
                 if (link.isNotBlank()) {
-                    // Dùng id (đã chuyển thành chữ hoa) để tìm tên server trong map
-                    // Nếu không có tên, sẽ lấy chính id đó (vd: Link9, Link10)
-                    val serverName = servers[id.uppercase()] ?: id
+                    val serverName = servers[id] ?: "Server $id"
                     val finalName = "$prefix - $serverName"
-
                     val tempLink = if (link.contains("short.icu")) {
                         app.get(link, allowRedirects = false).headers["location"]
                     } else {
@@ -184,4 +189,6 @@ class Yanhh3dProvider : MainAPI() {
 
         return true
     }
+
+    data class FboSource(@JsonProperty("file") val file: String?)
 }
