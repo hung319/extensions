@@ -149,7 +149,6 @@ class Yanhh3dProvider : MainAPI() {
                     val serverName = servers[id] ?: "Server $id"
                     val finalName = "$prefix - $serverName"
 
-                    // Sửa lỗi: Không dùng loadExtractor, thay bằng newExtractorLink
                     val finalLink = if (link.contains("short.icu")) {
                         app.get(link, allowRedirects = false).headers["location"]
                     } else {
@@ -157,8 +156,16 @@ class Yanhh3dProvider : MainAPI() {
                     }
                     
                     if(finalLink != null){
-                         callback(
-                            newExtractorLink(this.name, finalName, finalLink, referer = mainUrl)
+                        // Sửa lỗi: Sử dụng đúng cú pháp newExtractorLink với khối khởi tạo
+                        callback(
+                            newExtractorLink(
+                                source = this.name,
+                                name = finalName,
+                                url = finalLink,
+                                type = ExtractorLinkType.VIDEO
+                            ) {
+                                this.referer = mainUrl
+                            }
                         )
                     }
                 }
@@ -167,7 +174,6 @@ class Yanhh3dProvider : MainAPI() {
             // Fails silently
         }
     }
-
 
     override suspend fun loadLinks(
         data: String,
