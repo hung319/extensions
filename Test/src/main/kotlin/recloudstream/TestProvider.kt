@@ -119,7 +119,6 @@ class Yanhh3dProvider : MainAPI() {
     private suspend fun extractLinksFromPage(
         url: String,
         prefix: String,
-        subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
         try {
@@ -137,20 +136,17 @@ class Yanhh3dProvider : MainAPI() {
                 if (link.isNullOrBlank()) return@apmap
 
                 val finalName = "$prefix - $serverName"
-
-                // Phân loại và xử lý server
-                when {
-                    idKey.equals("FBO", true) || idKey.equals("HYD", true) -> {
-                        callback(newExtractorLink(this.name, finalName, link, type = ExtractorLinkType.VIDEO) {
-                            this.referer = mainUrl
-                        })
-                    }
-                    else -> {
-                         // Tất cả các server còn lại (1080, HD, 4K, 2K...) đều được coi là iframe
-                        loadExtractor(fixUrl(link), mainUrl, subtitleCallback, callback) {
-                            this.name = finalName
-                        }
-                    }
+                
+                // Sửa lỗi: Dùng newExtractorLink cho tất cả các trường hợp để tránh lỗi cú pháp
+                val tempLink = if (link.contains("short.icu")) {
+                    app.get(link, allowRedirects = false).headers["location"]
+                } else {
+                    link
+                }
+                if (tempLink != null) {
+                    callback(newExtractorLink(this.name, finalName, fixUrl(tempLink)) {
+                        this.referer = mainUrl
+                    })
                 }
             }
         } catch (e: Exception) {
@@ -170,8 +166,9 @@ class Yanhh3dProvider : MainAPI() {
         val subUrl = "$mainUrl/sever2$path"
 
         coroutineScope {
-            launch { extractLinksFromPage(dubUrl, "TM", subtitleCallback, callback) }
-            launch { extractLinksFromPage(subUrl, "VS", subtitleCallback, callback) }
+            // Sửa: Bỏ subtitleCallback vì không dùng đến trong hàm extractLinksFromPage
+            launch { extractLinksFromPage(dubUrl, "TM", callback) }
+            launch { extractLinksFromPage(subUrl, "VS", callback) }
         }
         return true
     }
