@@ -126,20 +126,23 @@ class Yanhh3dProvider : MainAPI() {
             val script = document.select("script").find { it.data().contains("var \$fb =") }?.data() ?: return
 
             // 1. Lấy tất cả tên server từ nút bấm trên web
+            // Key sẽ là chữ hoa để dễ so sánh, vd: "FBO", "LINK2", "DLM"
             val servers = document.select("a.btn3dsv").associate {
-                it.attr("name").uppercase() to it.text() // Chuyển key thành chữ hoa
+                it.attr("name").uppercase() to it.text()
             }
             
             // 2. Regex tổng quát để tìm tất cả các biến $check...
+            // Nó sẽ bắt được `Fbo`, `Link2`, `DLM`... vào group 1
             val linkRegex = Regex("""var\s*\${'$'}check(\w+)\s*=\s*['"](.*?)['"];""")
 
             // 3. Quét script và khớp link với tên server
             linkRegex.findAll(script).forEach { match ->
-                val id = match.groupValues[1]       // "Fbo", "Link2", "Link7"
-                val link = match.groupValues[2]     // URL
+                val id = match.groupValues[1]       // Vd: "Fbo", "Link2", "DLM"
+                val link = match.groupValues[2]     // URL của server
 
                 if (link.isNotBlank()) {
                     // Dùng id (đã chuyển thành chữ hoa) để tìm tên server trong map
+                    // Nếu không có tên, sẽ lấy chính id đó (vd: Link9, Link10)
                     val serverName = servers[id.uppercase()] ?: id
                     val finalName = "$prefix - $serverName"
 
