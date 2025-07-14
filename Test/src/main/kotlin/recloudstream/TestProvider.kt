@@ -66,10 +66,13 @@ class Yanhh3dProvider : MainAPI() {
     private fun getEpisodesFromDoc(doc: Document?): List<Episode> {
         return doc?.select("div#top-comment div.ss-list a.ssl-item, div#new-comment div.ss-list a.ssl-item")
             ?.distinctBy { it.selectFirst(".ssli-order")?.text() }
-            ?.map {
-                val epUrl = fixUrl(it.attr("href"))
-                val name = "Tập " + it.selectFirst(".ssli-order")?.text()?.trim()
-                Episode(epUrl, name)
+            ?.mapNotNull {
+                val epUrl = it.attr("href")
+                val orderText = it.selectFirst(".ssli-order")?.text()?.trim()
+                if (epUrl.isNullOrBlank() || orderText.isNullOrBlank()) return@mapNotNull null
+                
+                val name = "Tập $orderText"
+                Episode(fixUrl(epUrl), name)
             }?.reversed() ?: emptyList()
     }
 
@@ -116,7 +119,6 @@ class Yanhh3dProvider : MainAPI() {
             val document = app.get(url, timeout = 10L).document
             val script = document.select("script").find { it.data().contains("var \$fb =") }?.data() ?: return
 
-            // SỬA: Dùng throw e để hiển thị lỗi chi tiết khi gỡ lỗi
             try {
                 val fboJsonRegex = Regex("""source_fbo:\s*(\[.*?\])""")
                 val fboMatch = fboJsonRegex.find(script)
@@ -133,8 +135,7 @@ class Yanhh3dProvider : MainAPI() {
                     }
                 }
             } catch (e: Exception) {
-                // Buộc hiển thị lỗi để gỡ lỗi server HD+
-                throw e
+                logError(e) 
             }
 
             val linkRegex = Regex("""checkLink(\d+)\s*=\s*["'](.*?)["']""")
@@ -162,16 +163,19 @@ class Yanhh3dProvider : MainAPI() {
                 }
             }
         } catch (e: Exception) {
-            // Không làm gì để các server khác vẫn có thể được tải
+            logError(e)
         }
     }
 
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
-        val path = if (data.startsWith(mainUrl)) {
+        // Sửa: Xử lý các URL không chuẩn, chỉ lấy phần path hợp lệ
+        val path = try {
             URI(data).path.removePrefix("/sever2")
-        } else {
-            return false
+        } catch (e: Exception) {
+            return false // Trả về false nếu URL không hợp lệ
         }
+
+        if (path.isBlank()) return false
         
         val dubUrl = "$mainUrl$path"
         val subUrl = "$mainUrl/sever2$path"
