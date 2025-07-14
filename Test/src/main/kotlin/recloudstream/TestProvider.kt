@@ -144,16 +144,19 @@ class Yanhh3dProvider : MainAPI() {
                 e.printStackTrace()
             }
 
-            // Sửa: Regex linh hoạt hơn để lấy đúng tên tất cả các server
+            // Regex để lấy link từ các biến checkLink...
             val linkRegex = Regex("""var\s*\${'$'}check(Link\w*)\s*=\s*["'](.*?)["']""")
+            // Lấy map của tất cả các server và tên của chúng
             val servers = document.select("a.btn3dsv").associate {
                 it.attr("name") to it.text()
             }
 
             linkRegex.findAll(script).forEach { match ->
+                // `id` sẽ là "Link1", "Link2", "DLM"...
                 val (id, link) = match.destructured
                 if (link.isNotBlank()) {
-                    val serverName = servers[id] ?: id // Lấy tên từ map, nếu không có thì dùng id (Link9, Link10...)
+                    // SỬA LỖI: Chuyển `id` thành chữ hoa để khớp với `name` của nút (LINK1, LINK2...)
+                    val serverName = servers[id.uppercase()] ?: id 
                     val finalName = "$prefix - $serverName"
                     val tempLink = if (link.contains("short.icu")) {
                         app.get(link, allowRedirects = false).headers["location"]
