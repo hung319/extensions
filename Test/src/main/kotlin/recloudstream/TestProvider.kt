@@ -2,6 +2,7 @@ package recloudstream
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.SearchQuality // Thêm import cho SearchQuality
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
@@ -18,30 +19,52 @@ class Yanhh3dProvider : MainAPI() {
     override val hasMainPage = true
     override var lang = "vi"
     override val hasDownloadSupport = true
+    // Sửa: Chỉ sử dụng TvType.Cartoon cho cả phim bộ và phim lẻ
     override val supportedTypes = setOf(
-        TvType.Cartoon,
-        TvType.Anime,
-        TvType.TvSeries
+        TvType.Cartoon
     )
+
+    // Sửa: Hàm mới để chuyển đổi text chất lượng sang enum SearchQuality
+    private fun toSearchQuality(qualityString: String?): SearchQuality? {
+        return when {
+            qualityString == null -> null
+            qualityString.contains("4K") || qualityString.contains("UHD") -> SearchQuality.FourK
+            qualityString.contains("1080") || qualityString.contains("FullHD") -> SearchQuality.HD
+            qualityString.contains("720") -> SearchQuality.HD
+            qualityString.contains("HD") -> SearchQuality.HD
+            else -> null
+        }
+    }
 
     // ============================ HOMEPAGE ============================
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get(mainUrl).document
+        val url = "$mainUrl/moi-cap-nhat?page=$page"
+        val document = app.get(url).document
+
         val newMovies = document.select("div.film_list-wrap div.flw-item").mapNotNull {
             it.toSearchResult()
         }
-        return HomePageResponse(listOf(HomePageList("Phim Mới Cập Nhật", newMovies)))
+
+        return HomePageResponse(
+            listOf(HomePageList("Phim Mới Cập Nhật", newMovies)),
+            hasNext = newMovies.isNotEmpty()
+        )
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
-        val title = this.selectFirst("h3.film-name a")?.text()?.trim() ?: return null
-        val href = fixUrl(this.selectFirst("a.film-poster-ahref")?.attr("href") ?: return null)
+        val titleElement = this.selectFirst("h3.film-name a") ?: return null
+        val title = titleElement.text().trim()
+        val href = fixUrl(titleElement.attr("href"))
         val posterUrl = fixUrlNull(this.selectFirst("img.film-poster-img")?.attr("data-src"))
         val episodeStr = this.selectFirst("div.tick-rate")?.text()?.trim()
         val episodeNum = episodeStr?.let { Regex("""\d+""").find(it)?.value?.toIntOrNull() }
 
-        return newAnimeSearchResponse(title, href, TvType.Anime) {
+        // Sửa: Lấy text chất lượng và gán vào tag quality thay vì tiêu đề
+        val qualityText = this.selectFirst(".tick-dub")?.text()?.trim()
+
+        return newAnimeSearchResponse(title, href, TvType.Cartoon) {
             this.posterUrl = posterUrl
+            this.quality = toSearchQuality(qualityText)
             addDubStatus(dubExist = true, subExist = true, episodeNum)
         }
     }
@@ -56,14 +79,15 @@ class Yanhh3dProvider : MainAPI() {
     }
 
     // ============================ LOAD DETAILS ============================
-    private fun getEpisodesFromDoc(doc: Document?, type: String): List<Episode> {
-        val selector = if (type == "TM") "div#top-comment" else "div#new-comment"
-        return doc?.select("$selector div.ss-list a.ssl-item")?.map {
-            // Sửa lỗi: Đảm bảo URL của tập phim là tuyệt đối
-            val epUrl = fixUrl(it.attr("href"))
-            val name = "Tập " + it.selectFirst(".ssli-order")?.text()?.trim() + " ($type)"
-            Episode(epUrl, name)
-        }?.reversed() ?: emptyList()
+    private fun getEpisodesFromDoc(doc: Document?): List<Episode> {
+        return doc?.select("div#top-comment div.ss-list a.ssl-item, div#new-comment div.ss-list a.ssl-item")
+            ?.distinctBy { it.selectFirst(".ssli-order")?.text() }
+            ?.map {
+                val epUrl = fixUrl(it.attr("href"))
+                // Sửa: Bỏ hậu tố (TM), (VS)
+                val name = "Tập " + it.selectFirst(".ssli-order")?.text()?.trim()
+                Episode(epUrl, name)
+            }?.reversed() ?: emptyList()
     }
 
     override suspend fun load(url: String): LoadResponse? {
@@ -82,16 +106,26 @@ class Yanhh3dProvider : MainAPI() {
 
         coroutineScope {
             val dubEpisodesDeferred = async {
-                dubWatchUrl?.let { getEpisodesFromDoc(app.get(it).document, "TM") } ?: emptyList()
+                dubWatchUrl?.let { getEpisodesFromDoc(app.get(it).document) } ?: emptyList()
             }
             val subEpisodesDeferred = async {
-                subWatchUrl?.let { getEpisodesFromDoc(app.get(it).document, "VS") } ?: emptyList()
+                subWatchUrl?.let { getEpisodesFromDoc(app.get(it).document) } ?: emptyList()
             }
 
             val dubEpisodes = dubEpisodesDeferred.await()
             val subEpisodes = subEpisodesDeferred.await()
 
             episodes = if (subEpisodes.size > dubEpisodes.size) subEpisodes else dubEpisodes
+        }
+
+        if (episodes.isEmpty()) {
+            // Sửa: Trả về TvType.Cartoon cho phim lẻ
+            return newMovieLoadResponse(title, url, TvType.Cartoon, dubWatchUrl ?: subWatchUrl ?: url) {
+                this.posterUrl = poster
+                this.year = year
+                this.plot = plot
+                this.tags = tags
+            }
         }
 
         return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
@@ -113,7 +147,6 @@ class Yanhh3dProvider : MainAPI() {
             val script = document.select("script")
                 .find { it.data().contains("var \$fb =") }?.data() ?: return
 
-            // FBO extractor
             try {
                 val fboJsonRegex = Regex("""source_fbo: (\[.*?\])""")
                 val fboMatch = fboJsonRegex.find(script)
@@ -136,7 +169,6 @@ class Yanhh3dProvider : MainAPI() {
                 }
             } catch (_: Exception) {}
 
-            // Iframe links extractor
             val linkRegex = Regex("""checkLink(\d+)\s*=\s*["'](.*?)["']""")
             val serverRegex = Regex("""id="sv_LINK(\d+)"\s*name="LINK\d+">(.*?)<""")
 
@@ -157,7 +189,6 @@ class Yanhh3dProvider : MainAPI() {
                     }
                     
                     if(tempLink != null){
-                        // Sửa lỗi: Đảm bảo URL là tuyệt đối trước khi callback
                         val absoluteLink = fixUrl(tempLink)
                         callback(
                             newExtractorLink(
@@ -172,9 +203,7 @@ class Yanhh3dProvider : MainAPI() {
                     }
                 }
             }
-        } catch (_: Exception) {
-            // Fails silently
-        }
+        } catch (_: Exception) {}
     }
 
     override suspend fun loadLinks(
@@ -183,8 +212,12 @@ class Yanhh3dProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val path = URI(data).path.removePrefix("/sever2")
-
+        val path = if (data.startsWith(mainUrl)) {
+            URI(data).path.removePrefix("/sever2")
+        } else {
+            return false
+        }
+        
         val dubUrl = "$mainUrl$path"
         val subUrl = "$mainUrl/sever2$path"
 
