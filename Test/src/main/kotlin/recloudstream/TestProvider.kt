@@ -56,7 +56,7 @@ class Yanhh3dProvider : MainAPI() {
         val document = app.get(searchUrl).document
         return document.select("div.film_list-wrap div.flw-item").mapNotNull { it.toSearchResult() }
     }
-    
+
     private fun getEpisodeData(doc: Document?, type: String): List<Pair<String, String>> {
         val selector = if (type == "TM") "div#top-comment div.ss-list a.ssl-item" else "div#new-comment div.ss-list a.ssl-item"
         return doc?.select(selector)
@@ -80,7 +80,7 @@ class Yanhh3dProvider : MainAPI() {
 
         val dubWatchUrl = fixUrlNull(document.selectFirst("a.btn-play")?.attr("href"))
         val subWatchUrl = fixUrlNull(document.selectFirst("a.custom-button-sub")?.attr("href"))
-        
+
         val episodes = coroutineScope {
             val dubDataDeferred = async { dubWatchUrl?.let { getEpisodeData(app.get(it).document, "TM") } ?: emptyList() }
             val subDataDeferred = async { subWatchUrl?.let { getEpisodeData(app.get(it).document, "VS") } ?: emptyList() }
@@ -123,57 +123,62 @@ class Yanhh3dProvider : MainAPI() {
     ) {
         try {
             val document = app.get(url, timeout = 10L).document
-            val script = document.select("script").find { it.data().contains("var \$fb") }?.data() ?: return
+            // Sửa: Tìm script một cách linh hoạt hơn
+            val script = document.select("script").find {
+                val data = it.data()
+                data.contains("checkLink") || data.contains("checkFbo")
+            }?.data() ?: return
 
-            document.select("a.btn3dsv").apmap { btn ->
-                val serverName = btn.text()
-                val idKey = btn.attr("name")
+            // Lấy map của tất cả các server và tên của chúng
+            val servers = document.select("a.btn3dsv").associate {
+                it.attr("name").uppercase() to it.text()
+            }
 
-                if (serverName.contains("Link10", true)) return@apmap
+            // Regex tổng quát để tìm tất cả các biến $check...
+            val linkRegex = Regex("""var\s*\${'$'}check(\w+)\s*=\s*['"](.*?)['"];""")
 
-                val linkRegex = Regex("""var\s*\${'$'}check$idKey\s*=\s*['"](.*?)['"];""")
-                val link = linkRegex.find(script)?.groupValues?.get(1)
-                if (link.isNullOrBlank()) return@apmap
+            linkRegex.findAll(script).forEach { match ->
+                val id = match.groupValues[1].uppercase()
+                var link = match.groupValues[2]
 
-                val finalName = "$prefix - $serverName"
-                
-                // Sửa lỗi: Thay thế loadExtractor bằng newExtractorLink
-                if (idKey.equals("LINK1", true) && link.startsWith("/play-fb-v7/")) {
-                    try {
-                        val nestedDoc = app.get(fixUrl(link)).document
-                        val fboRegex = Regex("""var cccc = "(.*?)"""")
-                        fboRegex.find(nestedDoc.html())?.groupValues?.get(1)?.let { fboUrl ->
-                            callback(newExtractorLink(this.name, finalName, fboUrl) {
-                                this.referer = mainUrl
+                // Lấy tên server từ map, nếu không có nút hoặc là Link10 thì bỏ qua
+                val serverName = servers[id]
+                if (serverName.isNullOrBlank() || serverName.contains("Link10")) return@forEach
+
+                if (link.isNotBlank()) {
+                    val finalName = "$prefix - $serverName"
+
+                    if (link.contains("short.icu")) {
+                        link = app.get(link, allowRedirects = false).headers["location"] ?: return@forEach
+                    }
+
+                    when {
+                        // Server HD là trang trung gian
+                        serverName.equals("HD", true) -> {
+                            try {
+                                val nestedDoc = app.get(fixUrl(link)).document
+                                val fboRegex = Regex("""var cccc = "(.*?)"""")
+                                fboRegex.find(nestedDoc.html())?.groupValues?.get(1)?.let { fboUrl ->
+                                    if (fboUrl.isNotBlank()) {
+                                        callback(newExtractorLink(this.name, finalName, fboUrl))
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                            }
+                        }
+                        // Server Abyss CDN
+                        link.contains("abyss-cdn.ink") -> {
+                            callback(newExtractorLink(this.name, finalName, "$link/master.m3u8") {
+                                isM3u8 = true
                             })
                         }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
-                } else {
-                    val tempLink = if (link.contains("short.icu")) {
-                        app.get(link, allowRedirects = false).headers["location"]
-                    } else {
-                        link
-                    }
-                    if (tempLink != null) {
-                        callback(newExtractorLink(this.name, finalName, fixUrl(tempLink)) {
-                            this.referer = mainUrl
-                        })
+                        // Server FBO và HYD là link trực tiếp
+                        else -> {
+                            callback(newExtractorLink(this.name, finalName, link))
+                        }
                     }
                 }
-            }
-            
-            // Xử lý HYD riêng vì có thể không có nút bấm
-            try {
-                val hydRegex = Regex("""var\s*\${'$'}checkHYD\s*=\s*['"](.*?)['"];""")
-                hydRegex.find(script)?.groupValues?.get(1)?.let { hydLink ->
-                    if(hydLink.isNotBlank()) callback(newExtractorLink(this.name, "$prefix - HYD", hydLink){
-                        this.referer = mainUrl
-                    })
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -192,7 +197,6 @@ class Yanhh3dProvider : MainAPI() {
         val subUrl = "$mainUrl/sever2$path"
 
         coroutineScope {
-            // Sửa: Bỏ subtitleCallback vì không còn dùng đến
             launch { extractLinksFromPage(dubUrl, "TM", callback) }
             launch { extractLinksFromPage(subUrl, "VS", callback) }
         }
