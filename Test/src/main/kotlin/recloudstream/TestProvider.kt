@@ -119,46 +119,61 @@ class Yanhh3dProvider : MainAPI() {
     private suspend fun extractLinksFromPage(
         url: String,
         prefix: String,
-        subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
         try {
             val document = app.get(url, timeout = 10L).document
             val script = document.select("script").find { it.data().contains("var \$fb") }?.data() ?: return
 
-            val servers = document.select("a.btn3dsv").associate {
-                it.attr("name").uppercase() to it.text()
-            }
+            document.select("a.btn3dsv").apmap { btn ->
+                val serverName = btn.text()
+                val idKey = btn.attr("name")
 
-            val linkRegex = Regex("""var\s*\${'$'}check(\w+)\s*=\s*['"](.*?)['"];""")
+                if (serverName.contains("Link10", true)) return@apmap
 
-            linkRegex.findAll(script).forEach { match ->
-                val id = match.groupValues[1].uppercase()
-                val link = match.groupValues[2]
+                val linkRegex = Regex("""var\s*\${'$'}check$idKey\s*=\s*['"](.*?)['"];""")
+                val link = linkRegex.find(script)?.groupValues?.get(1)
+                if (link.isNullOrBlank()) return@apmap
 
-                val serverName = servers[id]
-                if (serverName.isNullOrBlank() || serverName.contains("Link10")) return@forEach
-
-                if (link.isNotBlank()) {
-                    val finalName = "$prefix - $serverName"
-                    if (id == "LINK1" && link.startsWith("/play-fb-v7/")) {
-                        try {
-                            val nestedDoc = app.get(fixUrl(link)).document
-                            val fboRegex = Regex("""var cccc = "(.*?)"""")
-                            fboRegex.find(nestedDoc.html())?.groupValues?.get(1)?.let { fboUrl ->
-                                callback(newExtractorLink(this.name, finalName, fboUrl) {
-                                    this.referer = mainUrl
-                                })
-                            }
-                        } catch (e: Exception) {
-                            e.printStackTrace()
+                val finalName = "$prefix - $serverName"
+                
+                // Sửa lỗi: Thay thế loadExtractor bằng newExtractorLink
+                if (idKey.equals("LINK1", true) && link.startsWith("/play-fb-v7/")) {
+                    try {
+                        val nestedDoc = app.get(fixUrl(link)).document
+                        val fboRegex = Regex("""var cccc = "(.*?)"""")
+                        fboRegex.find(nestedDoc.html())?.groupValues?.get(1)?.let { fboUrl ->
+                            callback(newExtractorLink(this.name, finalName, fboUrl) {
+                                this.referer = mainUrl
+                            })
                         }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                } else {
+                    val tempLink = if (link.contains("short.icu")) {
+                        app.get(link, allowRedirects = false).headers["location"]
                     } else {
-                        loadExtractor(fixUrl(link), mainUrl, subtitleCallback, callback) {
-                            this.name = finalName
-                        }
+                        link
+                    }
+                    if (tempLink != null) {
+                        callback(newExtractorLink(this.name, finalName, fixUrl(tempLink)) {
+                            this.referer = mainUrl
+                        })
                     }
                 }
+            }
+            
+            // Xử lý HYD riêng vì có thể không có nút bấm
+            try {
+                val hydRegex = Regex("""var\s*\${'$'}checkHYD\s*=\s*['"](.*?)['"];""")
+                hydRegex.find(script)?.groupValues?.get(1)?.let { hydLink ->
+                    if(hydLink.isNotBlank()) callback(newExtractorLink(this.name, "$prefix - HYD", hydLink){
+                        this.referer = mainUrl
+                    })
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -177,8 +192,9 @@ class Yanhh3dProvider : MainAPI() {
         val subUrl = "$mainUrl/sever2$path"
 
         coroutineScope {
-            launch { extractLinksFromPage(dubUrl, "TM", subtitleCallback, callback) }
-            launch { extractLinksFromPage(subUrl, "VS", subtitleCallback, callback) }
+            // Sửa: Bỏ subtitleCallback vì không còn dùng đến
+            launch { extractLinksFromPage(dubUrl, "TM", callback) }
+            launch { extractLinksFromPage(subUrl, "VS", callback) }
         }
         return true
     }
