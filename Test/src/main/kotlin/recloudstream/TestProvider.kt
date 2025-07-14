@@ -133,7 +133,7 @@ class Yanhh3dProvider : MainAPI() {
                 val fboMatch = fboRegex.find(script)
                 fboMatch?.groupValues?.get(1)?.let { fileUrl ->
                     callback.invoke(
-                        newExtractorLink(this.name, "$prefix - FBO (HD+)", fileUrl, type = ExtractorLinkType.VIDEO) {
+                        newExtractorLink(this.name, fileUrl, "https://example.com", type = ExtractorLinkType.VIDEO) {
                             this.referer = mainUrl; this.quality = Qualities.P1080.value
                         }
                     )
