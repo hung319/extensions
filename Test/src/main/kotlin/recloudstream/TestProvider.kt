@@ -61,7 +61,6 @@ class Yanhh3dProvider : MainAPI() {
         return document.select("div.film_list-wrap div.flw-item").mapNotNull { it.toSearchResult() }
     }
     
-    // Sửa: Thêm tham số `type` để lấy đúng danh sách tập
     private fun getEpisodeData(doc: Document?, type: String): List<Pair<String, String>> {
         val selector = if (type == "TM") "div#top-comment div.ss-list a.ssl-item" else "div#new-comment div.ss-list a.ssl-item"
         return doc?.select(selector)
@@ -87,7 +86,6 @@ class Yanhh3dProvider : MainAPI() {
         val subWatchUrl = fixUrlNull(document.selectFirst("a.custom-button-sub")?.attr("href"))
         
         val episodes = coroutineScope {
-            // Sửa: Truyền đúng `type` vào hàm getEpisodeData
             val dubDataDeferred = async { dubWatchUrl?.let { getEpisodeData(app.get(it).document, "TM") } ?: emptyList() }
             val subDataDeferred = async { subWatchUrl?.let { getEpisodeData(app.get(it).document, "VS") } ?: emptyList() }
 
@@ -127,21 +125,40 @@ class Yanhh3dProvider : MainAPI() {
             val document = app.get(url, timeout = 10L).document
             val script = document.select("script").find { it.data().contains("var \$fb =") }?.data() ?: return
 
+            // === Lấy link FBO (HD+) ===
+            // Cách 1: Từ biến $checkFbo
             try {
-                // Sửa: Dùng Regex trực tiếp để lấy link FBO, ổn định hơn parseJson
-                val fboRegex = Regex("""source_fbo:\s*\[\{"file":"(.*?)"\}\]""")
-                val fboMatch = fboRegex.find(script)
-                fboMatch?.groupValues?.get(1)?.let { fileUrl ->
-                    callback.invoke(
-                        newExtractorLink(this.name, fileUrl, "https://example.com", type = ExtractorLinkType.VIDEO) {
-                            this.referer = mainUrl; this.quality = Qualities.P1080.value
-                        }
-                    )
+                val checkFboRegex = Regex("""var\s*\${'$'}checkFbo\s*=\s*['"](.*?)['"]""")
+                checkFboRegex.find(script)?.groupValues?.get(1)?.let { fileUrl ->
+                    if (fileUrl.isNotBlank()) {
+                        callback.invoke(
+                            newExtractorLink(this.name, "$prefix - FBO (HD+)", fileUrl, type = ExtractorLinkType.VIDEO) {
+                                this.referer = mainUrl
+                            }
+                        )
+                    }
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
             }
 
+            // Cách 2: Từ object source_fbo
+            try {
+                val fboRegex = Regex("""source_fbo:\s*\[\{"file":"(.*?)"\}\]""")
+                fboRegex.find(script)?.groupValues?.get(1)?.let { fileUrl ->
+                    if (fileUrl.isNotBlank()) {
+                        callback.invoke(
+                            newExtractorLink(this.name, "$prefix - FBO (HD+)", fileUrl, type = ExtractorLinkType.VIDEO) {
+                                this.referer = mainUrl
+                            }
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+
+            // === Lấy các server còn lại ===
             val linkRegex = Regex("""checkLink(\d+)\s*=\s*["'](.*?)["']""")
             val serverRegex = Regex("""id="sv_LINK(\d+)"\s*name="LINK\d+">(.*?)<""")
             val servers = serverRegex.findAll(document.html()).associate { it.groupValues[1] to it.groupValues[2] }
