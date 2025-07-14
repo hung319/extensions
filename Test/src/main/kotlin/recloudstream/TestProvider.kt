@@ -119,7 +119,7 @@ class Yanhh3dProvider : MainAPI() {
                             source = this.name,
                             name = "FBO (HD+)",
                             url = fileUrl,
-                            type = ExtractorLinkType.VIDEO // Sửa lại thành VIDEO
+                            type = ExtractorLinkType.VIDEO
                         ) {
                             this.referer = mainUrl
                             this.quality = Qualities.P1080.value
@@ -143,6 +143,7 @@ class Yanhh3dProvider : MainAPI() {
 
         linkRegex.findAll(script).forEach { match ->
             val (id, link) = match.destructured
+            // Sửa lỗi: Đảm bảo sử dụng biến `link`
             if (link.isNotBlank()) {
                 val serverName = servers[id] ?: "Server $id"
                  if(link.contains("short.icu")) { // Handle short link
