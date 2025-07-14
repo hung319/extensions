@@ -18,32 +18,34 @@ class HHKungfuProvider : MainAPI() {
         TvType.Cartoon
     )
 
-    override val mainPage = mainPageOf(
-        "moi-cap-nhat/page/" to "Mới cập nhật",
-        "top-xem-nhieu/page/" to "Top Xem Nhiều",
-        "hoan-thanh/page/" to "Hoàn Thành",
-    )
-
-    override suspend fun mainPageLoad(
+    // Sửa lỗi #1: Quay lại sử dụng `getMainPage` để tương thích
+    override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        val url = "$mainUrl/${request.data}$page"
-        val document = app.get(url).document
-
-        val home = document.select("div.halim_box article.thumb").mapNotNull {
-            it.toSearchResponse()
-        }
+        val homePageList = mutableListOf<HomePageList>()
         
-        val hasNext = document.selectFirst("a.next.page-numbers") != null
+        // Cấu trúc lại trang chính để tải đồng thời nhiều mục
+        // Sử dụng apmap để tải song song, tăng tốc độ
+        listOf(
+            "moi-cap-nhat/page/" to "Mới cập nhật",
+            "top-xem-nhieu/page/" to "Top Xem Nhiều",
+            "hoan-thanh/page/" to "Hoàn Thành",
+        ).apmap { (path, name) ->
+            try {
+                val doc = app.get("$mainUrl/$path$page").document
+                val movies = doc.select("div.halim_box article.thumb").mapNotNull { element ->
+                    element.toSearchResponse()
+                }
+                if (movies.isNotEmpty()) {
+                    homePageList.add(HomePageList(name, movies))
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
 
-        return newHomePageResponse(
-            list = HomePageList(
-                name = request.name,
-                list = home
-            ),
-            hasNext = hasNext
-        )
+        return HomePageResponse(homePageList)
     }
 
     private fun Element.toSearchResponse(): SearchResponse? {
@@ -119,7 +121,8 @@ class HHKungfuProvider : MainAPI() {
                 this.name = "Tập $epKey $serverTags"
                 this.data = representativeUrl
             }
-        }.sortedByDescending { it.name.substringAfter("Tập ").substringBefore(" ").toIntOrNull() }
+        // Sửa lỗi #2: Thêm `?: 0` để xử lý trường hợp tên tập không có số
+        }.sortedByDescending { it.name.substringAfter("Tập ").substringBefore(" ").toIntOrNull() ?: 0 }
 
         val recommendations = document.select("section#halim-related-movies article.thumb").mapNotNull {
             it.toSearchResponse()
@@ -147,14 +150,13 @@ class HHKungfuProvider : MainAPI() {
         val sv = activeEpisode.attr("data-sv")
         val serverButtons = watchPageDoc.select("#halim-ajax-list-server .get-eps")
 
-        // Xác định tiền tố TM hoặc VS dựa trên server `sv`
         val langPrefix = if (sv == "2") "TM " else "VS "
 
         var foundLinks = false
         serverButtons.apmap { button ->
             try {
                 val type = button.attr("data-type")
-                val serverName = button.text() // Ví dụ: "VIP 1"
+                val serverName = button.text()
                 val playerAjaxUrl = "$mainUrl/player/player.php"
                 val ajaxResponse = app.get(
                     playerAjaxUrl,
@@ -182,7 +184,6 @@ class HHKungfuProvider : MainAPI() {
                     callback.invoke(
                         ExtractorLink(
                             source = this.name,
-                            // Thêm tiền tố vào tên server
                             name = "$langPrefix$serverName", 
                             url = fullM3u8Url,
                             referer = iframeSrc,
