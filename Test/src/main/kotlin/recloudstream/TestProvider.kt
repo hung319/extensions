@@ -18,24 +18,37 @@ class HHKungfuProvider : MainAPI() {
         TvType.Cartoon
     )
 
-    // Đã loại bỏ "Trang chủ" khỏi danh sách này
+    // Bước 1: Định nghĩa các mục ở trang chính bằng `mainPage`
     override val mainPage = mainPageOf(
-        "$mainUrl/moi-cap-nhat/page/" to "Mới cập nhật",
-        "$mainUrl/top-xem-nhieu/page/" to "Top Xem Nhiều",
-        "$mainUrl/hoan-thanh/page/" to "Hoàn Thành",
+        "moi-cap-nhat/page/" to "Mới cập nhật",
+        "top-xem-nhieu/page/" to "Top Xem Nhiều",
+        "hoan-thanh/page/" to "Hoàn Thành",
     )
 
-    override suspend fun mainPageLoad(
+    // Bước 2: Dùng `getMainPage` để xử lý logic cho các mục trên
+    override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        val url = request.data + page
+        // request.data sẽ chứa đường dẫn từ mainPage (ví dụ: "moi-cap-nhat/page/")
+        val url = "$mainUrl/${request.data}$page"
         val document = app.get(url).document
 
         val home = document.select("div.halim_box article.thumb").mapNotNull {
             it.toSearchResponse()
         }
-        return newHomePageResponse(request.name, home)
+        
+        // Kiểm tra xem có trang tiếp theo không
+        val hasNext = document.selectFirst("a.next.page-numbers") != null
+
+        // Trả về kết quả cho CloudStream
+        return newHomePageResponse(
+            list = HomePageList(
+                name = request.name, // Tên của mục (ví dụ: "Mới cập nhật")
+                list = home
+            ),
+            hasNext = hasNext
+        )
     }
 
     private fun Element.toSearchResponse(): SearchResponse? {
@@ -104,7 +117,7 @@ class HHKungfuProvider : MainAPI() {
         }
 
         return newTvSeriesLoadResponse(title, url, TvType.Cartoon, episodes.reversed()) {
-            this.posterUrl = poster
+            this.posterUrl = poster ?: ""
             this.plot = plot
             this.tags = tags
             this.recommendations = recommendations
