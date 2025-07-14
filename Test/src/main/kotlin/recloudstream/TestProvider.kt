@@ -125,19 +125,14 @@ class Yanhh3dProvider : MainAPI() {
             val document = app.get(url, timeout = 10L).document
             val script = document.select("script").find { it.data().contains("var \$fb =") }?.data() ?: return
 
-            // Sửa: Logic lấy FBO (HD+) mới, tối ưu và ổn định hơn
             var fboUrl: String? = null
             try {
-                // Ưu tiên lấy từ biến $checkFbo trước
                 val checkFboRegex = Regex("""var\s*\${'$'}checkFbo\s*=\s*['"](.*?)['"]""")
                 fboUrl = checkFboRegex.find(script)?.groupValues?.get(1)
-
-                // Nếu không có, thử lấy từ object source_fbo
                 if (fboUrl.isNullOrBlank()) {
                     val fboRegex = Regex("""source_fbo:\s*\[\{"file":"(.*?)"\}\]""")
                     fboUrl = fboRegex.find(script)?.groupValues?.get(1)
                 }
-
                 if (!fboUrl.isNullOrBlank()) {
                     callback.invoke(
                         newExtractorLink(this.name, "$prefix - FBO (HD+)", fboUrl, type = ExtractorLinkType.VIDEO) {
@@ -149,15 +144,16 @@ class Yanhh3dProvider : MainAPI() {
                 e.printStackTrace()
             }
 
-            // Lấy các server còn lại
-            val linkRegex = Regex("""checkLink(\d+)\s*=\s*["'](.*?)["']""")
-            val serverRegex = Regex("""id="sv_LINK(\d+)"\s*name="LINK\d+">(.*?)<""")
-            val servers = serverRegex.findAll(document.html()).associate { it.groupValues[1] to it.groupValues[2] }
+            // Sửa: Regex linh hoạt hơn để lấy đúng tên tất cả các server
+            val linkRegex = Regex("""var\s*\${'$'}check(Link\w*)\s*=\s*["'](.*?)["']""")
+            val servers = document.select("a.btn3dsv").associate {
+                it.attr("name") to it.text()
+            }
 
             linkRegex.findAll(script).forEach { match ->
                 val (id, link) = match.destructured
                 if (link.isNotBlank()) {
-                    val serverName = servers[id] ?: "Server $id"
+                    val serverName = servers[id] ?: id // Lấy tên từ map, nếu không có thì dùng id (Link9, Link10...)
                     val finalName = "$prefix - $serverName"
                     val tempLink = if (link.contains("short.icu")) {
                         app.get(link, allowRedirects = false).headers["location"]
