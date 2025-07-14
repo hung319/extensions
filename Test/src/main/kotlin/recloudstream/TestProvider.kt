@@ -1,11 +1,7 @@
 package recloudstream
 
-import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.SearchQuality
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
@@ -61,7 +57,6 @@ class Yanhh3dProvider : MainAPI() {
         return document.select("div.film_list-wrap div.flw-item").mapNotNull { it.toSearchResult() }
     }
     
-    // Sửa: Thêm tham số `type` để lấy đúng danh sách tập
     private fun getEpisodeData(doc: Document?, type: String): List<Pair<String, String>> {
         val selector = if (type == "TM") "div#top-comment div.ss-list a.ssl-item" else "div#new-comment div.ss-list a.ssl-item"
         return doc?.select(selector)
@@ -87,7 +82,6 @@ class Yanhh3dProvider : MainAPI() {
         val subWatchUrl = fixUrlNull(document.selectFirst("a.custom-button-sub")?.attr("href"))
         
         val episodes = coroutineScope {
-            // Sửa: Truyền đúng `type` vào hàm getEpisodeData
             val dubDataDeferred = async { dubWatchUrl?.let { getEpisodeData(app.get(it).document, "TM") } ?: emptyList() }
             val subDataDeferred = async { subWatchUrl?.let { getEpisodeData(app.get(it).document, "VS") } ?: emptyList() }
 
@@ -122,47 +116,59 @@ class Yanhh3dProvider : MainAPI() {
         }
     }
 
-    private suspend fun extractLinksFromPage(url: String, prefix: String, callback: (ExtractorLink) -> Unit) {
+    private suspend fun extractLinksFromPage(
+        url: String,
+        prefix: String,
+        callback: (ExtractorLink) -> Unit
+    ) {
         try {
             val document = app.get(url, timeout = 10L).document
-            val script = document.select("script").find { it.data().contains("var \$fb =") }?.data() ?: return
+            val script = document.select("script").find { it.data().contains("var \$fb") }?.data() ?: return
 
-            try {
-                // Sửa: Dùng Regex trực tiếp để lấy link FBO, ổn định hơn parseJson
-                val fboRegex = Regex("""source_fbo:\s*\[\{"file":"(.*?)"\}\]""")
-                val fboMatch = fboRegex.find(script)
-                fboMatch?.groupValues?.get(1)?.let { fileUrl ->
-                    callback.invoke(
-                        newExtractorLink(this.name, "$prefix - FBO (HD+)", fileUrl, type = ExtractorLinkType.VIDEO) {
-                            this.referer = mainUrl; this.quality = Qualities.P1080.value
-                        }
-                    )
+            // Lặp qua từng nút server trên trang
+            document.select("a.btn3dsv").apmap { btn ->
+                val serverName = btn.text()
+                val idKey = btn.attr("name")
+
+                // Bỏ qua các server không mong muốn
+                if (serverName.contains("Link10", true) || serverName.equals("2K", true)) {
+                    return@apmap
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
 
-            val linkRegex = Regex("""checkLink(\d+)\s*=\s*["'](.*?)["']""")
-            val serverRegex = Regex("""id="sv_LINK(\d+)"\s*name="LINK\d+">(.*?)<""")
-            val servers = serverRegex.findAll(document.html()).associate { it.groupValues[1] to it.groupValues[2] }
+                val linkRegex = Regex("""var\s*\${'$'}check$idKey\s*=\s*['"](.*?)['"];""")
+                val link = linkRegex.find(script)?.groupValues?.get(1)
+                if (link.isNullOrBlank()) return@apmap
 
-            linkRegex.findAll(script).forEach { match ->
-                val (id, link) = match.destructured
-                if (link.isNotBlank()) {
-                    val serverName = servers[id] ?: "Server $id"
-                    val finalName = "$prefix - $serverName"
-                    val tempLink = if (link.contains("short.icu")) {
-                        app.get(link, allowRedirects = false).headers["location"]
-                    } else {
-                        link
+                val finalName = "$prefix - $serverName"
+
+                when {
+                    // HD+ và HYD là link video trực tiếp
+                    idKey.equals("FBO", true) || idKey.equals("HYD", true) -> {
+                        callback(newExtractorLink(this.name, finalName, link) {
+                            this.referer = mainUrl
+                        })
                     }
-                    if (tempLink != null) {
-                        val absoluteLink = fixUrl(tempLink)
-                        callback(
-                            newExtractorLink(this.name, finalName, absoluteLink, type = ExtractorLinkType.VIDEO) {
-                                this.referer = mainUrl
+                    // Server HD là trang trung gian chứa link FBO
+                    serverName.equals("HD", true) && link.startsWith("/play-fb-v7/") -> {
+                        try {
+                            val nestedDoc = app.get(fixUrl(link)).document
+                            val fboRegex = Regex("""var cccc = "(.*?)"""")
+                            fboRegex.find(nestedDoc.html())?.groupValues?.get(1)?.let { fboUrl ->
+                                callback(newExtractorLink(this.name, finalName, fboUrl) {
+                                    this.referer = mainUrl
+                                })
                             }
-                        )
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        }
+                    }
+                    // Các server 1080, 4K là của Abyss CDN, cần thêm /master.m3u8
+                    link.contains("abyss-cdn.ink") -> {
+                        val m3u8Url = "$link/master.m3u8"
+                        callback(newExtractorLink(this.name, finalName, m3u8Url) {
+                            this.referer = mainUrl
+                            this.isM3u8 = true
+                        })
                     }
                 }
             }
@@ -189,6 +195,4 @@ class Yanhh3dProvider : MainAPI() {
 
         return true
     }
-
-    data class FboSource(@JsonProperty("file") val file: String?)
 }
