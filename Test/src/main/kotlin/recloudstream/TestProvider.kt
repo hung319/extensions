@@ -9,7 +9,6 @@ import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
 import java.net.URI
 
-// Lớp "Công nhân" - Kế thừa từ MainAPI và chứa toàn bộ logic
 class HHKungfuProvider : MainAPI() {
     override var name = "HHKungfu"
     override var mainUrl = "https://hhkungfu.ee"
@@ -27,7 +26,8 @@ class HHKungfuProvider : MainAPI() {
         val episode = this.selectFirst("span.episode")?.text()
 
         return newTvSeriesSearchResponse(title, href, TvType.Cartoon) {
-            this.posterUrl = posterUrl
+            // SỬA LỖI Ở ĐÂY: Thêm toán tử Elvis `?: ""` để xử lý trường hợp null
+            this.posterUrl = posterUrl ?: ""
             addQuality(episode)
         }
     }
