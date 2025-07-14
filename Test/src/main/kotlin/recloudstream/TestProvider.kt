@@ -119,6 +119,7 @@ class Yanhh3dProvider : MainAPI() {
     private suspend fun extractLinksFromPage(
         url: String,
         prefix: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
         try {
@@ -138,7 +139,7 @@ class Yanhh3dProvider : MainAPI() {
                 try {
                     val id = match.groupValues[1].uppercase()
                     var link = match.groupValues[2]
-
+                    
                     val serverName = servers[id]
                     val ignoredIds = setOf("LINK1", "LINK10", "HYD", "NC")
                     if (serverName.isNullOrBlank() || id in ignoredIds) return@forEach
@@ -149,18 +150,16 @@ class Yanhh3dProvider : MainAPI() {
                         if (link.contains("short.icu")) {
                             link = app.get(link, allowRedirects = false).headers["location"] ?: return@forEach
                         }
-
                         val finalUrl = fixUrl(link)
-                        // "Ping" link trước khi thêm
+
+                        // Ping link trước khi thêm
                         if (app.head(finalUrl).isSuccessful) {
-                            if (finalUrl.contains("abyss-cdn.ink")) {
-                                callback(newExtractorLink(this.name, finalName, "$finalUrl/master.m3u8", type = ExtractorLinkType.M3U8) {
-                                    referer = mainUrl
-                                })
+                            if (serverName.equals("2K", true)) {
+                                loadExtractor(finalUrl, mainUrl, subtitleCallback, callback)
+                            } else if (finalUrl.contains("abyss-cdn.ink")) {
+                                callback(newExtractorLink(this.name, finalName, "$finalUrl/master.m3u8", type = ExtractorLinkType.M3U8))
                             } else {
-                                callback(newExtractorLink(this.name, finalName, finalUrl) {
-                                    referer = mainUrl
-                                })
+                                callback(newExtractorLink(this.name, finalName, finalUrl))
                             }
                         }
                     }
@@ -185,8 +184,8 @@ class Yanhh3dProvider : MainAPI() {
         val subUrl = "$mainUrl/sever2$path"
 
         coroutineScope {
-            launch { extractLinksFromPage(dubUrl, "TM", callback) }
-            launch { extractLinksFromPage(subUrl, "VS", callback) }
+            launch { extractLinksFromPage(dubUrl, "TM", subtitleCallback, callback) }
+            launch { extractLinksFromPage(subUrl, "VS", subtitleCallback, callback) }
         }
         return true
     }
