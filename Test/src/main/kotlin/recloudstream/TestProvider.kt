@@ -61,8 +61,10 @@ class Yanhh3dProvider : MainAPI() {
         return document.select("div.film_list-wrap div.flw-item").mapNotNull { it.toSearchResult() }
     }
     
-    private fun getEpisodeData(doc: Document?): List<Pair<String, String>> {
-        return doc?.select("div.ss-list a.ssl-item")
+    // Sửa: Thêm tham số `type` để lấy đúng danh sách tập
+    private fun getEpisodeData(doc: Document?, type: String): List<Pair<String, String>> {
+        val selector = if (type == "TM") "div#top-comment div.ss-list a.ssl-item" else "div#new-comment div.ss-list a.ssl-item"
+        return doc?.select(selector)
             ?.mapNotNull {
                 val epUrl = it.attr("href")
                 val orderText = it.selectFirst(".ssli-order")?.text()?.trim()
@@ -71,10 +73,7 @@ class Yanhh3dProvider : MainAPI() {
             } ?: emptyList()
     }
 
-    private data class MergedEpisodeInfo(
-        var dubUrl: String? = null,
-        var subUrl: String? = null
-    )
+    private data class MergedEpisodeInfo(var dubUrl: String? = null, var subUrl: String? = null)
 
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
@@ -88,20 +87,16 @@ class Yanhh3dProvider : MainAPI() {
         val subWatchUrl = fixUrlNull(document.selectFirst("a.custom-button-sub")?.attr("href"))
         
         val episodes = coroutineScope {
-            val dubDataDeferred = async { dubWatchUrl?.let { getEpisodeData(app.get(it).document) } ?: emptyList() }
-            val subDataDeferred = async { subWatchUrl?.let { getEpisodeData(app.get(it).document) } ?: emptyList() }
+            // Sửa: Truyền đúng `type` vào hàm getEpisodeData
+            val dubDataDeferred = async { dubWatchUrl?.let { getEpisodeData(app.get(it).document, "TM") } ?: emptyList() }
+            val subDataDeferred = async { subWatchUrl?.let { getEpisodeData(app.get(it).document, "VS") } ?: emptyList() }
 
             val dubData = dubDataDeferred.await()
             val subData = subDataDeferred.await()
 
             val mergedMap = mutableMapOf<String, MergedEpisodeInfo>()
-
-            dubData.forEach { (name, epUrl) ->
-                mergedMap.getOrPut(name) { MergedEpisodeInfo() }.dubUrl = epUrl
-            }
-            subData.forEach { (name, epUrl) ->
-                mergedMap.getOrPut(name) { MergedEpisodeInfo() }.subUrl = epUrl
-            }
+            dubData.forEach { (name, epUrl) -> mergedMap.getOrPut(name) { MergedEpisodeInfo() }.dubUrl = epUrl }
+            subData.forEach { (name, epUrl) -> mergedMap.getOrPut(name) { MergedEpisodeInfo() }.subUrl = epUrl }
 
             mergedMap.map { (name, info) ->
                 val tag = when {
@@ -113,7 +108,6 @@ class Yanhh3dProvider : MainAPI() {
                 val episodeName = "Tập $name $tag".trim()
                 val episodeUrl = info.dubUrl ?: info.subUrl!!
                 Episode(episodeUrl, episodeName)
-            // Sửa lỗi: Thêm `?` để xử lý an toàn trường hợp tên tập là null
             }.sortedBy { episode -> episode.name?.let { name -> Regex("""\d+""").find(name)?.value?.toIntOrNull() } }
         }
 
@@ -134,18 +128,15 @@ class Yanhh3dProvider : MainAPI() {
             val script = document.select("script").find { it.data().contains("var \$fb =") }?.data() ?: return
 
             try {
-                val fboJsonRegex = Regex("""source_fbo:\s*(\[.*?\])""")
-                val fboMatch = fboJsonRegex.find(script)
-                if (fboMatch != null) {
-                    val fboJson = fboMatch.destructured.component1()
-                    val fboLinks = parseJson<List<FboSource>>(fboJson)
-                    fboLinks.firstOrNull()?.file?.let { fileUrl ->
-                        callback.invoke(
-                            newExtractorLink(this.name, "$prefix - FBO (HD+)", fileUrl, type = ExtractorLinkType.VIDEO) {
-                                this.referer = mainUrl; this.quality = Qualities.P1080.value
-                            }
-                        )
-                    }
+                // Sửa: Dùng Regex trực tiếp để lấy link FBO, ổn định hơn parseJson
+                val fboRegex = Regex("""source_fbo:\s*\[\{"file":"(.*?)"\}\]""")
+                val fboMatch = fboRegex.find(script)
+                fboMatch?.groupValues?.get(1)?.let { fileUrl ->
+                    callback.invoke(
+                        newExtractorLink(this.name, "$prefix - FBO (HD+)", fileUrl, type = ExtractorLinkType.VIDEO) {
+                            this.referer = mainUrl; this.quality = Qualities.P1080.value
+                        }
+                    )
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
