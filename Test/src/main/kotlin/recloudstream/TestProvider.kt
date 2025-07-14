@@ -35,8 +35,8 @@ class Yanhh3dProvider : MainAPI() {
 
     private fun Element.toSearchResult(): SearchResponse? {
         val title = this.selectFirst("h3.film-name a")?.text()?.trim() ?: return null
-        val href = this.selectFirst("a.film-poster-ahref")?.attr("href") ?: return null
-        val posterUrl = this.selectFirst("img.film-poster-img")?.attr("data-src")
+        val href = fixUrl(this.selectFirst("a.film-poster-ahref")?.attr("href") ?: return null)
+        val posterUrl = fixUrlNull(this.selectFirst("img.film-poster-img")?.attr("data-src"))
         val episodeStr = this.selectFirst("div.tick-rate")?.text()?.trim()
         val episodeNum = episodeStr?.let { Regex("""\d+""").find(it)?.value?.toIntOrNull() }
 
@@ -59,7 +59,8 @@ class Yanhh3dProvider : MainAPI() {
     private fun getEpisodesFromDoc(doc: Document?, type: String): List<Episode> {
         val selector = if (type == "TM") "div#top-comment" else "div#new-comment"
         return doc?.select("$selector div.ss-list a.ssl-item")?.map {
-            val epUrl = it.attr("href")
+            // Sửa lỗi: Đảm bảo URL của tập phim là tuyệt đối
+            val epUrl = fixUrl(it.attr("href"))
             val name = "Tập " + it.selectFirst(".ssli-order")?.text()?.trim() + " ($type)"
             Episode(epUrl, name)
         }?.reversed() ?: emptyList()
@@ -68,14 +69,14 @@ class Yanhh3dProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
         val title = document.selectFirst("h2.film-name")?.text()?.trim() ?: return null
-        val poster = document.selectFirst("div.anisc-poster img")?.attr("src")
-            ?: document.selectFirst("meta[property=og:image]")?.attr("content")
+        val poster = fixUrlNull(document.selectFirst("div.anisc-poster img")?.attr("src")
+            ?: document.selectFirst("meta[property=og:image]")?.attr("content"))
         val plot = document.selectFirst("div.film-description div.text")?.text()?.trim()
         val tags = document.select("div.anisc-info a.genre").map { it.text() }
         val year = document.select("div.anisc-info span.item-head:contains(Năm:) + span.name")?.text()?.toIntOrNull()
 
-        val dubWatchUrl = document.selectFirst("a.btn-play")?.attr("href")
-        val subWatchUrl = document.selectFirst("a.custom-button-sub")?.attr("href")
+        val dubWatchUrl = fixUrlNull(document.selectFirst("a.btn-play")?.attr("href"))
+        val subWatchUrl = fixUrlNull(document.selectFirst("a.custom-button-sub")?.attr("href"))
 
         var episodes: List<Episode> = emptyList()
 
@@ -149,19 +150,20 @@ class Yanhh3dProvider : MainAPI() {
                     val serverName = servers[id] ?: "Server $id"
                     val finalName = "$prefix - $serverName"
 
-                    val finalLink = if (link.contains("short.icu")) {
+                    val tempLink = if (link.contains("short.icu")) {
                         app.get(link, allowRedirects = false).headers["location"]
                     } else {
                         link
                     }
                     
-                    if(finalLink != null){
-                        // Sửa lỗi: Sử dụng đúng cú pháp newExtractorLink với khối khởi tạo
+                    if(tempLink != null){
+                        // Sửa lỗi: Đảm bảo URL là tuyệt đối trước khi callback
+                        val absoluteLink = fixUrl(tempLink)
                         callback(
                             newExtractorLink(
                                 source = this.name,
                                 name = finalName,
-                                url = finalLink,
+                                url = absoluteLink,
                                 type = ExtractorLinkType.VIDEO
                             ) {
                                 this.referer = mainUrl
