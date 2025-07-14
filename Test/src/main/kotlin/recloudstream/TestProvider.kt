@@ -119,21 +119,18 @@ class Yanhh3dProvider : MainAPI() {
     private suspend fun extractLinksFromPage(
         url: String,
         prefix: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
         try {
             val document = app.get(url, timeout = 10L).document
             val script = document.select("script").find { it.data().contains("var \$fb") }?.data() ?: return
 
-            // Lặp qua từng nút server trên trang
             document.select("a.btn3dsv").apmap { btn ->
                 val serverName = btn.text()
                 val idKey = btn.attr("name")
 
-                // Bỏ qua các server không mong muốn
-                if (serverName.contains("Link10", true) || serverName.equals("2K", true)) {
-                    return@apmap
-                }
+                if (serverName.contains("Link10", true)) return@apmap
 
                 val linkRegex = Regex("""var\s*\${'$'}check$idKey\s*=\s*['"](.*?)['"];""")
                 val link = linkRegex.find(script)?.groupValues?.get(1)
@@ -141,34 +138,18 @@ class Yanhh3dProvider : MainAPI() {
 
                 val finalName = "$prefix - $serverName"
 
+                // Phân loại và xử lý server
                 when {
-                    // HD+ và HYD là link video trực tiếp
                     idKey.equals("FBO", true) || idKey.equals("HYD", true) -> {
-                        callback(newExtractorLink(this.name, finalName, link) {
+                        callback(newExtractorLink(this.name, finalName, link, type = ExtractorLinkType.VIDEO) {
                             this.referer = mainUrl
                         })
                     }
-                    // Server HD là trang trung gian chứa link FBO
-                    serverName.equals("HD", true) && link.startsWith("/play-fb-v7/") -> {
-                        try {
-                            val nestedDoc = app.get(fixUrl(link)).document
-                            val fboRegex = Regex("""var cccc = "(.*?)"""")
-                            fboRegex.find(nestedDoc.html())?.groupValues?.get(1)?.let { fboUrl ->
-                                callback(newExtractorLink(this.name, finalName, fboUrl) {
-                                    this.referer = mainUrl
-                                })
-                            }
-                        } catch (e: Exception) {
-                            e.printStackTrace()
+                    else -> {
+                         // Tất cả các server còn lại (1080, HD, 4K, 2K...) đều được coi là iframe
+                        loadExtractor(fixUrl(link), mainUrl, subtitleCallback, callback) {
+                            this.name = finalName
                         }
-                    }
-                    // Các server 1080, 4K là của Abyss CDN, cần thêm /master.m3u8
-                    link.contains("abyss-cdn.ink") -> {
-                        val m3u8Url = "$link/master.m3u8"
-                        callback(newExtractorLink(this.name, finalName, m3u8Url) {
-                            this.referer = mainUrl
-                            this.isM3u8 = true
-                        })
                     }
                 }
             }
@@ -189,10 +170,9 @@ class Yanhh3dProvider : MainAPI() {
         val subUrl = "$mainUrl/sever2$path"
 
         coroutineScope {
-            launch { extractLinksFromPage(dubUrl, "TM", callback) }
-            launch { extractLinksFromPage(subUrl, "VS", callback) }
+            launch { extractLinksFromPage(dubUrl, "TM", subtitleCallback, callback) }
+            launch { extractLinksFromPage(subUrl, "VS", subtitleCallback, callback) }
         }
-
         return true
     }
 }
