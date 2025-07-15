@@ -9,8 +9,6 @@ import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import org.jsoup.nodes.Element
 import java.net.URI
 
@@ -97,8 +95,7 @@ class HHKungfuProvider : MainAPI() {
 
         val episodeMap = mutableMapOf<String, MutableList<EpisodeInfo>>()
         val serverBlocks = document.select(".halim-server")
-        val numberRegex = Regex("""\d+""")
-
+        
         serverBlocks.forEach { server ->
             val serverName = server.selectFirst(".halim-server-name")?.text()
             val serverLabel = when {
@@ -108,25 +105,29 @@ class HHKungfuProvider : MainAPI() {
             }
 
             server.select("ul.halim-list-eps li a").forEach { ep ->
-                val epName = ep.selectFirst("span")?.text() ?: ep.text()
-                val epKey = numberRegex.find(epName)?.value ?: epName 
+                // Lấy tên tập phim gốc từ web, ví dụ: "Tập 1-6"
+                val epName = ep.selectFirst("span")?.text()?.trim() ?: ep.text().trim()
                 val epUrl = ep.attr("href")
                 
-                episodeMap.getOrPut(epKey) { mutableListOf() }.add(EpisodeInfo(epUrl, serverLabel))
+                // Dùng tên gốc này làm key để gộp
+                episodeMap.getOrPut(epName) { mutableListOf() }.add(EpisodeInfo(epUrl, serverLabel))
             }
         }
         
+        val numberRegex = Regex("""\d+""")
         val episodes = episodeMap.entries
-            .mapNotNull { (key, value) ->
-                key.toIntOrNull()?.let { Triple(it, key, value) }
+            .map { (epName, infoList) ->
+                // Lấy số đầu tiên trong tên tập để sắp xếp
+                val sortKey = numberRegex.find(epName)?.value?.toIntOrNull() ?: 0
+                Triple(sortKey, epName, infoList)
             }
-            .sortedBy { it.first }
-            .map { (_, epKey, infoList) ->
+            .sortedBy { it.first } // Sắp xếp theo thứ tự tăng dần
+            .map { (_, epName, infoList) ->
                 val data = infoList.toJson()
                 val serverTags = infoList.joinToString(separator = "+") { it.serverLabel }.let { "($it)" }
                 
                 newEpisode(data) {
-                    this.name = "Tập $epKey $serverTags"
+                    this.name = "$epName $serverTags"
                 }
             }
 
@@ -151,7 +152,6 @@ class HHKungfuProvider : MainAPI() {
         val listType = object : TypeToken<List<EpisodeInfo>>() {}.type
         val infoList = parseJson<List<EpisodeInfo>>(data)
         
-        // Sử dụng coroutineScope để chạy các tác vụ song song một cách an toàn
         coroutineScope {
             infoList.forEach { info ->
                 async {
@@ -213,6 +213,6 @@ class HHKungfuProvider : MainAPI() {
                 }
             }
         }
-        return true // Trả về true vì các tác vụ đã được khởi chạy
+        return true
     }
 }
