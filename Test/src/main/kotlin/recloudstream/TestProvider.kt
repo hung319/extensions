@@ -18,14 +18,12 @@ class HHKungfuProvider : MainAPI() {
         TvType.Cartoon
     )
 
-    // Bước 1: Dùng `mainPageOf` để khai báo các mục trên trang chính
     override val mainPage = mainPageOf(
         "moi-cap-nhat/page/" to "Mới cập nhật",
         "top-xem-nhieu/page/" to "Top Xem Nhiều",
         "hoan-thanh/page/" to "Hoàn Thành",
     )
 
-    // Bước 2: Dùng `getMainPage` để xử lý logic tải và phân trang cho từng mục
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
@@ -113,9 +111,10 @@ class HHKungfuProvider : MainAPI() {
             }
         }
         
+        // Sắp xếp các tập phim theo thứ tự tăng dần
         val episodes = episodeMap.keys
-            .mapNotNull { it.toIntOrNull() }
-            .sortedDescending()
+            .mapNotNull { it.toIntOrNull() } // Lấy số tập
+            .sorted() // Sắp xếp tăng dần
             .mapNotNull { epKey ->
                 val infoList = episodeMap[epKey.toString()] ?: return@mapNotNull null
                 val representativeUrl = infoList.first().url
@@ -126,6 +125,7 @@ class HHKungfuProvider : MainAPI() {
                 }
             }
 
+        // Lấy danh sách phim đề xuất
         val recommendations = document.select("section#halim-related-movies article.thumb").mapNotNull {
             it.toSearchResponse()
         }
@@ -138,17 +138,17 @@ class HHKungfuProvider : MainAPI() {
         }
     }
 
-    // Sửa lỗi #1: Cập nhật lại hoàn toàn hàm `loadLinks`
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Lấy thông tin chung từ trang xem phim, bất kể server là gì
         val watchPageDoc = app.get(data).document
-        val postId = watchPageDoc.selectFirst("main.watch-page")?.attr("data-id") ?: return false
-        val chapterSt = watchPageDoc.selectFirst(".halim-episode.active a")?.attr("data-ep") ?: return false
+
+        val activeEpisode = watchPageDoc.selectFirst(".halim-episode.active a") ?: return false
+        val postId = activeEpisode.attr("data-id")
+        val chapterSt = activeEpisode.attr("data-ep")
         
         var foundLinks = false
 
@@ -156,7 +156,6 @@ class HHKungfuProvider : MainAPI() {
         listOf("1", "2").apmap { sv ->
             val langPrefix = if (sv == "2") "TM " else "VS "
             
-            // Lấy danh sách các nút server (VIP 1, VIP 4K,...)
             val serverButtons = watchPageDoc.select("#halim-ajax-list-server .get-eps")
 
             serverButtons.forEach { button ->
