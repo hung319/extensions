@@ -18,34 +18,34 @@ class HHKungfuProvider : MainAPI() {
         TvType.Cartoon
     )
 
-    // Đã sửa lại, sử dụng `getMainPage` để tương thích và tải các mục
+    // Bước 1: Dùng `mainPageOf` để khai báo các mục trên trang chính
+    override val mainPage = mainPageOf(
+        "moi-cap-nhat/page/" to "Mới cập nhật",
+        "top-xem-nhieu/page/" to "Top Xem Nhiều",
+        "hoan-thanh/page/" to "Hoàn Thành",
+    )
+
+    // Bước 2: Dùng `getMainPage` để xử lý logic tải và phân trang cho từng mục
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        val homePageList = mutableListOf<HomePageList>()
-        
-        val pages = listOf(
-            "moi-cap-nhat/page/" to "Mới cập nhật",
-            "top-xem-nhieu/page/" to "Top Xem Nhiều",
-            "hoan-thanh/page/" to "Hoàn Thành",
-        )
+        val url = "$mainUrl/${request.data}$page"
+        val document = app.get(url).document
 
-        pages.apmap { (path, name) ->
-            try {
-                val doc = app.get("$mainUrl/$path$page").document
-                val movies = doc.select("div.halim_box article.thumb").mapNotNull { element ->
-                    element.toSearchResponse()
-                }
-                if (movies.isNotEmpty()) {
-                    homePageList.add(HomePageList(name, movies))
-                }
-            } catch (e: Exception) {
-                // Bỏ qua lỗi nếu một mục không tải được
-            }
+        val home = document.select("div.halim_box article.thumb").mapNotNull {
+            it.toSearchResponse()
         }
+        
+        val hasNext = document.selectFirst("a.next.page-numbers") != null
 
-        return HomePageResponse(homePageList)
+        return newHomePageResponse(
+            list = HomePageList(
+                name = request.name,
+                list = home
+            ),
+            hasNext = hasNext
+        )
     }
 
     private fun Element.toSearchResponse(): SearchResponse? {
@@ -138,68 +138,72 @@ class HHKungfuProvider : MainAPI() {
         }
     }
 
+    // Sửa lỗi #1: Cập nhật lại hoàn toàn hàm `loadLinks`
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // Lấy thông tin chung từ trang xem phim, bất kể server là gì
         val watchPageDoc = app.get(data).document
-
-        val activeEpisode = watchPageDoc.selectFirst(".halim-episode.active a") ?: return false
-        val postId = activeEpisode.attr("data-post-id")
-        val chapterSt = activeEpisode.attr("data-ep")
-        val sv = activeEpisode.attr("data-sv")
-        val serverButtons = watchPageDoc.select("#halim-ajax-list-server .get-eps")
-
-        val langPrefix = if (sv == "2") "TM " else "VS "
-
+        val postId = watchPageDoc.selectFirst("main.watch-page")?.attr("data-id") ?: return false
+        val chapterSt = watchPageDoc.selectFirst(".halim-episode.active a")?.attr("data-ep") ?: return false
+        
         var foundLinks = false
-        serverButtons.apmap { button ->
-            try {
-                val type = button.attr("data-type")
-                val serverName = button.text()
-                val playerAjaxUrl = "$mainUrl/player/player.php"
-                val ajaxResponse = app.get(
-                    playerAjaxUrl,
-                    params = mapOf(
-                        "action" to "dox_ajax_player",
-                        "post_id" to postId,
-                        "chapter_st" to chapterSt,
-                        "type" to type,
-                        "sv" to sv
-                    ),
-                    headers = mapOf("X-Requested-With" to "XMLHttpRequest")
-                ).document
 
-                val iframeSrc = ajaxResponse.selectFirst("iframe")?.attr("src") ?: return@apmap
-                
-                val extractorPageSource = app.get(iframeSrc, referer = data).text
-                
-                val fileRegex = Regex("""sources:\s*\[\{\s*type:\s*"hls",\s*file:\s*"(.*?)"""")
-                val relativeLink = fileRegex.find(extractorPageSource)?.groupValues?.get(1)
+        // Lặp qua cả 2 loại server: 1 (Vietsub) và 2 (Thuyết Minh)
+        listOf("1", "2").apmap { sv ->
+            val langPrefix = if (sv == "2") "TM " else "VS "
+            
+            // Lấy danh sách các nút server (VIP 1, VIP 4K,...)
+            val serverButtons = watchPageDoc.select("#halim-ajax-list-server .get-eps")
 
-                if (relativeLink != null) {
-                    val domain = URI(iframeSrc).let { "${it.scheme}://${it.host}" }
-                    val fullM3u8Url = if (relativeLink.startsWith("http")) relativeLink else domain + relativeLink
+            serverButtons.forEach { button ->
+                try {
+                    val type = button.attr("data-type")
+                    val serverName = button.text()
+                    val playerAjaxUrl = "$mainUrl/player/player.php"
 
-                    callback.invoke(
-                        ExtractorLink(
-                            source = this.name,
-                            name = "$langPrefix$serverName", 
-                            url = fullM3u8Url,
-                            referer = iframeSrc,
-                            quality = Qualities.Unknown.value,
-                            type = ExtractorLinkType.M3U8
+                    val ajaxResponse = app.get(
+                        playerAjaxUrl,
+                        params = mapOf(
+                            "action" to "dox_ajax_player",
+                            "post_id" to postId,
+                            "chapter_st" to chapterSt,
+                            "type" to type,
+                            "sv" to sv
+                        ),
+                        headers = mapOf("X-Requested-With" to "XMLHttpRequest")
+                    ).document
+
+                    val iframeSrc = ajaxResponse.selectFirst("iframe")?.attr("src") ?: return@forEach
+                    
+                    val extractorPageSource = app.get(iframeSrc, referer = data).text
+                    val fileRegex = Regex("""sources:\s*\[\{\s*type:\s*"hls",\s*file:\s*"(.*?)"""")
+                    val relativeLink = fileRegex.find(extractorPageSource)?.groupValues?.get(1)
+
+                    if (relativeLink != null) {
+                        val domain = URI(iframeSrc).let { "${it.scheme}://${it.host}" }
+                        val fullM3u8Url = if (relativeLink.startsWith("http")) relativeLink else domain + relativeLink
+
+                        callback.invoke(
+                            ExtractorLink(
+                                source = this.name,
+                                name = "$langPrefix$serverName", 
+                                url = fullM3u8Url,
+                                referer = iframeSrc,
+                                quality = Qualities.Unknown.value,
+                                type = ExtractorLinkType.M3U8
+                            )
                         )
-                    )
-                    foundLinks = true
+                        foundLinks = true
+                    }
+                } catch (e: Exception) {
+                    // Bỏ qua nếu có lỗi
                 }
-            } catch (e: Exception) {
-                // Bỏ qua lỗi nếu một server bị lỗi
             }
         }
-
         return foundLinks
     }
 }
