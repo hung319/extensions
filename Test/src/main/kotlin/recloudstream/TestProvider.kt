@@ -11,6 +11,8 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
 import java.net.URI
+import kotlinx.coroutines.async // Thêm import này
+import kotlinx.coroutines.coroutineScope
 
 class HHKungfuProvider : MainAPI() {
     override var name = "HHKungfu"
