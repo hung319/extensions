@@ -49,10 +49,11 @@ class HHKungfuProvider : MainAPI() {
         )
     }
 
+    // Làm cho selector mạnh mẽ hơn để dùng được cho cả trang chính và sidebar/rcm
     private fun Element.toSearchResponse(): SearchResponse? {
-        val a = this.selectFirst("a.halim-thumb") ?: return null
+        val a = this.selectFirst("a.halim-thumb, a.thumbnail-link") ?: return null
         val href = a.attr("href")
-        val title = this.selectFirst("h3.title, h2.entry-title")?.text() ?: return null
+        val title = this.selectFirst("h2.entry-title, h3.title")?.text() ?: return null
         val posterUrl = this.selectFirst("img.wp-post-image")?.attr("src")
         val episodeText = this.selectFirst("span.episode")?.text()
 
@@ -114,14 +115,13 @@ class HHKungfuProvider : MainAPI() {
             }
         }
         
-        val episodes = episodeMap.keys
-            .mapNotNull { it.toIntOrNull() }
-            .sorted()
-            .mapNotNull { epKey ->
-                val infoList = episodeMap[epKey.toString()] ?: return@mapNotNull null
-                
-                // Sửa lỗi cú pháp ở đây
-                val data = infoList.toJson()
+        val episodes = episodeMap.entries
+            .mapNotNull { (key, value) ->
+                key.toIntOrNull()?.let { Triple(it, key, value) }
+            }
+            .sortedBy { it.first } // Sắp xếp tăng dần
+            .map { (_, epKey, infoList) ->
+                val data = infoList.toJson() // Truyền toàn bộ thông tin cho loadLinks
                 val serverTags = infoList.joinToString(separator = "+") { it.serverLabel }.let { "($it)" }
                 
                 newEpisode(data) {
@@ -129,6 +129,7 @@ class HHKungfuProvider : MainAPI() {
                 }
             }
 
+        // Lấy danh sách phim đề xuất từ sidebar
         val recommendations = document.select("aside#sidebar .popular-post .item").mapNotNull {
             it.toSearchResponse()
         }
@@ -147,22 +148,28 @@ class HHKungfuProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // Parse JSON `data` để lấy lại danh sách các server của tập phim
         val listType = object : TypeToken<List<EpisodeInfo>>() {}.type
         val infoList = parseJson<List<EpisodeInfo>>(data)
         
         var foundLinks = false
 
+        // Lặp qua từng server (VS, TM) của tập phim đó và tải song song
         infoList.apmap { info ->
             try {
+                // Tải trang xem phim của từng server
                 val watchPageDoc = app.get(info.url).document
                 val activeEpisode = watchPageDoc.selectFirst(".halim-episode.active a") ?: return@apmap
                 val postId = watchPageDoc.selectFirst("main.watch-page")?.attr("data-id") ?: return@apmap
-                val chapterSt = activeEpisode.attr("data-ep")
-                val sv = activeEpisode.attr("data-sv")
+                val chapterSt = activeEpisode.attr("data-ep") ?: return@apmap
+                val sv = activeEpisode.attr("data-sv") ?: return@apmap
                 
-                val langPrefix = "${info.serverLabel} "
+                val langPrefix = "${info.serverLabel} " // Tiền tố (VS, TM)
 
+                // Lấy danh sách các nút player (VIP 1, VIP 4K...)
                 val serverButtons = watchPageDoc.select("#halim-ajax-list-server .get-eps")
+                
+                // Dùng forEach để không bị lỗi khi một player không hoạt động
                 serverButtons.forEach { button ->
                     try {
                         val type = button.attr("data-type")
@@ -182,6 +189,7 @@ class HHKungfuProvider : MainAPI() {
                         ).document
 
                         val iframeSrc = ajaxResponse.selectFirst("iframe")?.attr("src") ?: return@forEach
+                        
                         val extractorPageSource = app.get(iframeSrc, referer = info.url).text
                         val fileRegex = Regex("""sources:\s*\[\{\s*type:\s*"hls",\s*file:\s*"(.*?)"""")
                         val relativeLink = fileRegex.find(extractorPageSource)?.groupValues?.get(1)
@@ -203,11 +211,11 @@ class HHKungfuProvider : MainAPI() {
                             foundLinks = true
                         }
                     } catch (e: Exception) {
-                        // Bỏ qua lỗi server con
+                        // Bỏ qua lỗi của player con
                     }
                 }
             } catch (e: Exception) {
-                // Bỏ qua lỗi server chính
+                // Bỏ qua lỗi của server chính (VS/TM)
             }
         }
         return foundLinks
