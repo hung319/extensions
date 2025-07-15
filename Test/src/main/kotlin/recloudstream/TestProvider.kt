@@ -114,15 +114,14 @@ class HHKungfuProvider : MainAPI() {
             }
         }
         
-        val episodes = episodeMap.entries
-            .mapNotNull { (key, value) ->
-                // Tạo một cặp gồm số tập và danh sách thông tin
-                key.toIntOrNull()?.let { Triple(it, key, value) }
-            }
-            .sortedBy { it.first } // Sắp xếp theo số tập tăng dần
-            .map { (_, epKey, infoList) ->
-                // Dùng JSON để truyền toàn bộ thông tin server cho `loadLinks`
-                val data = toJson(infoList)
+        val episodes = episodeMap.keys
+            .mapNotNull { it.toIntOrNull() }
+            .sorted()
+            .mapNotNull { epKey ->
+                val infoList = episodeMap[epKey.toString()] ?: return@mapNotNull null
+                
+                // Sửa lỗi cú pháp ở đây
+                val data = infoList.toJson()
                 val serverTags = infoList.joinToString(separator = "+") { it.serverLabel }.let { "($it)" }
                 
                 newEpisode(data) {
@@ -130,7 +129,6 @@ class HHKungfuProvider : MainAPI() {
                 }
             }
 
-        // Đã sửa lại selector để lấy phim đề xuất từ sidebar
         val recommendations = document.select("aside#sidebar .popular-post .item").mapNotNull {
             it.toSearchResponse()
         }
@@ -149,23 +147,20 @@ class HHKungfuProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Parse JSON `data` để lấy lại danh sách các server của tập phim
         val listType = object : TypeToken<List<EpisodeInfo>>() {}.type
         val infoList = parseJson<List<EpisodeInfo>>(data)
         
         var foundLinks = false
 
-        // Lặp qua từng server (VS, TM) của tập phim đó
         infoList.apmap { info ->
             try {
-                // Tải trang xem phim của từng server
                 val watchPageDoc = app.get(info.url).document
                 val activeEpisode = watchPageDoc.selectFirst(".halim-episode.active a") ?: return@apmap
                 val postId = watchPageDoc.selectFirst("main.watch-page")?.attr("data-id") ?: return@apmap
                 val chapterSt = activeEpisode.attr("data-ep")
                 val sv = activeEpisode.attr("data-sv")
                 
-                val langPrefix = "${info.serverLabel} " // Tiền tố (VS, TM)
+                val langPrefix = "${info.serverLabel} "
 
                 val serverButtons = watchPageDoc.select("#halim-ajax-list-server .get-eps")
                 serverButtons.forEach { button ->
