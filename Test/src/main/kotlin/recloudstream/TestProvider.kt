@@ -18,13 +18,15 @@ class HHKungfuProvider : MainAPI() {
         TvType.Cartoon
     )
 
+    // Bước 1: Dùng `mainPageOf` để khai báo các mục trên trang chính
     override val mainPage = mainPageOf(
         "moi-cap-nhat/page/" to "Mới cập nhật",
         "top-xem-nhieu/page/" to "Top Xem Nhiều",
         "hoan-thanh/page/" to "Hoàn Thành",
     )
 
-    override suspend fun mainPageLoad(
+    // Bước 2: Dùng `getMainPage` để xử lý logic tải và phân trang cho từng mục
+    override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
@@ -35,6 +37,7 @@ class HHKungfuProvider : MainAPI() {
             it.toSearchResponse()
         }
         
+        // Kiểm tra xem có trang tiếp theo không
         val hasNext = document.selectFirst("a.next.page-numbers") != null
 
         return newHomePageResponse(
@@ -115,11 +118,10 @@ class HHKungfuProvider : MainAPI() {
             val representativeUrl = infoList.first().url
             val serverTags = infoList.joinToString(separator = "+") { it.serverLabel }.let { "($it)" }
             
-            // Đã dọn dẹp lại, bỏ dòng `this.data = ...` dư thừa
             newEpisode(representativeUrl) {
                 this.name = "Tập $epKey $serverTags"
             }
-        }.sortedByDescending { it.name.substringAfter("Tập ").substringBefore(" ").toIntOrNull() ?: 0 }
+        }.sortedByDescending { it.name.filter { c -> c.isDigit() }.toIntOrNull() ?: 0 }
 
         val recommendations = document.select("section#halim-related-movies article.thumb").mapNotNull {
             it.toSearchResponse()
@@ -191,7 +193,7 @@ class HHKungfuProvider : MainAPI() {
                     foundLinks = true
                 }
             } catch (e: Exception) {
-                e.printStackTrace()
+                // Bỏ qua lỗi nếu một server bị lỗi
             }
         }
 
