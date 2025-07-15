@@ -18,15 +18,13 @@ class HHKungfuProvider : MainAPI() {
         TvType.Cartoon
     )
 
-    // Bước 1: Dùng `mainPageOf` để khai báo các mục trên trang chính
     override val mainPage = mainPageOf(
         "moi-cap-nhat/page/" to "Mới cập nhật",
         "top-xem-nhieu/page/" to "Top Xem Nhiều",
         "hoan-thanh/page/" to "Hoàn Thành",
     )
 
-    // Bước 2: Dùng `getMainPage` để xử lý logic tải và phân trang cho từng mục
-    override suspend fun getMainPage(
+    override suspend fun mainPageLoad(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
@@ -37,7 +35,6 @@ class HHKungfuProvider : MainAPI() {
             it.toSearchResponse()
         }
         
-        // Kiểm tra xem có trang tiếp theo không
         val hasNext = document.selectFirst("a.next.page-numbers") != null
 
         return newHomePageResponse(
@@ -114,14 +111,19 @@ class HHKungfuProvider : MainAPI() {
             }
         }
         
-        val episodes = episodeMap.entries.map { (epKey, infoList) ->
-            val representativeUrl = infoList.first().url
-            val serverTags = infoList.joinToString(separator = "+") { it.serverLabel }.let { "($it)" }
-            
-            newEpisode(representativeUrl) {
-                this.name = "Tập $epKey $serverTags"
+        // Sửa logic sắp xếp để an toàn hơn
+        val episodes = episodeMap.keys
+            .mapNotNull { it.toIntOrNull() } // Chuyển các key (số tập) thành số nguyên
+            .sortedDescending() // Sắp xếp các số này giảm dần
+            .mapNotNull { epKey -> // Duyệt qua danh sách số đã sắp xếp
+                val infoList = episodeMap[epKey.toString()] ?: return@mapNotNull null
+                val representativeUrl = infoList.first().url
+                val serverTags = infoList.joinToString(separator = "+") { it.serverLabel }.let { "($it)" }
+                
+                newEpisode(representativeUrl) {
+                    this.name = "Tập $epKey $serverTags"
+                }
             }
-        }.sortedByDescending { it.name.filter { c -> c.isDigit() }.toIntOrNull() ?: 0 }
 
         val recommendations = document.select("section#halim-related-movies article.thumb").mapNotNull {
             it.toSearchResponse()
