@@ -18,32 +18,34 @@ class HHKungfuProvider : MainAPI() {
         TvType.Cartoon
     )
 
-    override val mainPage = mainPageOf(
-        "moi-cap-nhat/page/" to "Mới cập nhật",
-        "top-xem-nhieu/page/" to "Top Xem Nhiều",
-        "hoan-thanh/page/" to "Hoàn Thành",
-    )
-
-    override suspend fun mainPageLoad(
+    // Đã sửa lại, sử dụng `getMainPage` để tương thích và tải các mục
+    override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        val url = "$mainUrl/${request.data}$page"
-        val document = app.get(url).document
-
-        val home = document.select("div.halim_box article.thumb").mapNotNull {
-            it.toSearchResponse()
-        }
+        val homePageList = mutableListOf<HomePageList>()
         
-        val hasNext = document.selectFirst("a.next.page-numbers") != null
-
-        return newHomePageResponse(
-            list = HomePageList(
-                name = request.name,
-                list = home
-            ),
-            hasNext = hasNext
+        val pages = listOf(
+            "moi-cap-nhat/page/" to "Mới cập nhật",
+            "top-xem-nhieu/page/" to "Top Xem Nhiều",
+            "hoan-thanh/page/" to "Hoàn Thành",
         )
+
+        pages.apmap { (path, name) ->
+            try {
+                val doc = app.get("$mainUrl/$path$page").document
+                val movies = doc.select("div.halim_box article.thumb").mapNotNull { element ->
+                    element.toSearchResponse()
+                }
+                if (movies.isNotEmpty()) {
+                    homePageList.add(HomePageList(name, movies))
+                }
+            } catch (e: Exception) {
+                // Bỏ qua lỗi nếu một mục không tải được
+            }
+        }
+
+        return HomePageResponse(homePageList)
     }
 
     private fun Element.toSearchResponse(): SearchResponse? {
@@ -111,11 +113,10 @@ class HHKungfuProvider : MainAPI() {
             }
         }
         
-        // Sửa logic sắp xếp để an toàn hơn
         val episodes = episodeMap.keys
-            .mapNotNull { it.toIntOrNull() } // Chuyển các key (số tập) thành số nguyên
-            .sortedDescending() // Sắp xếp các số này giảm dần
-            .mapNotNull { epKey -> // Duyệt qua danh sách số đã sắp xếp
+            .mapNotNull { it.toIntOrNull() }
+            .sortedDescending()
+            .mapNotNull { epKey ->
                 val infoList = episodeMap[epKey.toString()] ?: return@mapNotNull null
                 val representativeUrl = infoList.first().url
                 val serverTags = infoList.joinToString(separator = "+") { it.serverLabel }.let { "($it)" }
