@@ -9,6 +9,8 @@ import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import org.jsoup.nodes.Element
 import java.net.URI
 
@@ -49,7 +51,6 @@ class HHKungfuProvider : MainAPI() {
         )
     }
 
-    // Làm cho selector mạnh mẽ hơn để dùng được cho cả trang chính và sidebar/rcm
     private fun Element.toSearchResponse(): SearchResponse? {
         val a = this.selectFirst("a.halim-thumb, a.thumbnail-link") ?: return null
         val href = a.attr("href")
@@ -119,9 +120,9 @@ class HHKungfuProvider : MainAPI() {
             .mapNotNull { (key, value) ->
                 key.toIntOrNull()?.let { Triple(it, key, value) }
             }
-            .sortedBy { it.first } // Sắp xếp tăng dần
+            .sortedBy { it.first }
             .map { (_, epKey, infoList) ->
-                val data = infoList.toJson() // Truyền toàn bộ thông tin cho loadLinks
+                val data = infoList.toJson()
                 val serverTags = infoList.joinToString(separator = "+") { it.serverLabel }.let { "($it)" }
                 
                 newEpisode(data) {
@@ -129,7 +130,6 @@ class HHKungfuProvider : MainAPI() {
                 }
             }
 
-        // Lấy danh sách phim đề xuất từ sidebar
         val recommendations = document.select("aside#sidebar .popular-post .item").mapNotNull {
             it.toSearchResponse()
         }
@@ -148,76 +148,71 @@ class HHKungfuProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Parse JSON `data` để lấy lại danh sách các server của tập phim
         val listType = object : TypeToken<List<EpisodeInfo>>() {}.type
         val infoList = parseJson<List<EpisodeInfo>>(data)
         
-        var foundLinks = false
-
-        // Lặp qua từng server (VS, TM) của tập phim đó và tải song song
-        infoList.apmap { info ->
-            try {
-                // Tải trang xem phim của từng server
-                val watchPageDoc = app.get(info.url).document
-                val activeEpisode = watchPageDoc.selectFirst(".halim-episode.active a") ?: return@apmap
-                val postId = watchPageDoc.selectFirst("main.watch-page")?.attr("data-id") ?: return@apmap
-                val chapterSt = activeEpisode.attr("data-ep") ?: return@apmap
-                val sv = activeEpisode.attr("data-sv") ?: return@apmap
-                
-                val langPrefix = "${info.serverLabel} " // Tiền tố (VS, TM)
-
-                // Lấy danh sách các nút player (VIP 1, VIP 4K...)
-                val serverButtons = watchPageDoc.select("#halim-ajax-list-server .get-eps")
-                
-                // Dùng forEach để không bị lỗi khi một player không hoạt động
-                serverButtons.forEach { button ->
+        // Sử dụng coroutineScope để chạy các tác vụ song song một cách an toàn
+        coroutineScope {
+            infoList.forEach { info ->
+                async {
                     try {
-                        val type = button.attr("data-type")
-                        val serverName = button.text()
-                        val playerAjaxUrl = "$mainUrl/player/player.php"
-
-                        val ajaxResponse = app.get(
-                            playerAjaxUrl,
-                            params = mapOf(
-                                "action" to "dox_ajax_player",
-                                "post_id" to postId,
-                                "chapter_st" to chapterSt,
-                                "type" to type,
-                                "sv" to sv
-                            ),
-                            headers = mapOf("X-Requested-With" to "XMLHttpRequest")
-                        ).document
-
-                        val iframeSrc = ajaxResponse.selectFirst("iframe")?.attr("src") ?: return@forEach
+                        val watchPageDoc = app.get(info.url).document
+                        val activeEpisode = watchPageDoc.selectFirst(".halim-episode.active a") ?: return@async
+                        val postId = watchPageDoc.selectFirst("main.watch-page")?.attr("data-id") ?: return@async
+                        val chapterSt = activeEpisode.attr("data-ep") ?: return@async
+                        val sv = activeEpisode.attr("data-sv") ?: return@async
                         
-                        val extractorPageSource = app.get(iframeSrc, referer = info.url).text
-                        val fileRegex = Regex("""sources:\s*\[\{\s*type:\s*"hls",\s*file:\s*"(.*?)"""")
-                        val relativeLink = fileRegex.find(extractorPageSource)?.groupValues?.get(1)
+                        val langPrefix = "${info.serverLabel} "
 
-                        if (relativeLink != null) {
-                            val domain = URI(iframeSrc).let { "${it.scheme}://${it.host}" }
-                            val fullM3u8Url = if (relativeLink.startsWith("http")) relativeLink else domain + relativeLink
+                        val serverButtons = watchPageDoc.select("#halim-ajax-list-server .get-eps")
+                        serverButtons.forEach { button ->
+                            try {
+                                val type = button.attr("data-type")
+                                val serverName = button.text()
+                                val playerAjaxUrl = "$mainUrl/player/player.php"
 
-                            callback.invoke(
-                                ExtractorLink(
-                                    source = this.name,
-                                    name = "$langPrefix$serverName",
-                                    url = fullM3u8Url,
-                                    referer = iframeSrc,
-                                    quality = Qualities.Unknown.value,
-                                    type = ExtractorLinkType.M3U8
-                                )
-                            )
-                            foundLinks = true
+                                val ajaxResponse = app.get(
+                                    playerAjaxUrl,
+                                    params = mapOf(
+                                        "action" to "dox_ajax_player",
+                                        "post_id" to postId,
+                                        "chapter_st" to chapterSt,
+                                        "type" to type,
+                                        "sv" to sv
+                                    ),
+                                    headers = mapOf("X-Requested-With" to "XMLHttpRequest")
+                                ).document
+
+                                val iframeSrc = ajaxResponse.selectFirst("iframe")?.attr("src") ?: return@forEach
+                                val extractorPageSource = app.get(iframeSrc, referer = info.url).text
+                                val fileRegex = Regex("""sources:\s*\[\{\s*type:\s*"hls",\s*file:\s*"(.*?)"""")
+                                val relativeLink = fileRegex.find(extractorPageSource)?.groupValues?.get(1)
+
+                                if (relativeLink != null) {
+                                    val domain = URI(iframeSrc).let { "${it.scheme}://${it.host}" }
+                                    val fullM3u8Url = if (relativeLink.startsWith("http")) relativeLink else domain + relativeLink
+
+                                    callback.invoke(
+                                        ExtractorLink(
+                                            source = this@HHKungfuProvider.name,
+                                            name = "$langPrefix$serverName",
+                                            url = fullM3u8Url,
+                                            referer = iframeSrc,
+                                            quality = Qualities.Unknown.value,
+                                            type = ExtractorLinkType.M3U8
+                                        )
+                                    )
+                                }
+                            } catch (e: Exception) {
+                                // Bỏ qua lỗi server con
+                            }
                         }
                     } catch (e: Exception) {
-                        // Bỏ qua lỗi của player con
+                        // Bỏ qua lỗi server chính
                     }
                 }
-            } catch (e: Exception) {
-                // Bỏ qua lỗi của server chính (VS/TM)
             }
         }
-        return foundLinks
+        return true // Trả về true vì các tác vụ đã được khởi chạy
     }
 }
