@@ -1,326 +1,155 @@
 package recloudstream
 
-// Import các lớp cần thiết
-import android.util.Log
+import com.fasterxml.jackson.annotation.JsonProperty
+import com.fasterxml.jackson.core.type.TypeReference
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
-import java.net.URLEncoder
-import kotlin.text.Regex // Import Regex
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
-import org.jsoup.Jsoup
-import org.jsoup.nodes.Element
-import okhttp3.Interceptor
-import okhttp3.Response
-import okhttp3.ResponseBody
-import okhttp3.ResponseBody.Companion.toResponseBody
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.Qualities
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 
-// --- DATA CLASSES giữ nguyên ---
-data class KitsuMain(val data: List<KitsuData>?)
-data class KitsuData(val attributes: KitsuAttributes?)
-data class KitsuAttributes(
-    val canonicalTitle: String?,
-    val posterImage: KitsuPoster?
-)
-data class KitsuPoster(
-    val original: String?,
-    val large: String?,
-    val medium: String?,
-    val small: String?,
-    val tiny: String?
-)
-
-// --- Định nghĩa lớp Provider ---
-class AnimetProvider : MainAPI() {
-    override var mainUrl = "https://animet.org"
-    override var name = "Animet"
+class KKPhimProvider : MainAPI() {
+    override var name = "KKPhim"
+    override var mainUrl = "https://kkphim.com"
     override val hasMainPage = true
     override var lang = "vi"
-    override val hasDownloadSupport = true
-    override val supportedTypes = setOf(
-        TvType.Anime,
-        TvType.AnimeMovie,
-        TvType.OVA,
-        TvType.Cartoon,
-        TvType.TvSeries
+
+    private val apiDomain = "https://phimapi.com"
+    private val imageCdnDomain = "https://phimimg.com"
+
+    private val categories = mapOf(
+        "Phim Mới Cập Nhật" to "phim-moi-cap-nhat",
+        "Phim Bộ" to "danh-sach/phim-bo",
+        "Phim Lẻ" to "danh-sach/phim-le",
+        "Hoạt Hình" to "danh-sach/hoat-hinh",
+        "TV Shows" to "danh-sach/tv-shows"
     )
 
-    private var baseUrl: String? = null
-    private val baseUrlMutex = Mutex()
-
-    // =================== PHẦN 1: KHAI BÁO CÁC MỤC TRANG CHỦ ===================
-    override val mainPage = mainPageOf(
-        "/danh-sach/phim-moi-cap-nhat/" to "Phim Mới Cập Nhật",
-        "/the-loai/cn-animation/" to "CN Animation",
-        "/danh-sach/phim-sieu-nhan/" to "Tokusatsu",
-        "/bang-xep-hang/day.html" to "Xem Nhiều Trong Ngày"
+    override var supportedTypes = setOf(
+        TvType.Movie,
+        TvType.TvSeries,
+        TvType.Anime
     )
 
-    // =================== PHẦN 2: HÀM getMainPage ĐA NĂNG ===================
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        val currentBaseUrl = try { getBaseUrl() } catch (e: Exception) { return null }
-
-        val path = request.data
-        val url = if (page > 1 && !path.contains("bang-xep-hang")) {
-            val slug = if (path.endsWith('/')) path else "$path/"
-            "$currentBaseUrl${slug}trang-$page.html"
-        } else {
-            "$currentBaseUrl$path"
-        }
-        
-        Log.d(name, "getMainPage loading URL: $url")
-
-        return try {
-            val document = app.get(url, referer = currentBaseUrl).document
-            
-            val home = when {
-                path.contains("bang-xep-hang") -> {
-                    document.select("ul.bxh-movie-phimletv li.group").mapNotNull { element ->
-                        val titleElement = element.selectFirst("h3.title-item a") ?: return@mapNotNull null
-                        val href = fixUrlBased(titleElement.attr("href")) ?: return@mapNotNull null
-                        val title = titleElement.text()
-                        val posterUrl = fixUrlBased(element.selectFirst("a.thumb img")?.attr("src"))
-                        
-                        newAnimeSearchResponse(title, href, TvType.Anime) {
-                            this.posterUrl = posterUrl
-                        }
-                    }
-                }
-                else -> {
-                    document.select("ul.MovieList li.TPostMv").mapNotNull {
-                        mapElementToSearchResponse(it, currentBaseUrl)
-                    }
-                }
-            }
-
-            val hasNextPage = if (path.contains("bang-xep-hang")) {
-                false
-            } else {
-                document.selectFirst("div.wp-pagenavi > a.next, div.wp-pagenavi > span.current + a") != null
-            }
-
-            newHomePageResponse(
-                list = HomePageList(
-                    name = request.name,
-                    list = home
-                ),
-                hasNext = hasNextPage
-            )
-        } catch (e: Exception) {
-            Log.e(name, "getMainPage failed for url '$url'", e)
-            null
-        }
-    }
-
-
-    // --- Các hàm helper ---
-    private suspend fun getBaseUrl(): String {
-        baseUrlMutex.withLock {
-            if (baseUrl == null) {
-                try {
-                    val response = app.get(mainUrl, timeout = 15_000L).text
-                    val doc = Jsoup.parse(response)
-                    val domainText =
-                        doc.selectFirst("span.text-success.font-weight-bold")?.text()?.trim()
-                    if (!domainText.isNullOrBlank()) {
-                        baseUrl = "https://${domainText.lowercase().removeSuffix("/")}"
+        val homePageLists = coroutineScope {
+            categories.map { (title, slug) ->
+                async {
+                    val url = if (slug == "phim-moi-cap-nhat") {
+                        "$apiDomain/$slug?page=1"
                     } else {
-                        baseUrl = "https://anime10.site" // Fallback
+                        "$apiDomain/v1/api/$slug?page=1"
                     }
-                } catch (e: Exception) {
-                    baseUrl = "https://anime10.site" // Fallback
+                    try {
+                        val items = if (slug == "phim-moi-cap-nhat") {
+                            app.get(url).parsed<ApiResponse>().items
+                        } else {
+                            app.get(url).parsed<SearchApiResponse>().data?.items
+                        } ?: emptyList()
+                        val searchResults = items.mapNotNull { toSearchResponse(it) }
+                        HomePageList(title, searchResults)
+                    } catch (e: Exception) {
+                        HomePageList(title, emptyList())
+                    }
                 }
+            }.map { it.await() }
+        }
+
+        return newHomePageResponse(homePageLists.filter { it.list.isNotEmpty() })
+    }
+
+    private fun toSearchResponse(item: MovieItem): SearchResponse? {
+        val movieUrl = "$mainUrl/phim/${item.slug}"
+        val tvType = when (item.type) {
+            "series" -> TvType.TvSeries
+            "single" -> TvType.Movie
+            "hoathinh" -> TvType.Anime
+            else -> when (item.tmdb?.type) {
+                "movie" -> TvType.Movie
+                "tv" -> TvType.TvSeries
+                else -> null
             }
-        }
-        return baseUrl ?: throw ErrorLoadingException("Could not determine base URL")
-    }
+        } ?: return null
 
-    private fun fixUrlBased(url: String?): String? {
-        if (url.isNullOrBlank()) return null
-        val currentBaseUrl = baseUrl ?: return fixUrl(url)
-        return when {
-            url.startsWith("//") -> fixUrl("https:$url")
-            url.startsWith("/") -> fixUrl("$currentBaseUrl$url")
-            else -> fixUrl(url)
-        }
-    }
-
-    private suspend fun getKitsuPoster(title: String): String? {
-        return try {
-            val encodedTitle = URLEncoder.encode(title, "UTF-8")
-            val searchUrl =
-                "https://kitsu.io/api/edge/anime?filter[text]=$encodedTitle&page[limit]=1"
-            val response = app.get(searchUrl, timeout = 10_000L).parsedSafe<KitsuMain>()
-            val poster = response?.data?.firstOrNull()?.attributes?.posterImage
-            poster?.original ?: poster?.large ?: poster?.medium ?: poster?.small ?: poster?.tiny
-        } catch (e: Exception) {
-            Log.e(name, "Kitsu API Error for title '$title'.", e)
-            null
-        }
-    }
-
-    private fun mapElementToSearchResponse(
-        element: Element,
-        currentBaseUrl: String
-    ): AnimeSearchResponse? {
-        val linkTag = element.selectFirst("article a") ?: element.selectFirst("a") ?: return null
-        val href = fixUrlBased(linkTag.attr("href")) ?: return null
-        if (href.isBlank()) return null
-        val title = linkTag.selectFirst("h2.Title")?.text()?.trim()
-            ?: linkTag.attr("title")?.trim()
-            ?: linkTag.text()?.trim()
-            ?: return null
-        if (title.isBlank()) return null
-
-        val poster = linkTag.selectFirst("div.Image figure img")?.let { img ->
-            img.attr("data-src").ifBlank { img.attr("src") }
-        }?.let { fixUrlBased(it) }
-
-        val tvType = when {
-            href.contains("/the-loai/cn-animation", ignoreCase = true) -> TvType.Cartoon
-            href.contains("/the-loai/tokusatsu", ignoreCase = true) -> TvType.TvSeries
-            else -> TvType.Anime
+        val poster = item.posterUrl?.let {
+            if (it.startsWith("http")) it else "$imageCdnDomain/$it"
         }
 
-        return newAnimeSearchResponse(title, href, tvType) {
+        return newMovieSearchResponse(item.name, movieUrl, tvType) {
             this.posterUrl = poster
-            if (!poster.isNullOrBlank() && baseUrl != null && poster.startsWith(baseUrl!!)) {
-                this.posterHeaders = mapOf("Referer" to currentBaseUrl)
-            }
         }
     }
 
-    // --- Các hàm chức năng chính ---
-    override suspend fun search(query: String): List<SearchResponse>? {
-        val currentBaseUrl = try { getBaseUrl() } catch (e: Exception) { return null }
-        val encodedQuery = URLEncoder.encode(query, "UTF-8")
-        val searchUrl = "$currentBaseUrl/tim-kiem/$encodedQuery.html"
-        return try {
-            val document = app.get(searchUrl, referer = currentBaseUrl).document
-            val results = document.select("ul.MovieList li.TPostMv")
-            results.mapNotNull { mapElementToSearchResponse(it, currentBaseUrl) }
-        } catch (e: Exception) {
-            Log.e(name, "Search failed for query '$query' at url $searchUrl", e)
-            null
-        }
+    override suspend fun search(query: String): List<SearchResponse> {
+        val url = "$apiDomain/v1/api/tim-kiem?keyword=$query"
+        val response = app.get(url).parsed<SearchApiResponse>()
+
+        return response.data?.items?.mapNotNull { item ->
+            toSearchResponse(item)
+        } ?: listOf()
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        try {
-            val currentBaseUrl = try { getBaseUrl() } catch (e: Exception) { return null }
-            val mainDocument = app.get(url, referer = currentBaseUrl).document
+        val slug = url.substringAfter("/phim/")
+        val apiUrl = "$apiDomain/phim/$slug"
+        val response = app.get(apiUrl).parsed<DetailApiResponse>()
+        val movie = response.movie ?: return null
 
-            val mainTitle = mainDocument.selectFirst("h1.Title")?.text()?.trim()
-            val subTitle = mainDocument.selectFirst("h2.SubTitle")?.text()?.trim()
+        val title = movie.name
+        val poster = movie.posterUrl
+        val year = movie.year
+        val description = movie.content
+        val tags = movie.category?.map { it.name }
+        val actors = movie.actor?.let { actorList ->
+            actorList.map { ActorData(Actor(it)) }
+        }
 
-            val displayTitle = mainTitle?.takeIf { it.isNotBlank() }
-                ?: subTitle?.takeIf { it.isNotBlank() }
-                ?: throw ErrorLoadingException("Không tìm thấy tiêu đề (h1.Title hoặc h2.SubTitle)")
-
-            val titleForKitsu = mainTitle?.takeIf { it.isNotBlank() } ?: subTitle
-
-            val animetPosterRaw =
-                mainDocument.selectFirst("article.TPost header div.Image figure.Objf img")?.let {
-                    it.attr("data-src").ifBlank { it.attr("src") }
-                }
-            val animetPoster = animetPosterRaw?.let { fixUrlBased(it) }
-            val description =
-                mainDocument.selectFirst("article.TPost header div.Description")?.text()?.trim()
-            val year = mainDocument.selectFirst("p.Info span.Date a")?.text()?.toIntOrNull()
-            val ratingText = mainDocument.selectFirst("div#star")?.attr("data-score")
-            val rating = ratingText?.toFloatOrNull()?.times(1000)?.toInt()
-            val statusElement =
-                mainDocument.selectFirst("div#MvTb-Info div.mvici-left ul.InfoList li:contains(Trạng thái)")
-            val statusText =
-                statusElement?.selectFirst("span.Info")?.text()?.trim() ?: statusElement?.ownText()
-                    ?.trim()
-            val parsedStatus = when {
-                statusText?.contains("Đang tiến hành", ignoreCase = true) == true -> ShowStatus.Ongoing
-                statusText?.contains("Hoàn thành", ignoreCase = true) == true -> ShowStatus.Completed
-                else -> null
+        var recommendations: List<SearchResponse>? = null
+        if (movie.recommendations is List<*>) {
+            try {
+                val movieItems = mapper.convertValue(movie.recommendations, object : TypeReference<List<MovieItem>>() {})
+                recommendations = movieItems.mapNotNull { toSearchResponse(it) }
+            } catch (e: Exception) {
+                // Ignore conversion errors
             }
-            val genres =
-                mainDocument.select("div#MvTb-Info div.mvici-left ul.InfoList li:contains(Thể loại) a")
-                    .mapNotNull { it.text()?.trim()?.takeIf { tag -> tag.isNotBlank() } }
-
-            val isDonghuaGenre = genres.any {
-                it.equals("CN Animation", ignoreCase = true) || it.equals(
-                    "Hoạt hình Trung Quốc",
-                    ignoreCase = true
-                ) || it.equals("Donghua", ignoreCase = true)
-            }
-            val isDonghuaTitle = displayTitle.contains("Donghua", ignoreCase = true) || displayTitle.contains("(CN)", ignoreCase = true)
-            val isDonghuaUrl = url.contains("/cn-animation/", ignoreCase = true)
-            val isTokusatsuUrl = url.contains("/tokusatsu/", ignoreCase = true)
-            val isMovieUrl = url.contains("/movie-ova/", ignoreCase = true)
-
-            val tvType = when {
-                isDonghuaGenre || isDonghuaTitle || isDonghuaUrl -> TvType.Cartoon
-                isTokusatsuUrl || genres.any { it.equals("Tokusatsu", ignoreCase = true) } -> TvType.TvSeries
-                isMovieUrl || genres.any { it.equals("Movie & OVA", ignoreCase = true) } -> TvType.AnimeMovie
-                genres.any { it.equals("OVA", ignoreCase = true) } -> TvType.OVA
-                else -> TvType.Anime
-            }
-
-            var finalPosterUrl = animetPoster
-            val animeTypesForKitsu = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
-            if (tvType in animeTypesForKitsu && !titleForKitsu.isNullOrBlank()) {
-                val kitsuPoster = getKitsuPoster(titleForKitsu)
-                if (!kitsuPoster.isNullOrBlank()) {
-                    finalPosterUrl = kitsuPoster
-                }
-            }
-
-            val watchPageUrl =
-                mainDocument.selectFirst("a.watch_button_more")?.attr("href")?.let { fixUrlBased(it) }
-            var episodes = emptyList<Episode>()
-            if (!watchPageUrl.isNullOrBlank()) {
+        }
+        if (recommendations.isNullOrEmpty()) {
+            movie.category?.firstOrNull()?.slug?.let { categorySlug ->
                 try {
-                    val episodeListPageDocument = app.get(watchPageUrl, referer = url).document
-                    episodes =
-                        episodeListPageDocument.select("ul.list-episode li.episode a.episode-link")
-                            .mapNotNull episodelist@{ epElement ->
-                                val epHref = epElement.attr("href")?.let { fixUrlBased(it) }
-                                if (epHref.isNullOrBlank()) return@episodelist null
-
-                                val epIdentifier =
-                                    epElement.attr("data-epname").trim().ifBlank { epElement.text().trim() }
-                                if (epIdentifier.isBlank()) return@episodelist null
-
-                                val epName = if (epIdentifier.equals("Full", ignoreCase = true) || epIdentifier.equals("Movie", ignoreCase = true)) {
-                                    epIdentifier
-                                } else {
-                                    "Tập $epIdentifier"
-                                }
-                                newEpisode(epHref) {
-                                    this.name = epName
-                                }
-                            }
+                    val recUrl = "$apiDomain/v1/api/the-loai/$categorySlug"
+                    val recResponse = app.get(recUrl).parsed<SearchApiResponse>()
+                    recommendations = recResponse.data?.items
+                        ?.mapNotNull { toSearchResponse(it) }
+                        ?.filter { it.url != url }
                 } catch (e: Exception) {
-                    Log.e(name, "load: Error fetching/parsing episode page $watchPageUrl", e)
+                    // Ignore loading errors
                 }
             }
-            
-            val recommendations = mainDocument.select("div.MovieListRelated ul.MovieList li.TPostMv").mapNotNull {
-                mapElementToSearchResponse(it, currentBaseUrl)
-            }
+        }
 
-            return newTvSeriesLoadResponse(displayTitle, url, tvType, episodes) {
-                this.apiName = this@AnimetProvider.name
-                this.posterUrl = finalPosterUrl
-                this.year = year
-                this.plot = description
-                this.rating = rating
-                this.tags = genres
-                this.showStatus = parsedStatus
-                this.recommendations = recommendations
-                if (!finalPosterUrl.isNullOrBlank() && baseUrl != null && finalPosterUrl.startsWith(baseUrl!!)) {
-                    this.posterHeaders = mapOf("Referer" to currentBaseUrl)
+        val tvType = when (movie.type) {
+            "series" -> TvType.TvSeries
+            "hoathinh" -> TvType.Anime
+            else -> TvType.Movie
+        }
+
+        val episodes = response.episodes?.flatMap { episodeGroup ->
+            episodeGroup.serverData.map { episodeData ->
+                newEpisode(episodeData) {
+                    this.name = episodeData.name
                 }
             }
-        } catch (e: Exception) {
-            Log.e(name, "Load failed for URL $url", e)
-            return null
+        } ?: emptyList()
+
+        return when (tvType) {
+            TvType.TvSeries, TvType.Anime -> newTvSeriesLoadResponse(title, url, tvType, episodes) {
+                this.posterUrl = poster; this.year = year; this.plot = description; this.tags = tags; this.actors = actors; this.recommendations = recommendations
+            }
+            TvType.Movie -> newMovieLoadResponse(title, url, tvType, episodes.firstOrNull()?.data) {
+                this.posterUrl = poster; this.year = year; this.plot = description; this.tags = tags; this.actors = actors; this.recommendations = recommendations
+            }
+            else -> null
         }
     }
 
@@ -330,106 +159,115 @@ class AnimetProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val episodeUrl = data
-        val idRegex = Regex("-(\\d+)\\.(\\d+)\\.html$")
-        val idMatch = idRegex.find(episodeUrl)
-        val filmId = idMatch?.groupValues?.getOrNull(1)
-        val epId = idMatch?.groupValues?.getOrNull(2)
+        val episodeData = mapper.readValue(data, EpisodeData::class.java)
 
-        if (filmId == null || epId == null) {
-            Log.e(name, "Không thể trích xuất filmId/epId từ URL: $episodeUrl")
-            return false
-        }
+        val headers = mapOf(
+            "Referer" to mainUrl,
+            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
+        )
 
         try {
-            val currentBaseUrl = getBaseUrl()
-            val ajaxUrl = "$currentBaseUrl/ajax/player"
-            val postData = mapOf("id" to filmId, "ep" to epId, "sv" to "0")
-            val headers = mapOf("Referer" to currentBaseUrl, "Origin" to currentBaseUrl)
+            // --- BƯỚC 1: LẤY VÀ PHÂN TÍCH MASTER PLAYLIST ---
+            val masterM3u8Url = episodeData.linkM3u8
+            val masterContent = app.get(masterM3u8Url, headers = headers).text
+            val relativePlaylistUrl = masterContent.lines().lastOrNull { it.endsWith(".m3u8") }
+                ?: throw Exception("Không tìm thấy final playlist trong master M3U8")
+            val masterUrlBase = masterM3u8Url.substringBeforeLast("/") + "/"
+            val finalPlaylistUrl = masterUrlBase + relativePlaylistUrl
 
-            val responseText = app.post(ajaxUrl, data = postData, headers = headers).text
-            val m3u8Regex = Regex(""""file":"(https?://[^"]+\.m3u8)"""")
-            val m3u8Link = m3u8Regex.find(responseText)?.groupValues?.getOrNull(1)?.replace("\\/", "/")
+            // --- BƯỚC 2: LỌC BỎ CÁC KHỐI /v7/ KHÔNG MONG MUỐN ---
+            val finalPlaylistContent = app.get(finalPlaylistUrl, headers = headers).text
+            val segmentBaseUrl = finalPlaylistUrl.substringBeforeLast("/") + "/"
 
-            if (m3u8Link.isNullOrBlank()) {
-                Log.e(name, "Không thể trích xuất link m3u8 từ phản hồi AJAX.")
-                return false
+            val lines = finalPlaylistContent.lines()
+            val cleanedLines = mutableListOf<String>()
+            var i = 0
+            while (i < lines.size) {
+                val line = lines[i].trim()
+
+                // Kiểm tra xem đây có phải là điểm bắt đầu của một khối cần xóa không
+                if (line == "#EXT-X-DISCONTINUITY") {
+                    // Nhìn về phía trước để tìm xem có segment /v7/ không
+                    var isV7Block = false
+                    var blockEndIndex = i
+                    
+                    for (j in (i + 1) until lines.size) {
+                        val nextLine = lines[j]
+                        if (nextLine.contains("/v7/")) {
+                            isV7Block = true
+                        }
+                        // Khối kết thúc ở thẻ DISCONTINUITY tiếp theo
+                        if (j > i && nextLine.trim() == "#EXT-X-DISCONTINUITY") {
+                            blockEndIndex = j
+                            break
+                        }
+                        // Nếu không có thẻ kết thúc, khối kéo dài đến hết file
+                        if (j == lines.size - 1) {
+                            blockEndIndex = lines.size
+                        }
+                    }
+
+                    if (isV7Block) {
+                        // Nếu đúng là khối v7, bỏ qua toàn bộ khối bằng cách nhảy index
+                        i = blockEndIndex
+                        continue
+                    }
+                }
+
+                // Nếu là dòng hợp lệ, thêm vào danh sách kết quả
+                if (line.isNotEmpty()) {
+                    if (line.startsWith("#")) {
+                        cleanedLines.add(line)
+                    } else if (!line.contains("/v7/")) { // Kiểm tra lại để chắc chắn không lọt segment v7
+                        cleanedLines.add(segmentBaseUrl + line)
+                    }
+                }
+                i++
             }
 
-            callback.invoke(
-                newExtractorLink(
-                    source = this.name,
-                    name = "Animet", // Bạn có thể đặt tên server nếu biết
-                    url = m3u8Link,
-                    type = ExtractorLinkType.M3U8
-                ) {
-                    this.referer = currentBaseUrl
-                    this.quality = Qualities.Unknown.value
-                }
+            val cleanedM3u8Content = cleanedLines.joinToString("\n")
+            
+            // --- BƯỚC 3: UPLOAD LÊN DPASTE.ORG VÀ TRẢ VỀ LINK RAW ---
+            val postData = mapOf(
+                "content" to cleanedM3u8Content,
+                "lexer" to "text"
             )
+            val dpasteJsonResponse = app.post("https://dpaste.org/api/", data = postData).text
+            val dpasteUrl = mapper.readValue<DpasteResponse>(dpasteJsonResponse).url
+            val rawDpasteUrl = "$dpasteUrl/raw"
+
+            // --- BƯỚC 4: TRẢ LINK VỀ CHO TRÌNH PHÁT ---
+            callback.invoke(
+                ExtractorLink(
+                    source = this.name,
+                    name = "${this.name} (Dpaste)",
+                    url = rawDpasteUrl,
+                    referer = mainUrl,
+                    quality = Qualities.Unknown.value,
+                    type = ExtractorLinkType.M3U8,
+                    headers = headers
+                )
+            )
+
             return true
         } catch (e: Exception) {
-            Log.e(name, "loadLinks thất bại: ${e.message}", e)
+            e.printStackTrace()
             return false
         }
     }
 
-    // === PHẦN MỚI THÊM: BẮT LỖI VIDEO ===
-    /**
-     * Interceptor để sửa lỗi phát video từ một số server CDN (như TikTok).
-     * Nó sẽ bắt các yêu cầu tải segment của video, và nếu cần, nó sẽ sửa dữ liệu
-     * bằng hàm `skipByteError` trước khi đưa cho trình phát.
-     */
-    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
-        return object : Interceptor {
-            override fun intercept(chain: Interceptor.Chain): Response {
-                val request = chain.request()
-                val response = chain.proceed(request)
-                val url = request.url.toString()
-
-                // Kiểm tra nếu URL của segment video đến từ các CDN cần sửa lỗi
-                if (url.contains(".tiktokcdn.") || url.contains("ibyteimg.com")) {
-                    response.body?.let { body ->
-                        try {
-                            val fixedBytes = skipByteError(body)
-                            val newBody = fixedBytes.toResponseBody(body.contentType())
-                            return response.newBuilder().body(newBody).build()
-                        } catch (e: Exception) {
-                            Log.e(name, "skipByteError failed for URL: $url", e)
-                            // Trả về response gốc nếu có lỗi
-                        }
-                    }
-                }
-                return response
-            }
-        }
-    }
-} // Kết thúc class AnimetProvider
-
-
-// === HÀM TRỢ GIÚP: BỎ QUA BYTE LỖI ===
-/**
- * Hàm này đọc dữ liệu của một segment video, tìm và loại bỏ các byte "rác"
- * ở đầu file mà một số CDN thêm vào, gây lỗi cho trình phát video.
- * Nó tìm chuỗi byte hợp lệ đầu tiên (bắt đầu bằng byte 71) và trả về dữ liệu từ đó.
- */
-private fun skipByteError(responseBody: ResponseBody): ByteArray {
-    val source = responseBody.source()
-    source.request(Long.MAX_VALUE) // Đọc toàn bộ nội dung vào buffer
-    val buffer = source.buffer.clone()
-    source.close()
-
-    val byteArray = buffer.readByteArray()
-    // Khoảng cách giữa các byte 71 (ký tự 'G') trong file .ts hợp lệ là 188
-    val length = byteArray.size - 188
-    var start = 0
-    for (i in 0 until length) {
-        val nextIndex = i + 188
-        if (nextIndex < byteArray.size && byteArray[i].toInt() == 71 && byteArray[nextIndex].toInt() == 71) {
-            start = i // Tìm thấy điểm bắt đầu hợp lệ
-            break
-        }
-    }
-    // Cắt bỏ phần byte lỗi ở đầu nếu tìm thấy
-    return if (start > 0) byteArray.copyOfRange(start, byteArray.size) else byteArray
+    // --- DATA CLASSES ---
+    data class ApiResponse(@JsonProperty("items") val items: List<MovieItem>? = null, @JsonProperty("pagination") val pagination: Pagination? = null)
+    data class SearchApiResponse(@JsonProperty("data") val data: SearchData? = null)
+    data class SearchData(@JsonProperty("items") val items: List<MovieItem>? = null, @JsonProperty("params") val params: SearchParams? = null)
+    data class SearchParams(@JsonProperty("pagination") val pagination: Pagination? = null)
+    data class MovieItem(@JsonProperty("name") val name: String, @JsonProperty("slug") val slug: String, @JsonProperty("poster_url") val posterUrl: String? = null, @JsonProperty("type") val type: String? = null, @JsonProperty("tmdb") val tmdb: TmdbInfo? = null)
+    data class TmdbInfo(@JsonProperty("type") val type: String? = null)
+    data class Pagination(@JsonProperty("currentPage") val currentPage: Int? = null, @JsonProperty("totalPages") val totalPages: Int? = null)
+    data class DetailApiResponse(@JsonProperty("movie") val movie: DetailMovie? = null, @JsonProperty("episodes") val episodes: List<EpisodeGroup>? = null)
+    data class DetailMovie(@JsonProperty("name") val name: String, @JsonProperty("content") val content: String? = null, @JsonProperty("poster_url") val posterUrl: String? = null, @JsonProperty("year") val year: Int? = null, @JsonProperty("type") val type: String? = null, @JsonProperty("category") val category: List<Category>? = null, @JsonProperty("actor") val actor: List<String>? = null, @JsonProperty("chieurap") val recommendations: Any? = null)
+    data class Category(@JsonProperty("name") val name: String, @JsonProperty("slug") val slug: String)
+    data class EpisodeGroup(@JsonProperty("server_name") val serverName: String, @JsonProperty("server_data") val serverData: List<EpisodeData>)
+    data class EpisodeData(@JsonProperty("name") val name: String, @JsonProperty("slug") val slug: String, @JsonProperty("link_m3u8") val linkM3u8: String, @JsonProperty("link_embed") val linkEmbed: String)
+    private data class DpasteResponse(@JsonProperty("url") val url: String)
 }
