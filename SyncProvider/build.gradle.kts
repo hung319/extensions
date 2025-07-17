@@ -4,6 +4,8 @@ import org.jetbrains.kotlin.konan.properties.Properties
 
 dependencies {
     implementation("com.google.android.material:material:1.4.0")
+    implementation("io.ktor:ktor-client-core:2.3.9")
+    implementation("io.ktor:ktor-client-okhttp:2.3.9")
 }
 
 // use an integer for version numbers
