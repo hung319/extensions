@@ -230,11 +230,7 @@ class KKPhimProvider : MainAPI() {
     val postData = mapOf("content" to cleanedM3u8Content, "lexer" to "_text")
     val dpasteJsonResponse = app.post("https://dpaste.org/api/", data = postData).text
     
-    if (!dpasteJsonResponse.trim().startsWith("{")) {
-        throw Exception("Lỗi bước 3: Dữ liệu trả về từ dpaste không phải là JSON. Response: $dpasteJsonResponse")
-    }
-
-    val dpasteUrl = mapper.readValue(dpasteJsonResponse, DpasteResponse::class.java).url
+    val dpasteUrl = dpasteJsonResponse.trim()
     val rawDpasteUrl = "$dpasteUrl/raw"
 
     if (!rawDpasteUrl.startsWith("http")) {
@@ -271,5 +267,4 @@ class KKPhimProvider : MainAPI() {
     data class Category(@JsonProperty("name") val name: String, @JsonProperty("slug") val slug: String)
     data class EpisodeGroup(@JsonProperty("server_name") val serverName: String, @JsonProperty("server_data") val serverData: List<EpisodeData>)
     data class EpisodeData(@JsonProperty("name") val name: String, @JsonProperty("slug") val slug: String, @JsonProperty("link_m3u8") val linkM3u8: String, @JsonProperty("link_embed") val linkEmbed: String)
-    private data class DpasteResponse(@JsonProperty("url") val url: String)
 }
