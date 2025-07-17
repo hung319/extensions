@@ -272,7 +272,7 @@ class OphimProvider : MainAPI() {
 
         val pastebinUrl = app.post(
             "https://paste.swurl.xyz/playlist.m3u8",
-            data = requestBody // Sửa lỗi: Truyền đối tượng RequestBody thay vì String
+            requestBody = requestBody // Sửa lỗi: Truyền đối tượng RequestBody thay vì String
         ).text.trim()
 
         if (pastebinUrl.isBlank() || !pastebinUrl.startsWith("http")) {
