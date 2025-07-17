@@ -9,6 +9,8 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 
 class KKPhimProvider : MainAPI() {
     override var name = "KKPhim"
@@ -223,9 +225,12 @@ class KKPhimProvider : MainAPI() {
         if (cleanedM3u8Content.isBlank()) throw Exception("M3U8 content is empty after filtering")
         
         // BƯỚC 3: UPLOAD LÊN DỊCH VỤ MỚI (paste.swurl.xyz)
+        // Chuyển đổi chuỗi text thành một đối tượng RequestBody mà hàm post yêu cầu
+        val postBody = cleanedM3u8Content.toRequestBody("text/plain".toMediaType())
+
         val finalUrl = app.post(
-            url = "https://paste.swurl.xyz/playlist.m3u8",
-            requestBody = cleanedM3u8Content
+             url = "https://paste.swurl.xyz/playlist.m3u8",
+             requestBody = postBody
         ).text.trim()
 
         if (!finalUrl.startsWith("http")) {
