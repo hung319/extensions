@@ -1,158 +1,222 @@
 package recloudstream
 
-import android.util.Base64
 import com.fasterxml.jackson.annotation.JsonProperty
-import com.fasterxml.jackson.core.type.TypeReference
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import org.jsoup.Jsoup
+import com.lagradost.cloudstream3.newEpisode
 
-class KKPhimProvider : MainAPI() {
-    override var name = "KKPhim"
-    override var mainUrl = "https://kkphim.com"
-    override val hasMainPage = true
+data class OphimItem(
+    @JsonProperty("name") val name: String,
+    @JsonProperty("slug") val slug: String,
+    @JsonProperty("poster_url") val posterUrl: String?,
+    @JsonProperty("thumb_url") val thumbUrl: String?,
+    @JsonProperty("year") val year: Int?,
+    @JsonProperty("type") val type: String?,
+    @JsonProperty("tmdb") val tmdb: TmdbInfo?
+)
+
+data class TmdbInfo(
+    @JsonProperty("type") val type: String?
+)
+
+data class OphimHomepage(
+    @JsonProperty("status") val status: Boolean,
+    @JsonProperty("items") val items: List<OphimItem>,
+    @JsonProperty("pathImage") val pathImage: String
+)
+
+data class OphimDetail(
+    @JsonProperty("movie") val movie: MovieDetail,
+    @JsonProperty("episodes") val episodes: List<EpisodeServer>
+)
+
+data class MovieDetail(
+    @JsonProperty("name") val name: String,
+    @JsonProperty("origin_name") val originName: String,
+    @JsonProperty("content") val content: String,
+    @JsonProperty("poster_url") val posterUrl: String,
+    @JsonProperty("thumb_url") val thumbUrl: String,
+    @JsonProperty("year") val year: Int?,
+    @JsonProperty("actor") val actor: List<String>?,
+    @JsonProperty("category") val category: List<Category>?,
+    @JsonProperty("country") val country: List<Country>?,
+    @JsonProperty("type") val type: String
+)
+
+data class Category(
+    @JsonProperty("name") val name: String
+)
+
+data class Country(
+    @JsonProperty("name") val name: String
+)
+
+data class EpisodeServer(
+    @JsonProperty("server_name") val serverName: String,
+    @JsonProperty("server_data") val serverData: List<EpisodeData>
+)
+
+data class EpisodeData(
+    @JsonProperty("name") val name: String,
+    @JsonProperty("slug") val slug: String,
+    @JsonProperty("link_m3u8") val linkM3u8: String
+)
+
+data class NextData(
+    @JsonProperty("props") val props: Props
+)
+
+data class Props(
+    @JsonProperty("pageProps") val pageProps: PageProps
+)
+
+data class PageProps(
+    @JsonProperty("data") val data: SearchData
+)
+
+data class SearchData(
+    @JsonProperty("items") val items: List<OphimItem>
+)
+
+class OphimProvider : MainAPI() {
+    override var mainUrl = "https://ophim1.com"
+    override var name = "Ophim"
     override var lang = "vi"
+    override val hasMainPage = true
+    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime)
 
-    private val apiDomain = "https://phimapi.com"
-    private val imageCdnDomain = "https://phimimg.com"
-
-    private val categories = mapOf(
-        "Phim Mới Cập Nhật" to "phim-moi-cap-nhat",
-        "Phim Bộ" to "danh-sach/phim-bo",
-        "Phim Lẻ" to "danh-sach/phim-le",
-        "Hoạt Hình" to "danh-sach/hoat-hinh",
-        "TV Shows" to "danh-sach/tv-shows"
-    )
-
-    override var supportedTypes = setOf(
-        TvType.Movie,
-        TvType.TvSeries,
-        TvType.Anime
-    )
-
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        val homePageLists = coroutineScope {
-            categories.map { (title, slug) ->
-                async {
-                    val url = if (slug == "phim-moi-cap-nhat") {
-                        "$apiDomain/$slug?page=1"
-                    } else {
-                        "$apiDomain/v1/api/$slug?page=1"
-                    }
-                    try {
-                        val items = if (slug == "phim-moi-cap-nhat") {
-                            app.get(url).parsed<ApiResponse>().items
-                        } else {
-                            app.get(url).parsed<SearchApiResponse>().data?.items
-                        } ?: emptyList()
-                        val searchResults = items.mapNotNull { toSearchResponse(it) }
-                        HomePageList(title, searchResults)
-                    } catch (e: Exception) {
-                        HomePageList(title, emptyList())
-                    }
-                }
-            }.map { it.await() }
+    private fun getUrl(path: String): String {
+        return if (path.startsWith("http")) path else "$mainUrl/$path"
+    }
+    
+    private fun getImageUrl(path: String?, basePath: String? = null): String? {
+        if (path.isNullOrBlank()) return null
+        val trimmedPath = path.trim()
+        return if (trimmedPath.startsWith("http")) {
+            trimmedPath
+        } 
+        else {
+            (basePath ?: "https://img.ophim.live/uploads/movies/") + trimmedPath
         }
-
-        return newHomePageResponse(homePageLists.filter { it.list.isNotEmpty() })
     }
 
-    private fun toSearchResponse(item: MovieItem): SearchResponse? {
-        val movieUrl = "$mainUrl/phim/${item.slug}"
-        val tvType = when (item.type) {
-            "series" -> TvType.TvSeries
-            "single" -> TvType.Movie
+    private fun getTvType(item: OphimItem): TvType {
+        return when (item.type) {
             "hoathinh" -> TvType.Anime
-            else -> when (item.tmdb?.type) {
-                "movie" -> TvType.Movie
-                "tv" -> TvType.TvSeries
-                else -> null
+            "series" -> TvType.TvSeries
+            else -> {
+                if (item.tmdb?.type == "tv") TvType.TvSeries else TvType.Movie
             }
-        } ?: return null
-
-        val poster = item.posterUrl?.let {
-            if (it.startsWith("http")) it else "$imageCdnDomain/$it"
         }
+    }
 
-        return newMovieSearchResponse(item.name, movieUrl, tvType) {
-            this.posterUrl = poster
+    override val mainPage = mainPageOf(
+        "$mainUrl/danh-sach/phim-moi-cap-nhat?page=" to "Phim mới cập nhật"
+    )
+
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val url = request.data + page
+        val response = app.get(url).text
+        val homepageData = parseJson<OphimHomepage>(response)
+
+        val imageBasePath = homepageData.pathImage
+
+        val results = homepageData.items.mapNotNull { item ->
+            val imageUrl = if (item.thumbUrl.isNullOrBlank()) item.posterUrl else item.thumbUrl
+            
+            // SỬA: Quay lại dùng newMovieSearchResponse để hết cảnh báo
+            newMovieSearchResponse(
+                name = item.name,
+                url = getUrl("phim/${item.slug}"),
+                type = getTvType(item),
+            ) {
+                this.posterUrl = getImageUrl(imageUrl, imageBasePath)
+                this.year = item.year
+            }
         }
+        return newHomePageResponse(request.name, results)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$apiDomain/v1/api/tim-kiem?keyword=$query"
-        val response = app.get(url).parsed<SearchApiResponse>()
+        val searchDomain = "https://ophim16.cc"
+        val searchUrl = "$searchDomain/tim-kiem?keyword=$query"
+        val doc = app.get(searchUrl).document
 
-        return response.data?.items?.mapNotNull { item ->
-            toSearchResponse(item)
-        } ?: listOf()
+        val scriptData = doc.selectFirst("script#__NEXT_DATA__")?.data()
+            ?: return emptyList()
+
+        val searchJson = parseJson<NextData>(scriptData)
+        val searchItems = searchJson.props.pageProps.data.items
+
+        return searchItems.map { item ->
+            val imageUrl = if (item.thumbUrl.isNullOrBlank()) item.posterUrl else item.thumbUrl
+            
+            // SỬA: Quay lại dùng newMovieSearchResponse để hết cảnh báo
+            newMovieSearchResponse(
+                name = item.name,
+                url = getUrl("phim/${item.slug}"),
+                type = getTvType(item),
+            ) {
+                this.posterUrl = getImageUrl(imageUrl)
+                this.year = item.year
+            }
+        }
     }
 
-    override suspend fun load(url: String): LoadResponse? {
-        val slug = url.substringAfter("/phim/")
-        val apiUrl = "$apiDomain/phim/$slug"
-        val response = app.get(apiUrl).parsed<DetailApiResponse>()
-        val movie = response.movie ?: return null
+    override suspend fun load(url: String): LoadResponse {
+        val response = app.get(url).text
+        val detailData = parseJson<OphimDetail>(response)
+        val movieInfo = detailData.movie
 
-        val title = movie.name
-        val poster = movie.posterUrl
-        val year = movie.year
-        val description = movie.content
-        val tags = movie.category?.map { it.name }
-        val actors = movie.actor?.let { actorList ->
-            actorList.map { ActorData(Actor(it)) }
-        }
+        val title = movieInfo.name
+        val poster = if (movieInfo.posterUrl.isBlank()) movieInfo.thumbUrl else movieInfo.posterUrl
+        
+        val posterUrl = getImageUrl(poster)
+        val backgroundPosterUrl = getImageUrl(movieInfo.thumbUrl)
+        val year = movieInfo.year
+        val plot = Jsoup.parse(movieInfo.content).text()
+        val tags = movieInfo.category?.map { it.name }
+        val actors = movieInfo.actor?.map { ActorData(Actor(it)) }
 
-        var recommendations: List<SearchResponse>? = null
-        if (movie.recommendations is List<*>) {
-            try {
-                val movieItems = mapper.convertValue(movie.recommendations, object : TypeReference<List<MovieItem>>() {})
-                recommendations = movieItems.mapNotNull { toSearchResponse(it) }
-            } catch (e: Exception) {
-                // Ignore conversion errors
-            }
-        }
-        if (recommendations.isNullOrEmpty()) {
-            movie.category?.firstOrNull()?.slug?.let { categorySlug ->
-                try {
-                    val recUrl = "$apiDomain/v1/api/the-loai/$categorySlug"
-                    val recResponse = app.get(recUrl).parsed<SearchApiResponse>()
-                    recommendations = recResponse.data?.items
-                        ?.mapNotNull { toSearchResponse(it) }
-                        ?.filter { it.url != url }
-                } catch (e: Exception) {
-                    // Ignore loading errors
+        return when (movieInfo.type) {
+            "hoathinh", "series" -> {
+                val episodes = detailData.episodes.flatMap { server ->
+                    server.serverData.map { episodeData ->
+                        newEpisode(data = episodeData.linkM3u8) {
+                            this.name = "Tập ${episodeData.name}"
+                        }
+                    }
+                }
+                val tvType = if (movieInfo.type == "hoathinh") TvType.Anime else TvType.TvSeries
+                newTvSeriesLoadResponse(title, url, tvType, episodes) {
+                    this.posterUrl = posterUrl
+                    this.backgroundPosterUrl = backgroundPosterUrl
+                    this.year = year
+                    this.plot = plot
+                    this.tags = tags
+                    this.actors = actors
                 }
             }
-        }
-
-        val tvType = when (movie.type) {
-            "series" -> TvType.TvSeries
-            "hoathinh" -> TvType.Anime
-            else -> TvType.Movie
-        }
-
-        val episodes = response.episodes?.flatMap { episodeGroup ->
-            episodeGroup.serverData.map { episodeData ->
-                newEpisode(episodeData) {
-                    this.name = episodeData.name
+            else -> { 
+                newMovieLoadResponse(
+                    title,
+                    url,
+                    TvType.Movie,
+                    detailData.episodes.firstOrNull()?.serverData?.firstOrNull()?.linkM3u8
+                ) {
+                    this.posterUrl = posterUrl
+                    this.backgroundPosterUrl = backgroundPosterUrl
+                    this.year = year
+                    this.plot = plot
+                    this.tags = tags
+                    this.actors = actors
                 }
             }
-        } ?: emptyList()
-
-        return when (tvType) {
-            TvType.TvSeries, TvType.Anime -> newTvSeriesLoadResponse(title, url, tvType, episodes) {
-                this.posterUrl = poster; this.year = year; this.plot = description; this.tags = tags; this.actors = actors; this.recommendations = recommendations
-            }
-            TvType.Movie -> newMovieLoadResponse(title, url, tvType, episodes.firstOrNull()?.data) {
-                this.posterUrl = poster; this.year = year; this.plot = description; this.tags = tags; this.actors = actors; this.recommendations = recommendations
-            }
-            else -> null
         }
     }
 
@@ -162,111 +226,74 @@ class KKPhimProvider : MainAPI() {
     subtitleCallback: (SubtitleFile) -> Unit,
     callback: (ExtractorLink) -> Unit
 ): Boolean {
+    // Thoát sớm nếu dữ liệu không phải là một URL hợp lệ
+    if (!data.startsWith("http")) return false
+
     try {
-        val episodeData = mapper.readValue(data, EpisodeData::class.java)
-        val headers = mapOf(
-            "Referer" to mainUrl,
-            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
-        )
+        // 1. Dùng trực tiếp URL M3U8 "master" từ API
+        val masterM3u8Url = data
 
-        // BƯỚC 1: LẤY VÀ PHÂN TÍCH PLAYLIST
-        val masterM3u8Url = episodeData.linkM3u8
-        val masterContent = app.get(masterM3u8Url, headers = headers).text
-        val relativePlaylistUrl = masterContent.lines().lastOrNull { it.endsWith(".m3u8") }
-            ?: throw Exception("No child playlist found in master M3U8")
-        val masterUrlBase = masterM3u8Url.substringBeforeLast("/") + "/"
-        val finalPlaylistUrl = masterUrlBase + relativePlaylistUrl
+        // Lấy nội dung của file master
+        val masterM3u8Content = app.get(masterM3u8Url).text
 
-        // BƯỚC 2: LỌC NỘI DUNG M3U8
-        val finalPlaylistContent = app.get(finalPlaylistUrl, headers = headers).text
-        var contentToProcess = finalPlaylistContent
-        if (!contentToProcess.contains('\n')) {
-            contentToProcess = contentToProcess.replace("#", "\n#").trim()
+        // 2. Tìm link M3U8 của luồng chất lượng cao nhất
+        val variantPath = masterM3u8Content.lines().lastOrNull { it.isNotBlank() && !it.startsWith("#") }
+            ?: throw Exception("Không tìm thấy luồng M3U8 hợp lệ trong file master")
+
+        // Xây dựng URL đầy đủ cho file M3U8 "variant" DỰA TRÊN URL MASTER
+        // -> Đây là điểm thay đổi quan trọng, giúp code linh hoạt
+        val masterPathBase = masterM3u8Url.substringBeforeLast("/")
+        val variantM3u8Url = if (variantPath.startsWith("http")) {
+            variantPath // Nếu variant path đã là link tuyệt đối
+        } else {
+            "$masterPathBase/$variantPath" // Nếu là link tương đối
         }
-        val lines = contentToProcess.lines()
 
-        val cleanedLines = mutableListOf<String>()
-        var i = 0
-        while (i < lines.size) {
-            val line = lines[i].trim()
-            if (line == "#EXT-X-DISCONTINUITY") {
-                var isV7Block = false
-                var blockEndIndex = i
-                for (j in (i + 1) until lines.size) {
-                    val nextLine = lines[j]
-                    if (nextLine.contains("/v7/") || nextLine.contains("convertv7")) { isV7Block = true }
-                    if (j > i && nextLine.trim() == "#EXT-X-DISCONTINUITY") {
-                        blockEndIndex = j
-                        break
-                    }
-                    if (j == lines.size - 1) { blockEndIndex = lines.size }
-                }
-                if (isV7Block) {
-                    i = blockEndIndex
-                    continue
-                }
-            }
-            if (line.isNotEmpty()) {
-                if (line.startsWith("#")) {
-                    cleanedLines.add(line)
-                } else if (!line.contains("/v7/") && !line.contains("convertv7")) {
-                    val segmentUrl = if (line.startsWith("http")) {
-                        line
-                    } else {
-                        (finalPlaylistUrl.substringBeforeLast("/") + "/" + line)
-                    }
-                    cleanedLines.add(segmentUrl)
-                }
-            }
-            i++
-        }
+        // Lấy nội dung của file variant
+        val variantM3u8Content = app.get(variantM3u8Url).text
         
-        val cleanedM3u8Content = cleanedLines.joinToString("\n")
-        if (cleanedM3u8Content.isBlank()) throw Exception("M3U8 content is empty after filtering")
-        
-        // BƯỚC 3: UPLOAD LÊN DỊCH VỤ MỚI (paste.swurl.xyz)
-        // Chuyển đổi chuỗi text thành một đối tượng RequestBody mà hàm post yêu cầu
-        val postBody = cleanedM3u8Content.toRequestBody("text/plain".toMediaType())
+        // 3. Sửa đổi nội dung file M3U8 "variant"
+        val variantPathBase = variantM3u8Url.substringBeforeLast("/")
+        val modifiedM3u8 = variantM3u8Content.lines().mapNotNull { line ->
+            when {
+                // Loại bỏ các dòng discontinuity
+                line.contains("#EXT-X-DISCONTINUITY") -> null
+                // Biến các link segment tương đối thành tuyệt đối
+                line.isNotBlank() && !line.startsWith("#") -> {
+                    if (line.startsWith("http")) line else "$variantPathBase/$line"
+                }
+                // Giữ lại các dòng khác
+                else -> line
+            }
+        }.joinToString("\n")
 
-        val finalUrl = app.post(
-             url = "https://paste.swurl.xyz/playlist.m3u8",
-             requestBody = postBody
+        // 4. Tải nội dung đã sửa đổi lên pastebin để có link tĩnh
+        val pastebinUrl = app.post(
+            "https://paste.swurl.xyz/playlist.m3u8",
+            data = modifiedM3u8
         ).text.trim()
 
-        if (!finalUrl.startsWith("http")) {
-            throw Exception("Failed to upload to paste.swurl.xyz. Response: $finalUrl")
+        if (pastebinUrl.isBlank() || !pastebinUrl.startsWith("http")) {
+            throw Exception("Tải M3U8 lên pastebin thất bại")
         }
         
-        // BƯỚC 4: TRẢ LINK VỀ CHO TRÌNH PHÁT
+        // 5. Trả link cuối cùng về cho trình phát
         callback.invoke(
-            ExtractorLink(
+            newExtractorLink(
                 source = this.name,
-                name = "${this.name} (Cleaned)",
-                url = finalUrl,
-                referer = mainUrl,
-                quality = Qualities.Unknown.value,
-                type = ExtractorLinkType.M3U8,
-                headers = headers
-            )
+                name = "${this.name} (Sửa đổi)",
+                url = pastebinUrl,
+                type = ExtractorLinkType.M3U8
+            ) {
+                this.referer = "$mainUrl/" 
+                this.quality = Qualities.Unknown.value
+            }
         )
+
         return true
     } catch (e: Exception) {
         e.printStackTrace()
         return false
     }
-}
-
-    // --- DATA CLASSES ---
-    data class ApiResponse(@JsonProperty("items") val items: List<MovieItem>? = null, @JsonProperty("pagination") val pagination: Pagination? = null)
-    data class SearchApiResponse(@JsonProperty("data") val data: SearchData? = null)
-    data class SearchData(@JsonProperty("items") val items: List<MovieItem>? = null, @JsonProperty("params") val params: SearchParams? = null)
-    data class SearchParams(@JsonProperty("pagination") val pagination: Pagination? = null)
-    data class MovieItem(@JsonProperty("name") val name: String, @JsonProperty("slug") val slug: String, @JsonProperty("poster_url") val posterUrl: String? = null, @JsonProperty("type") val type: String? = null, @JsonProperty("tmdb") val tmdb: TmdbInfo? = null)
-    data class TmdbInfo(@JsonProperty("type") val type: String? = null)
-    data class Pagination(@JsonProperty("currentPage") val currentPage: Int? = null, @JsonProperty("totalPages") val totalPages: Int? = null)
-    data class DetailApiResponse(@JsonProperty("movie") val movie: DetailMovie? = null, @JsonProperty("episodes") val episodes: List<EpisodeGroup>? = null)
-    data class DetailMovie(@JsonProperty("name") val name: String, @JsonProperty("content") val content: String? = null, @JsonProperty("poster_url") val posterUrl: String? = null, @JsonProperty("year") val year: Int? = null, @JsonProperty("type") val type: String? = null, @JsonProperty("category") val category: List<Category>? = null, @JsonProperty("actor") val actor: List<String>? = null, @JsonProperty("chieurap") val recommendations: Any? = null)
-    data class Category(@JsonProperty("name") val name: String, @JsonProperty("slug") val slug: String)
-    data class EpisodeGroup(@JsonProperty("server_name") val serverName: String, @JsonProperty("server_data") val serverData: List<EpisodeData>)
-    data class EpisodeData(@JsonProperty("name") val name: String, @JsonProperty("slug") val slug: String, @JsonProperty("link_m3u8") val linkM3u8: String, @JsonProperty("link_embed") val linkEmbed: String)
+  }
 }
