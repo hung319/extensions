@@ -232,19 +232,15 @@ class OphimProvider : MainAPI() {
     if (!data.startsWith("http")) return false
 
     try {
-        // Tạo một map chứa các header cần thiết
-        val headers = mapOf("Referer" to "$mainUrl/")
-
-        // 1. Dùng trực tiếp URL M3U8 "master" từ API
+        // BƯỚC 1: LẤY VÀ PHÂN TÍCH PLAYLIST GỐC
+        val headers = mapOf("Referer" to mainUrl)
         val masterM3u8Url = data
-
-        // Lấy nội dung của file master VỚI HEADER
         val masterM3u8Content = app.get(masterM3u8Url, headers = headers).text
 
-        // 2. Tìm link M3U8 của luồng chất lượng cao nhất
+        // Tìm link playlist con (thường là chất lượng cao nhất)
         val variantPath = masterM3u8Content.lines().lastOrNull { it.isNotBlank() && !it.startsWith("#") }
-            ?: throw Exception("Không tìm thấy luồng M3U8 hợp lệ trong file master")
-        
+            ?: throw Exception("Không tìm thấy luồng M3U8 con trong file master")
+
         val masterPathBase = masterM3u8Url.substringBeforeLast("/")
         val variantM3u8Url = if (variantPath.startsWith("http")) {
             variantPath
@@ -252,51 +248,66 @@ class OphimProvider : MainAPI() {
             "$masterPathBase/$variantPath"
         }
 
-        // Lấy nội dung của file variant VỚI HEADER
-        val variantM3u8Content = app.get(variantM3u8Url, headers = headers).text
-        
-        // 3. Sửa đổi nội dung file M3U8 "variant"
+        // BƯỚC 2: LẤY PLAYLIST CUỐI CÙNG VÀ LỌC QUẢNG CÁO
+        val finalPlaylistContent = app.get(variantM3u8Url, headers = headers).text
         val variantPathBase = variantM3u8Url.substringBeforeLast("/")
-        val modifiedM3u8 = variantM3u8Content.lines().mapNotNull { line ->
-            when {
-                line.contains("#EXT-X-DISCONTINUITY") -> null
-                line.isNotBlank() && !line.startsWith("#") -> {
-                    if (line.startsWith("http")) line else "$variantPathBase/$line"
-                }
-                else -> line
+
+        var inAdBlock = false
+        val cleanedLines = mutableListOf<String>()
+
+        finalPlaylistContent.lines().forEach { line ->
+            val trimmedLine = line.trim()
+            if (trimmedLine == "#EXT-X-DISCONTINUITY") {
+                inAdBlock = !inAdBlock
+                return@forEach // Bỏ qua dòng DISCONTINUITY
             }
-        }.joinToString("\n")
 
-        // 4. Tạo RequestBody và tải nội dung đã sửa đổi lên pastebin
-        val requestBody = modifiedM3u8.toRequestBody("text/plain".toMediaType())
+            if (!inAdBlock) {
+                // Xử lý các dòng segment để đảm bảo URL là tuyệt đối
+                if (trimmedLine.isNotEmpty() && !trimmedLine.startsWith("#")) {
+                    val segmentUrl = if (trimmedLine.startsWith("http")) {
+                        trimmedLine
+                    } else {
+                        "$variantPathBase/$trimmedLine"
+                    }
+                    cleanedLines.add(segmentUrl)
+                } else {
+                    // Giữ lại các dòng metadata khác
+                    cleanedLines.add(line)
+                }
+            }
+        }
 
-        val pastebinUrl = app.post(
+        val cleanedM3u8Content = cleanedLines.joinToString("\n")
+        if (cleanedM3u8Content.isBlank()) throw Exception("Nội dung M3U8 trống sau khi lọc")
+
+        // BƯỚC 3: UPLOAD NỘI DUNG ĐÃ LỌC LÊN DỊCH VỤ PASTE
+        val requestBody = cleanedM3u8Content.toRequestBody("text/plain".toMediaType())
+        val finalUrl = app.post(
             "https://paste.swurl.xyz/playlist.m3u8",
-            requestBody = requestBody // Sửa lỗi: Truyền đối tượng RequestBody thay vì String
+            requestBody = requestBody
         ).text.trim()
 
-        if (pastebinUrl.isBlank() || !pastebinUrl.startsWith("http")) {
-            throw Exception("Tải M3U8 lên pastebin thất bại")
+        if (!finalUrl.startsWith("http")) {
+            throw Exception("Tải M3U8 lên dịch vụ paste thất bại")
         }
         
-        // 5. Trả link cuối cùng về cho trình phát
+        // BƯỚC 4: TRẢ LINK CUỐI CÙNG VỀ CHO TRÌNH PHÁT
         callback.invoke(
             newExtractorLink(
                 source = this.name,
-                name = "${this.name} (Sửa đổi)",
-                url = pastebinUrl,
+                name = "${this.name} (Đã lọc)",
+                url = finalUrl,
                 type = ExtractorLinkType.M3U8
             ) {
-                // Referer này cũng quan trọng đối với trình phát video
-                this.referer = "$mainUrl/" 
+                this.referer = mainUrl
                 this.quality = Qualities.Unknown.value
             }
         )
-
         return true
     } catch (e: Exception) {
         e.printStackTrace()
         return false
     }
-}
+ }
 }
