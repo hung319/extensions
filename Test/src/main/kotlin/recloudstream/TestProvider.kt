@@ -188,7 +188,9 @@ class KKPhimProvider : MainAPI() {
         throw Exception("Lỗi bước 2: Nội dung final playlist nhận về bị trống.")
     }
 
-    val lines = finalPlaylistContent.lines()
+    // Thêm ký tự xuống dòng trước mỗi thẻ # để định dạng lại M3U8
+    val formattedContent = finalPlaylistContent.replace("#", "\n#").trim()
+    val lines = formattedContent.lines()
     val cleanedLines = mutableListOf<String>()
     var i = 0
     while (i < lines.size) {
