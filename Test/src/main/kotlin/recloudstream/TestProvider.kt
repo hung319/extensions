@@ -230,7 +230,7 @@ class KKPhimProvider : MainAPI() {
     val postData = mapOf("content" to cleanedM3u8Content, "lexer" to "_text")
     val dpasteJsonResponse = app.post("https://dpaste.org/api/", data = postData).text
     
-    val dpasteUrl = dpasteJsonResponse.trim()
+    val dpasteUrl = dpasteJsonResponse.trim().removeSurrounding("\"")
     val rawDpasteUrl = "$dpasteUrl/raw"
 
     if (!rawDpasteUrl.startsWith("http")) {
