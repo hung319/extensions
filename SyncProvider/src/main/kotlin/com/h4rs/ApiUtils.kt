@@ -18,6 +18,9 @@ object ApiUtils {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
     private val failure = Pair(false, "Project not found, please check project number")
     private val failureToken = Pair(false, "Github token is wrong")
+    
+    private const val BASE64_FLAGS = Base64.URL_SAFE or Base64.NO_WRAP
+
     private val headers = mapOf(
         "Accept" to "application/vnd.github.v4.idl",
         "Content-Type" to "application/json",
@@ -28,7 +31,6 @@ object ApiUtils {
     private suspend fun apiCall(query: String?): APIRes? {
         if (query == null) return null
         try {
-            // SỬA LỖI TẠI ĐÂY: Dùng `json` thay vì `data`
             val req = app.post(
                 "https://api.github.com/graphql",
                 headers = headers,
@@ -76,7 +78,7 @@ object ApiUtils {
                 val data =
                     BackupUtils.getBackup(context, HomeViewModel.getResumeWatching())?.toJson()
                         ?: ""
-                val encodedData = Base64.encodeToString(data.toByteArray(), Base64.NO_WRAP)
+                val encodedData = Base64.encodeToString(data.toByteArray(), BASE64_FLAGS)
                 val createQuery =
                     """ mutation CreateDraftIssue { addProjectV2DraftIssue( input: { projectId: "$projectId", title: "$currentDeviceId", body: "$encodedData" } ) { projectItem { id content { ... on DraftIssue { id } } } } } """
                 val createRes =
@@ -95,19 +97,34 @@ object ApiUtils {
         }
     }
 
+    // ================= SỬA LỖI TẠI ĐÂY =================
     suspend fun syncThisDevice(data: String): Pair<Boolean, String>? {
         if (!isLoggedIn()) return null
-        val deviceId = getKey<String>("sync_device_id") ?: return failure
-        val encodedData = Base64.encodeToString(data.toByteArray(), Base64.NO_WRAP)
+
+        // Luôn xác thực lại ID của bản sao lưu trên cloud trước khi cập nhật
+        val currentDeviceId = getKey<String>("device_id")
+        val devices = fetchDevices()
+        val correctDevice = devices?.firstOrNull { it.name == currentDeviceId }
+        
+        // Nếu không tìm thấy thiết bị trên cloud (có thể chưa được tạo), không làm gì cả
+        if (correctDevice == null) {
+            return Pair(false, "Device not registered on cloud yet. Save settings first.")
+        }
+        
+        val draftIssueId = correctDevice.deviceId // Lấy ID đúng
+
+        val encodedData = Base64.encodeToString(data.toByteArray(), BASE64_FLAGS)
         val query =
-            """ mutation UpdateProjectV2DraftIssue { updateProjectV2DraftIssue( input: { draftIssueId: "$deviceId", title: "${getKey<String>("device_id")}", body: "$encodedData" } ) { draftIssue { id } } } """
+            """ mutation UpdateProjectV2DraftIssue { updateProjectV2DraftIssue( input: { draftIssueId: "$draftIssueId", title: "$currentDeviceId", body: "$encodedData" } ) { draftIssue { id } } } """
         val res = apiCall(query.toStringData())
+        
         return if (res != null) {
             Pair(true, "Sync Success")
         } else {
             failure
         }
     }
+    // ======================================================
 
     suspend fun fetchDevices(): List<SyncDevice>? {
         if (!isLoggedIn()) return null
@@ -136,7 +153,12 @@ object ApiUtils {
         val res = apiCall(query) ?: return null
         val nodes = res.data?.viewer?.projectV2?.items?.nodes
         return nodes?.map {
-            val decodedData = String(Base64.decode(it.content.bodyText, Base64.DEFAULT))
+            val body = it.content.bodyText
+            val decodedData = try {
+                String(Base64.decode(body, BASE64_FLAGS))
+            } catch (e: Exception) {
+                body
+            }
             SyncDevice(
                 name = it.content.title,
                 deviceId = it.content.id,
