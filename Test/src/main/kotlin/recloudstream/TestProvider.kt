@@ -227,7 +227,7 @@ class KKPhimProvider : MainAPI() {
     }
 
     // --- BƯỚC 3: UPLOAD LÊN DPASTE.ORG VÀ TRẢ VỀ LINK RAW ---
-    val postData = mapOf("content" to cleanedM3u8Content, "lexer" to "text")
+    val postData = mapOf("content" to cleanedM3u8Content, "lexer" to "_text")
     val dpasteJsonResponse = app.post("https://dpaste.org/api/", data = postData).text
     
     if (!dpasteJsonResponse.trim().startsWith("{")) {
