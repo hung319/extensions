@@ -228,7 +228,6 @@ class OphimProvider : MainAPI() {
     subtitleCallback: (SubtitleFile) -> Unit,
     callback: (ExtractorLink) -> Unit
 ): Boolean {
-    // Thoát sớm nếu dữ liệu không phải là một URL hợp lệ
     if (!data.startsWith("http")) return false
 
     try {
@@ -237,48 +236,62 @@ class OphimProvider : MainAPI() {
         // BƯỚC 1: LẤY URL FILE CON TỪ FILE MASTER
         val masterM3u8Url = data
         val masterM3u8Content = app.get(masterM3u8Url, headers = headers).text
-
-        // Tìm link playlist con (thường là chất lượng cao nhất)
         val variantPath = masterM3u8Content.lines().lastOrNull { it.isNotBlank() && !it.startsWith("#") }
-            ?: throw Exception("Không tìm thấy luồng M3U8 con trong file master")
-
+            ?: throw Exception("Không tìm thấy luồng M3U8 con")
         val masterPathBase = masterM3u8Url.substringBeforeLast("/")
-        val variantM3u8Url = if (variantPath.startsWith("http")) {
-            variantPath
-        } else {
-            "$masterPathBase/$variantPath"
-        }
+        val variantM3u8Url = if (variantPath.startsWith("http")) variantPath else "$masterPathBase/$variantPath"
 
         // BƯỚC 2: TẢI FILE CON, LỌC QUẢNG CÁO VÀ TẠO LINK TUYỆT ĐỐI
-        val finalPlaylistContent = app.get(variantM3u8Url, headers = headers).text
-        val variantPathBase = variantM3u8Url.substringBeforeLast("/")
+val finalPlaylistContent = app.get(variantM3u8Url, headers = headers).text
+val variantPathBase = variantM3u8Url.substringBeforeLast("/")
 
-        var inAdBlock = false
-        val cleanedM3u8 = buildString {
-            finalPlaylistContent.lines().forEach { line ->
-                val trimmedLine = line.trim()
-                if (trimmedLine.isEmpty()) return@forEach
+val cleanedLines = mutableListOf<String>()
+val lines = finalPlaylistContent.lines()
+var i = 0
+while (i < lines.size) {
+    val line = lines[i].trim()
 
-                if (trimmedLine == "#EXT-X-DISCONTINUITY") {
-                    inAdBlock = !inAdBlock
-                    return@forEach
+    // Kiểm tra xem có phải là điểm bắt đầu của một khối quảng cáo không
+    if (line == "#EXT-X-DISCONTINUITY") {
+        // Nhìn trước dòng tiếp theo để xem có khớp với mẫu quảng cáo không
+        val nextInfoLine = lines.getOrNull(i + 1)?.trim()
+        val isAdPattern = nextInfoLine != null && (
+                nextInfoLine.startsWith("#EXTINF:3.92") || 
+                nextInfoLine.startsWith("#EXTINF:0.76")
+            )
+
+        // Nếu đúng là khối quảng cáo
+        if (isAdPattern) {
+            // Tìm thẻ #EXT-X-DISCONTINUITY tiếp theo để biết điểm kết thúc
+            var adBlockEndIndex = i
+            for (j in (i + 1) until lines.size) {
+                if (lines[j].trim() == "#EXT-X-DISCONTINUITY") {
+                    adBlockEndIndex = j
+                    break
                 }
-
-                if (!inAdBlock) {
-                    if (!trimmedLine.startsWith("#")) {
-                        // Ghép baseUrl của file con để tạo thành link tuyệt đối
-                        appendLine("$variantPathBase/$trimmedLine")
-                    } else {
-                        // Giữ lại các thẻ metadata (#EXTM3U, #EXTINF,...)
-                        appendLine(trimmedLine)
-                    }
-                }
+                adBlockEndIndex = j // Trong trường hợp đây là khối cuối cùng
             }
+            // Bỏ qua toàn bộ khối quảng cáo bằng cách nhảy chỉ số i
+            i = adBlockEndIndex + 1
+            continue // Bắt đầu vòng lặp tiếp theo từ sau khối quảng cáo
         }
-        
-        if (!cleanedM3u8.contains("#EXTINF")) {
-            throw Exception("Nội dung M3U8 trống sau khi lọc.")
+    }
+
+    // Nếu không phải quảng cáo, xử lý và giữ lại dòng
+    if (line.isNotEmpty()) {
+        if (!line.startsWith("#")) {
+            // Nếu là link segment, chuyển thành link tuyệt đối
+            cleanedLines.add("$variantPathBase/$line")
+        } else {
+            // Nếu là thẻ meta, giữ lại nguyên vẹn
+            cleanedLines.add(line)
         }
+    }
+    
+    i++ // Di chuyển đến dòng tiếp theo
+}
+
+val cleanedM3u8 = cleanedLines.joinToString("\n")
 
         // BƯỚC 3: UPLOAD VÀ TRẢ VỀ LINK
         val requestBody = cleanedM3u8.toRequestBody("application/vnd.apple.mpegurl".toMediaType())
@@ -287,9 +300,7 @@ class OphimProvider : MainAPI() {
             requestBody = requestBody
         ).text.trim()
 
-        if (!finalUrl.startsWith("http")) {
-            throw Exception("Tải M3U8 lên dịch vụ paste thất bại")
-        }
+        if (!finalUrl.startsWith("http")) throw Exception("Tải M3U8 lên dịch vụ paste thất bại")
         
         callback.invoke(
             newExtractorLink(
