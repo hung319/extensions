@@ -228,77 +228,81 @@ class OphimProvider : MainAPI() {
     subtitleCallback: (SubtitleFile) -> Unit,
     callback: (ExtractorLink) -> Unit
 ): Boolean {
-    // Thoát sớm nếu dữ liệu không phải là một URL hợp lệ
     if (!data.startsWith("http")) return false
 
     try {
-        // BƯỚC 1: LẤY VÀ PHÂN TÍCH PLAYLIST GỐC
+        // BƯỚC 1: LẤY VÀ PHÂN TÍCH PLAYLIST
         val headers = mapOf("Referer" to mainUrl)
         val masterM3u8Url = data
         val masterM3u8Content = app.get(masterM3u8Url, headers = headers).text
 
-        // Tìm link playlist con (thường là chất lượng cao nhất)
         val variantPath = masterM3u8Content.lines().lastOrNull { it.isNotBlank() && !it.startsWith("#") }
-            ?: throw Exception("Không tìm thấy luồng M3U8 con trong file master")
+            ?: throw Exception("Không tìm thấy luồng M3U8 con")
 
         val masterPathBase = masterM3u8Url.substringBeforeLast("/")
-        val variantM3u8Url = if (variantPath.startsWith("http")) {
-            variantPath
-        } else {
-            "$masterPathBase/$variantPath"
-        }
+        val variantM3u8Url = if (variantPath.startsWith("http")) variantPath else "$masterPathBase/$variantPath"
 
-        // BƯỚC 2: LẤY PLAYLIST CUỐI CÙNG VÀ LỌC QUẢNG CÁO (LOGIC ĐẢO NGƯỢC)
-val finalPlaylistContent = app.get(variantM3u8Url, headers = headers).text
-val variantPathBase = variantM3u8Url.substringBeforeLast("/")
+        // BƯỚC 2: LỌC NỘI DUNG M3U8
+        val finalPlaylistContent = app.get(variantM3u8Url, headers = headers).text
+        val variantPathBase = variantM3u8Url.substringBeforeLast("/")
 
-// Cờ này theo dõi xem chúng ta có đang ở BÊN TRONG khối chứa phim hay không.
-// Ban đầu là false, nghĩa là các nội dung ở đầu file (quảng cáo) sẽ bị xóa.
-var isInsideMovieBlock = false
-val cleanedLines = mutableListOf<String>()
+        var isInsideMovieBlock = false
+        val movieSegments = mutableListOf<String>()
 
-finalPlaylistContent.lines().forEach { line ->
-    val trimmedLine = line.trim()
-    if (trimmedLine == "#EXT-X-DISCONTINUITY") {
-        isInsideMovieBlock = !isInsideMovieBlock // Bật/tắt công tắc "chế độ phim"
-        return@forEach // Bỏ qua chính dòng DISCONTINUITY
-    }
-
-    // Bây giờ, chúng ta chỉ giữ lại những dòng khi đang ở BÊN TRONG khối phim.
-    if (isInsideMovieBlock) {
-        if (trimmedLine.isNotEmpty() && !trimmedLine.startsWith("#")) {
-            // Đây là dòng chứa link segment .ts
-            val segmentUrl = if (trimmedLine.startsWith("http")) {
-                trimmedLine
-            } else {
-                "$variantPathBase/$trimmedLine"
+        finalPlaylistContent.lines().forEach { line ->
+            val trimmedLine = line.trim()
+            if (trimmedLine == "#EXT-X-DISCONTINUITY") {
+                isInsideMovieBlock = !isInsideMovieBlock
+                return@forEach
             }
-            cleanedLines.add(segmentUrl)
-        } else {
-            // Đây là dòng metadata khác, giữ lại
-            cleanedLines.add(line)
+
+            if (isInsideMovieBlock) {
+                // Chỉ giữ lại nội dung khi ở trong khối phim
+                if (trimmedLine.isNotEmpty()) {
+                     movieSegments.add(line)
+                }
+            }
         }
-    }
-    // Nếu isInsideMovieBlock là false, không làm gì cả -> dòng đó (quảng cáo) sẽ bị xóa.
-}
+        
+        // NẾU KHÔNG CÓ KHỐI DISCONTINUITY, LẤY TOÀN BỘ NỘI DUNG
+        if (movieSegments.isEmpty() && finalPlaylistContent.contains("#EXTINF")) {
+            movieSegments.addAll(finalPlaylistContent.lines())
+        }
 
-val cleanedM3u8Content = cleanedLines.joinToString("\n")
-if (cleanedM3u8Content.isBlank()) throw Exception("Nội dung M3U8 trống sau khi lọc. Có thể cấu trúc M3U8 đã thay đổi.")
+        // BƯỚC 3: XÂY DỰNG LẠI FILE M3U8 HOÀN CHỈNH
+        val rebuiltM3u8 = buildString {
+            appendLine("#EXTM3U")
+            appendLine("#EXT-X-VERSION:3")
+            
+            movieSegments.forEach { line ->
+                val trimmedLine = line.trim()
+                if (trimmedLine.isNotEmpty()) {
+                    if (trimmedLine.startsWith("#")) {
+                        // Giữ lại các thẻ metadata của segment
+                        appendLine(line)
+                    } else {
+                        // Đảm bảo URL của segment là tuyệt đối
+                        val segmentUrl = if (trimmedLine.startsWith("http")) trimmedLine else "$variantPathBase/$trimmedLine"
+                        appendLine(segmentUrl)
+                    }
+                }
+            }
+            appendLine("#EXT-X-ENDLIST")
+        }
 
-// ... các bước tiếp theo giữ nguyên ...
-
-        // BƯỚC 3: UPLOAD NỘI DUNG ĐÃ LỌC LÊN DỊCH VỤ PASTE
-        val requestBody = cleanedM3u8Content.toRequestBody("text/plain".toMediaType())
+        if (rebuiltM3u8.isBlank() || !rebuiltM3u8.contains("#EXTINF")) {
+            throw Exception("Nội dung M3U8 trống sau khi lọc và xây dựng lại.")
+        }
+        
+        // BƯỚC 4: UPLOAD VÀ TRẢ VỀ LINK
+        val requestBody = rebuiltM3u8.toRequestBody("application/vnd.apple.mpegurl".toMediaType())
         val finalUrl = app.post(
             "https://paste.swurl.xyz/playlist.m3u8",
             requestBody = requestBody
         ).text.trim()
 
-        if (!finalUrl.startsWith("http")) {
-            throw Exception("Tải M3U8 lên dịch vụ paste thất bại")
-        }
+        if (!finalUrl.startsWith("http")) throw Exception("Tải M3U8 lên dịch vụ paste thất bại")
         
-        // BƯỚC 4: TRẢ LINK CUỐI CÙNG VỀ CHO TRÌNH PHÁT
         callback.invoke(
             newExtractorLink(
                 source = this.name,
@@ -315,5 +319,5 @@ if (cleanedM3u8Content.isBlank()) throw Exception("Nội dung M3U8 trống sau k
         e.printStackTrace()
         return false
     }
- }
+  }
 }
