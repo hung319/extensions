@@ -160,68 +160,91 @@ class KKPhimProvider : MainAPI() {
     subtitleCallback: (SubtitleFile) -> Unit,
     callback: (ExtractorLink) -> Unit
 ): Boolean {
-    // --- BƯỚC 1: LẤY VÀ PHÂN TÍCH MASTER PLAYLIST ---
-    val episodeData = mapper.readValue(data, EpisodeData::class.java)
-    val headers = mapOf(
-        "Referer" to mainUrl,
-        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
-    )
-    val masterM3u8Url = episodeData.linkM3u8
-    val masterContent = app.get(masterM3u8Url, headers = headers).text
-    val relativePlaylistUrl = masterContent.lines().lastOrNull { it.endsWith(".m3u8") }
-        ?: throw Exception("Không tìm thấy playlist con")
-    val masterUrlBase = masterM3u8Url.substringBeforeLast("/") + "/"
-    val finalPlaylistUrl = masterUrlBase + relativePlaylistUrl
+    try {
+        val episodeData = mapper.readValue(data, EpisodeData::class.java)
+        val headers = mapOf(
+            "Referer" to mainUrl,
+            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
+        )
 
-    // --- BƯỚC 2: LỌC NỘI DUNG ---
-    val finalPlaylistContent = app.get(finalPlaylistUrl, headers = headers).text
-    var contentToProcess = finalPlaylistContent
-    if (!contentToProcess.contains('\n')) {
-        contentToProcess = contentToProcess.replace("#", "\n#").trim()
-    }
-    val lines = contentToProcess.lines()
+        // --- BƯỚC 1: LẤY VÀ PHÂN TÍCH PLAYLIST ---
+        val masterM3u8Url = episodeData.linkM3u8
+        val masterContent = app.get(masterM3u8Url, headers = headers).text
+        val relativePlaylistUrl = masterContent.lines().lastOrNull { it.endsWith(".m3u8") }
+            ?: throw Exception("No child playlist found")
+        val masterUrlBase = masterM3u8Url.substringBeforeLast("/") + "/"
+        val finalPlaylistUrl = masterUrlBase + relativePlaylistUrl
 
-    val cleanedLines = mutableListOf<String>()
-    var i = 0
-    while (i < lines.size) {
-        val line = lines[i].trim()
-        if (line == "#EXT-X-DISCONTINUITY") {
-            var isV7Block = false
-            var blockEndIndex = i
-            for (j in (i + 1) until lines.size) {
-                val nextLine = lines[j]
-                if (nextLine.contains("/v7/") || nextLine.contains("convertv7")) { isV7Block = true }
-                if (j > i && nextLine.trim() == "#EXT-X-DISCONTINUITY") {
-                    blockEndIndex = j
-                    break
+        // --- BƯỚC 2: LỌC NỘI DUNG M3U8 ---
+        val finalPlaylistContent = app.get(finalPlaylistUrl, headers = headers).text
+        var contentToProcess = finalPlaylistContent
+        if (!contentToProcess.contains('\n')) {
+            contentToProcess = contentToProcess.replace("#", "\n#").trim()
+        }
+        val lines = contentToProcess.lines()
+
+        val cleanedLines = mutableListOf<String>()
+        var i = 0
+        while (i < lines.size) {
+            val line = lines[i].trim()
+            if (line == "#EXT-X-DISCONTINUITY") {
+                var isV7Block = false
+                var blockEndIndex = i
+                for (j in (i + 1) until lines.size) {
+                    val nextLine = lines[j]
+                    if (nextLine.contains("/v7/") || nextLine.contains("convertv7")) { isV7Block = true }
+                    if (j > i && nextLine.trim() == "#EXT-X-DISCONTINUITY") {
+                        blockEndIndex = j
+                        break
+                    }
+                    if (j == lines.size - 1) { blockEndIndex = lines.size }
                 }
-                if (j == lines.size - 1) { blockEndIndex = lines.size }
+                if (isV7Block) {
+                    i = blockEndIndex
+                    continue
+                }
             }
-            if (isV7Block) {
-                i = blockEndIndex
-                continue
+            if (line.isNotEmpty()) {
+                if (line.startsWith("#")) {
+                    cleanedLines.add(line)
+                } else if (!line.contains("/v7/") && !line.contains("convertv7")) {
+                    val segmentBaseUrl = finalPlaylistUrl.substringBeforeLast("/") + "/"
+                    cleanedLines.add(segmentBaseUrl + line)
+                }
             }
+            i++
         }
-        if (line.isNotEmpty()) {
-            if (line.startsWith("#")) {
-                cleanedLines.add(line)
-            } else if (!line.contains("/v7/") && !line.contains("convertv7")) {
-                val segmentBaseUrl = finalPlaylistUrl.substringBeforeLast("/") + "/"
-                cleanedLines.add(segmentBaseUrl + line)
-            }
-        }
-        i++
-    }
-    
-    val cleanedM3u8Content = cleanedLines.joinToString("\n")
-    if (cleanedM3u8Content.isBlank()) {
-         throw Exception("Nội dung M3U8 sau khi lọc bị trống.")
-    }
+        
+        val cleanedM3u8Content = cleanedLines.joinToString("\n")
+        if (cleanedM3u8Content.isBlank()) throw Exception("M3U8 content is empty after filtering")
+        
+        // --- BƯỚC 3: UPLOAD LÊN DPASTE.ORG VÀ TRẢ VỀ LINK RAW ---
+        val postData = mapOf("content" to cleanedM3u8Content, "lexer" to "_text")
+        val dpasteJsonResponse = app.post("https://dpaste.org/api/", data = postData).text
+        val dpasteUrl = dpasteJsonResponse.trim().removeSurrounding("\"")
+        val rawDpasteUrl = "$dpasteUrl/raw"
 
-    // --- BƯỚC 3: CHẨN ĐOÁN ---
-    // Ném ra toàn bộ nội dung đã xử lý để kiểm tra định dạng.
-    // Vui lòng sao chép TOÀN BỘ nội dung của thông báo lỗi này và gửi lại cho tôi.
-    throw Exception(cleanedM3u8Content)
+        if (!rawDpasteUrl.startsWith("http")) {
+            throw Exception("Failed to create valid dpaste URL: $rawDpasteUrl")
+        }
+        
+        // --- BƯỚC 4: TRẢ LINK VỀ CHO TRÌNH PHÁT ---
+        callback.invoke(
+            ExtractorLink(
+                source = this.name,
+                name = "${this.name} (Cleaned)",
+                url = rawDpasteUrl,
+                referer = mainUrl,
+                quality = Qualities.Unknown.value,
+                type = ExtractorLinkType.M3U8,
+                headers = headers
+            )
+        )
+        return true
+    } catch (e: Exception) {
+        e.printStackTrace()
+        return false
+    }
 }
 
     // --- DATA CLASSES ---
