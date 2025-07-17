@@ -3,7 +3,7 @@ package com.h4rs
 import android.content.Context
 import android.util.Base64
 import com.fasterxml.jackson.module.kotlin.readValue
-import com.lagradost.cloudstream3.app // ĐÂY LÀ IMPORT ĐÚNG
+import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.AcraApplication.Companion.getKey
 import com.lagradost.cloudstream3.AcraApplication.Companion.setKey
 import com.lagradost.cloudstream3.ui.home.HomeViewModel
@@ -28,10 +28,11 @@ object ApiUtils {
     private suspend fun apiCall(query: String?): APIRes? {
         if (query == null) return null
         try {
+            // SỬA LỖI TẠI ĐÂY: Dùng `json` thay vì `data`
             val req = app.post(
                 "https://api.github.com/graphql",
                 headers = headers,
-                data = mapOf("query" to query)
+                json = mapOf("query" to query) 
             ).text
             return tryParseJson<APIRes>(req)
         } catch (e: Exception) {
