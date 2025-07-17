@@ -230,39 +230,37 @@ class OphimProvider : MainAPI() {
     if (!data.startsWith("http")) return false
 
     try {
+        // Tạo một map chứa các header cần thiết
+        val headers = mapOf("Referer" to "$mainUrl/")
+
         // 1. Dùng trực tiếp URL M3U8 "master" từ API
         val masterM3u8Url = data
 
-        // Lấy nội dung của file master
-        val masterM3u8Content = app.get(masterM3u8Url).text
+        // Lấy nội dung của file master VỚI HEADER
+        val masterM3u8Content = app.get(masterM3u8Url, headers = headers).text
 
         // 2. Tìm link M3U8 của luồng chất lượng cao nhất
         val variantPath = masterM3u8Content.lines().lastOrNull { it.isNotBlank() && !it.startsWith("#") }
             ?: throw Exception("Không tìm thấy luồng M3U8 hợp lệ trong file master")
-
-        // Xây dựng URL đầy đủ cho file M3U8 "variant" DỰA TRÊN URL MASTER
-        // -> Đây là điểm thay đổi quan trọng, giúp code linh hoạt
+        
         val masterPathBase = masterM3u8Url.substringBeforeLast("/")
         val variantM3u8Url = if (variantPath.startsWith("http")) {
-            variantPath // Nếu variant path đã là link tuyệt đối
+            variantPath
         } else {
-            "$masterPathBase/$variantPath" // Nếu là link tương đối
+            "$masterPathBase/$variantPath"
         }
 
-        // Lấy nội dung của file variant
-        val variantM3u8Content = app.get(variantM3u8Url).text
+        // Lấy nội dung của file variant VỚI HEADER
+        val variantM3u8Content = app.get(variantM3u8Url, headers = headers).text
         
         // 3. Sửa đổi nội dung file M3U8 "variant"
         val variantPathBase = variantM3u8Url.substringBeforeLast("/")
         val modifiedM3u8 = variantM3u8Content.lines().mapNotNull { line ->
             when {
-                // Loại bỏ các dòng discontinuity
                 line.contains("#EXT-X-DISCONTINUITY") -> null
-                // Biến các link segment tương đối thành tuyệt đối
                 line.isNotBlank() && !line.startsWith("#") -> {
                     if (line.startsWith("http")) line else "$variantPathBase/$line"
                 }
-                // Giữ lại các dòng khác
                 else -> line
             }
         }.joinToString("\n")
@@ -285,6 +283,7 @@ class OphimProvider : MainAPI() {
                 url = pastebinUrl,
                 type = ExtractorLinkType.M3U8
             ) {
+                // Referer này cũng quan trọng đối với trình phát video
                 this.referer = "$mainUrl/" 
                 this.quality = Qualities.Unknown.value
             }
@@ -295,5 +294,5 @@ class OphimProvider : MainAPI() {
         e.printStackTrace()
         return false
     }
-  }
+}
 }
