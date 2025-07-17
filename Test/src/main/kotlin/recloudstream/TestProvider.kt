@@ -160,108 +160,102 @@ class KKPhimProvider : MainAPI() {
     subtitleCallback: (SubtitleFile) -> Unit,
     callback: (ExtractorLink) -> Unit
 ): Boolean {
-    // Tag để lọc log cho dễ
-    val TAG = "KKPhimDebug"
-    
-    try {
-        val episodeData = mapper.readValue(data, EpisodeData::class.java)
+    // Không còn khối try-catch. Bất kỳ lỗi nào cũng sẽ được ném ra ngoài.
 
-        val headers = mapOf(
-            "Referer" to mainUrl,
-            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
-        )
+    val episodeData = mapper.readValue(data, EpisodeData::class.java)
 
-        // --- BƯỚC 1: LẤY VÀ PHÂN TÍCH MASTER PLAYLIST ---
-        val masterM3u8Url = episodeData.linkM3u8
-        val masterContent = app.get(masterM3u8Url, headers = headers).text
-        if (masterContent.isBlank()) {
-            throw Exception("Nội dung master M3U8 nhận về bị trống.")
-        }
+    val headers = mapOf(
+        "Referer" to mainUrl,
+        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
+    )
 
-        val relativePlaylistUrl = masterContent.lines().lastOrNull { it.endsWith(".m3u8") }
-            ?: throw Exception("Không tìm thấy link playlist con trong master M3U8.")
-        
-        val masterUrlBase = masterM3u8Url.substringBeforeLast("/") + "/"
-        val finalPlaylistUrl = masterUrlBase + relativePlaylistUrl
-
-        // --- BƯỚC 2: LỌC BỎ CÁC KHỐI /v7/ KHÔNG MONG MUỐN ---
-        val finalPlaylistContent = app.get(finalPlaylistUrl, headers = headers).text
-        if (finalPlaylistContent.isBlank()) {
-            throw Exception("Nội dung final playlist nhận về bị trống.")
-        }
-
-        val lines = finalPlaylistContent.lines()
-        val cleanedLines = mutableListOf<String>()
-        var i = 0
-        while (i < lines.size) {
-            val line = lines[i].trim()
-            if (line == "#EXT-X-DISCONTINUITY") {
-                var isV7Block = false
-                var blockEndIndex = i
-                for (j in (i + 1) until lines.size) {
-                    val nextLine = lines[j]
-                    if (nextLine.contains("/v7/")) { isV7Block = true }
-                    if (j > i && nextLine.trim() == "#EXT-X-DISCONTINUITY") {
-                        blockEndIndex = j
-                        break
-                    }
-                    if (j == lines.size - 1) { blockEndIndex = lines.size }
-                }
-                if (isV7Block) {
-                    i = blockEndIndex
-                    continue
-                }
-            }
-            if (line.isNotEmpty()) {
-                if (line.startsWith("#")) {
-                    cleanedLines.add(line)
-                } else if (!line.contains("/v7/")) {
-                    val segmentBaseUrl = finalPlaylistUrl.substringBeforeLast("/") + "/"
-                    cleanedLines.add(segmentBaseUrl + line)
-                }
-            }
-            i++
-        }
-        
-        val cleanedM3u8Content = cleanedLines.joinToString("\n")
-        if (cleanedM3u8Content.isBlank() || !cleanedM3u8Content.contains("#EXTM3U")) {
-             throw Exception("Nội dung M3U8 sau khi lọc bị trống hoặc không hợp lệ.")
-        }
-
-        // --- BƯỚC 3: UPLOAD LÊN DPASTE.ORG VÀ TRẢ VỀ LINK RAW ---
-        val postData = mapOf("content" to cleanedM3u8Content, "lexer" to "text")
-        val dpasteJsonResponse = app.post("https://dpaste.org/api/", data = postData).text
-        
-        if (!dpasteJsonResponse.trim().startsWith("{")) {
-            throw Exception("Dữ liệu trả về từ dpaste không phải là JSON. Response: $dpasteJsonResponse")
-        }
-
-        val dpasteUrl = mapper.readValue(dpasteJsonResponse, DpasteResponse::class.java).url
-        val rawDpasteUrl = "$dpasteUrl/raw"
-
-        if (!rawDpasteUrl.startsWith("http")) {
-            throw Exception("Không thể tạo URL hợp lệ từ dpaste: $rawDpasteUrl")
-        }
-        
-        // --- BƯỚC 4: TRẢ LINK VỀ CHO TRÌNH PHÁT ---
-        callback.invoke(
-            ExtractorLink(
-                source = this.name,
-                name = "${this.name} (Dpaste)",
-                url = rawDpasteUrl,
-                referer = mainUrl,
-                quality = Qualities.Unknown.value,
-                type = ExtractorLinkType.M3U8,
-                headers = headers
-            )
-        )
-        return true
-    } catch (e: Exception) {
-        // Bắt và ghi log lỗi cụ thể đã được "throw" từ khối try
-        Log.e(TAG, "LỖI: ${e.message}")
-        e.printStackTrace()
-        return false
+    // --- BƯỚC 1: LẤY VÀ PHÂN TÍCH MASTER PLAYLIST ---
+    val masterM3u8Url = episodeData.linkM3u8
+    val masterContent = app.get(masterM3u8Url, headers = headers).text
+    if (masterContent.isBlank()) {
+        throw Exception("Lỗi bước 1: Nội dung master M3U8 nhận về bị trống.")
     }
+
+    val relativePlaylistUrl = masterContent.lines().lastOrNull { it.endsWith(".m3u8") }
+        ?: throw Exception("Lỗi bước 1: Không tìm thấy link playlist con trong master M3U8.")
+    
+    val masterUrlBase = masterM3u8Url.substringBeforeLast("/") + "/"
+    val finalPlaylistUrl = masterUrlBase + relativePlaylistUrl
+
+    // --- BƯỚC 2: LỌC BỎ CÁC KHỐI /v7/ KHÔNG MONG MUỐN ---
+    val finalPlaylistContent = app.get(finalPlaylistUrl, headers = headers).text
+    if (finalPlaylistContent.isBlank()) {
+        throw Exception("Lỗi bước 2: Nội dung final playlist nhận về bị trống.")
+    }
+
+    val lines = finalPlaylistContent.lines()
+    val cleanedLines = mutableListOf<String>()
+    var i = 0
+    while (i < lines.size) {
+        val line = lines[i].trim()
+        if (line == "#EXT-X-DISCONTINUITY") {
+            var isV7Block = false
+            var blockEndIndex = i
+            for (j in (i + 1) until lines.size) {
+                val nextLine = lines[j]
+                if (nextLine.contains("/v7/")) { isV7Block = true }
+                if (j > i && nextLine.trim() == "#EXT-X-DISCONTINUITY") {
+                    blockEndIndex = j
+                    break
+                }
+                if (j == lines.size - 1) { blockEndIndex = lines.size }
+            }
+            if (isV7Block) {
+                i = blockEndIndex
+                continue
+            }
+        }
+        if (line.isNotEmpty()) {
+            if (line.startsWith("#")) {
+                cleanedLines.add(line)
+            } else if (!line.contains("/v7/")) {
+                val segmentBaseUrl = finalPlaylistUrl.substringBeforeLast("/") + "/"
+                cleanedLines.add(segmentBaseUrl + line)
+            }
+        }
+        i++
+    }
+    
+    val cleanedM3u8Content = cleanedLines.joinToString("\n")
+    if (cleanedM3u8Content.isBlank() || !cleanedM3u8Content.contains("#EXTM3U")) {
+            throw Exception("Lỗi bước 2: Nội dung M3U8 sau khi lọc bị trống hoặc không hợp lệ.")
+    }
+
+    // --- BƯỚC 3: UPLOAD LÊN DPASTE.ORG VÀ TRẢ VỀ LINK RAW ---
+    val postData = mapOf("content" to cleanedM3u8Content, "lexer" to "text")
+    val dpasteJsonResponse = app.post("https://dpaste.org/api/", data = postData).text
+    
+    if (!dpasteJsonResponse.trim().startsWith("{")) {
+        throw Exception("Lỗi bước 3: Dữ liệu trả về từ dpaste không phải là JSON. Response: $dpasteJsonResponse")
+    }
+
+    val dpasteUrl = mapper.readValue(dpasteJsonResponse, DpasteResponse::class.java).url
+    val rawDpasteUrl = "$dpasteUrl/raw"
+
+    if (!rawDpasteUrl.startsWith("http")) {
+        throw Exception("Lỗi bước 3: Không thể tạo URL hợp lệ từ dpaste: $rawDpasteUrl")
+    }
+    
+    // --- BƯỚC 4: TRẢ LINK VỀ CHO TRÌNH PHÁT ---
+    callback.invoke(
+        ExtractorLink(
+            source = this.name,
+            name = "${this.name} (Dpaste)",
+            url = rawDpasteUrl,
+            referer = mainUrl,
+            quality = Qualities.Unknown.value,
+            type = ExtractorLinkType.M3U8,
+            headers = headers
+        )
+    )
+    
+    // Chỉ trả về true nếu mọi thứ thành công
+    return true
 }
 
     // --- DATA CLASSES ---
