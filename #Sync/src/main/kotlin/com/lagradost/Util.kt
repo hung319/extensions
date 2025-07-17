@@ -6,6 +6,7 @@ import android.provider.Settings
 import java.security.MessageDigest
 import java.util.UUID
 
+@Suppress("DEPRECATION")
 fun getDeviceId(packageName: String, context: Context): String {
     val androidId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
     if (!androidId.isNullOrEmpty()) {

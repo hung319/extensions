@@ -143,26 +143,38 @@ object BackupUtils {
     fun getBackup(context: Context?, resumeWatching: List<DataStoreHelper.ResumeWatchingResult>?): BackupFile? {
         if (context == null) return null
 
+        fun sortMap(source: Map<String, Any?>): BackupVars {
+            val bools = mutableMapOf<String, Boolean>()
+            val ints = mutableMapOf<String, Int>()
+            val strings = mutableMapOf<String, String>()
+            val floats = mutableMapOf<String, Float>()
+            val longs = mutableMapOf<String, Long>()
+            val stringSets = mutableMapOf<String, Set<String>>()
+
+            source.forEach { (key, value) ->
+                when (value) {
+                    is Boolean -> bools[key] = value
+                    is Int -> ints[key] = value
+                    is String -> strings[key] = value
+                    is Float -> floats[key] = value
+                    is Long -> longs[key] = value
+                    is Set<*> -> {
+                        // Đảm bảo tất cả phần tử trong set là String trước khi ép kiểu
+                        if (value.all { it is String }) {
+                            @Suppress("UNCHECKED_CAST")
+                            stringSets[key] = value as Set<String>
+                        }
+                    }
+                }
+            }
+            return BackupVars(bools, ints, strings, floats, longs, stringSets)
+        }
+
         val allData = context.getSharedPrefs().all.filter { it.key.isBackup(resumeWatching) }
         val allSettings = context.getDefaultSharedPrefs().all.filter { it.key.isBackup(resumeWatching) }
 
-        val allDataSorted = BackupVars(
-            allData.filter { it.value is Boolean } as? Map<String, Boolean>,
-            allData.filter { it.value is Int } as? Map<String, Int>,
-            allData.filter { it.value is String } as? Map<String, String>,
-            allData.filter { it.value is Float } as? Map<String, Float>,
-            allData.filter { it.value is Long } as? Map<String, Long>,
-            allData.filter { it.value as? Set<String> != null } as? Map<String, Set<String>>
-        )
-
-        val allSettingsSorted = BackupVars(
-            allSettings.filter { it.value is Boolean } as? Map<String, Boolean>,
-            allSettings.filter { it.value is Int } as? Map<String, Int>,
-            allSettings.filter { it.value is String } as? Map<String, String>,
-            allSettings.filter { it.value is Float } as? Map<String, Float>,
-            allSettings.filter { it.value is Long } as? Map<String, Long>,
-            allSettings.filter { it.value as? Set<String> != null } as? Map<String, Set<String>>
-        )
+        val allDataSorted = sortMap(allData)
+        val allSettingsSorted = sortMap(allSettings)
 
         return BackupFile(
             allDataSorted,
