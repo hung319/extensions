@@ -9,6 +9,8 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import org.jsoup.Jsoup
 import com.lagradost.cloudstream3.newEpisode
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 
 data class OphimItem(
     @JsonProperty("name") val name: String,
@@ -265,10 +267,12 @@ class OphimProvider : MainAPI() {
             }
         }.joinToString("\n")
 
-        // 4. Tải nội dung đã sửa đổi lên pastebin để có link tĩnh
+        // 4. Tạo RequestBody và tải nội dung đã sửa đổi lên pastebin
+        val requestBody = modifiedM3u8.toRequestBody("text/plain".toMediaType())
+
         val pastebinUrl = app.post(
             "https://paste.swurl.xyz/playlist.m3u8",
-            data = modifiedM3u8
+            data = requestBody // Sửa lỗi: Truyền đối tượng RequestBody thay vì String
         ).text.trim()
 
         if (pastebinUrl.isBlank() || !pastebinUrl.startsWith("http")) {
