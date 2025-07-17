@@ -22,7 +22,6 @@ android {
 cloudstream {
     // All of these properties are optional, you can safely remove them
 
-    name = "#Sync"
     // description = "Lorem Ipsum"
     authors = listOf("anhdaden")
 
