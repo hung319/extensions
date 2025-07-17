@@ -83,35 +83,42 @@ object ApiUtils {
                     """ mutation CreateDraftIssue { addProjectV2DraftIssue( input: { projectId: "$projectId", title: "$currentDeviceId", body: "$encodedData" } ) { projectItem { id content { ... on DraftIssue { id } } } } } """
                 val createRes =
                     apiCall(createQuery.toStringData()) ?: return failureToken
+                
+                // ================= SỬA LỖI TẠI ĐÂY =================
+                // Kiểm tra xem API của GitHub có trả về lỗi cụ thể không
+                val apiError = createRes.errors?.firstOrNull()?.message
+                if (apiError != null) {
+                    return Pair(false, "GitHub API Error: $apiError")
+                }
+
+                // Kiểm tra xem issue đã được tạo thành công chưa
                 val issue = createRes.data?.issue
                 if (issue != null) {
                     setKey("sync_item_id", issue.projectItem.id)
                     setKey("sync_device_id", issue.projectItem.content.id)
                     return Pair(true, "Created new backup for device: $currentDeviceId")
                 } else {
-                    return Pair(false, "Failed to create new backup")
+                    return Pair(false, "Failed to create new backup. Response from server was empty.")
                 }
+                // ======================================================
             } else {
                 return Pair(true, "Login successful. Backup is disabled, no new device created.")
             }
         }
     }
 
-    // ================= SỬA LỖI TẠI ĐÂY =================
     suspend fun syncThisDevice(data: String): Pair<Boolean, String>? {
         if (!isLoggedIn()) return null
 
-        // Luôn xác thực lại ID của bản sao lưu trên cloud trước khi cập nhật
         val currentDeviceId = getKey<String>("device_id")
         val devices = fetchDevices()
         val correctDevice = devices?.firstOrNull { it.name == currentDeviceId }
         
-        // Nếu không tìm thấy thiết bị trên cloud (có thể chưa được tạo), không làm gì cả
         if (correctDevice == null) {
             return Pair(false, "Device not registered on cloud yet. Save settings first.")
         }
         
-        val draftIssueId = correctDevice.deviceId // Lấy ID đúng
+        val draftIssueId = correctDevice.deviceId
 
         val encodedData = Base64.encodeToString(data.toByteArray(), BASE64_FLAGS)
         val query =
@@ -124,7 +131,6 @@ object ApiUtils {
             failure
         }
     }
-    // ======================================================
 
     suspend fun fetchDevices(): List<SyncDevice>? {
         if (!isLoggedIn()) return null
