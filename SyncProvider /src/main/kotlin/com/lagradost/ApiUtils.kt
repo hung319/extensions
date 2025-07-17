@@ -1,98 +1,163 @@
 package com.h4rs
 
-import android.util.Base64
 import android.content.Context
-import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.mapper
-import com.lagradost.cloudstream3.utils.AppUtils.toJson
-import com.lagradost.cloudstream3.AcraApplication.Companion.setKey
 import com.lagradost.cloudstream3.AcraApplication.Companion.getKey
-import com.lagradost.cloudstream3.ui.home.HomeViewModel.Companion.getResumeWatching
+import com.lagradost.cloudstream3.AcraApplication.Companion.setKey
+import com.lagradost.cloudstream3.ui.home.HomeViewModel
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
+import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
+import com.lagradost.cloudstream3.utils.DataStore.mapper
+import com.lagradost.cloudstream3.utils.Coroutines.main
+import io.ktor.client.request.*
+import io.ktor.client.statement.*
+import com.lagradost.cloudstream3.AcraApplication.Companion.app
 import com.fasterxml.jackson.module.kotlin.readValue
+import org.json.JSONObject
+import com.lagradost.cloudstream3.utils.AppUtils.base64Decode
+import com.lagradost.cloudstream3.utils.AppUtils.toBase64
 
 object ApiUtils {
-    private fun Any.toStringData(): String {
-        return mapper.writeValueAsString(this)
-    }
+    private val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
+    private val failure = Pair(false, "Project not found, please check project number")
+    private val failureToken = Pair(false, "Github token is wrong")
+    private val headers = mapOf(
+        "Accept" to "application/vnd.github.v4.idl",
+        "Content-Type" to "application/json",
+        "User-Agent" to USER_AGENT,
+        "Authorization" to "bearer ${getKey<String>("sync_token")}"
+    )
 
-    private suspend fun apiCall(query: String): APIRes? {
+    private suspend fun apiCall(query: String?): APIRes? {
+        if (query == null) return null
         try {
-            val token = getKey<String>("sync_token")
-            val apiUrl = "https://api.github.com/graphql"
-            val header = mapOf(
-                "Content-Type" to "application/json",
-                "Authorization" to "Bearer $token"
-            )
-            val data = """ { "query": ${query} } """
-            val res = app.post(apiUrl, headers = header, json = data)
-
-            return res.parsedSafe<APIRes>()
+            val req = app.post(
+                "https://api.github.com/graphql",
+                headers = headers,
+                json = JSONObject(mapOf("query" to query))
+            ).text
+            return tryParseJson<APIRes>(req)
         } catch (e: Exception) {
+            e.printStackTrace()
             return null
         }
     }
 
-    fun isLoggedIn(): Boolean {
-        val token = getKey<String>("sync_token")
-        val projectNum = getKey<String>("sync_project_num")
-        val projectId = getKey<String>("sync_project_id")
-
-        return !(token.isNullOrEmpty() || projectNum.isNullOrEmpty() || projectId.isNullOrEmpty())
+    private fun String.toStringData(): String {
+        return this.replace("\"", "\\\"").replace("\n", "")
     }
 
-    suspend fun syncProjectDetails(context: Context?): Pair<Boolean, String?> {
-        var failure = false to "Project not found"
-        var failureToken = false to "Github token is wrong"
-        val projectNum = getKey<String>("sync_project_num")
-        val query = """ query Viewer { viewer { projectV2(number: ${projectNum}) { id } } } """
+    fun isLoggedIn(): Boolean {
+        return !getKey<String>("sync_token").isNullOrEmpty() && !getKey<String>("sync_project_num").isNullOrEmpty()
+    }
+
+    suspend fun syncProjectDetails(context: Context?): Pair<Boolean, String>? {
+        if (!isLoggedIn()) return null
+        val projectNum = getKey<String>("sync_project_num") ?: return failure
+        val query = """ query { viewer { projectV2(number: ${projectNum}) { id } } } """
         val res = apiCall(query.toStringData()) ?: return failureToken
         val projectId = res.data?.viewer?.projectV2?.id ?: return failure
         setKey("sync_project_id", projectId)
+
+        // LOGIC MỚI BẮT ĐẦU TỪ ĐÂY
         val devices: List<SyncDevice>? = fetchDevices()
-        if (devices?.isEmpty() == false && devices?.size ?: 0 > 0) {
-            val firstDevice: SyncDevice = devices!!.first()
-            setKey("sync_item_id", firstDevice.itemId ?: "")
-            setKey("sync_device_id", firstDevice.deviceId ?: "")
+        val currentDeviceId = getKey<String>("device_id")
+
+        // Tìm xem có bản sao lưu nào khớp với ID của thiết bị hiện tại không
+        val existingDevice = devices?.firstOrNull { it.name == currentDeviceId }
+
+        if (existingDevice != null) {
+            // Đã có bản sao lưu cho ID này, ta sẽ sử dụng nó
+            setKey("sync_item_id", existingDevice.itemId)
+            setKey("sync_device_id", existingDevice.deviceId)
+
+            // Tùy chọn: Khôi phục dữ liệu nếu người dùng bật
             if (getKey<String>("restore_device") == "true") {
-                val restoredValue = mapper.readValue<BackupFile>(firstDevice.syncedData ?: "")
+                val restoredValue = mapper.readValue<BackupFile>(existingDevice.syncedData ?: "")
                 BackupUtils.restore(context, restoredValue, true, true)
+                return Pair(true, "Restored data from $currentDeviceId")
             }
-        } else if (getKey<String>("backup_device") == "true") {
-            val syncData = BackupUtils.getBackup(context, getResumeWatching())?.toJson() ?: ""
-            val data = Base64.encodeToString(syncData.toByteArray(), Base64.URL_SAFE or Base64.NO_WRAP)
-            val query = """ mutation AddProjectV2DraftIssue { addProjectV2DraftIssue( input: { projectId: "$projectId", title: "${getKey<String>("device_id")}", body: "$data" } ) { projectItem { id content { ... on DraftIssue { id } } } } } """
-            val res = apiCall(query.toStringData()) ?: return failureToken
-            val itemId = res.data?.issue?.projectItem?.id ?: return false to res.errors?.get(0)?.message?.toString()
-            val deviceId = res.data?.issue?.projectItem?.content?.id ?: return false to res.errors?.get(0)?.message?.toString()
-            setKey("sync_item_id", itemId)
-            setKey("sync_device_id", deviceId)
+            return Pair(true, "Synced with existing device: $currentDeviceId")
         } else {
-            setKey("sync_token", "")
-            setKey("sync_project_num", "")
-            return false to "Error finding backup device"
+            // Không tìm thấy bản sao lưu cho ID này, tiến hành tạo mới
+            if (getKey<String>("backup_device") == "true") {
+                val data =
+                    BackupUtils.getBackup(context, HomeViewModel.getResumeWatching())?.toJson()
+                        ?: ""
+                val createQuery =
+                    """ mutation CreateDraftIssue { addProjectV2DraftIssue( input: { projectId: "$projectId", title: "$currentDeviceId", body: "${data.toBase64()}" } ) { projectItem { id content { ... on DraftIssue { id } } } } } """
+                val createRes =
+                    apiCall(createQuery.toStringData()) ?: return failureToken
+                val issue = createRes.data?.issue
+                if (issue != null) {
+                    setKey("sync_item_id", issue.projectItem.id)
+                    setKey("sync_device_id", issue.projectItem.content.id)
+                    return Pair(true, "Created new backup for device: $currentDeviceId")
+                } else {
+                    return failure
+                }
+            } else {
+                 return Pair(true, "Login successful. Backup is disabled, no new device created.")
+            }
         }
-        return true to "Device registered successfully"
     }
 
-    suspend fun syncThisDevice(syncData: String): Pair<Boolean, String?> {
-        val failure = false to "Error sync this device id: ${getKey<String>("device_id")}"
-        if (!isLoggedIn()) return failure
-        val data = Base64.encodeToString(syncData.toByteArray(), Base64.URL_SAFE or Base64.NO_WRAP)
-        val deviceId = getKey<String>("sync_device_id")
-        val query = """ mutation UpdateProjectV2DraftIssue { updateProjectV2DraftIssue( input: { draftIssueId: "$deviceId", title: "${getKey<String>("device_id")}", body: "$data" } ) { draftIssue { id } } } """
-        apiCall(query.toStringData()) ?: return failure
-        
-        return true to "Sync success"
+    suspend fun syncThisDevice(data: String): Pair<Boolean, String>? {
+        if (!isLoggedIn()) return null
+        val deviceId = getKey<String>("sync_device_id") ?: return failure
+        val query =
+            """ mutation UpdateProjectV2DraftIssue { updateProjectV2DraftIssue( input: { draftIssueId: "$deviceId", title: "${getKey<String>("device_id")}", body: "${data.toBase64()}" } ) { draftIssue { id } } } """
+        val res = apiCall(query.toStringData())
+        if (res != null) {
+            main {
+                //showToast("Sync Success")
+            }
+            return Pair(true, "Sync Success")
+        } else {
+            main {
+                //showToast("Sync Fail")
+            }
+            return failure
+        }
     }
 
     suspend fun fetchDevices(): List<SyncDevice>? {
         if (!isLoggedIn()) return null
-        val projectNum = getKey<String>("sync_project_num")
-        val query = """ query User { viewer { projectV2(number: ${projectNum}) { id items(first: 50) { nodes { id content { ... on DraftIssue { id title bodyText } } } totalCount } } } } """
-        val res = apiCall(query.toStringData())
-        return res?.data?.viewer?.projectV2?.items?.nodes?.map {
-            val data = Base64.decode(it.content.bodyText, Base64.URL_SAFE or Base64.NO_WRAP).toString(Charsets.UTF_8)
-            SyncDevice(it.content.title, it.content.id, it.id, data)
+        val projectNum = getKey<String>("sync_project_num") ?: return null
+        val query = """
+        query{
+            viewer {
+                projectV2(number: ${projectNum}) {
+                    id
+                    items(first: 100) {
+                        nodes{
+                            id
+                            content{
+                                ...on DraftIssue {
+                                    id
+                                    title
+                                    bodyText
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        """.toStringData()
+        val res = apiCall(query) ?: return null
+        val nodes = res.data?.viewer?.projectV2?.items?.nodes
+        if (nodes != null) {
+            return nodes.map {
+                SyncDevice(
+                    name = it.content.title,
+                    deviceId = it.content.id,
+                    itemId = it.id,
+                    syncedData = it.content.bodyText.base64Decode()
+                )
+            }
+        } else {
+            return null
         }
     }
+
 }
