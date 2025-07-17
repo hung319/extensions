@@ -233,7 +233,8 @@ class KKPhimProvider : MainAPI() {
                 "lexer" to "text"
             )
             val dpasteJsonResponse = app.post("https://dpaste.org/api/", data = postData).text
-            val dpasteUrl = mapper.readValue<DpasteResponse>(dpasteJsonResponse).url
+            // Sửa lại dòng 236
+            val dpasteUrl = mapper.readValue(dpasteJsonResponse, DpasteResponse::class.java).url
             val rawDpasteUrl = "$dpasteUrl/raw"
 
             // --- BƯỚC 4: TRẢ LINK VỀ CHO TRÌNH PHÁT ---
