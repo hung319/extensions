@@ -43,9 +43,8 @@ object ApiUtils {
         }
     }
 
-    private fun String.toStringData(): String {
-        return this.replace("\"", "\\\"").replace("\n", "")
-    }
+    // XÓA BỎ HÀM toStringData() GÂY LỖI
+    // private fun String.toStringData(): String { ... }
 
     fun isLoggedIn(): Boolean {
         return !getKey<String>("sync_token").isNullOrEmpty() && !getKey<String>("sync_project_num").isNullOrEmpty()
@@ -55,7 +54,8 @@ object ApiUtils {
         if (!isLoggedIn()) return null
         val projectNum = getKey<String>("sync_project_num") ?: return failure
         val query = """ query { viewer { projectV2(number: ${projectNum}) { id } } } """
-        val res = apiCall(query.toStringData()) ?: return failureToken
+        // Gọi apiCall trực tiếp, không qua toStringData()
+        val res = apiCall(query) ?: return failureToken
         val projectId = res.data?.viewer?.projectV2?.id ?: return failure
         setKey("sync_project_id", projectId)
 
@@ -81,17 +81,14 @@ object ApiUtils {
                 val encodedData = Base64.encodeToString(data.toByteArray(), BASE64_FLAGS)
                 val createQuery =
                     """ mutation CreateDraftIssue { addProjectV2DraftIssue( input: { projectId: "$projectId", title: "$currentDeviceId", body: "$encodedData" } ) { projectItem { id content { ... on DraftIssue { id } } } } } """
-                val createRes =
-                    apiCall(createQuery.toStringData()) ?: return failureToken
+                // Gọi apiCall trực tiếp, không qua toStringData()
+                val createRes = apiCall(createQuery) ?: return failureToken
                 
-                // ================= SỬA LỖI TẠI ĐÂY =================
-                // Kiểm tra xem API của GitHub có trả về lỗi cụ thể không
                 val apiError = createRes.errors?.firstOrNull()?.message
                 if (apiError != null) {
                     return Pair(false, "GitHub API Error: $apiError")
                 }
 
-                // Kiểm tra xem issue đã được tạo thành công chưa
                 val issue = createRes.data?.issue
                 if (issue != null) {
                     setKey("sync_item_id", issue.projectItem.id)
@@ -100,7 +97,6 @@ object ApiUtils {
                 } else {
                     return Pair(false, "Failed to create new backup. Response from server was empty.")
                 }
-                // ======================================================
             } else {
                 return Pair(true, "Login successful. Backup is disabled, no new device created.")
             }
@@ -123,7 +119,8 @@ object ApiUtils {
         val encodedData = Base64.encodeToString(data.toByteArray(), BASE64_FLAGS)
         val query =
             """ mutation UpdateProjectV2DraftIssue { updateProjectV2DraftIssue( input: { draftIssueId: "$draftIssueId", title: "$currentDeviceId", body: "$encodedData" } ) { draftIssue { id } } } """
-        val res = apiCall(query.toStringData())
+        // Gọi apiCall trực tiếp, không qua toStringData()
+        val res = apiCall(query)
         
         return if (res != null) {
             Pair(true, "Sync Success")
@@ -155,7 +152,8 @@ object ApiUtils {
                 }
             }
         }
-        """.toStringData()
+        """
+        // Gọi apiCall trực tiếp, không qua toStringData()
         val res = apiCall(query) ?: return null
         val nodes = res.data?.viewer?.projectV2?.items?.nodes
         return nodes?.map {
