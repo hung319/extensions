@@ -248,38 +248,44 @@ class OphimProvider : MainAPI() {
             "$masterPathBase/$variantPath"
         }
 
-        // BƯỚC 2: LẤY PLAYLIST CUỐI CÙNG VÀ LỌC QUẢNG CÁO
-        val finalPlaylistContent = app.get(variantM3u8Url, headers = headers).text
-        val variantPathBase = variantM3u8Url.substringBeforeLast("/")
+        // BƯỚC 2: LẤY PLAYLIST CUỐI CÙNG VÀ LỌC QUẢNG CÁO (LOGIC ĐẢO NGƯỢC)
+val finalPlaylistContent = app.get(variantM3u8Url, headers = headers).text
+val variantPathBase = variantM3u8Url.substringBeforeLast("/")
 
-        var inAdBlock = false
-        val cleanedLines = mutableListOf<String>()
+// Cờ này theo dõi xem chúng ta có đang ở BÊN TRONG khối chứa phim hay không.
+// Ban đầu là false, nghĩa là các nội dung ở đầu file (quảng cáo) sẽ bị xóa.
+var isInsideMovieBlock = false
+val cleanedLines = mutableListOf<String>()
 
-        finalPlaylistContent.lines().forEach { line ->
-            val trimmedLine = line.trim()
-            if (trimmedLine == "#EXT-X-DISCONTINUITY") {
-                inAdBlock = !inAdBlock
-                return@forEach // Bỏ qua dòng DISCONTINUITY
+finalPlaylistContent.lines().forEach { line ->
+    val trimmedLine = line.trim()
+    if (trimmedLine == "#EXT-X-DISCONTINUITY") {
+        isInsideMovieBlock = !isInsideMovieBlock // Bật/tắt công tắc "chế độ phim"
+        return@forEach // Bỏ qua chính dòng DISCONTINUITY
+    }
+
+    // Bây giờ, chúng ta chỉ giữ lại những dòng khi đang ở BÊN TRONG khối phim.
+    if (isInsideMovieBlock) {
+        if (trimmedLine.isNotEmpty() && !trimmedLine.startsWith("#")) {
+            // Đây là dòng chứa link segment .ts
+            val segmentUrl = if (trimmedLine.startsWith("http")) {
+                trimmedLine
+            } else {
+                "$variantPathBase/$trimmedLine"
             }
-
-            if (!inAdBlock) {
-                // Xử lý các dòng segment để đảm bảo URL là tuyệt đối
-                if (trimmedLine.isNotEmpty() && !trimmedLine.startsWith("#")) {
-                    val segmentUrl = if (trimmedLine.startsWith("http")) {
-                        trimmedLine
-                    } else {
-                        "$variantPathBase/$trimmedLine"
-                    }
-                    cleanedLines.add(segmentUrl)
-                } else {
-                    // Giữ lại các dòng metadata khác
-                    cleanedLines.add(line)
-                }
-            }
+            cleanedLines.add(segmentUrl)
+        } else {
+            // Đây là dòng metadata khác, giữ lại
+            cleanedLines.add(line)
         }
+    }
+    // Nếu isInsideMovieBlock là false, không làm gì cả -> dòng đó (quảng cáo) sẽ bị xóa.
+}
 
-        val cleanedM3u8Content = cleanedLines.joinToString("\n")
-        if (cleanedM3u8Content.isBlank()) throw Exception("Nội dung M3U8 trống sau khi lọc")
+val cleanedM3u8Content = cleanedLines.joinToString("\n")
+if (cleanedM3u8Content.isBlank()) throw Exception("Nội dung M3U8 trống sau khi lọc. Có thể cấu trúc M3U8 đã thay đổi.")
+
+// ... các bước tiếp theo giữ nguyên ...
 
         // BƯỚC 3: UPLOAD NỘI DUNG ĐÃ LỌC LÊN DỊCH VỤ PASTE
         val requestBody = cleanedM3u8Content.toRequestBody("text/plain".toMediaType())
