@@ -1,17 +1,16 @@
 package com.h4rs
 
 import android.content.Context
+import android.util.Base64 // Import lớp Base64 của Android
 import com.fasterxml.jackson.module.kotlin.readValue
 import com.lagradost.cloudstream3.AcraApplication.Companion.app
 import com.lagradost.cloudstream3.AcraApplication.Companion.getKey
 import com.lagradost.cloudstream3.AcraApplication.Companion.setKey
 import com.lagradost.cloudstream3.ui.home.HomeViewModel
-import com.lagradost.cloudstream3.utils.AppUtils.base64Decode
-import com.lagradost.cloudstream3.utils.AppUtils.toBase64
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.DataStore.mapper
-import io.ktor.client.request.* // import quan trọng
+import io.ktor.client.request.*
 import org.json.JSONObject
 
 object ApiUtils {
@@ -76,8 +75,10 @@ object ApiUtils {
                 val data =
                     BackupUtils.getBackup(context, HomeViewModel.getResumeWatching())?.toJson()
                         ?: ""
+                // SỬ DỤNG Base64 CỦA ANDROID
+                val encodedData = Base64.encodeToString(data.toByteArray(), Base64.NO_WRAP)
                 val createQuery =
-                    """ mutation CreateDraftIssue { addProjectV2DraftIssue( input: { projectId: "$projectId", title: "$currentDeviceId", body: "${data.toBase64()}" } ) { projectItem { id content { ... on DraftIssue { id } } } } } """
+                    """ mutation CreateDraftIssue { addProjectV2DraftIssue( input: { projectId: "$projectId", title: "$currentDeviceId", body: "$encodedData" } ) { projectItem { id content { ... on DraftIssue { id } } } } } """
                 val createRes =
                     apiCall(createQuery.toStringData()) ?: return failureToken
                 val issue = createRes.data?.issue
@@ -97,8 +98,10 @@ object ApiUtils {
     suspend fun syncThisDevice(data: String): Pair<Boolean, String>? {
         if (!isLoggedIn()) return null
         val deviceId = getKey<String>("sync_device_id") ?: return failure
+        // SỬ DỤNG Base64 CỦA ANDROID
+        val encodedData = Base64.encodeToString(data.toByteArray(), Base64.NO_WRAP)
         val query =
-            """ mutation UpdateProjectV2DraftIssue { updateProjectV2DraftIssue( input: { draftIssueId: "$deviceId", title: "${getKey<String>("device_id")}", body: "${data.toBase64()}" } ) { draftIssue { id } } } """
+            """ mutation UpdateProjectV2DraftIssue { updateProjectV2DraftIssue( input: { draftIssueId: "$deviceId", title: "${getKey<String>("device_id")}", body: "$encodedData" } ) { draftIssue { id } } } """
         val res = apiCall(query.toStringData())
         return if (res != null) {
             Pair(true, "Sync Success")
@@ -134,11 +137,13 @@ object ApiUtils {
         val res = apiCall(query) ?: return null
         val nodes = res.data?.viewer?.projectV2?.items?.nodes
         return nodes?.map {
+            // SỬ DỤNG Base64 CỦA ANDROID
+            val decodedData = String(Base64.decode(it.content.bodyText, Base64.DEFAULT))
             SyncDevice(
                 name = it.content.title,
                 deviceId = it.content.id,
                 itemId = it.id,
-                syncedData = it.content.bodyText.base64Decode()
+                syncedData = decodedData
             )
         }
     }
