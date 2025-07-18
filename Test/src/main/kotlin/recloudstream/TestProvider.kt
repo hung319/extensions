@@ -43,7 +43,12 @@ class Anime47Provider : MainAPI() {
 
     private fun Element.toSearchResult(): SearchResponse? {
         val title = this.selectFirst("div.movie-title-1")?.text()?.trim() ?: return null
-        val href = fixUrl(this.selectFirst("a")!!.attr("href"))
+        
+        // SỬA LỖI: Dọn dẹp href trước khi tạo link tuyệt đối
+        val rawHref = this.selectFirst("a")!!.attr("href")
+        val cleanHref = if (rawHref.startsWith("./")) rawHref.substring(1) else rawHref
+        val href = fixUrl(cleanHref)
+
         val posterUrl = this.selectFirst("div.public-film-item-thumb")?.attr("style")
             ?.substringAfter("url('")?.substringBefore("')")
         val ribbon = this.selectFirst("span.ribbon")?.text()?.trim()
