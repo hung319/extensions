@@ -189,42 +189,40 @@ class Anime47Provider : MainAPI() {
         val hasLoadedSubtitles = AtomicBoolean(false)
 
         sources.apmap { (sourceName, url) ->
-            try {
-                val episodeId = url.substringAfterLast('/').substringBefore('.').trim()
-                val serverId = "4"
-                val postData = mapOf("ID" to episodeId, "SV" to serverId, "SV4" to serverId)
+            // BỎ TRY-CATCH ĐỂ HIỂN THỊ LỖI GỐC
+            val episodeId = url.substringAfterLast('/').substringBefore('.').trim()
+            val serverId = "4"
+            val postData = mapOf("ID" to episodeId, "SV" to serverId, "SV4" to serverId)
 
-                val playerResponseText = app.post(
-                    "$mainUrl/player/player.php", data = postData,
-                    referer = url, headers = mapOf("X-Requested-With" to "XMLHttpRequest")
-                ).text
-                
-                val encryptedDataB64 = Regex("""var thanhhoa = atob\("([^"]+)"\)""").find(playerResponseText)?.groupValues?.get(1)
-                    ?: return@apmap
+            val playerResponseText = app.post(
+                "$mainUrl/player/player.php", data = postData,
+                referer = url, headers = mapOf("X-Requested-With" to "XMLHttpRequest")
+            ).text
+            
+            val encryptedDataB64 = Regex("""var thanhhoa = atob\("([^"]+)"\)""").find(playerResponseText)?.groupValues?.get(1)
+                ?: throw Exception("[$sourceName] Không tìm thấy dữ liệu mã hóa")
 
-                val videoUrl = decryptSource(encryptedDataB64, "caphedaklak") ?: return@apmap
+            val videoUrl = decryptSource(encryptedDataB64, "caphedaklak")
+                ?: throw Exception("[$sourceName] Giải mã video thất bại")
 
-                callback(
-                    ExtractorLink(
-                        source = this.name, name = sourceName, url = videoUrl, referer = "$mainUrl/",
-                        quality = Qualities.Unknown.value, type = ExtractorLinkType.M3U8,
-                    )
+            callback(
+                ExtractorLink(
+                    source = this.name, name = sourceName, url = videoUrl, referer = "$mainUrl/",
+                    quality = Qualities.Unknown.value, type = ExtractorLinkType.M3U8,
                 )
-                
-                if (hasLoadedSubtitles.compareAndSet(false, true)) {
-                    val tracksJsonBlock = Regex("""tracks:\s*(\[.*?\])""").find(playerResponseText)?.groupValues?.get(1)
-                    if (tracksJsonBlock != null) {
-                        val subtitleRegex = Regex("""\{file:\s*["']([^"']+)["'],\s*label:\s*["']([^"']+)["']""")
-                        subtitleRegex.findAll(tracksJsonBlock).forEach { match ->
-                            val file = match.groupValues[1]; val label = match.groupValues[2]
-                            if (file.isNotBlank()) {
-                                subtitleCallback(SubtitleFile(label, fixUrl(file)))
-                            }
+            )
+            
+            if (hasLoadedSubtitles.compareAndSet(false, true)) {
+                val tracksJsonBlock = Regex("""tracks:\s*(\[.*?\])""").find(playerResponseText)?.groupValues?.get(1)
+                if (tracksJsonBlock != null) {
+                    val subtitleRegex = Regex("""\{file:\s*["']([^"']+)["'],\s*label:\s*["']([^"']+)["']""")
+                    subtitleRegex.findAll(tracksJsonBlock).forEach { match ->
+                        val file = match.groupValues[1]; val label = match.groupValues[2]
+                        if (file.isNotBlank()) {
+                            subtitleCallback(SubtitleFile(label, fixUrl(file)))
                         }
                     }
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
             }
         }
         
