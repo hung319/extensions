@@ -60,7 +60,6 @@ class Anime47Provider : MainAPI() {
         return document.select("ul.last-film-box > li").mapNotNull { it.toSearchResult() }
     }
 
-    // =================== HÀM LOAD ĐÃ ĐƯỢC VIẾT LẠI HOÀN TOÀN ===================
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, interceptor = interceptor).document
 
@@ -69,7 +68,7 @@ class Anime47Provider : MainAPI() {
         val plot = document.selectFirst("div#film-content > .news-article")?.text()?.trim()
         val tags = document.select("dd.movie-dd.dd-cat a").map { it.text() }
         val year = document.selectFirst("span.title-year")?.text()?.removeSurrounding("(", ")")?.toIntOrNull()
-
+        
         val tvType = if (tags.any { it.contains("Hoạt hình Trung Quốc", ignoreCase = true) }) {
             TvType.Cartoon
         } else {
@@ -82,7 +81,8 @@ class Anime47Provider : MainAPI() {
             // Trường hợp 1: PHIM LẺ / OVA
             val watchUrl = document.selectFirst("a#btn-film-watch")?.attr("href")?.let { fixUrl(it) } 
                 ?: return null
-            listOf(Episode(data = watchUrl, name = title))
+            // SỬA LỖI: Đặt tên tập phim là "Xem Phim" thay vì lặp lại tên phim
+            listOf(Episode(data = watchUrl, name = "Xem Phim"))
         } else {
             // Trường hợp 2: PHIM BỘ
             val episodeList = mutableListOf<Episode>()
@@ -99,7 +99,6 @@ class Anime47Provider : MainAPI() {
                 val lastPage = pagination.last()?.text()?.toIntOrNull() ?: 1
 
                 if (lastPage > 1) {
-                    // SỬA LỖI: Chuyển IntRange thành List trước khi dùng apmap
                     (2..lastPage).toList().apmap { page ->
                         try {
                             val ajaxResponse = app.post(
@@ -111,9 +110,7 @@ class Anime47Provider : MainAPI() {
                                 val epName = "Tập " + it.attr("title").ifEmpty { it.text() }
                                 Episode(epHref, name = epName)
                             }.let { episodeList.addAll(it) }
-                        } catch (e: Exception) {
-                            // Bỏ qua nếu trang bị lỗi
-                        }
+                        } catch (_: Exception) {}
                     }
                 }
             }
@@ -129,10 +126,8 @@ class Anime47Provider : MainAPI() {
             this.year = year
         }
     }
-
-    private data class Track(val file: String?, val label: String?, val kind: String?, val default: Boolean?)
+    
     private data class CryptoJsJson(val ct: String, val iv: String, val s: String)
-    private data class VideoSource(val file: String)
     
     private fun evpBytesToKey(password: ByteArray, salt: ByteArray, keySize: Int, ivSize: Int): Pair<ByteArray, ByteArray> {
         var derivedBytes = byteArrayOf()
@@ -163,7 +158,6 @@ class Anime47Provider : MainAPI() {
             val decryptedBytes = cipher.doFinal(ciphertext)
             parseJson<String>(String(decryptedBytes))
         } catch (e: Exception) {
-            e.printStackTrace()
             null
         }
     }
@@ -199,25 +193,22 @@ class Anime47Provider : MainAPI() {
             )
         )
         
-        // SỬA LỖI PHỤ ĐỀ: Dùng Regex đơn giản hơn để lấy khối JSON
-        val tracksJson = Regex("""tracks:\s*(\[.*?\])""").find(playerResponseText)?.groupValues?.get(1)
-        if (tracksJson != null) {
-            try {
-                val tracks = parseJson<List<Track>>(tracksJson)
-                tracks.forEach { track ->
-                    if (!track.file.isNullOrBlank()) {
-                        subtitleCallback(SubtitleFile(track.label ?: "Phụ đề", fixUrl(track.file)))
-                    }
+        // SỬA LỖI: Quay lại logic lấy phụ đề bằng Regex đã được xác nhận hoạt động
+        val tracksJsonBlock = Regex("""tracks:\s*(\[.*?\])""").find(playerResponseText)?.groupValues?.get(1)
+        if (tracksJsonBlock != null) {
+            val subtitleRegex = Regex("""\{file:\s*["']([^"']+)["'],\s*label:\s*["']([^"']+)["']""")
+            subtitleRegex.findAll(tracksJsonBlock).forEach { match ->
+                val file = match.groupValues[1]
+                val label = match.groupValues[2]
+                if (file.isNotBlank()) {
+                    subtitleCallback(SubtitleFile(label, fixUrl(file)))
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
             }
         }
         
         return true
     }
 
-    // **CẢI TIẾN 4: Logic Interceptor giữ nguyên**
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
         return object : Interceptor {
             override fun intercept(chain: Interceptor.Chain): Response {
@@ -231,9 +222,7 @@ class Anime47Provider : MainAPI() {
                             val fixedBytes = skipByteError(body)
                             val newBody = fixedBytes.toResponseBody(body.contentType())
                             return response.newBuilder().body(newBody).build()
-                        } catch (e: Exception) { 
-                            // Bỏ qua lỗi
-                        }
+                        } catch (_: Exception) {}
                     }
                 }
                 return response
