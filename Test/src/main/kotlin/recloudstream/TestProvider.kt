@@ -69,18 +69,27 @@ class Anime47Provider : MainAPI() {
         val tags = document.select("dd.movie-dd.dd-cat a").map { it.text() }
         val year = document.selectFirst("span.title-year")?.text()?.removeSurrounding("(", ")")?.toIntOrNull()
 
-        // **CẢI TIẾN 3: Xác định TvType dựa trên tag**
         val tvType = if (tags.any { it.contains("Hoạt hình Trung Quốc", ignoreCase = true) }) {
             TvType.Cartoon
         } else {
             TvType.Anime
         }
 
-        // **CẢI TIẾN 1: Lấy danh sách tập phim từ trang xem phim để đảm bảo đầy đủ**
-        val firstEpisodeUrl = document.selectFirst("a#btn-film-watch")?.attr("href")
-        val episodes = if (firstEpisodeUrl != null) {
+        // === LOGIC MỚI: Lấy URL xem phim từ script thay vì href ===
+        val scriptWithWatchUrl = document.select("script:containsData(let playButton, episodePlay)").html()
+        val relativeWatchUrl = Regex("""episodePlay\s*=\s*'(.*?)';""").find(scriptWithWatchUrl)?.groupValues?.get(1)
+        
+        val watchUrl = relativeWatchUrl?.let { fixUrl(it) }
+            ?: return null // Trả về null nếu không tìm thấy link xem phim trong script
+
+        // Logic phân biệt phim bộ và phim lẻ
+        val scriptWithEpisodes = document.select("script:containsData(anyEpisodes)").html()
+        val isSeries = Regex("""anyEpisodes\s*=\s*'(.*?)';""").containsMatchIn(scriptWithEpisodes)
+
+        val episodes = if (isSeries) {
+            // Đây là phim bộ, vào trang xem phim để lấy danh sách đầy đủ
             try {
-                val watchPageDoc = app.get(fixUrl(firstEpisodeUrl), interceptor = interceptor).document
+                val watchPageDoc = app.get(watchUrl, interceptor = interceptor).document
                 watchPageDoc.select("div.episodes ul li a").map {
                     val epHref = fixUrl(it.attr("href"))
                     val epNum = it.attr("title").ifEmpty { it.text() }.toIntOrNull()
@@ -88,19 +97,20 @@ class Anime47Provider : MainAPI() {
                     Episode(epHref, name = epName, episode = epNum)
                 }.reversed()
             } catch (e: Exception) {
-                // Nếu không vào được trang xem phim, trả về danh sách trống
                 emptyList()
             }
         } else {
-            emptyList()
+            // Đây là phim lẻ hoặc OVA, tạo một tập duy nhất
+            listOf(Episode(data = watchUrl, name = title))
         }
+
+        if (episodes.isEmpty()) return null
 
         return newTvSeriesLoadResponse(title, url, tvType, episodes) {
             this.posterUrl = poster
             this.plot = plot
             this.tags = tags
             this.year = year
-            // **LƯU Ý 2: Không tìm thấy danh sách phim đề cử riêng cho từng phim**
         }
     }
     
