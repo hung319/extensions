@@ -1,6 +1,7 @@
 package recloudstream
 
 // === Imports ===
+import android.util.Log // THÊM IMPORT CHO LOG
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
@@ -65,7 +66,6 @@ class Anime47Provider : MainAPI() {
         return document.select("ul.last-film-box > li").mapNotNull { it.toSearchResult() }
     }
 
-    // Lớp data tạm thời để lưu thông tin tập phim khi gộp nguồn
     private data class EpisodeInfo(val name: String, val sources: MutableMap<String, String>)
 
     override suspend fun load(url: String): LoadResponse? {
@@ -83,36 +83,29 @@ class Anime47Provider : MainAPI() {
             TvType.Anime
         }
 
-        // Luôn tìm link đến trang xem phim từ script của trang info
         val scriptWithWatchUrl = document.select("script:containsData(let playButton, episodePlay)").html()
         val relativeWatchUrl = Regex("""episodePlay\s*=\s*'(.*?)';""").find(scriptWithWatchUrl)?.groupValues?.get(1)
         val watchUrl = relativeWatchUrl?.let { fixUrl(it) } ?: return null
 
-        // `episodesByNumber` sẽ lưu trữ các nguồn theo số tập.
-        // Key là số tập (Int), Value là một đối tượng chứa tên và các nguồn của tập đó
         val episodesByNumber = mutableMapOf<Int, EpisodeInfo>()
 
         try {
             val watchPageDoc = app.get(watchUrl, interceptor = interceptor).document
             
-            // Lặp qua từng khối server (Yamisora, Củ Cải,...) trên trang xem phim
             watchPageDoc.select("div.server").forEach { serverBlock ->
                 val serverName = serverBlock.selectFirst(".name span")?.text()?.trim() ?: "Server"
-                
-                // Lấy tất cả các tập của server đó
                 val episodeElements = serverBlock.select("div.episodes ul li a, div.tab-content div.tab-pane ul li a")
 
                 episodeElements.forEach {
                     val epHref = fixUrl(it.attr("href"))
                     val epRawName = it.attr("title").ifEmpty { it.text() }.trim()
+                    
+                    // YÊU CẦU 1: Đơn giản hóa việc tạo Episode, để CloudStream tự xử lý số tập
                     val epName = "Tập $epRawName"
-                    // Lấy số đầu tiên trong tên tập (vd: "375" từ "375-377") để làm key
                     val epNum = epRawName.substringBefore("-").filter { c -> c.isDigit() }.toIntOrNull()
 
                     if (epNum != null) {
-                        // Nếu chưa có tập này, tạo một entry mới với tên đầy đủ
                         val episodeInfo = episodesByNumber.getOrPut(epNum) { EpisodeInfo(name = epName, sources = mutableMapOf()) }
-                        // Thêm nguồn của server hiện tại vào tập
                         episodeInfo.sources[serverName] = epHref
                     }
                 }
@@ -122,17 +115,15 @@ class Anime47Provider : MainAPI() {
         }
 
         if (episodesByNumber.isEmpty()) {
-             // Xử lý trường hợp phim lẻ/OVA
             return newMovieLoadResponse(title, url, tvType, watchUrl) {
                 this.posterUrl = poster; this.plot = plot; this.tags = tags; this.year = year
             }
         }
 
         val episodes = episodesByNumber.entries.map { (epNum, epInfo) ->
-            // Mã hóa danh sách nguồn thành một chuỗi JSON để truyền cho loadLinks
             val data = epInfo.sources.toJson()
-            Episode(data = data, name = epInfo.name, episode = epNum)
-        }.sortedBy { it.episode }
+            Episode(data = data, name = epInfo.name) // Bỏ `episode = epNum`
+        }.sortedBy { it.name?.substringAfter("Tập")?.trim()?.substringBefore("-")?.toIntOrNull() ?: 0 }
 
         return newTvSeriesLoadResponse(title, url, tvType, episodes) {
             this.posterUrl = poster
@@ -189,40 +180,55 @@ class Anime47Provider : MainAPI() {
         val hasLoadedSubtitles = AtomicBoolean(false)
 
         sources.apmap { (sourceName, url) ->
-            // BỎ TRY-CATCH ĐỂ HIỂN THỊ LỖI GỐC
-            val episodeId = url.substringAfterLast('/').substringBefore('.').trim()
-            val serverId = "4"
-            val postData = mapOf("ID" to episodeId, "SV" to serverId, "SV4" to serverId)
+            try {
+                val episodeId = url.substringAfterLast('/').substringBefore('.').trim()
+                val serverId = "4"
+                val postData = mapOf("ID" to episodeId, "SV" to serverId, "SV4" to serverId)
 
-            val playerResponseText = app.post(
-                "$mainUrl/player/player.php", data = postData,
-                referer = url, headers = mapOf("X-Requested-With" to "XMLHttpRequest")
-            ).text
-            
-            val encryptedDataB64 = Regex("""var thanhhoa = atob\("([^"]+)"\)""").find(playerResponseText)?.groupValues?.get(1)
-                ?: throw Exception("[$sourceName] Không tìm thấy dữ liệu mã hóa")
+                val playerResponseText = app.post(
+                    "$mainUrl/player/player.php", data = postData,
+                    referer = url, headers = mapOf("X-Requested-With" to "XMLHttpRequest")
+                ).text
+                
+                val encryptedDataB64 = Regex("""var thanhhoa = atob\("([^"]+)"\)""").find(playerResponseText)?.groupValues?.get(1)
+                    ?: throw Exception("Không tìm thấy dữ liệu mã hóa")
 
-            val videoUrl = decryptSource(encryptedDataB64, "caphedaklak")
-                ?: throw Exception("[$sourceName] Giải mã video thất bại")
+                val videoUrl = decryptSource(encryptedDataB64, "caphedaklak")
+                    ?: throw Exception("Giải mã video thất bại")
 
-            callback(
-                ExtractorLink(
-                    source = this.name, name = sourceName, url = videoUrl, referer = "$mainUrl/",
-                    quality = Qualities.Unknown.value, type = ExtractorLinkType.M3U8,
+                // **THAY ĐỔI: Tạo link thành công với tên "OK"**
+                callback(
+                    ExtractorLink(
+                        source = this.name, name = "$sourceName - OK", url = videoUrl, referer = "$mainUrl/",
+                        quality = Qualities.Unknown.value, type = ExtractorLinkType.M3U8,
+                    )
                 )
-            )
-            
-            if (hasLoadedSubtitles.compareAndSet(false, true)) {
-                val tracksJsonBlock = Regex("""tracks:\s*(\[.*?\])""").find(playerResponseText)?.groupValues?.get(1)
-                if (tracksJsonBlock != null) {
-                    val subtitleRegex = Regex("""\{file:\s*["']([^"']+)["'],\s*label:\s*["']([^"']+)["']""")
-                    subtitleRegex.findAll(tracksJsonBlock).forEach { match ->
-                        val file = match.groupValues[1]; val label = match.groupValues[2]
-                        if (file.isNotBlank()) {
-                            subtitleCallback(SubtitleFile(label, fixUrl(file)))
+                
+                if (hasLoadedSubtitles.compareAndSet(false, true)) {
+                    val tracksJsonBlock = Regex("""tracks:\s*(\[.*?\])""").find(playerResponseText)?.groupValues?.get(1)
+                    if (tracksJsonBlock != null) {
+                        val subtitleRegex = Regex("""\{file:\s*["']([^"']+)["'],\s*label:\s*["']([^"']+)["']""")
+                        subtitleRegex.findAll(tracksJsonBlock).forEach { match ->
+                            val file = match.groupValues[1]; val label = match.groupValues[2]
+                            if (file.isNotBlank()) {
+                                subtitleCallback(SubtitleFile(label, fixUrl(file)))
+                            }
                         }
                     }
                 }
+            } catch (e: Exception) {
+                // **THAY ĐỔI: Tạo link thất bại với tên là LỖI + lý do**
+                callback(
+                    ExtractorLink(
+                        source = this.name,
+                        // Giới hạn độ dài của thông báo lỗi để không làm vỡ giao diện
+                        name = "$sourceName - LỖI: ${e.message?.take(50)}", 
+                        url = "https://example.com/error", // Link giả để không bị crash
+                        referer = mainUrl,
+                        quality = Qualities.Unknown.value,
+                        type = ExtractorLinkType.M3U8,
+                    )
+                )
             }
         }
         
