@@ -161,18 +161,16 @@ class Anime47Provider : MainAPI() {
             )
         )
         
-        // SỬA LỖI: Dùng Regex chính xác hơn và parseJson
-        val tracksJson = Regex("""tracks:\s*(\[.*?\])\s*,\s*skin:""").find(playerResponseText)?.groupValues?.get(1)
-        if (tracksJson != null) {
-            try {
-                val tracks = parseJson<List<Track>>(tracksJson)
-                tracks.forEach { track ->
-                    if (!track.file.isNullOrBlank()) {
-                        subtitleCallback(SubtitleFile(track.label ?: "Phụ đề", fixUrl(track.file)))
-                    }
+        val tracksJsonBlock = Regex("""tracks:\s*(\[.*?\])""").find(playerResponseText)?.groupValues?.get(1)
+        if (tracksJsonBlock != null) {
+            val subtitleRegex = Regex("""\{file:\s*["']([^"']+)["'],\s*label:\s*["']([^"']+)["']""")
+            subtitleRegex.findAll(tracksJsonBlock).forEach { match ->
+                val file = match.groupValues[1]
+                val label = match.groupValues[2]
+                if (file.isNotBlank()) {
+                    // SỬA LỖI: Gọi hàm fixUrl để chuyển đổi link tương đối thành tuyệt đối
+                    subtitleCallback(SubtitleFile(label, fixUrl(file)))
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
             }
         }
         
