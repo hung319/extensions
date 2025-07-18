@@ -64,7 +64,6 @@ class Anime47Provider : MainAPI() {
         return document.select("ul.last-film-box > li").mapNotNull { it.toSearchResult() }
     }
 
-    // =================== HÀM LOAD ĐÃ ĐƯỢC VIẾT LẠI ĐỂ GỘP SERVER ===================
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, interceptor = interceptor).document
 
@@ -80,32 +79,27 @@ class Anime47Provider : MainAPI() {
             TvType.Anime
         }
 
-        val scriptWithWatchUrl = document.select("script:containsData(let playButton, episodePlay)").html()
-        val relativeWatchUrl = Regex("""episodePlay\s*=\s*'(.*?)';""").find(scriptWithWatchUrl)?.groupValues?.get(1)
-        val watchUrl = relativeWatchUrl?.let { fixUrl(it) } ?: return null
-
-        // `episodesByNumber` sẽ lưu trữ các nguồn theo số tập.
-        // Key là số tập (Int), Value là một Map chứa {"Tên Server" -> "URL Tập Phim"}
         val episodesByNumber = mutableMapOf<Int, MutableMap<String, String>>()
 
         try {
+            // Luôn tìm link đến trang xem phim từ script của trang info
+            val scriptWithWatchUrl = document.select("script:containsData(let playButton, episodePlay)").html()
+            val relativeWatchUrl = Regex("""episodePlay\s*=\s*'(.*?)';""").find(scriptWithWatchUrl)?.groupValues?.get(1)
+            val watchUrl = relativeWatchUrl?.let { fixUrl(it) } ?: return null
+            
             val watchPageDoc = app.get(watchUrl, interceptor = interceptor).document
             
-            // Lặp qua từng khối server trên trang xem phim
             watchPageDoc.select("div.server").forEach { serverBlock ->
                 val serverName = serverBlock.selectFirst(".name span")?.text()?.trim() ?: "Server"
-                
-                // Lấy tất cả các tập của server đó
                 val episodeElements = serverBlock.select("div.episodes ul li a, div.tab-content div.tab-pane ul li a")
+
                 episodeElements.forEach {
                     val epHref = fixUrl(it.attr("href"))
                     val epName = it.attr("title").ifEmpty { it.text() }.trim()
                     val epNum = epName.substringBefore("_").substringBefore("-").filter { c -> c.isDigit() }.toIntOrNull()
 
                     if (epNum != null) {
-                        // Nếu chưa có集này, tạo một map mới
                         episodesByNumber.getOrPut(epNum) { mutableMapOf() }
-                        // Thêm nguồn của server hiện tại vào tập
                         episodesByNumber[epNum]?.set(serverName, epHref)
                     }
                 }
@@ -115,15 +109,21 @@ class Anime47Provider : MainAPI() {
         }
 
         if (episodesByNumber.isEmpty()) {
-            // Nếu không tìm thấy tập nào, coi như là phim lẻ 1 tập
-            return newMovieLoadResponse(title, url, tvType, watchUrl) {
-                this.posterUrl = poster; this.plot = plot; this.tags = tags; this.year = year
+            val watchUrl = document.selectFirst("a#btn-film-watch")?.attr("href")?.let { fixUrl(it) }
+                ?: document.select("script:containsData(episodePlay)").html()
+                    .let { Regex("""episodePlay\s*=\s*'(.*?)';""").find(it)?.groupValues?.get(1)?.let { rel -> fixUrl(rel) } }
+            
+            return if (watchUrl != null) {
+                newMovieLoadResponse(title, url, tvType, watchUrl) {
+                    this.posterUrl = poster; this.plot = plot; this.tags = tags; this.year = year
+                }
+            } else {
+                null
             }
         }
 
         val episodes = episodesByNumber.entries.map { (epNum, sources) ->
-            // Mã hóa danh sách nguồn thành một chuỗi JSON để truyền cho loadLinks
-            val data = toJson(sources)
+            val data = sources.toJson()
             Episode(data = data, name = "Tập $epNum", episode = epNum)
         }.sortedBy { it.episode }
 
@@ -162,7 +162,9 @@ class Anime47Provider : MainAPI() {
             cipher.init(Cipher.DECRYPT_MODE, secretKey, IvParameterSpec(iv))
             val decryptedBytes = cipher.doFinal(ciphertext)
             parseJson<String>(String(decryptedBytes))
-        } catch (e: Exception) { null }
+        } catch (e: Exception) {
+            null
+        }
     }
 
     private fun hexStringToByteArray(s: String): ByteArray {
@@ -173,21 +175,15 @@ class Anime47Provider : MainAPI() {
         return data
     }
     
-    // =================== HÀM LOADLINKS ĐÃ ĐƯỢC VIẾT LẠI ĐỂ TẢI SONG SONG ===================
     override suspend fun loadLinks(
         data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Giải mã chuỗi JSON `data` để lấy lại danh sách các nguồn
         val sources = try { parseJson<Map<String, String>>(data) } catch(e: Exception) { mapOf("Default" to data) }
-        val hasLoadedSubtitles = AtomicBoolean(false)
-
-        // Dùng apmap để xử lý các nguồn song song
+        
         sources.apmap { (sourceName, url) ->
             try {
                 val episodeId = url.substringAfterLast('/').substringBefore('.').trim()
-                
-                // **THAY ĐỔI: Chỉ sử dụng server ID "4" (Fe)**
-                val serverId = "4"
+                val serverId = "4" // Chỉ dùng server Fe theo yêu cầu
 
                 val playerResponseText = app.post(
                     "$mainUrl/player/player.php", data = mapOf("ID" to episodeId, "SV" to serverId),
@@ -201,20 +197,18 @@ class Anime47Provider : MainAPI() {
 
                 callback(
                     ExtractorLink(
-                        source = this.name, name = "$sourceName - Fe", url = videoUrl, referer = "$mainUrl/",
+                        source = this.name, name = sourceName, url = videoUrl, referer = "$mainUrl/",
                         quality = Qualities.Unknown.value, type = ExtractorLinkType.M3U8,
                     )
                 )
                 
-                if (hasLoadedSubtitles.compareAndSet(false, true)) {
-                    val tracksJsonBlock = Regex("""tracks:\s*(\[.*?\])""").find(playerResponseText)?.groupValues?.get(1)
-                    if (tracksJsonBlock != null) {
-                        val subtitleRegex = Regex("""\{file:\s*["']([^"']+)["'],\s*label:\s*["']([^"']+)["']""")
-                        subtitleRegex.findAll(tracksJsonBlock).forEach { match ->
-                            val file = match.groupValues[1]; val label = match.groupValues[2]
-                            if (file.isNotBlank()) {
-                                subtitleCallback(SubtitleFile(label, fixUrl(file)))
-                            }
+                val tracksJsonBlock = Regex("""tracks:\s*(\[.*?\])""").find(playerResponseText)?.groupValues?.get(1)
+                if (tracksJsonBlock != null) {
+                    val subtitleRegex = Regex("""\{file:\s*["']([^"']+)["'],\s*label:\s*["']([^"']+)["']""")
+                    subtitleRegex.findAll(tracksJsonBlock).forEach { match ->
+                        val file = match.groupValues[1]; val label = match.groupValues[2]
+                        if (file.isNotBlank()) {
+                            subtitleCallback(SubtitleFile(label, fixUrl(file)))
                         }
                     }
                 }
