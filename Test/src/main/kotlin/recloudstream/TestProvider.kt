@@ -60,6 +60,7 @@ class Anime47Provider : MainAPI() {
         return document.select("ul.last-film-box > li").mapNotNull { it.toSearchResult() }
     }
 
+    // =================== HÀM LOAD ĐÃ ĐƯỢC VIẾT LẠI HOÀN TOÀN ===================
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, interceptor = interceptor).document
 
@@ -68,40 +69,59 @@ class Anime47Provider : MainAPI() {
         val plot = document.selectFirst("div#film-content > .news-article")?.text()?.trim()
         val tags = document.select("dd.movie-dd.dd-cat a").map { it.text() }
         val year = document.selectFirst("span.title-year")?.text()?.removeSurrounding("(", ")")?.toIntOrNull()
-
+        
+        // **CẢI TIẾN 3: Dùng tvType Cartoon cho phim có tag Hoạt hình Trung Quốc**
         val tvType = if (tags.any { it.contains("Hoạt hình Trung Quốc", ignoreCase = true) }) {
             TvType.Cartoon
         } else {
             TvType.Anime
         }
 
-        // === LOGIC MỚI: Lấy URL xem phim từ script thay vì href ===
-        val scriptWithWatchUrl = document.select("script:containsData(let playButton, episodePlay)").html()
-        val relativeWatchUrl = Regex("""episodePlay\s*=\s*'(.*?)';""").find(scriptWithWatchUrl)?.groupValues?.get(1)
-        
-        val watchUrl = relativeWatchUrl?.let { fixUrl(it) }
-            ?: return null // Trả về null nếu không tìm thấy link xem phim trong script
+        // **CẢI TIẾN 1 & 2: Xử lý phim lẻ và phim bộ nhiều trang**
+        val episodeContainer = document.selectFirst("div.block2.servers")
 
-        // Logic phân biệt phim bộ và phim lẻ
-        val scriptWithEpisodes = document.select("script:containsData(anyEpisodes)").html()
-        val isSeries = Regex("""anyEpisodes\s*=\s*'(.*?)';""").containsMatchIn(scriptWithEpisodes)
-
-        val episodes = if (isSeries) {
-            // Đây là phim bộ, vào trang xem phim để lấy danh sách đầy đủ
-            try {
-                val watchPageDoc = app.get(watchUrl, interceptor = interceptor).document
-                watchPageDoc.select("div.episodes ul li a").map {
-                    val epHref = fixUrl(it.attr("href"))
-                    val epNum = it.attr("title").ifEmpty { it.text() }.toIntOrNull()
-                    val epName = "Tập " + it.attr("title").ifEmpty { it.text() }
-                    Episode(epHref, name = epName, episode = epNum)
-                }.reversed()
-            } catch (e: Exception) {
-                emptyList()
-            }
-        } else {
-            // Đây là phim lẻ hoặc OVA, tạo một tập duy nhất
+        val episodes = if (episodeContainer == null) {
+            // Trường hợp 1: PHIM LẺ / OVA (Không có khối danh sách tập)
+            val watchUrl = document.selectFirst("a#btn-film-watch")?.attr("href")?.let { fixUrl(it) } 
+                ?: return null // Nếu không có link xem phim thì dừng
             listOf(Episode(data = watchUrl, name = title))
+        } else {
+            // Trường hợp 2: PHIM BỘ (Có khối danh sách tập)
+            val episodeList = mutableListOf<Episode>()
+            
+            // Lấy các tập ở trang đầu tiên
+            episodeContainer.select("div.episodes ul li a").mapNotNull {
+                val epHref = fixUrl(it.attr("href"))
+                val epName = "Tập " + it.attr("title").ifEmpty { it.text() }
+                Episode(epHref, name = epName)
+            }.let { episodeList.addAll(it) }
+
+            // Lấy các tập ở các trang tiếp theo (nếu có)
+            val pagination = episodeContainer.select("ul.pagination li a")
+            if (pagination.isNotEmpty()) {
+                val filmId = pagination.attr("onclick").substringAfter("(").substringBefore(",")
+                val lastPage = pagination.last()?.text()?.toIntOrNull() ?: 1
+
+                if (lastPage > 1) {
+                    // Dùng apmap để tải song song các trang còn lại
+                    (2..lastPage).apmap { page ->
+                        try {
+                            val ajaxResponse = app.post(
+                                "$mainUrl/player/ajax_episodes.php",
+                                data = mapOf("film_id" to filmId, "page" to page.toString())
+                            ).document
+                            ajaxResponse.select("li a").mapNotNull {
+                                val epHref = fixUrl(it.attr("href"))
+                                val epName = "Tập " + it.attr("title").ifEmpty { it.text() }
+                                Episode(epHref, name = epName)
+                            }.let { episodeList.addAll(it) }
+                        } catch (e: Exception) {
+                            // Bỏ qua nếu trang bị lỗi
+                        }
+                    }
+                }
+            }
+            episodeList.distinctBy { it.data }.sortedBy { it.name }.reversed()
         }
 
         if (episodes.isEmpty()) return null
@@ -111,9 +131,10 @@ class Anime47Provider : MainAPI() {
             this.plot = plot
             this.tags = tags
             this.year = year
+            // **LƯU Ý 2: Vẫn chưa tìm thấy danh sách phim đề cử riêng**
         }
     }
-    
+
     private data class Track(val file: String?, val label: String?, val kind: String?, val default: Boolean?)
     private data class CryptoJsJson(val ct: String, val iv: String, val s: String)
     private data class VideoSource(val file: String)
@@ -183,7 +204,8 @@ class Anime47Provider : MainAPI() {
             )
         )
         
-        val tracksJson = Regex("""tracks:\s*(\[.*?\])\s*,\s*skin:""").find(playerResponseText)?.groupValues?.get(1)
+        // SỬA LỖI PHỤ ĐỀ: Dùng Regex đơn giản hơn để lấy khối JSON
+        val tracksJson = Regex("""tracks:\s*(\[.*?\])""").find(playerResponseText)?.groupValues?.get(1)
         if (tracksJson != null) {
             try {
                 val tracks = parseJson<List<Track>>(tracksJson)
@@ -200,7 +222,7 @@ class Anime47Provider : MainAPI() {
         return true
     }
 
-    // **CẢI TIẾN 4: Giữ nguyên logic Interceptor đã hoạt động tốt**
+    // **CẢI TIẾN 4: Logic Interceptor giữ nguyên**
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
         return object : Interceptor {
             override fun intercept(chain: Interceptor.Chain): Response {
@@ -208,7 +230,7 @@ class Anime47Provider : MainAPI() {
                 val response = chain.proceed(request)
                 val url = request.url.toString()
                 
-                if (url.contains(".nonprofit.asia")) {
+                if (url.contains("nonprofit.asia")) {
                     response.body?.let { body ->
                         try {
                             val fixedBytes = skipByteError(body)
