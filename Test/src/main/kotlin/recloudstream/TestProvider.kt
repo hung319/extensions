@@ -60,6 +60,7 @@ class Anime47Provider : MainAPI() {
         return document.select("ul.last-film-box > li").mapNotNull { it.toSearchResult() }
     }
 
+    // =================== HÀM LOAD ĐÃ ĐƯỢC SỬA LẠI THEO YÊU CẦU ===================
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, interceptor = interceptor).document
 
@@ -75,48 +76,45 @@ class Anime47Provider : MainAPI() {
             TvType.Anime
         }
 
+        // **LOGIC MỚI: Bỏ phân biệt phim lẻ/bộ, luôn lấy danh sách tập từ trang info**
         val episodeContainer = document.selectFirst("div.block2.servers")
+            ?: return null // Nếu không có khối tập phim nào, thì dừng
 
-        val episodes = if (episodeContainer == null) {
-            // Trường hợp 1: PHIM LẺ / OVA
-            val watchUrl = document.selectFirst("a#btn-film-watch")?.attr("href")?.let { fixUrl(it) } 
-                ?: return null
-            // SỬA LỖI: Đặt tên tập phim là "Xem Phim" thay vì lặp lại tên phim
-            listOf(Episode(data = watchUrl, name = "Xem Phim"))
-        } else {
-            // Trường hợp 2: PHIM BỘ
-            val episodeList = mutableListOf<Episode>()
-            
-            episodeContainer.select("div.episodes ul li a").mapNotNull {
-                val epHref = fixUrl(it.attr("href"))
-                val epName = "Tập " + it.attr("title").ifEmpty { it.text() }
-                Episode(epHref, name = epName)
-            }.let { episodeList.addAll(it) }
+        val episodeList = mutableListOf<Episode>()
+        
+        // Lấy các tập ở trang đầu tiên
+        episodeContainer.select("div.episodes ul li a").mapNotNull {
+            val epHref = fixUrl(it.attr("href"))
+            val epName = "Tập " + it.attr("title").ifEmpty { it.text() }
+            Episode(epHref, name = epName)
+        }.let { episodeList.addAll(it) }
 
-            val pagination = episodeContainer.select("ul.pagination li a")
-            if (pagination.isNotEmpty()) {
-                val filmId = pagination.attr("onclick").substringAfter("(").substringBefore(",")
-                val lastPage = pagination.last()?.text()?.toIntOrNull() ?: 1
+        // Lấy các tập ở các trang tiếp theo (nếu có)
+        val pagination = episodeContainer.select("ul.pagination li a")
+        if (pagination.isNotEmpty()) {
+            val filmId = pagination.attr("onclick").substringAfter("(").substringBefore(",")
+            // Lấy trang cuối cùng từ nút cuối cùng không phải là nút "»"
+            val lastPage = pagination.getOrNull(pagination.size - 2)?.text()?.toIntOrNull() ?: 1
 
-                if (lastPage > 1) {
-                    (2..lastPage).toList().apmap { page ->
-                        try {
-                            val ajaxResponse = app.post(
-                                "$mainUrl/player/ajax_episodes.php",
-                                data = mapOf("film_id" to filmId, "page" to page.toString())
-                            ).document
-                            ajaxResponse.select("li a").mapNotNull {
-                                val epHref = fixUrl(it.attr("href"))
-                                val epName = "Tập " + it.attr("title").ifEmpty { it.text() }
-                                Episode(epHref, name = epName)
-                            }.let { episodeList.addAll(it) }
-                        } catch (_: Exception) {}
-                    }
+            if (lastPage > 1) {
+                (2..lastPage).toList().apmap { page ->
+                    try {
+                        val ajaxResponse = app.post(
+                            "$mainUrl/player/ajax_episodes.php",
+                            data = mapOf("film_id" to filmId, "page" to page.toString())
+                        ).document
+                        ajaxResponse.select("li a").mapNotNull {
+                            val epHref = fixUrl(it.attr("href"))
+                            val epName = "Tập " + it.attr("title").ifEmpty { it.text() }
+                            Episode(epHref, name = epName)
+                        }.let { episodeList.addAll(it) }
+                    } catch (_: Exception) {}
                 }
             }
-            episodeList.distinctBy { it.data }.sortedBy { it.name }.reversed()
         }
 
+        val episodes = episodeList.distinctBy { it.data }.sortedBy { it.name?.toIntOrNull() ?: 0 }.reversed()
+        
         if (episodes.isEmpty()) return null
 
         return newTvSeriesLoadResponse(title, url, tvType, episodes) {
@@ -127,7 +125,9 @@ class Anime47Provider : MainAPI() {
         }
     }
     
+    private data class Track(val file: String?, val label: String?, val kind: String?, val default: Boolean?)
     private data class CryptoJsJson(val ct: String, val iv: String, val s: String)
+    private data class VideoSource(val file: String)
     
     private fun evpBytesToKey(password: ByteArray, salt: ByteArray, keySize: Int, ivSize: Int): Pair<ByteArray, ByteArray> {
         var derivedBytes = byteArrayOf()
@@ -193,7 +193,6 @@ class Anime47Provider : MainAPI() {
             )
         )
         
-        // SỬA LỖI: Quay lại logic lấy phụ đề bằng Regex đã được xác nhận hoạt động
         val tracksJsonBlock = Regex("""tracks:\s*(\[.*?\])""").find(playerResponseText)?.groupValues?.get(1)
         if (tracksJsonBlock != null) {
             val subtitleRegex = Regex("""\{file:\s*["']([^"']+)["'],\s*label:\s*["']([^"']+)["']""")
