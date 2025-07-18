@@ -4,6 +4,7 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
 import javax.crypto.Cipher
@@ -90,8 +91,7 @@ class Anime47Provider : MainAPI() {
         }
     }
     
-    // --- Data Classes & Decryption Logic ---
-    private data class Track(val file: String, val label: String?, val kind: String?)
+    private data class Track(val file: String, val label: String?)
     private data class CryptoJsJson(val ct: String, val iv: String, val s: String)
     private data class VideoSource(val file: String)
     
@@ -113,7 +113,7 @@ class Anime47Provider : MainAPI() {
     private fun decryptSource(encryptedDataB64: String, passwordStr: String): String? {
         return try {
             val encryptedJsonStr = String(Base64.decode(encryptedDataB64, Base64.DEFAULT))
-            val encryptedSource = AppUtils.parseJson<CryptoJsJson>(encryptedJsonStr)
+            val encryptedSource = parseJson<CryptoJsJson>(encryptedJsonStr)
             val salt = hexStringToByteArray(encryptedSource.s)
             val iv = hexStringToByteArray(encryptedSource.iv)
             val ciphertext = Base64.decode(encryptedSource.ct, Base64.DEFAULT)
@@ -122,7 +122,7 @@ class Anime47Provider : MainAPI() {
             val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
             cipher.init(Cipher.DECRYPT_MODE, secretKey, IvParameterSpec(iv))
             val decryptedBytes = cipher.doFinal(ciphertext)
-            AppUtils.parseJson<String>(String(decryptedBytes))
+            parseJson<String>(String(decryptedBytes))
         } catch (e: Exception) {
             e.printStackTrace()
             null
@@ -138,7 +138,6 @@ class Anime47Provider : MainAPI() {
         return data
     }
     
-    // --- Link Loading ---
     override suspend fun loadLinks(
         data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit
     ): Boolean {
@@ -161,33 +160,39 @@ class Anime47Provider : MainAPI() {
             )
         )
         
+        // SỬA LỖI: Quay lại sử dụng parseJson cho phụ đề - Chính xác và ổn định hơn.
         val tracksJson = Regex("""tracks:\s*(\[.*?\])""").find(playerResponseText)?.groupValues?.get(1)
         if (tracksJson != null) {
-            AppUtils.parseJson<List<Track>>(tracksJson).forEach {
-                subtitleCallback(SubtitleFile(it.label ?: "Phụ đề", it.file))
+            try {
+                // Parse mảng JSON của `tracks` thành một danh sách các đối tượng Track
+                val tracks = parseJson<List<Track>>(tracksJson)
+                tracks.forEach { track ->
+                    subtitleCallback(SubtitleFile(track.label ?: "Phụ đề", fixUrl(track.file)))
+                }
+            } catch (e: Exception) {
+                // Bỏ qua nếu parse phụ đề thất bại
+                e.printStackTrace()
             }
         }
         
         return true
     }
 
-    // *** CÁC HÀM MỚI ĐƯỢC THÊM VÀO ***
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
         return object : Interceptor {
             override fun intercept(chain: Interceptor.Chain): Response {
                 val request = chain.request()
                 val response = chain.proceed(request)
                 val url = request.url.toString()
-
-                // Điều kiện để kích hoạt interceptor
+                
                 if (url.contains("nonprofit.asia")) {
                     response.body?.let { body ->
                         try {
                             val fixedBytes = skipByteError(body)
                             val newBody = fixedBytes.toResponseBody(body.contentType())
                             return response.newBuilder().body(newBody).build()
-                        } catch (e: Exception) {
-                            // Bỏ qua và trả về response gốc nếu có lỗi
+                        } catch (e: Exception) { 
+                            // Bỏ qua lỗi
                         }
                     }
                 }
@@ -197,7 +202,6 @@ class Anime47Provider : MainAPI() {
     }
 }
 
-// Hàm này được đặt BÊN NGOÀI class Anime47Provider
 private fun skipByteError(responseBody: ResponseBody): ByteArray {
     val source = responseBody.source()
     source.request(Long.MAX_VALUE)
