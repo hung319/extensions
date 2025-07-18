@@ -79,44 +79,33 @@ class Anime47Provider : MainAPI() {
             TvType.Anime
         }
 
-        val episodeContainer = document.selectFirst("div.block2.servers")
-            ?: return null
+        // Luôn tìm link đến trang xem phim từ script của trang info
+        val scriptWithWatchUrl = document.select("script:containsData(let playButton, episodePlay)").html()
+        val relativeWatchUrl = Regex("""episodePlay\s*=\s*'(.*?)';""").find(scriptWithWatchUrl)?.groupValues?.get(1)
+        val watchUrl = relativeWatchUrl?.let { fixUrl(it) } ?: return null
 
-        val episodeList = mutableListOf<Episode>()
-        
-        episodeContainer.select("div.episodes ul li a").mapNotNull {
-            val epHref = fixUrl(it.attr("href"))
-            val epName = "Tập " + it.attr("title").ifEmpty { it.text() }
-            Episode(epHref, name = epName)
-        }.let { episodeList.addAll(it) }
+        // Luôn truy cập trang xem phim để lấy danh sách tập
+        val episodes = try {
+            val watchPageDoc = app.get(watchUrl, interceptor = interceptor).document
+            
+            // Xử lý cả danh sách tập thông thường và danh sách tập có tab (chia 1-100, 101-200,...)
+            val episodeElements = watchPageDoc.select("div.episodes ul li a, div.tab-content div.tab-pane ul li a")
 
-        val pagination = episodeContainer.select("ul.pagination li a")
-        if (pagination.isNotEmpty()) {
-            val filmId = pagination.attr("onclick").substringAfter("(").substringBefore(",")
-            val lastPage = pagination.getOrNull(pagination.size - 2)?.text()?.toIntOrNull() ?: 1
-
-            if (lastPage > 1) {
-                (2..lastPage).toList().apmap { page ->
-                    try {
-                        app.post(
-                            "$mainUrl/player/ajax_episodes.php",
-                            data = mapOf("film_id" to filmId, "page" to page.toString())
-                        ).document.select("li a").mapNotNull {
-                            val epHref = fixUrl(it.attr("href"))
-                            val epName = "Tập " + it.attr("title").ifEmpty { it.text() }
-                            Episode(epHref, name = epName)
-                        }.let { episodeList.addAll(it) }
-                    } catch (_: Exception) {}
-                }
+            episodeElements.map {
+                val epHref = fixUrl(it.attr("href"))
+                val epName = "Tập " + it.attr("title").ifEmpty { it.text() }.trim()
+                Episode(epHref, name = epName)
             }
+        } catch (e: Exception) {
+            emptyList()
         }
 
-        // SỬA LỖI SẮP XẾP: Bỏ .reversed() để sắp xếp theo thứ tự tăng dần (1, 2, 3, ...)
-        val sortedEpisodes = episodeList.distinctBy { it.data }.sortedBy {
+        if (episodes.isEmpty()) return null
+        
+        // **SỬA LỖI SẮP XẾP:** Lấy số đầu tiên từ tên tập để sắp xếp
+        val sortedEpisodes = episodes.distinctBy { it.data }.sortedBy {
             it.name?.substringAfter("Tập")?.trim()?.substringBefore("-")?.toIntOrNull() ?: 0
         }
-        
-        if (sortedEpisodes.isEmpty()) return null
 
         return newTvSeriesLoadResponse(title, url, tvType, sortedEpisodes) {
             this.posterUrl = poster
