@@ -199,7 +199,7 @@ class Anime47Provider : MainAPI() {
                 // **THAY ĐỔI: Tạo link thành công với tên "OK"**
                 callback(
                     ExtractorLink(
-                        source = this.name, name = "$sourceName - OK", url = videoUrl, referer = "$mainUrl/",
+                        source = this.name, name = "$sourceName - OK", url = example.com, referer = "$mainUrl/",
                         quality = Qualities.Unknown.value, type = ExtractorLinkType.M3U8,
                     )
                 )
