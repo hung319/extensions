@@ -65,7 +65,6 @@ class Anime47Provider : MainAPI() {
         return document.select("ul.last-film-box > li").mapNotNull { it.toSearchResult() }
     }
 
-    // Lớp data tạm thời để lưu thông tin tập phim khi gộp nguồn
     private data class EpisodeInfo(val name: String, val sources: MutableMap<String, String>)
 
     override suspend fun load(url: String): LoadResponse? {
@@ -100,12 +99,10 @@ class Anime47Provider : MainAPI() {
                     val epHref = fixUrl(it.attr("href"))
                     val epRawName = it.attr("title").ifEmpty { it.text() }.trim()
                     val epName = "Tập $epRawName"
-                    val epNum = epRawName.substringBefore("-").filter { c -> c.isDigit() }.toIntOrNull()
+                    val epNum = epRawName.substringBefore("_").substringBefore("-").filter { c -> c.isDigit() }.toIntOrNull()
 
                     if (epNum != null) {
-                        // Nếu chưa có tập này, tạo một entry mới
                         episodesByNumber.getOrPut(epNum) { EpisodeInfo(name = epName, sources = mutableMapOf()) }
-                        // Thêm nguồn của server hiện tại vào tập
                         episodesByNumber[epNum]?.sources?.set(serverName, epHref)
                     }
                 }
@@ -115,7 +112,6 @@ class Anime47Provider : MainAPI() {
         }
 
         if (episodesByNumber.isEmpty()) {
-             // Xử lý trường hợp phim lẻ/OVA
             return newMovieLoadResponse(title, url, tvType, watchUrl) {
                 this.posterUrl = poster; this.plot = plot; this.tags = tags; this.year = year
             }
@@ -185,8 +181,11 @@ class Anime47Provider : MainAPI() {
                 val episodeId = url.substringAfterLast('/').substringBefore('.').trim()
                 val serverId = "4"
 
+                // **SỬA LỖI: Thêm lại tham số SV4 theo yêu cầu**
+                val postData = mapOf("ID" to episodeId, "SV" to serverId, "SV4" to serverId)
+
                 val playerResponseText = app.post(
-                    "$mainUrl/player/player.php", data = mapOf("ID" to episodeId, "SV" to serverId),
+                    "$mainUrl/player/player.php", data = postData,
                     referer = url, headers = mapOf("X-Requested-With" to "XMLHttpRequest")
                 ).text
                 
