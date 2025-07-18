@@ -1,17 +1,17 @@
-package recloudstream 
+package recloudstream
 
-// Thêm các thư viện cần thiết
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
-import com.lagradost.cloudstream3.extractors.helper.AesHelper
 import org.jsoup.nodes.Element
 
-/**
- * Định nghĩa lớp Provider chính
- */
+// Thêm các thư viện Java cần thiết cho việc giải mã
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
+import java.util.Base64
+
 class Anime47Provider : MainAPI() {
-    // === Các thuộc tính cơ bản của Provider ===
     override var mainUrl = "https://anime47.shop"
     override var name = "Anime47"
     override val hasMainPage = true
@@ -23,22 +23,14 @@ class Anime47Provider : MainAPI() {
         TvType.OVA
     )
 
-    // Cloudflare Killer để vượt qua bảo vệ Cloudflare
     private val interceptor = CloudflareKiller()
 
-    // === Định nghĩa các trang chính hiển thị trên trang chủ của plugin ===
     override val mainPage = mainPageOf(
         "$mainUrl/danh-sach/phim-moi/1.html" to "Anime Mới Cập Nhật",
         "$mainUrl/the-loai/hoat-hinh-trung-quoc-75/1.html" to "Hoạt Hình Trung Quốc",
         "$mainUrl/danh-sach/anime-mua-moi-update.html" to "Anime Mùa Mới",
     )
 
-    /**
-     * Hàm để tải dữ liệu cho trang chủ.
-     * @param page Số trang hiện tại.
-     * @param request Yêu cầu trang chính chứa URL và tên.
-     * @return Dữ liệu trang chủ.
-     */
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
@@ -51,10 +43,6 @@ class Anime47Provider : MainAPI() {
         return newHomePageResponse(request.name, home)
     }
 
-    /**
-     * Hàm tiện ích để chuyển đổi một phần tử HTML thành đối tượng SearchResponse.
-     * @return SearchResponse hoặc null nếu không thể phân tích.
-     */
     private fun Element.toSearchResult(): SearchResponse? {
         val title = this.selectFirst("div.movie-title-1")?.text()?.trim() ?: return null
         val href = fixUrl(this.selectFirst("a")!!.attr("href"))
@@ -70,11 +58,6 @@ class Anime47Provider : MainAPI() {
         }
     }
 
-    /**
-     * Hàm xử lý tìm kiếm.
-     * @param query Từ khóa tìm kiếm.
-     * @return Danh sách các kết quả tìm kiếm.
-     */
     override suspend fun search(query: String): List<SearchResponse> {
         val document = app.get("$mainUrl/tim-kiem/?keyword=$query", interceptor = interceptor).document
         return document.select("ul.last-film-box > li").mapNotNull {
@@ -82,11 +65,6 @@ class Anime47Provider : MainAPI() {
         }
     }
 
-    /**
-     * Hàm tải thông tin chi tiết của phim và danh sách các tập.
-     * @param url URL của phim.
-     * @return Dữ liệu chi tiết của phim.
-     */
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, interceptor = interceptor).document
 
@@ -96,7 +74,6 @@ class Anime47Provider : MainAPI() {
         val tags = document.select("dd.movie-dd.dd-cat a").map { it.text() }
         val year = document.selectFirst("span.title-year")?.text()?.removeSurrounding("(", ")")?.toIntOrNull()
 
-        // Trích xuất danh sách tập phim từ biến javascript 'anyEpisodes'
         val script = document.select("script").find { it.data().contains("anyEpisodes =") }?.data()
         val episodesHtml = script?.substringAfter("anyEpisodes = '")?.substringBefore("';")
         
@@ -109,7 +86,6 @@ class Anime47Provider : MainAPI() {
             }
         }
         
-        // Dùng Jsoup để phân tích chuỗi HTML vừa trích xuất
         val episodesDoc = org.jsoup.Jsoup.parse(episodesHtml)
         val episodes = episodesDoc.select("div.episodes ul li a").map {
             val epHref = fixUrl(it.attr("href"))
@@ -126,14 +102,54 @@ class Anime47Provider : MainAPI() {
             this.year = year
         }
     }
+    
+    // Data classes để parse JSON
+    private data class Track(val file: String, val label: String?, val kind: String?)
+    private data class CryptoJsJson(val ct: String, val iv: String, val s: String)
+    private data class VideoSource(val file: String)
 
     /**
-     * Hàm tải link video trực tiếp để phát.
-     * @param data URL của trang xem phim.
-     * @param subtitleCallback Callback để trả về file phụ đề.
-     * @param callback Callback để trả về link video.
-     * @return true nếu tải link thành công.
+     * Hàm giải mã AES tùy chỉnh để xử lý định dạng của CryptoJS JSON.
+     * @param data Base64 encoded string chứa JSON object với ciphertext và IV.
+     * @param key Chuỗi key để giải mã.
+     * @return Chuỗi đã giải mã (dự kiến là JSON chứa link video).
      */
+    private fun decryptCryptoJsData(data: String, key: String): String? {
+        try {
+            // 1. Giải mã Base64 bên ngoài để lấy JSON
+            val decodedJsonData = String(Base64.getDecoder().decode(data))
+            val cryptoData = AppUtils.parseJson<CryptoJsJson>(decodedJsonData)
+
+            // 2. Lấy IV (dưới dạng hex) và CipherText (dưới dạng Base64)
+            val iv = hexStringToByteArray(cryptoData.iv)
+            val cipherText = Base64.getDecoder().decode(cryptoData.ct)
+
+            // 3. Chuẩn bị key và IV cho việc giải mã
+            val secretKeySpec = SecretKeySpec(key.toByteArray(), "AES")
+            val ivParameterSpec = IvParameterSpec(iv)
+
+            // 4. Thực hiện giải mã
+            val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+            cipher.init(Cipher.DECRYPT_MODE, secretKeySpec, ivParameterSpec)
+            return String(cipher.doFinal(cipherText))
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return null
+        }
+    }
+
+    // Hàm tiện ích để chuyển đổi chuỗi Hex thành ByteArray
+    private fun hexStringToByteArray(s: String): ByteArray {
+        val len = s.length
+        val data = ByteArray(len / 2)
+        var i = 0
+        while (i < len) {
+            data[i / 2] = ((Character.digit(s[i], 16) shl 4) + Character.digit(s[i + 1], 16)).toByte()
+            i += 2
+        }
+        return data
+    }
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -142,11 +158,9 @@ class Anime47Provider : MainAPI() {
     ): Boolean {
         val document = app.get(data, interceptor = interceptor).document
         
-        // Lấy ID tập phim từ script
         val scriptContent = document.select("script").find { it.data().contains("var id_ep =") }?.data()
         val episodeId = scriptContent?.substringAfter("var id_ep = ")?.substringBefore(";")?.trim() ?: return false
 
-        // Lặp qua các server có sẵn
         document.select("#clicksv > span.btn").apmap { serverElement ->
             try {
                 val serverId = serverElement.id().removePrefix("sv")
@@ -160,17 +174,14 @@ class Anime47Provider : MainAPI() {
                     interceptor = interceptor
                 ).text
 
-                // === GIẢI MÃ DỮ LIỆU VIDEO ===
                 val encryptedData = playerResponseText.substringAfter("var thanhhoa = atob(\"").substringBefore("\");")
                 val decryptionKey = "caphedaklak"
-
-                val decryptedJson = AesHelper.cryptoJsDecrypt(encryptedData, decryptionKey)
-                // Đôi khi link có thể nằm trong biến `daklak` hoặc `file:`
-                val videoUrl = decryptedJson?.let {
-                    if (it.startsWith("http")) it else it.substringAfter("file:\"").substringBefore("\"")
-                }
                 
-                // Trích xuất phụ đề từ trong script
+                // Gọi hàm giải mã tùy chỉnh
+                val decryptedString = decryptCryptoJsData(encryptedData, decryptionKey) ?: return@apmap
+                
+                val videoUrl = AppUtils.parseJson<VideoSource>(decryptedString).file
+                
                 val tracksRegex = """"tracks"\s*:\s*(\[.*?\])""".toRegex()
                 val tracksMatch = tracksRegex.find(playerResponseText)
                 if (tracksMatch != null) {
@@ -185,9 +196,8 @@ class Anime47Provider : MainAPI() {
                         )
                     }
                 }
-                // ========================
-
-                if (videoUrl != null && videoUrl.contains(".m3u8")) {
+                
+                if (videoUrl.contains(".m3u8")) {
                     callback.invoke(
                         ExtractorLink(
                             source = this.name,
@@ -200,18 +210,10 @@ class Anime47Provider : MainAPI() {
                     )
                 }
             } catch (e: Exception) {
-                // In ra lỗi để debug nhưng không làm dừng cả quá trình
                 e.printStackTrace()
             }
         }
         
         return true
     }
-
-    // Data class để parse JSON của danh sách phụ đề
-    data class Track(
-        val file: String,
-        val label: String?,
-        val kind: String?
-    )
 }
