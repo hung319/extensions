@@ -84,28 +84,22 @@ class Anime47Provider : MainAPI() {
         val relativeWatchUrl = Regex("""episodePlay\s*=\s*'(.*?)';""").find(scriptWithWatchUrl)?.groupValues?.get(1)
         val watchUrl = relativeWatchUrl?.let { fixUrl(it) } ?: return null
 
-        // `episodesByNumber` sẽ lưu trữ các nguồn theo số tập.
-        // Key là số tập (Int), Value là một Map chứa {"Tên Server" -> "URL Tập Phim"}
         val episodesByNumber = mutableMapOf<Int, MutableMap<String, String>>()
 
         try {
             val watchPageDoc = app.get(watchUrl, interceptor = interceptor).document
             
-            // Lặp qua từng khối server trên trang xem phim
             watchPageDoc.select("div.server").forEach { serverBlock ->
                 val serverName = serverBlock.selectFirst(".name span")?.text()?.trim() ?: "Server"
-                
-                // Lấy tất cả các tập của server đó
                 val episodeElements = serverBlock.select("div.episodes ul li a, div.tab-content div.tab-pane ul li a")
+
                 episodeElements.forEach {
                     val epHref = fixUrl(it.attr("href"))
                     val epName = it.attr("title").ifEmpty { it.text() }.trim()
                     val epNum = epName.substringBefore("_").substringBefore("-").filter { c -> c.isDigit() }.toIntOrNull()
 
                     if (epNum != null) {
-                        // Nếu chưa có集này, tạo một map mới
                         episodesByNumber.getOrPut(epNum) { mutableMapOf() }
-                        // Thêm nguồn của server hiện tại vào tập
                         episodesByNumber[epNum]?.set(serverName, epHref)
                     }
                 }
@@ -115,15 +109,14 @@ class Anime47Provider : MainAPI() {
         }
 
         if (episodesByNumber.isEmpty()) {
-            // Nếu không tìm thấy tập nào, coi như là phim lẻ 1 tập
             return newMovieLoadResponse(title, url, tvType, watchUrl) {
                 this.posterUrl = poster; this.plot = plot; this.tags = tags; this.year = year
             }
         }
 
         val episodes = episodesByNumber.entries.map { (epNum, sources) ->
-            // Mã hóa danh sách nguồn thành một chuỗi JSON để truyền cho loadLinks
-            val data = toJson(sources)
+            // SỬA LỖI: Dùng đúng cú pháp cho extension function
+            val data = sources.toJson()
             Episode(data = data, name = "Tập $epNum", episode = epNum)
         }.sortedBy { it.episode }
 
