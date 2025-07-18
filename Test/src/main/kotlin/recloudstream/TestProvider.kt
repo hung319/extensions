@@ -17,6 +17,7 @@ import okhttp3.Interceptor
 import okhttp3.Response
 import okhttp3.ResponseBody
 import okhttp3.ResponseBody.Companion.toResponseBody
+import java.util.concurrent.atomic.AtomicBoolean
 
 // === Provider Class ===
 class Anime47Provider : MainAPI() {
@@ -64,6 +65,9 @@ class Anime47Provider : MainAPI() {
         return document.select("ul.last-film-box > li").mapNotNull { it.toSearchResult() }
     }
 
+    // Lớp data tạm thời để lưu thông tin tập phim khi gộp nguồn
+    private data class EpisodeInfo(val name: String, val sources: MutableMap<String, String>)
+
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, interceptor = interceptor).document
 
@@ -79,14 +83,13 @@ class Anime47Provider : MainAPI() {
             TvType.Anime
         }
 
-        val episodesByNumber = mutableMapOf<Int, MutableMap<String, String>>()
+        val scriptWithWatchUrl = document.select("script:containsData(let playButton, episodePlay)").html()
+        val relativeWatchUrl = Regex("""episodePlay\s*=\s*'(.*?)';""").find(scriptWithWatchUrl)?.groupValues?.get(1)
+        val watchUrl = relativeWatchUrl?.let { fixUrl(it) } ?: return null
+
+        val episodesByNumber = mutableMapOf<Int, EpisodeInfo>()
 
         try {
-            // Luôn tìm link đến trang xem phim từ script của trang info
-            val scriptWithWatchUrl = document.select("script:containsData(let playButton, episodePlay)").html()
-            val relativeWatchUrl = Regex("""episodePlay\s*=\s*'(.*?)';""").find(scriptWithWatchUrl)?.groupValues?.get(1)
-            val watchUrl = relativeWatchUrl?.let { fixUrl(it) } ?: return null
-            
             val watchPageDoc = app.get(watchUrl, interceptor = interceptor).document
             
             watchPageDoc.select("div.server").forEach { serverBlock ->
@@ -95,12 +98,15 @@ class Anime47Provider : MainAPI() {
 
                 episodeElements.forEach {
                     val epHref = fixUrl(it.attr("href"))
-                    val epName = it.attr("title").ifEmpty { it.text() }.trim()
-                    val epNum = epName.substringBefore("_").substringBefore("-").filter { c -> c.isDigit() }.toIntOrNull()
+                    val epRawName = it.attr("title").ifEmpty { it.text() }.trim()
+                    val epName = "Tập $epRawName"
+                    val epNum = epRawName.substringBefore("-").filter { c -> c.isDigit() }.toIntOrNull()
 
                     if (epNum != null) {
-                        episodesByNumber.getOrPut(epNum) { mutableMapOf() }
-                        episodesByNumber[epNum]?.set(serverName, epHref)
+                        // Nếu chưa có tập này, tạo một entry mới
+                        episodesByNumber.getOrPut(epNum) { EpisodeInfo(name = epName, sources = mutableMapOf()) }
+                        // Thêm nguồn của server hiện tại vào tập
+                        episodesByNumber[epNum]?.sources?.set(serverName, epHref)
                     }
                 }
             }
@@ -109,22 +115,15 @@ class Anime47Provider : MainAPI() {
         }
 
         if (episodesByNumber.isEmpty()) {
-            val watchUrl = document.selectFirst("a#btn-film-watch")?.attr("href")?.let { fixUrl(it) }
-                ?: document.select("script:containsData(episodePlay)").html()
-                    .let { Regex("""episodePlay\s*=\s*'(.*?)';""").find(it)?.groupValues?.get(1)?.let { rel -> fixUrl(rel) } }
-            
-            return if (watchUrl != null) {
-                newMovieLoadResponse(title, url, tvType, watchUrl) {
-                    this.posterUrl = poster; this.plot = plot; this.tags = tags; this.year = year
-                }
-            } else {
-                null
+             // Xử lý trường hợp phim lẻ/OVA
+            return newMovieLoadResponse(title, url, tvType, watchUrl) {
+                this.posterUrl = poster; this.plot = plot; this.tags = tags; this.year = year
             }
         }
 
-        val episodes = episodesByNumber.entries.map { (epNum, sources) ->
-            val data = sources.toJson()
-            Episode(data = data, name = "Tập $epNum", episode = epNum)
+        val episodes = episodesByNumber.entries.map { (epNum, epInfo) ->
+            val data = epInfo.sources.toJson()
+            Episode(data = data, name = epInfo.name, episode = epNum)
         }.sortedBy { it.episode }
 
         return newTvSeriesLoadResponse(title, url, tvType, episodes) {
@@ -179,11 +178,12 @@ class Anime47Provider : MainAPI() {
         data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit
     ): Boolean {
         val sources = try { parseJson<Map<String, String>>(data) } catch(e: Exception) { mapOf("Default" to data) }
-        
+        val hasLoadedSubtitles = AtomicBoolean(false)
+
         sources.apmap { (sourceName, url) ->
             try {
                 val episodeId = url.substringAfterLast('/').substringBefore('.').trim()
-                val serverId = "4" // Chỉ dùng server Fe theo yêu cầu
+                val serverId = "4"
 
                 val playerResponseText = app.post(
                     "$mainUrl/player/player.php", data = mapOf("ID" to episodeId, "SV" to serverId),
@@ -202,13 +202,15 @@ class Anime47Provider : MainAPI() {
                     )
                 )
                 
-                val tracksJsonBlock = Regex("""tracks:\s*(\[.*?\])""").find(playerResponseText)?.groupValues?.get(1)
-                if (tracksJsonBlock != null) {
-                    val subtitleRegex = Regex("""\{file:\s*["']([^"']+)["'],\s*label:\s*["']([^"']+)["']""")
-                    subtitleRegex.findAll(tracksJsonBlock).forEach { match ->
-                        val file = match.groupValues[1]; val label = match.groupValues[2]
-                        if (file.isNotBlank()) {
-                            subtitleCallback(SubtitleFile(label, fixUrl(file)))
+                if (hasLoadedSubtitles.compareAndSet(false, true)) {
+                    val tracksJsonBlock = Regex("""tracks:\s*(\[.*?\])""").find(playerResponseText)?.groupValues?.get(1)
+                    if (tracksJsonBlock != null) {
+                        val subtitleRegex = Regex("""\{file:\s*["']([^"']+)["'],\s*label:\s*["']([^"']+)["']""")
+                        subtitleRegex.findAll(tracksJsonBlock).forEach { match ->
+                            val file = match.groupValues[1]; val label = match.groupValues[2]
+                            if (file.isNotBlank()) {
+                                subtitleCallback(SubtitleFile(label, fixUrl(file)))
+                            }
                         }
                     }
                 }
