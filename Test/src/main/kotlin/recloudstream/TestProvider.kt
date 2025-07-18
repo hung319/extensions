@@ -63,11 +63,10 @@ class Anime47Provider : MainAPI() {
         return document.select("ul.last-film-box > li").mapNotNull { it.toSearchResult() }
     }
 
-    // =================== HÀM LOAD ĐÃ ĐƯỢC ĐƠN GIẢN HÓA ===================
+    // =================== HÀM LOAD ĐÃ ĐƯỢC HOÀN THIỆN ===================
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, interceptor = interceptor).document
 
-        // 1. Lấy thông tin metadata từ trang info
         val title = document.selectFirst("h1.movie-title span.title-1")?.text()?.trim() ?: return null
         val poster = document.selectFirst("div.movie-l-img img")?.attr("src")
         val plot = document.selectFirst("div#film-content > .news-article")?.text()?.trim()
@@ -80,27 +79,35 @@ class Anime47Provider : MainAPI() {
             TvType.Anime
         }
 
-        // 2. Luôn tìm link đến trang xem phim từ script của trang info
+        // Luôn tìm link đến trang xem phim từ script của trang info
         val scriptWithWatchUrl = document.select("script:containsData(let playButton, episodePlay)").html()
         val relativeWatchUrl = Regex("""episodePlay\s*=\s*'(.*?)';""").find(scriptWithWatchUrl)?.groupValues?.get(1)
         val watchUrl = relativeWatchUrl?.let { fixUrl(it) } ?: return null
 
-        // 3. Luôn truy cập trang xem phim để lấy danh sách tập
+        // Luôn truy cập trang xem phim để lấy danh sách tập
         val episodes = try {
             val watchPageDoc = app.get(watchUrl, interceptor = interceptor).document
-            watchPageDoc.select("div.episodes ul li a").map {
+            
+            // Xử lý cả danh sách tập thông thường và danh sách tập có tab (chia 1-100, 101-200,...)
+            val episodeElements = watchPageDoc.select("div.episodes ul li a, div.tab-content div.tab-pane ul li a")
+
+            episodeElements.map {
                 val epHref = fixUrl(it.attr("href"))
-                val epNum = it.attr("title").ifEmpty { it.text() }.trim().toIntOrNull()
                 val epName = "Tập " + it.attr("title").ifEmpty { it.text() }.trim()
-                Episode(epHref, name = epName, episode = epNum)
-            }.reversed()
+                Episode(epHref, name = epName)
+            }
         } catch (e: Exception) {
             emptyList()
         }
 
         if (episodes.isEmpty()) return null
+        
+        // **SỬA LỖI SẮP XẾP:** Lấy số đầu tiên từ tên tập để sắp xếp
+        val sortedEpisodes = episodes.distinctBy { it.data }.sortedBy {
+            it.name?.substringAfter("Tập")?.trim()?.substringBefore("-")?.toIntOrNull() ?: 0
+        }.reversed()
 
-        return newTvSeriesLoadResponse(title, url, tvType, episodes) {
+        return newTvSeriesLoadResponse(title, url, tvType, sortedEpisodes) {
             this.posterUrl = poster
             this.plot = plot
             this.tags = tags
@@ -108,9 +115,7 @@ class Anime47Provider : MainAPI() {
         }
     }
     
-    private data class Track(val file: String?, val label: String?, val kind: String?, val default: Boolean?)
     private data class CryptoJsJson(val ct: String, val iv: String, val s: String)
-    private data class VideoSource(val file: String)
     
     private fun evpBytesToKey(password: ByteArray, salt: ByteArray, keySize: Int, ivSize: Int): Pair<ByteArray, ByteArray> {
         var derivedBytes = byteArrayOf()
@@ -154,6 +159,7 @@ class Anime47Provider : MainAPI() {
         return data
     }
     
+    // =================== HÀM LOADLINKS ĐÃ ĐƯỢC HOÀN THIỆN ===================
     override suspend fun loadLinks(
         data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit
     ): Boolean {
@@ -176,6 +182,7 @@ class Anime47Provider : MainAPI() {
             )
         )
         
+        // **SỬA LỖI PHỤ ĐỀ:** Dùng logic Regex ổn định
         val tracksJsonBlock = Regex("""tracks:\s*(\[.*?\])""").find(playerResponseText)?.groupValues?.get(1)
         if (tracksJsonBlock != null) {
             val subtitleRegex = Regex("""\{file:\s*["']([^"']+)["'],\s*label:\s*["']([^"']+)["']""")
