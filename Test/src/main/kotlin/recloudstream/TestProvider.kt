@@ -91,7 +91,8 @@ class Anime47Provider : MainAPI() {
         }
     }
     
-    private data class Track(val file: String, val label: String?)
+    // SỬA LỖI: Cập nhật data class để khớp hoàn toàn với JSON
+    private data class Track(val file: String, val label: String?, val kind: String?, val default: Boolean?)
     private data class CryptoJsJson(val ct: String, val iv: String, val s: String)
     private data class VideoSource(val file: String)
     
@@ -160,17 +161,17 @@ class Anime47Provider : MainAPI() {
             )
         )
         
-        // SỬA LỖI: Quay lại sử dụng parseJson cho phụ đề - Chính xác và ổn định hơn.
-        val tracksJson = Regex("""tracks:\s*(\[.*?\])""").find(playerResponseText)?.groupValues?.get(1)
+        // SỬA LỖI: Dùng Regex chính xác hơn và parseJson
+        val tracksJson = Regex("""tracks:\s*(\[.*?\])\s*,\s*skin:""").find(playerResponseText)?.groupValues?.get(1)
         if (tracksJson != null) {
             try {
-                // Parse mảng JSON của `tracks` thành một danh sách các đối tượng Track
                 val tracks = parseJson<List<Track>>(tracksJson)
                 tracks.forEach { track ->
-                    subtitleCallback(SubtitleFile(track.label ?: "Phụ đề", fixUrl(track.file)))
+                    if (!track.file.isNullOrBlank()) {
+                        subtitleCallback(SubtitleFile(track.label ?: "Phụ đề", fixUrl(track.file)))
+                    }
                 }
             } catch (e: Exception) {
-                // Bỏ qua nếu parse phụ đề thất bại
                 e.printStackTrace()
             }
         }
