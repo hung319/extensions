@@ -9,6 +9,7 @@ import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import java.security.MessageDigest
 import android.util.Base64 // Sử dụng Base64 của Android cho tính tương thích
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 
 class Anime47Provider : MainAPI() {
     override var mainUrl = "https://anime47.shop"
