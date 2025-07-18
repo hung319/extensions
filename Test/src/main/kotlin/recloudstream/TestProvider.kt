@@ -65,6 +65,7 @@ class Anime47Provider : MainAPI() {
         return document.select("ul.last-film-box > li").mapNotNull { it.toSearchResult() }
     }
 
+    // Lớp data tạm thời để lưu thông tin tập phim khi gộp nguồn
     private data class EpisodeInfo(val name: String, val sources: MutableMap<String, String>)
 
     override suspend fun load(url: String): LoadResponse? {
@@ -82,28 +83,37 @@ class Anime47Provider : MainAPI() {
             TvType.Anime
         }
 
+        // Luôn tìm link đến trang xem phim từ script của trang info
         val scriptWithWatchUrl = document.select("script:containsData(let playButton, episodePlay)").html()
         val relativeWatchUrl = Regex("""episodePlay\s*=\s*'(.*?)';""").find(scriptWithWatchUrl)?.groupValues?.get(1)
         val watchUrl = relativeWatchUrl?.let { fixUrl(it) } ?: return null
 
+        // `episodesByNumber` sẽ lưu trữ các nguồn theo số tập.
+        // Key là số tập (Int), Value là một đối tượng chứa tên và các nguồn của tập đó
         val episodesByNumber = mutableMapOf<Int, EpisodeInfo>()
 
         try {
             val watchPageDoc = app.get(watchUrl, interceptor = interceptor).document
             
+            // Lặp qua từng khối server (Yamisora, Củ Cải,...) trên trang xem phim
             watchPageDoc.select("div.server").forEach { serverBlock ->
                 val serverName = serverBlock.selectFirst(".name span")?.text()?.trim() ?: "Server"
+                
+                // Lấy tất cả các tập của server đó
                 val episodeElements = serverBlock.select("div.episodes ul li a, div.tab-content div.tab-pane ul li a")
 
                 episodeElements.forEach {
                     val epHref = fixUrl(it.attr("href"))
                     val epRawName = it.attr("title").ifEmpty { it.text() }.trim()
                     val epName = "Tập $epRawName"
-                    val epNum = epRawName.substringBefore("_").substringBefore("-").filter { c -> c.isDigit() }.toIntOrNull()
+                    // Lấy số đầu tiên trong tên tập (vd: "375" từ "375-377") để làm key
+                    val epNum = epRawName.substringBefore("-").filter { c -> c.isDigit() }.toIntOrNull()
 
                     if (epNum != null) {
-                        episodesByNumber.getOrPut(epNum) { EpisodeInfo(name = epName, sources = mutableMapOf()) }
-                        episodesByNumber[epNum]?.sources?.set(serverName, epHref)
+                        // Nếu chưa có tập này, tạo một entry mới với tên đầy đủ
+                        val episodeInfo = episodesByNumber.getOrPut(epNum) { EpisodeInfo(name = epName, sources = mutableMapOf()) }
+                        // Thêm nguồn của server hiện tại vào tập
+                        episodeInfo.sources[serverName] = epHref
                     }
                 }
             }
@@ -112,12 +122,14 @@ class Anime47Provider : MainAPI() {
         }
 
         if (episodesByNumber.isEmpty()) {
+             // Xử lý trường hợp phim lẻ/OVA
             return newMovieLoadResponse(title, url, tvType, watchUrl) {
                 this.posterUrl = poster; this.plot = plot; this.tags = tags; this.year = year
             }
         }
 
         val episodes = episodesByNumber.entries.map { (epNum, epInfo) ->
+            // Mã hóa danh sách nguồn thành một chuỗi JSON để truyền cho loadLinks
             val data = epInfo.sources.toJson()
             Episode(data = data, name = epInfo.name, episode = epNum)
         }.sortedBy { it.episode }
@@ -180,8 +192,6 @@ class Anime47Provider : MainAPI() {
             try {
                 val episodeId = url.substringAfterLast('/').substringBefore('.').trim()
                 val serverId = "4"
-
-                // **SỬA LỖI: Thêm lại tham số SV4 theo yêu cầu**
                 val postData = mapOf("ID" to episodeId, "SV" to serverId, "SV4" to serverId)
 
                 val playerResponseText = app.post(
