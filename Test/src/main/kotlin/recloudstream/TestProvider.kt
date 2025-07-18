@@ -24,7 +24,7 @@ class Anime47Provider : MainAPI() {
     override val hasMainPage = true
     override var lang = "vi"
     override val hasDownloadSupport = true
-    override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
+    override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA, TvType.Cartoon)
 
     private val interceptor = CloudflareKiller()
 
@@ -69,30 +69,42 @@ class Anime47Provider : MainAPI() {
         val tags = document.select("dd.movie-dd.dd-cat a").map { it.text() }
         val year = document.selectFirst("span.title-year")?.text()?.removeSurrounding("(", ")")?.toIntOrNull()
 
-        val script = document.select("script").find { it.data().contains("anyEpisodes =") }?.data()
-        val episodesHtml = script?.substringAfter("anyEpisodes = '")?.substringBefore("';")
-        
-        if (episodesHtml == null) {
-             return newAnimeLoadResponse(title, url, TvType.Anime) {
-                this.posterUrl = poster; this.plot = plot; this.tags = tags; this.year = year
-            }
+        // **CẢI TIẾN 3: Xác định TvType dựa trên tag**
+        val tvType = if (tags.any { it.contains("Hoạt hình Trung Quốc", ignoreCase = true) }) {
+            TvType.Cartoon
+        } else {
+            TvType.Anime
         }
-        
-        val episodesDoc = org.jsoup.Jsoup.parse(episodesHtml)
-        val episodes = episodesDoc.select("div.episodes ul li a").map {
-            val epHref = fixUrl(it.attr("href"))
-            val epNum = it.attr("title").ifEmpty { it.text() }.toIntOrNull()
-            val epName = "Tập " + it.attr("title").ifEmpty { it.text() }
-            Episode(epHref, name = epName, episode = epNum)
-        }.reversed()
 
-        return newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
-            this.posterUrl = poster; this.plot = plot; this.tags = tags; this.year = year
+        // **CẢI TIẾN 1: Lấy danh sách tập phim từ trang xem phim để đảm bảo đầy đủ**
+        val firstEpisodeUrl = document.selectFirst("a#btn-film-watch")?.attr("href")
+        val episodes = if (firstEpisodeUrl != null) {
+            try {
+                val watchPageDoc = app.get(fixUrl(firstEpisodeUrl), interceptor = interceptor).document
+                watchPageDoc.select("div.episodes ul li a").map {
+                    val epHref = fixUrl(it.attr("href"))
+                    val epNum = it.attr("title").ifEmpty { it.text() }.toIntOrNull()
+                    val epName = "Tập " + it.attr("title").ifEmpty { it.text() }
+                    Episode(epHref, name = epName, episode = epNum)
+                }.reversed()
+            } catch (e: Exception) {
+                // Nếu không vào được trang xem phim, trả về danh sách trống
+                emptyList()
+            }
+        } else {
+            emptyList()
+        }
+
+        return newTvSeriesLoadResponse(title, url, tvType, episodes) {
+            this.posterUrl = poster
+            this.plot = plot
+            this.tags = tags
+            this.year = year
+            // **LƯU Ý 2: Không tìm thấy danh sách phim đề cử riêng cho từng phim**
         }
     }
     
-    // SỬA LỖI: Cập nhật data class để khớp hoàn toàn với JSON
-    private data class Track(val file: String, val label: String?, val kind: String?, val default: Boolean?)
+    private data class Track(val file: String?, val label: String?, val kind: String?, val default: Boolean?)
     private data class CryptoJsJson(val ct: String, val iv: String, val s: String)
     private data class VideoSource(val file: String)
     
@@ -161,22 +173,24 @@ class Anime47Provider : MainAPI() {
             )
         )
         
-        val tracksJsonBlock = Regex("""tracks:\s*(\[.*?\])""").find(playerResponseText)?.groupValues?.get(1)
-        if (tracksJsonBlock != null) {
-            val subtitleRegex = Regex("""\{file:\s*["']([^"']+)["'],\s*label:\s*["']([^"']+)["']""")
-            subtitleRegex.findAll(tracksJsonBlock).forEach { match ->
-                val file = match.groupValues[1]
-                val label = match.groupValues[2]
-                if (file.isNotBlank()) {
-                    // SỬA LỖI: Gọi hàm fixUrl để chuyển đổi link tương đối thành tuyệt đối
-                    subtitleCallback(SubtitleFile(label, fixUrl(file)))
+        val tracksJson = Regex("""tracks:\s*(\[.*?\])\s*,\s*skin:""").find(playerResponseText)?.groupValues?.get(1)
+        if (tracksJson != null) {
+            try {
+                val tracks = parseJson<List<Track>>(tracksJson)
+                tracks.forEach { track ->
+                    if (!track.file.isNullOrBlank()) {
+                        subtitleCallback(SubtitleFile(track.label ?: "Phụ đề", fixUrl(track.file)))
+                    }
                 }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
         }
         
         return true
     }
 
+    // **CẢI TIẾN 4: Giữ nguyên logic Interceptor đã hoạt động tốt**
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
         return object : Interceptor {
             override fun intercept(chain: Interceptor.Chain): Response {
@@ -184,7 +198,7 @@ class Anime47Provider : MainAPI() {
                 val response = chain.proceed(request)
                 val url = request.url.toString()
                 
-                if (url.contains("nonprofit.asia")) {
+                if (url.contains(".nonprofit.asia")) {
                     response.body?.let { body ->
                         try {
                             val fixedBytes = skipByteError(body)
