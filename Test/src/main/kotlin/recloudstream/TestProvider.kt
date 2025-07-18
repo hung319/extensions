@@ -69,42 +69,38 @@ class Anime47Provider : MainAPI() {
         val plot = document.selectFirst("div#film-content > .news-article")?.text()?.trim()
         val tags = document.select("dd.movie-dd.dd-cat a").map { it.text() }
         val year = document.selectFirst("span.title-year")?.text()?.removeSurrounding("(", ")")?.toIntOrNull()
-        
-        // **CẢI TIẾN 3: Dùng tvType Cartoon cho phim có tag Hoạt hình Trung Quốc**
+
         val tvType = if (tags.any { it.contains("Hoạt hình Trung Quốc", ignoreCase = true) }) {
             TvType.Cartoon
         } else {
             TvType.Anime
         }
 
-        // **CẢI TIẾN 1 & 2: Xử lý phim lẻ và phim bộ nhiều trang**
         val episodeContainer = document.selectFirst("div.block2.servers")
 
         val episodes = if (episodeContainer == null) {
-            // Trường hợp 1: PHIM LẺ / OVA (Không có khối danh sách tập)
+            // Trường hợp 1: PHIM LẺ / OVA
             val watchUrl = document.selectFirst("a#btn-film-watch")?.attr("href")?.let { fixUrl(it) } 
-                ?: return null // Nếu không có link xem phim thì dừng
+                ?: return null
             listOf(Episode(data = watchUrl, name = title))
         } else {
-            // Trường hợp 2: PHIM BỘ (Có khối danh sách tập)
+            // Trường hợp 2: PHIM BỘ
             val episodeList = mutableListOf<Episode>()
             
-            // Lấy các tập ở trang đầu tiên
             episodeContainer.select("div.episodes ul li a").mapNotNull {
                 val epHref = fixUrl(it.attr("href"))
                 val epName = "Tập " + it.attr("title").ifEmpty { it.text() }
                 Episode(epHref, name = epName)
             }.let { episodeList.addAll(it) }
 
-            // Lấy các tập ở các trang tiếp theo (nếu có)
             val pagination = episodeContainer.select("ul.pagination li a")
             if (pagination.isNotEmpty()) {
                 val filmId = pagination.attr("onclick").substringAfter("(").substringBefore(",")
                 val lastPage = pagination.last()?.text()?.toIntOrNull() ?: 1
 
                 if (lastPage > 1) {
-                    // Dùng apmap để tải song song các trang còn lại
-                    (2..lastPage).apmap { page ->
+                    // SỬA LỖI: Chuyển IntRange thành List trước khi dùng apmap
+                    (2..lastPage).toList().apmap { page ->
                         try {
                             val ajaxResponse = app.post(
                                 "$mainUrl/player/ajax_episodes.php",
@@ -131,7 +127,6 @@ class Anime47Provider : MainAPI() {
             this.plot = plot
             this.tags = tags
             this.year = year
-            // **LƯU Ý 2: Vẫn chưa tìm thấy danh sách phim đề cử riêng**
         }
     }
 
