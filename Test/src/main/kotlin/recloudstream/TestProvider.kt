@@ -1,7 +1,6 @@
 package recloudstream
 
 // === Imports ===
-import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
@@ -68,13 +67,12 @@ class Anime47Provider : MainAPI() {
 
     private data class EpisodeInfo(val name: String, val sources: MutableMap<String, String>)
 
-    // =================== HÀM LOAD ĐÃ ĐƯỢC THÊM LOG GỠ LỖI ===================
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, interceptor = interceptor).document
 
         val title = document.selectFirst("h1.movie-title span.title-1")?.text()?.trim() ?: return null
         val poster = document.selectFirst("div.movie-l-img img")?.attr("src")
-        var plot = document.selectFirst("div#film-content > .news-article")?.text()?.trim() // Để var để có thể thêm log
+        val plot = document.selectFirst("div#film-content > .news-article")?.text()?.trim()
         val tags = document.select("dd.movie-dd.dd-cat a").map { it.text() }
         val year = document.selectFirst("span.title-year")?.text()?.removeSurrounding("(", ")")?.toIntOrNull()
         
@@ -84,9 +82,6 @@ class Anime47Provider : MainAPI() {
             TvType.Anime
         }
 
-        // Bắt đầu chuỗi log để gỡ lỗi
-        val debugLog = StringBuilder("\n\n--- DEBUG LOG ---\n")
-
         val scriptWithWatchUrl = document.select("script:containsData(let playButton, episodePlay)").html()
         val relativeWatchUrl = Regex("""episodePlay\s*=\s*'(.*?)';""").find(scriptWithWatchUrl)?.groupValues?.get(1)
         val watchUrl = relativeWatchUrl?.let { fixUrl(it) } ?: return null
@@ -94,16 +89,12 @@ class Anime47Provider : MainAPI() {
         val episodesByNumber = mutableMapOf<Int, EpisodeInfo>()
 
         try {
-            debugLog.append("Watch Page URL: $watchUrl\n")
             val watchPageDoc = app.get(watchUrl, interceptor = interceptor).document
             
-            val serverBlocks = watchPageDoc.select("div.server")
-            debugLog.append("Found ${serverBlocks.size} server blocks.\n")
-
-            serverBlocks.forEach { serverBlock ->
-                val serverName = serverBlock.selectFirst(".name span")?.text()?.trim() ?: "Unknown Server"
+            // **SỬA LỖI: Dùng selector chính xác hơn để lấy các khối server**
+            watchPageDoc.select("div.block2.servers > div.server").forEach { serverBlock ->
+                val serverName = serverBlock.selectFirst(".name span")?.text()?.trim() ?: "Server"
                 val episodeElements = serverBlock.select("div.episodes ul li a, div.tab-content div.tab-pane ul li a")
-                debugLog.append("-> Server '$serverName': Found ${episodeElements.size} episodes.\n")
 
                 episodeElements.forEach {
                     val epHref = fixUrl(it.attr("href"))
@@ -118,7 +109,7 @@ class Anime47Provider : MainAPI() {
                 }
             }
         } catch (e: Exception) {
-            debugLog.append("ERROR fetching/parsing watch page: ${e.message}\n")
+            e.printStackTrace()
         }
 
         if (episodesByNumber.isEmpty()) {
@@ -126,16 +117,10 @@ class Anime47Provider : MainAPI() {
                 this.posterUrl = poster; this.plot = plot; this.tags = tags; this.year = year
             }
         }
-        
-        debugLog.append("Final data for Ep 1: ${episodesByNumber[1]?.sources}\n")
-        debugLog.append("--- END DEBUG LOG ---")
-        
-        // Nối log vào phần mô tả
-        plot += debugLog.toString()
 
         val episodes = episodesByNumber.entries.map { (epNum, epInfo) ->
             val data = epInfo.sources.toJson()
-            Episode(data = data, name = epInfo.name, episode = epNum)
+            Episode(data = data, name = epInfo.name, episode = null)
         }.sortedBy { it.episode }
 
         return newTvSeriesLoadResponse(title, url, tvType, episodes) {
@@ -204,10 +189,9 @@ class Anime47Provider : MainAPI() {
                 ).text
                 
                 val encryptedDataB64 = Regex("""var thanhhoa = atob\("([^"]+)"\)""").find(playerResponseText)?.groupValues?.get(1)
-                    ?: throw Exception("Không tìm thấy dữ liệu mã hóa")
+                    ?: return@apmap
 
-                val videoUrl = decryptSource(encryptedDataB64, "caphedaklak")
-                    ?: throw Exception("Giải mã video thất bại")
+                val videoUrl = decryptSource(encryptedDataB64, "caphedaklak") ?: return@apmap
 
                 callback(
                     ExtractorLink(
@@ -229,13 +213,7 @@ class Anime47Provider : MainAPI() {
                     }
                 }
             } catch (e: Exception) {
-                callback(
-                    ExtractorLink(
-                        source = this.name, name = "$sourceName - LỖI: ${e.message?.take(50)}", 
-                        url = "https://example.com/error", referer = mainUrl,
-                        quality = Qualities.Unknown.value, type = ExtractorLinkType.M3U8,
-                    )
-                )
+                e.printStackTrace()
             }
         }
         
