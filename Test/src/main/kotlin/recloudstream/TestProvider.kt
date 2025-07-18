@@ -84,22 +84,28 @@ class Anime47Provider : MainAPI() {
         val relativeWatchUrl = Regex("""episodePlay\s*=\s*'(.*?)';""").find(scriptWithWatchUrl)?.groupValues?.get(1)
         val watchUrl = relativeWatchUrl?.let { fixUrl(it) } ?: return null
 
+        // `episodesByNumber` sẽ lưu trữ các nguồn theo số tập.
+        // Key là số tập (Int), Value là một Map chứa {"Tên Server" -> "URL Tập Phim"}
         val episodesByNumber = mutableMapOf<Int, MutableMap<String, String>>()
 
         try {
             val watchPageDoc = app.get(watchUrl, interceptor = interceptor).document
             
+            // Lặp qua từng khối server trên trang xem phim
             watchPageDoc.select("div.server").forEach { serverBlock ->
                 val serverName = serverBlock.selectFirst(".name span")?.text()?.trim() ?: "Server"
+                
+                // Lấy tất cả các tập của server đó
                 val episodeElements = serverBlock.select("div.episodes ul li a, div.tab-content div.tab-pane ul li a")
-
                 episodeElements.forEach {
                     val epHref = fixUrl(it.attr("href"))
                     val epName = it.attr("title").ifEmpty { it.text() }.trim()
                     val epNum = epName.substringBefore("_").substringBefore("-").filter { c -> c.isDigit() }.toIntOrNull()
 
                     if (epNum != null) {
+                        // Nếu chưa có集này, tạo một map mới
                         episodesByNumber.getOrPut(epNum) { mutableMapOf() }
+                        // Thêm nguồn của server hiện tại vào tập
                         episodesByNumber[epNum]?.set(serverName, epHref)
                     }
                 }
@@ -109,14 +115,15 @@ class Anime47Provider : MainAPI() {
         }
 
         if (episodesByNumber.isEmpty()) {
+            // Nếu không tìm thấy tập nào, coi như là phim lẻ 1 tập
             return newMovieLoadResponse(title, url, tvType, watchUrl) {
                 this.posterUrl = poster; this.plot = plot; this.tags = tags; this.year = year
             }
         }
 
         val episodes = episodesByNumber.entries.map { (epNum, sources) ->
-            // SỬA LỖI: Dùng đúng cú pháp cho extension function
-            val data = sources.toJson()
+            // Mã hóa danh sách nguồn thành một chuỗi JSON để truyền cho loadLinks
+            val data = toJson(sources)
             Episode(data = data, name = "Tập $epNum", episode = epNum)
         }.sortedBy { it.episode }
 
@@ -171,15 +178,19 @@ class Anime47Provider : MainAPI() {
         data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit
     ): Boolean {
         // Giải mã chuỗi JSON `data` để lấy lại danh sách các nguồn
-        val sources = parseJson<Map<String, String>>(data)
-        var hasLoadedSubtitles = false
+        val sources = try { parseJson<Map<String, String>>(data) } catch(e: Exception) { mapOf("Default" to data) }
+        val hasLoadedSubtitles = AtomicBoolean(false)
 
         // Dùng apmap để xử lý các nguồn song song
-        sources.apmap { (serverName, url) ->
+        sources.apmap { (sourceName, url) ->
             try {
                 val episodeId = url.substringAfterLast('/').substringBefore('.').trim()
+                
+                // **THAY ĐỔI: Chỉ sử dụng server ID "4" (Fe)**
+                val serverId = "4"
+
                 val playerResponseText = app.post(
-                    "$mainUrl/player/player.php", data = mapOf("ID" to episodeId, "SV" to "4"),
+                    "$mainUrl/player/player.php", data = mapOf("ID" to episodeId, "SV" to serverId),
                     referer = url, headers = mapOf("X-Requested-With" to "XMLHttpRequest")
                 ).text
                 
@@ -190,13 +201,12 @@ class Anime47Provider : MainAPI() {
 
                 callback(
                     ExtractorLink(
-                        source = this.name, name = serverName, url = videoUrl, referer = "$mainUrl/",
+                        source = this.name, name = "$sourceName - Fe", url = videoUrl, referer = "$mainUrl/",
                         quality = Qualities.Unknown.value, type = ExtractorLinkType.M3U8,
                     )
                 )
                 
-                // Chỉ lấy phụ đề từ nguồn đầu tiên thành công để tránh trùng lặp
-                if (!hasLoadedSubtitles) {
+                if (hasLoadedSubtitles.compareAndSet(false, true)) {
                     val tracksJsonBlock = Regex("""tracks:\s*(\[.*?\])""").find(playerResponseText)?.groupValues?.get(1)
                     if (tracksJsonBlock != null) {
                         val subtitleRegex = Regex("""\{file:\s*["']([^"']+)["'],\s*label:\s*["']([^"']+)["']""")
@@ -206,7 +216,6 @@ class Anime47Provider : MainAPI() {
                                 subtitleCallback(SubtitleFile(label, fixUrl(file)))
                             }
                         }
-                        hasLoadedSubtitles = true // Đánh dấu đã tải phụ đề
                     }
                 }
             } catch (e: Exception) {
