@@ -59,7 +59,11 @@ class Anime47Provider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val document = app.get("$mainUrl/tim-kiem/?keyword=$query", interceptor = interceptor).document
+        // SỬA LỖI: Cập nhật lại URL tìm kiếm chính xác
+        val searchUrl = "$mainUrl/tim-nang-cao/?keyword=$query&nam=&season=&status=&sapxep=1"
+        val document = app.get(searchUrl, interceptor = interceptor).document
+        
+        // Logic parse kết quả vẫn giữ nguyên vì cấu trúc HTML không đổi
         return document.select("ul.last-film-box > li").mapNotNull {
             it.toSearchResult()
         }
