@@ -163,59 +163,64 @@ class Anime47Provider : MainAPI() {
         val document = app.get(data, interceptor = interceptor).document
         
         val scriptContent = document.select("script").find { it.data().contains("var id_ep =") }?.data()
-        val episodeId = scriptContent?.substringAfter("var id_ep = ")?.substringBefore(";")?.trim() ?: return false
+        val episodeId = scriptContent?.substringAfter("var id_ep = ")?.substringBefore(";")?.trim() 
+            ?: throw Exception("Không thể tìm thấy ID tập phim")
 
+        // `apmap` sẽ tự động xử lý exception cho từng server, 
+        // vì vậy chúng ta không cần khối try-catch lớn bên ngoài nữa.
         document.select("#clicksv > span.btn").apmap { serverElement ->
-            try {
-                val serverId = serverElement.id().removePrefix("sv")
-                val serverName = serverElement.attr("title")
+            val serverId = serverElement.id().removePrefix("sv")
+            val serverName = serverElement.attr("title")
 
-                val playerResponseText = app.post(
-                    url = "$mainUrl/player/player.php",
-                    data = mapOf("ID" to episodeId, "SV" to serverId),
-                    referer = data,
-                    headers = mapOf("X-Requested-With" to "XMLHttpRequest"),
-                    interceptor = interceptor
-                ).text
+            val playerResponseText = app.post(
+                url = "$mainUrl/player/player.php",
+                data = mapOf("ID" to episodeId, "SV" to serverId),
+                referer = data,
+                headers = mapOf("X-Requested-With" to "XMLHttpRequest"),
+                interceptor = interceptor
+            ).text
 
-                val encryptedData = playerResponseText.substringAfter("var thanhhoa = atob(\"").substringBefore("\");")
-                val decryptionKey = "caphedaklak"
-                
-                // Gọi hàm giải mã tùy chỉnh
-                val decryptedString = decryptCryptoJsData(encryptedData, decryptionKey) ?: return@apmap
-                
-                val videoUrl = AppUtils.parseJson<VideoSource>(decryptedString).file
-                
-                val tracksRegex = """"tracks"\s*:\s*(\[.*?\])""".toRegex()
-                val tracksMatch = tracksRegex.find(playerResponseText)
-                if (tracksMatch != null) {
-                    val tracksArrayJson = tracksMatch.groupValues[1]
-                    val tracks = AppUtils.parseJson<List<Track>>(tracksArrayJson)
-                    tracks.forEach { track ->
-                        subtitleCallback.invoke(
-                            SubtitleFile(
-                                lang = track.label ?: "Unknown",
-                                url = fixUrl(track.file)
-                            )
-                        )
-                    }
-                }
-                
-                if (videoUrl.contains(".m3u8")) {
-                    callback.invoke(
-                        ExtractorLink(
-                            source = this.name,
-                            name = "$name - $serverName",
-                            url = videoUrl,
-                            referer = "$mainUrl/",
-                            quality = Qualities.Unknown.value,
-                            type = ExtractorLinkType.M3U8,
+            // === CẢI THIỆN XỬ LÝ LỖI ===
+            val encryptedData = playerResponseText.substringAfter("var thanhhoa = atob(\"").substringBefore("\");")
+            // Ném lỗi nếu không tìm thấy dữ liệu mã hóa
+            if (encryptedData.isBlank()) throw Exception("[$serverName] Không tìm thấy dữ liệu mã hóa")
+
+            val decryptionKey = "caphedaklak"
+            
+            val decryptedString = decryptCryptoJsData(encryptedData, decryptionKey)
+                // Ném lỗi nếu giải mã thất bại
+                ?: throw Exception("[$serverName] Giải mã dữ liệu thất bại")
+            
+            val videoUrl = AppUtils.parseJson<VideoSource>(decryptedString).file
+            // Ném lỗi nếu URL video rỗng sau khi giải mã
+            if (videoUrl.isBlank()) throw Exception("[$serverName] Không tìm thấy URL video sau khi giải mã")
+            
+            // Trích xuất phụ đề
+            val tracksRegex = """"tracks"\s*:\s*(\[.*?\])""".toRegex()
+            val tracksMatch = tracksRegex.find(playerResponseText)
+            if (tracksMatch != null) {
+                val tracksArrayJson = tracksMatch.groupValues[1]
+                val tracks = AppUtils.parseJson<List<Track>>(tracksArrayJson)
+                tracks.forEach { track ->
+                    subtitleCallback.invoke(
+                        SubtitleFile(
+                            lang = track.label ?: "Unknown",
+                            url = fixUrl(track.file)
                         )
                     )
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
             }
+            
+            callback.invoke(
+                ExtractorLink(
+                    source = this.name,
+                    name = "$name - $serverName",
+                    url = videoUrl,
+                    referer = "$mainUrl/",
+                    quality = Qualities.Unknown.value,
+                    type = ExtractorLinkType.M3U8,
+                )
+            )
         }
         
         return true
