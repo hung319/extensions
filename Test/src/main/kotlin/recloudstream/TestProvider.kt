@@ -91,12 +91,13 @@ class Anime47Provider : MainAPI() {
         try {
             val watchPageDoc = app.get(watchUrl, interceptor = interceptor).document
             
-            // **SỬA LỖI: Dùng selector chính xác hơn để lấy các khối server**
-            watchPageDoc.select("div.block2.servers > div.server").forEach { serverBlock ->
-                val serverName = serverBlock.selectFirst(".name span")?.text()?.trim() ?: "Server"
-                val episodeElements = serverBlock.select("div.episodes ul li a, div.tab-content div.tab-pane ul li a")
+            // **SỬA LỖI: Thay đổi hoàn toàn logic lấy server**
+            // Tìm tất cả các div.name, sau đó tìm div.episodes ngay sau nó
+            watchPageDoc.select("div.name").forEach { nameDiv ->
+                val serverName = nameDiv.selectFirst("span")?.text()?.trim() ?: "Server"
+                val episodeElements = nameDiv.nextElementSibling()?.select("ul li a")
 
-                episodeElements.forEach {
+                episodeElements?.forEach {
                     val epHref = fixUrl(it.attr("href"))
                     val epRawName = it.attr("title").ifEmpty { it.text() }.trim()
                     val epName = "Tập $epRawName"
@@ -120,7 +121,7 @@ class Anime47Provider : MainAPI() {
 
         val episodes = episodesByNumber.entries.map { (epNum, epInfo) ->
             val data = epInfo.sources.toJson()
-            Episode(data = data, name = epInfo.name, episode = null)
+            Episode(data = data, name = epInfo.name, episode = epNum)
         }.sortedBy { it.episode }
 
         return newTvSeriesLoadResponse(title, url, tvType, episodes) {
