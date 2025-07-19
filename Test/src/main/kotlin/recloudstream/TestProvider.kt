@@ -1,5 +1,9 @@
 package recloudstream
 
+// Thêm các import cần thiết
+import com.lagradost.cloudstream3.network.CloudflareKiller
+import com.lagradost.cloudstream3.Requests
+
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.fasterxml.jackson.annotation.JsonProperty
@@ -20,6 +24,11 @@ class NguonCProvider : MainAPI() {
     companion object {
         const val API_URL = "https://phim.nguonc.com/api"
     }
+
+    // TẠO ĐỐI TƯỢNG REQUEST RIÊNG VỚI CLOUDFLAREKILLER
+    private val requests = Requests(
+        interceptor = CloudflareKiller()
+    )
 
     // Data classes... (Giữ nguyên không thay đổi)
     data class ListApiResponse(
@@ -45,7 +54,12 @@ class NguonCProvider : MainAPI() {
     )
 
     data class CategoryGroup(
+        @JsonProperty("group") val group: CategoryName,
         @JsonProperty("list") val list: List<CategoryItem>
+    )
+
+    data class CategoryName(
+        @JsonProperty("name") val name: String?
     )
 
     data class CategoryItem(
@@ -80,7 +94,7 @@ class NguonCProvider : MainAPI() {
         }
     }
 
-    // Core provider functions... (Giữ nguyên không thay đổi)
+    // Core provider functions...
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         if (page > 1) return HomePageResponse(emptyList())
 
@@ -93,7 +107,8 @@ class NguonCProvider : MainAPI() {
         )
 
         val homePageList = sections.apmap { (name, url) ->
-            val items = app.get(url).parsedSafe<ListApiResponse>()?.items
+            // THAY ĐỔI: Dùng `requests` thay vì `app`
+            val items = requests.get(url).parsedSafe<ListApiResponse>()?.items
                 ?.mapNotNull { it.toSearchResult() } ?: emptyList()
             HomePageList(name, items)
         }
@@ -105,7 +120,8 @@ class NguonCProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$API_URL/films/search?keyword=$query"
         return try {
-            app.get(url).parsed<ListApiResponse>().items.mapNotNull { it.toSearchResult() }
+            // THAY ĐỔI: Dùng `requests` thay vì `app`
+            requests.get(url).parsed<ListApiResponse>().items.mapNotNull { it.toSearchResult() }
         } catch (e: Exception) {
             emptyList()
         }
@@ -116,46 +132,17 @@ class NguonCProvider : MainAPI() {
         val apiLink = "$API_URL/film/$slug"
 
         try {
-            val res = app.get(apiLink).parsedSafe<FilmApiResponse>() ?: throw Exception("Phản hồi từ API là null hoặc không hợp lệ.")
+            // THAY ĐỔI: Dùng `requests` thay vì `app`
+            val res = requests.get(apiLink).parsedSafe<FilmApiResponse>() ?: throw Exception("Phản hồi từ API là null hoặc không hợp lệ.")
             
             val movieInfo = res.movie
+            val title = movieInfo.name ?: movieInfo.originalName ?: throw Exception("Phim không có Tên hoặc Tên gốc.")
             
-            // Thay đổi logic: Gán tên phim trước
-            val title = movieInfo.name ?: movieInfo.originalName
-
-            // THÊM BƯỚC KIỂM TRA MỚI: Nếu tên phim vẫn là null, tạo log lỗi
-            if (title == null) {
-                val debugDescription = """
-                    --- LỖI PLUGIN: THIẾU DỮ LIỆU ---
-                    
-                    Plugin đã tải dữ liệu thành công, nhưng không tìm thấy 'name' hoặc 'original_name' trong phản hồi của API.
-                    
-                    URL ĐÃ GỌI:
-                    $apiLink
-                    
-                    PHẢN HỒI THÔ TỪ API:
-                    --------------------
-                    ${app.get(apiLink).text}
-                    --------------------
-                """.trimIndent()
-                return newMovieLoadResponse(name = "LỖI - Thiếu Tên Phim", url = url, type = TvType.Movie, dataUrl = "") {
-                    this.plot = debugDescription
-                }
-            }
-            
-            // Nếu có tên phim, tiếp tục như bình thường
             val poster = movieInfo.posterUrl ?: movieInfo.thumbUrl
             val description = movieInfo.description?.let { Jsoup.parse(it).text() }
             val actors = movieInfo.casts?.split(",")?.map { ActorData(Actor(it.trim())) }
-            var year: Int? = null
-            var genres: List<String>? = null
-            movieInfo.category?.values?.forEach { group ->
-                if (group.list.any { it.name?.toIntOrNull() != null }) {
-                    year = group.list.firstOrNull()?.name?.toIntOrNull()
-                } else if (group.list.any { it.name?.length ?: 0 > 2 }) {
-                    genres = group.list.mapNotNull { it.name }
-                }
-            }
+            val year = movieInfo.category?.values?.find { it.group.name == "Năm" }?.list?.firstOrNull()?.name?.toIntOrNull()
+            val genres = movieInfo.category?.values?.find { it.group.name == "Thể loại" }?.list?.mapNotNull { it.name }
             val episodes = res.episodes?.flatMap { server ->
                 server.items.map { episode ->
                     newEpisode(episode) {
@@ -175,9 +162,9 @@ class NguonCProvider : MainAPI() {
                 }
             }
         } catch (e: Exception) {
-            // Khối catch này vẫn giữ nguyên để bắt các lỗi khác
             val rawResponse = try {
-                app.get(apiLink).text
+                // THAY ĐỔI: Dùng `requests` thay vì `app`
+                requests.get(apiLink).text
             } catch (e2: Exception) {
                 "Không thể tải phản hồi thô. Lỗi mạng: ${e2.message}"
             }
@@ -190,7 +177,7 @@ class NguonCProvider : MainAPI() {
                 $rawResponse
                 --------------------
             """.trimIndent()
-            return newMovieLoadResponse(name = "LỖI - $slug", url = url, type = TvType.Movie, dataUrl = "") {
+            return newTvSeriesLoadResponse(name = "LỖI - $slug", url = url, type = TvType.TvSeries, episodes = emptyList()) {
                 this.plot = debugDescription
             }
         }
