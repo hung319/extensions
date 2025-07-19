@@ -111,16 +111,39 @@ class NguonCProvider : MainAPI() {
         }
     }
 
-    // **THAY ĐỔI DUY NHẤT NẰM Ở ĐÂY**
     override suspend fun load(url: String): LoadResponse? {
         val slug = url.substringAfterLast("/")
         val apiLink = "$API_URL/film/$slug"
 
         try {
-            val res = app.get(apiLink).parsed<FilmApiResponse>()
+            val res = app.get(apiLink).parsedSafe<FilmApiResponse>() ?: throw Exception("Phản hồi từ API là null hoặc không hợp lệ.")
             
             val movieInfo = res.movie
-            val title = movieInfo.name ?: movieInfo.originalName ?: return null
+            
+            // Thay đổi logic: Gán tên phim trước
+            val title = movieInfo.name ?: movieInfo.originalName
+
+            // THÊM BƯỚC KIỂM TRA MỚI: Nếu tên phim vẫn là null, tạo log lỗi
+            if (title == null) {
+                val debugDescription = """
+                    --- LỖI PLUGIN: THIẾU DỮ LIỆU ---
+                    
+                    Plugin đã tải dữ liệu thành công, nhưng không tìm thấy 'name' hoặc 'original_name' trong phản hồi của API.
+                    
+                    URL ĐÃ GỌI:
+                    $apiLink
+                    
+                    PHẢN HỒI THÔ TỪ API:
+                    --------------------
+                    ${app.get(apiLink).text}
+                    --------------------
+                """.trimIndent()
+                return newMovieLoadResponse(name = "LỖI - Thiếu Tên Phim", url = url, type = TvType.Movie, dataUrl = "") {
+                    this.plot = debugDescription
+                }
+            }
+            
+            // Nếu có tên phim, tiếp tục như bình thường
             val poster = movieInfo.posterUrl ?: movieInfo.thumbUrl
             val description = movieInfo.description?.let { Jsoup.parse(it).text() }
             val actors = movieInfo.casts?.split(",")?.map { ActorData(Actor(it.trim())) }
@@ -152,30 +175,21 @@ class NguonCProvider : MainAPI() {
                 }
             }
         } catch (e: Exception) {
+            // Khối catch này vẫn giữ nguyên để bắt các lỗi khác
             val rawResponse = try {
                 app.get(apiLink).text
             } catch (e2: Exception) {
                 "Không thể tải phản hồi thô. Lỗi mạng: ${e2.message}"
             }
-
             val debugDescription = """
                 --- LỖI PLUGIN ---
-                
-                Plugin đã gặp sự cố khi tải dữ liệu cho phim này.
-                
-                URL ĐÃ GỌI:
-                $apiLink
-                
-                LỖI GỐC:
-                ${e.message}
-                
+                URL ĐÃ GỌI: $apiLink
+                LỖI GỐC: ${e.message}
                 PHẢN HỒI THÔ TỪ API:
                 --------------------
                 $rawResponse
                 --------------------
             """.trimIndent()
-
-            // SỬA LỖI: Thay đổi dataUrl = null thành dataUrl = ""
             return newMovieLoadResponse(name = "LỖI - $slug", url = url, type = TvType.Movie, dataUrl = "") {
                 this.plot = debugDescription
             }
