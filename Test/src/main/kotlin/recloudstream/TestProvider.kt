@@ -13,6 +13,12 @@ import java.net.URI
 import java.text.Normalizer
 import java.util.Base64
 
+// Thêm các import cần thiết cho Interceptor
+import okhttp3.Interceptor
+import okhttp3.Response
+import okhttp3.ResponseBody
+import okhttp3.ResponseBody.Companion.toResponseBody
+
 // Data class để truyền dữ liệu từ load() -> loadLinks()
 data class NguonCLoadData(
     @JsonProperty("slug") val slug: String,
@@ -272,22 +278,16 @@ class NguonCProvider : MainAPI() {
                         "Referer" to "$embedOrigin/",
                         "User-Agent" to userAgent
                     )
-                    val m3u8Content = app.get(finalM3u8Url, headers = playerHeaders).text
-
-                    val uploadApi = "https://text.06.run.place/nguonc.m3u8"
-                    val uploadBody = mapOf("data" to m3u8Content, "exp" to "5m")
-                    val uploadResponse = app.post(uploadApi, json = uploadBody)
-
-                    val uploadedUrl = uploadResponse.text
 
                     callback(
                         ExtractorLink(
                             source = this.name,
-                            name = "${server.serverName} (DEBUG)",
-                            url = uploadedUrl,
-                            referer = embedUrl, // SỬA ĐỔI: Dùng embedUrl làm referer
+                            name = server.serverName,
+                            url = finalM3u8Url,
+                            referer = embedUrl,
                             quality = Qualities.Unknown.value,
-                            type = ExtractorLinkType.M3U8
+                            type = ExtractorLinkType.M3U8,
+                            headers = playerHeaders
                         )
                     )
                     foundLinks = true
@@ -298,4 +298,52 @@ class NguonCProvider : MainAPI() {
         }
         return foundLinks
     }
+
+    // THÊM MỚI: Interceptor để sửa lỗi phát video
+    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
+        return object : Interceptor {
+            override fun intercept(chain: Interceptor.Chain): Response {
+                val request = chain.request()
+                val response = chain.proceed(request)
+                val url = request.url.toString()
+
+                // Sửa đổi điều kiện theo yêu cầu
+                if (url.contains("hihihoho4.top") || url.contains("amass15.top")) {
+                    response.body?.let { body ->
+                        try {
+                            val fixedBytes = skipByteError(body)
+                            val newBody = fixedBytes.toResponseBody(body.contentType())
+                            return response.newBuilder().body(newBody).build()
+                        } catch (e: Exception) {
+                            // Bỏ qua và trả về response gốc nếu có lỗi
+                        }
+                    }
+                }
+                return response
+            }
+        }
+    }
+} // Kết thúc class NguonCProvider
+
+/**
+ * THÊM MỚI: Hàm phụ trợ cho interceptor, đặt ở ngoài class.
+ * Dùng để sửa lỗi video bằng cách bỏ qua các byte lỗi ở đầu.
+ */
+private fun skipByteError(responseBody: ResponseBody): ByteArray {
+    val source = responseBody.source()
+    source.request(Long.MAX_VALUE)
+    val buffer = source.buffer.clone()
+    source.close()
+
+    val byteArray = buffer.readByteArray()
+    val length = byteArray.size - 188
+    var start = 0
+    for (i in 0 until length) {
+        val nextIndex = i + 188
+        if (nextIndex < byteArray.size && byteArray[i].toInt() == 71 && byteArray[nextIndex].toInt() == 71) {
+            start = i
+            break
+        }
+    }
+    return if (start > 0) byteArray.copyOfRange(start, byteArray.size) else byteArray
 }
