@@ -70,7 +70,6 @@ class NguonCProvider : MainAPI() {
         val isTvSeries = (this.totalEpisodes ?: 1) > 1
         val url = "$mainUrl/phim/${this.slug}"
 
-        // SỬA LỖI CHÍNH: Sử dụng đúng tên hàm bạn cung cấp
         return if (isTvSeries) {
             newTvSeriesSearchResponse(this.name ?: this.originalName ?: "", url) {
                 posterUrl = this@toSearchResult.posterUrl ?: this@toSearchResult.thumbUrl
@@ -84,20 +83,33 @@ class NguonCProvider : MainAPI() {
 
     // ============================ Core Provider Functions ============================
 
-    override val mainPage = mainPageOf(
-        "$API_URL/films/phim-moi-cap-nhat?page=" to "Phim mới cập nhật",
-        "$API_URL/films/danh-sach/phim-le?page=" to "Phim lẻ",
-        "$API_URL/films/danh-sach/phim-bo?page=" to "Phim bộ",
-        "$API_URL/films/danh-sach/phim-dang-chieu?page=" to "Phim đang chiếu",
-        "$API_URL/films/danh-sach/hoat-hinh?page=" to "Hoạt hình"
-    )
+    // SỬA LỖI: Xóa 'override val mainPage' và 'override suspend fun mainPage'
+    // Thay thế bằng 'override suspend fun getMainPage'
+    override suspend fun getMainPage(page: Int): HomePageResponse {
+        // Hàm này thường chỉ được gọi cho trang đầu tiên
+        if (page > 1) return HomePageResponse(emptyList())
 
-    override suspend fun mainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = request.data + page
-        val response = app.get(url).parsed<ListApiResponse>()
-        val home = response.items.mapNotNull { it.toSearchResult() }
-        return newHomePageResponse(request.name, home)
+        // Định nghĩa các mục trên trang chủ
+        val sections = listOf(
+            "Phim mới cập nhật" to "$API_URL/films/phim-moi-cap-nhat?page=1",
+            "Phim lẻ" to "$API_URL/films/danh-sach/phim-le?page=1",
+            "Phim bộ" to "$API_URL/films/danh-sach/phim-bo?page=1",
+            "Phim đang chiếu" to "$API_URL/films/danh-sach/phim-dang-chieu?page=1",
+            "Hoạt hình" to "$API_URL/films/danh-sach/hoat-hinh?page=1"
+        )
+
+        // Tải dữ liệu cho tất cả các mục cùng lúc để tăng tốc độ
+        val homePageList = sections.apmap { (name, url) ->
+            // Sử dụng safeParse để tránh lỗi nếu API không trả về dữ liệu
+            val items = app.get(url).parsedSafe<ListApiResponse>()?.items
+                ?.mapNotNull { it.toSearchResult() } ?: emptyList()
+            HomePageList(name, items)
+        }
+
+        // Chỉ trả về các mục có dữ liệu
+        return HomePageResponse(homePageList.filter { it.list.isNotEmpty() })
     }
+
 
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$API_URL/films/search?keyword=$query"
