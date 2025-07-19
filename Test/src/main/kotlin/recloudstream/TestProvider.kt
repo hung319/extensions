@@ -22,9 +22,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 // === Provider Class ===
 class Anime47Provider : MainAPI() {
-    // **THAY ĐỔI 1: Đặt mainUrl thành link gốc để tự động chuyển hướng**
     override var mainUrl = "https://anime47.com"
-    private var baseUrl = "https://anime47.shop" // Đặt một link ổn định làm dự phòng
+    private var baseUrl = "https://anime47.shop"
     override var name = "Anime47"
     override val hasMainPage = true
     override var lang = "vi"
@@ -33,7 +32,6 @@ class Anime47Provider : MainAPI() {
 
     private val interceptor = CloudflareKiller()
 
-    // **THAY ĐỔI 2: Thêm mục Live Action và dùng link tương đối**
     override val mainPage = mainPageOf(
         "/danh-sach/phim-moi/1.html" to "Anime Mới Cập Nhật",
         "/the-loai/hoat-hinh-trung-quoc-75/1.html" to "Hoạt Hình Trung Quốc",
@@ -41,15 +39,16 @@ class Anime47Provider : MainAPI() {
         "/danh-sach/jpdrama/1.html" to "Live action",
     )
 
-    // **THAY ĐỔI 3: Hàm tự động lấy tên miền mới nhất**
-    override suspend fun AwaitDown(url: String): Boolean {
+    // SỬA LỖI: Xóa từ khóa 'override'
+    private suspend fun AwaitDown(url: String): Boolean {
         return try {
             val redirectedUrl = app.get(
                 url,
                 interceptor = interceptor,
                 allowRedirects = true
             ).url
-            baseUrl = redirectedUrl.substringBefore("/")
+            // Lấy scheme và host từ URL sau khi chuyển hướng (ví dụ: "https://anime47.shop")
+            baseUrl = Regex("(https?://[^/]+)").find(redirectedUrl)?.groupValues?.get(1) ?: baseUrl
             true
         } catch (e: Exception) {
             false
@@ -57,7 +56,6 @@ class Anime47Provider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Luôn gọi AwaitDown để đảm bảo baseUrl được cập nhật
         AwaitDown(mainUrl)
         val url = baseUrl + if (page == 1) request.data else request.data.replace("/1.html", "/$page.html")
         val document = app.get(url, interceptor = interceptor).document
@@ -84,18 +82,13 @@ class Anime47Provider : MainAPI() {
         }
 
         return AnimeSearchResponse(
-            name = title,
-            url = href,
-            apiName = this@Anime47Provider.name,
-            type = TvType.Anime,
-            posterUrl = posterUrl,
-            dubStatus = EnumSet.of(DubStatus.Subbed),
-            otherName = ribbon,
-            episodes = episodes
+            name = title, url = href, apiName = this@Anime47Provider.name, type = TvType.Anime,
+            posterUrl = posterUrl, dubStatus = EnumSet.of(DubStatus.Subbed), otherName = ribbon, episodes = episodes
         )
     }
     
     override suspend fun search(query: String): List<SearchResponse> {
+        AwaitDown(mainUrl)
         val searchUrl = "$baseUrl/tim-nang-cao/?keyword=${URLEncoder.encode(query, "UTF-8")}&sapxep=1"
         val document = app.get(searchUrl, interceptor = interceptor).document
         return document.select("ul.last-film-box > li").mapNotNull { it.toSearchResult() }
@@ -156,7 +149,7 @@ class Anime47Provider : MainAPI() {
 
         val episodes = episodesByNumber.entries.map { (epNum, epInfo) ->
             val data = epInfo.sources.toJson()
-            Episode(data = data, name = epInfo.name, episode = null)
+            Episode(data = data, name = epInfo.name, episode = epNum)
         }.sortedBy { it.episode }
 
         return TvSeriesLoadResponse(
