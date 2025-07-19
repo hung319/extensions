@@ -164,7 +164,7 @@ class Anime47Provider : MainAPI() {
             val data = epInfo.sources.toJson()
             newEpisode(data) {
                 this.name = epInfo.name
-                this.episode = epNum
+                this.episode = null
             }
         }.sortedBy { it.episode }
 
@@ -276,7 +276,7 @@ class Anime47Provider : MainAPI() {
                 val response = chain.proceed(request)
                 val url = request.url.toString()
                 
-                if (url.contains("nonprofit.asia")) {
+                if (url.contains(".nonprofit.asia")) {
                     response.body?.let { body ->
                         try {
                             val fixedBytes = skipByteError(body)
