@@ -214,61 +214,46 @@ class NguonCProvider : MainAPI() {
         }
     }
 
-    // SỬA ĐỔI LỚN: Chuyển sang chế độ gỡ lỗi bằng Exception
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val debugLogs = mutableListOf<String>()
-        try {
-            val loadData = parseJson<NguonCLoadData>(data)
-            debugLogs.add("1. OK: Phân tích dữ liệu: slug='${loadData.slug}', tập='${loadData.episodeNum}'")
-
-            val movie = app.get("$apiUrl/film/${loadData.slug}", headers = headers)
-                .parsedSafe<NguonCDetailResponse>()?.movie
-            if(movie == null) {
-                debugLogs.add("2. LỖI: Không lấy được chi tiết phim từ API NguonC.")
-                throw Exception(debugLogs.joinToString("\n"))
-            }
-            debugLogs.add("2. OK: Lấy được chi tiết phim '${movie.name}'")
-
-            if (movie.episodes.isNullOrEmpty()) {
-                 debugLogs.add("3. LỖI: Phim không có server nào (mảng 'episodes' rỗng).")
-            } else {
-                 debugLogs.add("3. OK: Tìm thấy ${movie.episodes.size} server.")
-            }
-
-            // Dùng forEach để log tuần tự, dễ đọc hơn
-            movie.episodes.forEach { server ->
-                debugLogs.add("--- Đang xử lý Server: ${server.serverName} ---")
-
-                val episodeItem = if (movie.totalEpisodes <= 1) server.items.firstOrNull()
-                else server.items.find { it.name.toIntOrNull() == loadData.episodeNum }
-
-                val embedUrl = episodeItem?.embed
-                if (embedUrl.isNullOrBlank()) {
-                    debugLogs.add("4. Lỗi: Không tìm thấy link embed cho server này.")
-                    return@forEach
+        val loadData = parseJson<NguonCLoadData>(data)
+        val movie = app.get("$apiUrl/film/${loadData.slug}", headers = headers)
+            .parsedSafe<NguonCDetailResponse>()?.movie ?: return false
+        
+        var foundLinks = false
+        
+        movie.episodes.apmap { server ->
+            try {
+                val episodeItem = if (movie.totalEpisodes <= 1) {
+                    server.items.firstOrNull()
+                } else {
+                    server.items.find { it.name.toIntOrNull() == loadData.episodeNum }
                 }
-                debugLogs.add("4. OK: Link embed: $embedUrl")
+                
+                val embedUrl = episodeItem?.embed
+                if (embedUrl.isNullOrBlank()) return@apmap
 
+                app.get(embedUrl, headers = headers)
+
+                val embedOrigin = URI(embedUrl).let { "${it.scheme}://${it.host}" }
+
+                // SỬA LỖI: Tạo link API chính xác bằng cách kiểm tra dấu '?'
+                val streamApiUrl = if (embedUrl.contains("?")) {
+                    "$embedUrl&api=stream"
+                } else {
+                    "$embedUrl?api=stream"
+                }
+                
                 val embedPageContent = app.get(embedUrl, headers = headers).text
-                debugLogs.add("5. OK: Đã tải HTML trang embed, độ dài: ${embedPageContent.length}")
-
                 val authToken = embedPageContent.substringAfter("const authToken = '").substringBefore("'")
                 val hash = embedPageContent.substringAfter("data-hash=\"").substringBefore("\"")
-                debugLogs.add("6. OK: Trích xuất: authToken (dài ${authToken.length}), hash (dài ${hash.length})")
-
-                if (authToken.isBlank() || hash.isBlank()) {
-                    debugLogs.add("7. LỖI: Không trích xuất được authToken hoặc hash.")
-                    return@forEach
-                }
-
-                val streamApiUrl = "$embedUrl?api=stream"
-                val embedOrigin = URI(embedUrl).let { "${it.scheme}://${it.host}" }
                 
+                if (authToken.isBlank() || hash.isBlank()) return@apmap
+
                 val apiHeaders = mapOf(
                     "Content-Type" to "application/json",
                     "X-Requested-With" to "XMLHttpRequest",
@@ -278,31 +263,39 @@ class NguonCProvider : MainAPI() {
                     "Origin" to embedOrigin,
                     "Cookie" to "__dtsu=4C301750475292A9643FBE50677C1A34"
                 )
-                debugLogs.add("8. Info: Gửi POST đến $streamApiUrl")
                 
                 val requestBody = mapOf("hash" to hash)
-                val streamApiResponse = app.post(streamApiUrl, headers = apiHeaders, json = requestBody)
-                debugLogs.add("9. OK: Yêu cầu POST hoàn tất, Status: ${streamApiResponse.code}")
-                debugLogs.add("10. Body trả về: ${streamApiResponse.text.take(300)}")
+                val streamApiResponse = app.post(streamApiUrl, headers = apiHeaders, json = requestBody).parsedSafe<StreamApiResponse>()
+                
+                val base64StreamUrl = streamApiResponse?.streamUrl
+                if (!base64StreamUrl.isNullOrBlank()) {
+                    val cleanBase64 = base64StreamUrl.replace('-', '+').replace('_', '/')
+                    val padding = "=".repeat((4 - cleanBase64.length % 4) % 4)
+                    val finalM3u8Url = String(Base64.getDecoder().decode(cleanBase64 + padding))
+                    
+                    val playerHeaders = mapOf(
+                        "Origin" to embedOrigin,
+                        "Referer" to "$embedOrigin/",
+                        "User-Agent" to userAgent
+                    )
 
-                val base64StreamUrl = streamApiResponse.parsedSafe<StreamApiResponse>()?.streamUrl
-                if (base64StreamUrl.isNullOrBlank()) {
-                    debugLogs.add("11. LỖI: Không tìm thấy 'streamUrl' trong response.")
-                    return@forEach
+                    callback(
+                        ExtractorLink(
+                            source = this.name,
+                            name = server.serverName,
+                            url = finalM3u8Url,
+                            referer = embedUrl,
+                            quality = Qualities.Unknown.value,
+                            type = ExtractorLinkType.M3U8,
+                            headers = playerHeaders
+                        )
+                    )
+                    foundLinks = true
                 }
-                debugLogs.add("11. OK: Lấy được streamUrl Base64 (dài ${base64StreamUrl.length})")
-
-                val cleanBase64 = base64StreamUrl.replace('-', '+').replace('_', '/')
-                val padding = "=".repeat((4 - cleanBase64.length % 4) % 4)
-                val finalM3u8Url = String(Base64.getDecoder().decode(cleanBase64 + padding))
-                debugLogs.add("12. THÀNH CÔNG: Giải mã được link M3U8: $finalM3u8Url")
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
-        } catch (e: Exception) {
-            debugLogs.add("LỖI NGHIÊM TRỌNG: ${e.javaClass.simpleName} - ${e.message}")
-            e.printStackTrace()
         }
-        
-        // Ném ra lỗi chứa toàn bộ log
-        throw Exception(debugLogs.joinToString("\n"))
+        return foundLinks
     }
 }
