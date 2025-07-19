@@ -12,6 +12,10 @@ import com.lagradost.cloudstream3.mvvm.suspendSafeApiCall
 import java.net.URI
 import java.text.Normalizer
 import java.util.Base64
+
+// Thêm các import cần thiết
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import okhttp3.Interceptor
 import okhttp3.Response
 import okhttp3.ResponseBody
@@ -179,16 +183,19 @@ class NguonCProvider : MainAPI() {
         }
 
         val recommendations = mutableListOf<SearchResponse>()
-        genres.firstOrNull()?.let { primaryGenre ->
-            suspendSafeApiCall {
-                val genreSlug = primaryGenre.toUrlSlug()
+        for (genreName in genres) {
+            runCatching {
+                val genreSlug = genreName.toUrlSlug()
                 app.get("$apiUrl/films/the-loai/$genreSlug?page=1", headers = headers).parsedSafe<NguonCListResponse>()
                     ?.items?.let { recItems ->
-                        recommendations.addAll(
-                            recItems.filter { it.slug != movie.slug }.mapNotNull { it.toSearchResponse() }
-                        )
+                        if (recItems.isNotEmpty()) {
+                            recommendations.addAll(
+                                recItems.filter { it.slug != movie.slug }.mapNotNull { it.toSearchResponse() }
+                            )
+                        }
                     }
             }
+            if (recommendations.isNotEmpty()) break
         }
         
         if (movie.totalEpisodes <= 1) {
@@ -200,22 +207,15 @@ class NguonCProvider : MainAPI() {
                 this.recommendations = recommendations
             }
         } else {
-            // SỬA ĐỔI LỚN: Logic gom nhóm và tạo tag cho tập phim
             val episodes = movie.episodes
-                // Gom tất cả các tập từ tất cả các server vào một danh sách duy nhất
                 .flatMap { server ->
                     (server.items ?: emptyList()).map { item ->
-                        // Tạo một cặp dữ liệu (số tập, tên server)
                         Pair(item.name.toIntOrNull(), server.serverName)
                     }
                 }
-                .filter { it.first != null } // Lọc bỏ những tập không có số
-                .groupBy { it.first!! } // Gom nhóm theo số tập
+                .filter { it.first != null }
+                .groupBy { it.first!! }
                 .map { (epNum, sources) ->
-                    // sources ở đây là một danh sách các tên server cho tập epNum
-                    // ví dụ: ["Vietsub #1", "Thuyết minh #1"]
-                    
-                    // Tạo tag [VS-TM-LT]
                     val tags = sources.mapNotNull { (_, serverName) ->
                         when {
                             serverName.contains("Vietsub", ignoreCase = true) -> "VS"
@@ -225,21 +225,17 @@ class NguonCProvider : MainAPI() {
                         }
                     }.distinct().joinToString("-")
 
-                    // Tạo tên hiển thị
                     val displayName = "Tập $epNum" + if (tags.isNotBlank()) " [$tags]" else ""
-                    
-                    // Tạo dữ liệu để truyền cho loadLinks
                     val loadData = NguonCLoadData(slug = slug, episodeNum = epNum).toJson()
 
-                    Episode(
-                        data = loadData,
-                        name = displayName,
-                        episode = epNum,
-                        season = 1,
-                        posterUrl = movie.thumbUrl
-                    )
+                    newEpisode(data = loadData) {
+                        this.name = displayName
+                        this.episode = epNum
+                        this.season = 1
+                        this.posterUrl = movie.thumbUrl
+                    }
                 }
-                .sortedBy { it.episode } // Sắp xếp lại theo đúng thứ tự tập
+                .sortedBy { it.episode }
 
             return newTvSeriesLoadResponse(title, url, type, episodes) {
                 this.posterUrl = poster
@@ -260,88 +256,93 @@ class NguonCProvider : MainAPI() {
         val movie = app.get("$apiUrl/film/${loadData.slug}", headers = headers)
             .parsedSafe<NguonCDetailResponse>()?.movie ?: return false
         
-        var foundLinks = false
-        
-        movie.episodes.apmap { server ->
-            try {
-                val episodeItem = if (movie.totalEpisodes <= 1) {
-                    server.items?.firstOrNull()
-                } else {
-                    server.items?.find { it.name.toIntOrNull() == loadData.episodeNum }
-                }
-                
-                val embedUrl = episodeItem?.embed
-                if (embedUrl.isNullOrBlank()) return@apmap
-
-                val embedPageContent = app.get(embedUrl, headers = headers).text
-                val authToken = embedPageContent.substringAfter("const authToken = '").substringBefore("'")
-                val hash = embedPageContent.substringAfter("data-hash=\"").substringBefore("\"")
-                
-                if (authToken.isBlank() || hash.isBlank()) return@apmap
-
-                val streamApiUrl = if (embedUrl.contains("?")) "$embedUrl&api=stream" else "$embedUrl?api=stream"
-                val embedOrigin = URI(embedUrl).let { "${it.scheme}://${it.host}" }
-                
-                val apiHeaders = mapOf(
-                    "Content-Type" to "application/json",
-                    "X-Requested-With" to "XMLHttpRequest",
-                    "X-Embed-Auth" to authToken,
-                    "User-Agent" to userAgent,
-                    "Referer" to embedUrl,
-                    "Origin" to embedOrigin,
-                    "Cookie" to "__dtsu=4C301750475292A9643FBE50677C1A34"
-                )
-                
-                val requestBody = mapOf("hash" to hash)
-                val streamApiResponse = app.post(streamApiUrl, headers = apiHeaders, json = requestBody).parsedSafe<StreamApiResponse>()
-                
-                val base64StreamUrl = streamApiResponse?.streamUrl
-                if (!base64StreamUrl.isNullOrBlank()) {
-                    val cleanBase64 = base64StreamUrl.replace('-', '+').replace('_', '/')
-                    val padding = "=".repeat((4 - cleanBase64.length % 4) % 4)
-                    val decodedUrl = String(Base64.getDecoder().decode(cleanBase64 + padding))
-
-                    val finalM3u8Url = if (decodedUrl.startsWith("http")) decodedUrl else embedOrigin + decodedUrl
+        // Dùng map + async/awaitAll để lấy link song song
+        movie.episodes.map { server ->
+            async {
+                try {
+                    val episodeItem = if (movie.totalEpisodes <= 1) {
+                        server.items?.firstOrNull()
+                    } else {
+                        server.items?.find { it.name.toIntOrNull() == loadData.episodeNum }
+                    }
                     
-                    val playerHeaders = mapOf(
+                    val embedUrl = episodeItem?.embed
+                    if (embedUrl.isNullOrBlank()) return@async
+
+                    val embedPageContent = app.get(embedUrl, headers = headers).text
+                    val authToken = embedPageContent.substringAfter("const authToken = '").substringBefore("'")
+                    val hash = embedPageContent.substringAfter("data-hash=\"").substringBefore("\"")
+                    
+                    if (authToken.isBlank() || hash.isBlank()) return@async
+
+                    val streamApiUrl = if (embedUrl.contains("?")) "$embedUrl&api=stream" else "$embedUrl?api=stream"
+                    val embedOrigin = URI(embedUrl).let { "${it.scheme}://${it.host}" }
+                    
+                    val apiHeaders = mapOf(
+                        "Content-Type" to "application/json",
+                        "X-Requested-With" to "XMLHttpRequest",
+                        "X-Embed-Auth" to authToken,
+                        "User-Agent" to userAgent,
+                        "Referer" to embedUrl,
                         "Origin" to embedOrigin,
-                        "Referer" to "$embedOrigin/",
-                        "User-Agent" to userAgent
+                        "Cookie" to "__dtsu=4C301750475292A9643FBE50677C1A34"
                     )
-                    val m3u8Content = app.get(finalM3u8Url, headers = playerHeaders).text
-
-                    val uploadApi = "https://paste.swurl.xyz/nguonc.m3u8"
-                    val requestBodyUpload = m3u8Content.toRequestBody("text/plain".toMediaType())
-                    val uploadedUrl = app.post(uploadApi, requestBody = requestBodyUpload).text
                     
-                    callback(
-                        ExtractorLink(
-                            source = this.name,
-                            name = server.serverName,
-                            url = uploadedUrl,
-                            referer = embedUrl,
-                            quality = Qualities.Unknown.value,
-                            type = ExtractorLinkType.M3U8,
-                            headers = playerHeaders
+                    val requestBody = mapOf("hash" to hash)
+                    val streamApiResponse = app.post(streamApiUrl, headers = apiHeaders, json = requestBody).parsedSafe<StreamApiResponse>()
+                    
+                    val base64StreamUrl = streamApiResponse?.streamUrl
+                    if (!base64StreamUrl.isNullOrBlank()) {
+                        val cleanBase64 = base64StreamUrl.replace('-', '+').replace('_', '/')
+                        val padding = "=".repeat((4 - cleanBase64.length % 4) % 4)
+                        val decodedUrl = String(Base64.getDecoder().decode(cleanBase64 + padding))
+
+                        val finalM3u8Url = if (decodedUrl.startsWith("http")) decodedUrl else embedOrigin + decodedUrl
+                        
+                        val playerHeaders = mapOf(
+                            "Origin" to embedOrigin,
+                            "Referer" to "$embedOrigin/",
+                            "User-Agent" to userAgent
                         )
-                    )
-                    foundLinks = true
+                        val m3u8Content = app.get(finalM3u8Url, headers = playerHeaders).text
+
+                        // SỬA ĐỔI: Chuyển sang upload ở https://paste.swurl.xyz/
+                        val uploadApi = "https://paste.swurl.xyz/nguonc.m3u8"
+                        val requestBodyUpload = m3u8Content.toRequestBody("text/plain".toMediaType())
+                        val uploadedUrl = app.post(uploadApi, requestBody = requestBodyUpload).text
+                        
+                        callback(
+                            ExtractorLink(
+                                source = this.name,
+                                name = server.serverName,
+                                url = uploadedUrl,
+                                referer = embedUrl,
+                                quality = Qualities.Unknown.value,
+                                type = ExtractorLinkType.M3U8,
+                                headers = playerHeaders
+                            )
+                        )
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
             }
-        }
-        return foundLinks
+        }.awaitAll()
+        
+        return true
     }
 
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
+        val hihihohoRegex = Regex("""hihihoho\d+\.top""")
+        val amassRegex = Regex("""amass\d+\.top""")
+
         return object : Interceptor {
             override fun intercept(chain: Interceptor.Chain): Response {
                 val request = chain.request()
                 val response = chain.proceed(request)
                 val url = request.url.toString()
 
-                if (url.contains("hihihoho4.top") || url.contains("amass15.top")) {
+                if (hihihohoRegex.containsMatchIn(url) || amassRegex.containsMatchIn(url)) {
                     response.body?.let { body ->
                         try {
                             val fixedBytes = skipByteError(body)
