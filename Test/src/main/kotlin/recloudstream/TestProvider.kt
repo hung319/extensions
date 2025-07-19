@@ -83,9 +83,8 @@ class NguonCProvider : MainAPI() {
 
     // ============================ Core Provider Functions ============================
 
-    // SỬA LỖI: Xóa 'override val mainPage' và 'override suspend fun mainPage'
-    // Thay thế bằng 'override suspend fun getMainPage'
-    override suspend fun getMainPage(page: Int): HomePageResponse {
+    // SỬA LỖI: Cập nhật chữ ký hàm cho đúng với yêu cầu của trình biên dịch
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         // Hàm này thường chỉ được gọi cho trang đầu tiên
         if (page > 1) return HomePageResponse(emptyList())
 
