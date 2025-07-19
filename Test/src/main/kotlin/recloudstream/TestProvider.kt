@@ -28,7 +28,6 @@ class NguonCProvider : MainAPI() {
 
     data class FilmApiResponse(
         @JsonProperty("movie") val movie: MediaItem,
-        // SỬA LỖI: Cho phép danh sách tập phim có thể bị thiếu (null)
         @JsonProperty("episodes") val episodes: List<EpisodeServer>?
     )
 
@@ -115,11 +114,16 @@ class NguonCProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        // Nhận vào link định danh: .../phim/cam
         val slug = url.substringAfterLast("/")
-        val apiLink = "$API_URL/film/$slug"
-        val res = app.get(apiLink).parsed<FilmApiResponse>()
-        val movieInfo = res.movie
 
+        // Tạo ra link API: .../api/film/cam
+        val apiLink = "$API_URL/film/$slug"
+
+        // **Sử dụng đúng 'apiLink' để tải dữ liệu**
+        val res = app.get(apiLink).parsedSafe<FilmApiResponse>() ?: return null
+        
+        val movieInfo = res.movie
         val title = movieInfo.name ?: movieInfo.originalName ?: return null
         val poster = movieInfo.posterUrl ?: movieInfo.thumbUrl
         val description = movieInfo.description?.let { Jsoup.parse(it).text() }
@@ -135,7 +139,6 @@ class NguonCProvider : MainAPI() {
             }
         }
 
-        // SỬA LỖI: Xử lý an toàn trường hợp `episodes` là null
         val episodes = res.episodes?.flatMap { server ->
             server.items.map { episode ->
                 newEpisode(episode) {
@@ -143,7 +146,7 @@ class NguonCProvider : MainAPI() {
                     this.data = episode.m3u8 ?: episode.embed ?: ""
                 }
             }
-        } ?: emptyList() // Nếu `episodes` là null, trả về một danh sách rỗng
+        } ?: emptyList()
 
         return if ((movieInfo.totalEpisodes ?: 1) > 1) {
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
@@ -154,9 +157,6 @@ class NguonCProvider : MainAPI() {
                 this.tags = genres
             }
         } else {
-            // Đối với phim lẻ, link xem phim có thể không có trong 'episodes'.
-            // Cần một cách khác để lấy link, tuy nhiên API hiện tại chưa cung cấp.
-            // Tạm thời vẫn lấy từ `episodes` nếu có.
             newMovieLoadResponse(title, url, TvType.Movie, episodes.firstOrNull()?.data) {
                 this.posterUrl = poster
                 this.year = year
