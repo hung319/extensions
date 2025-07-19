@@ -6,7 +6,7 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import org.jsoup.Jsoup
 
 // Define the main provider class
-class NguonCProvider : MainAPI() { // Lỗi được sửa bằng cách đảm bảo tất cả hàm helper nằm trong class này
+class NguonCProvider : MainAPI() {
     override var mainUrl = "https://phim.nguonc.com"
     override var name = "NguonC"
     override val hasMainPage = true
@@ -66,12 +66,12 @@ class NguonCProvider : MainAPI() { // Lỗi được sửa bằng cách đảm b
 
     // ============================ Helper Functions ============================
 
-    // Sửa lỗi: Di chuyển hàm này vào trong class để có thể gọi newTvSeries/newMovie
+    // Sửa lỗi: Hàm này phải nằm BÊN TRONG class NguonCProvider
     private fun MediaItem.toSearchResult(): SearchResponse {
         val isTvSeries = (this.totalEpisodes ?: 1) > 1
         val url = "$mainUrl/phim/${this.slug}"
 
-        // Sửa lỗi: Sử dụng đúng cú pháp lambda { } để gán giá trị
+        // Sửa lỗi: Sử dụng đúng cú pháp lambda { ... }
         return if (isTvSeries) {
             newTvSeries(this.name ?: this.originalName ?: "", url) {
                 posterUrl = this@toSearchResult.posterUrl ?: this@toSearchResult.thumbUrl
@@ -85,7 +85,6 @@ class NguonCProvider : MainAPI() { // Lỗi được sửa bằng cách đảm b
 
     // ============================ Core Provider Functions ============================
 
-    // Sửa lỗi: Đảm bảo 'mainPage' override đúng cách (mã này là đúng chuẩn)
     override val mainPage = mainPageOf(
         "$API_URL/films/phim-moi-cap-nhat?page=" to "Phim mới cập nhật",
         "$API_URL/films/danh-sach/phim-le?page=" to "Phim lẻ",
@@ -119,24 +118,23 @@ class NguonCProvider : MainAPI() { // Lỗi được sửa bằng cách đảm b
         val title = movieInfo.name ?: movieInfo.originalName ?: return null
         val poster = movieInfo.posterUrl ?: movieInfo.thumbUrl
         val description = movieInfo.description?.let { Jsoup.parse(it).text() }
-        val cast = movieInfo.casts?.split(",")?.map { it.trim() }
-        val directors = movieInfo.director?.split(",")?.map { it.trim() }
+
+        // SỬA LỖI CHÍNH: Chuyển đổi List<String> thành List<Actor>
+        val actors = movieInfo.casts?.split(",")?.map { Actor(it.trim()) }
 
         var year: Int? = null
         var genres: List<String>? = null
         movieInfo.category?.values?.forEach { group ->
             if (group.list.any { it.name?.toIntOrNull() != null }) {
                 year = group.list.firstOrNull()?.name?.toIntOrNull()
-            }
-            else if (group.list.any { it.name?.length ?: 0 > 2 }) {
-                 genres = group.list.mapNotNull { it.name }
+            } else if (group.list.any { it.name?.length ?: 0 > 2 }) {
+                genres = group.list.mapNotNull { it.name }
             }
         }
 
         val episodes = res.episodes.flatMap { server ->
             server.items.map { episode ->
                 newEpisode(episode) {
-                    // Sửa lỗi: Thay 'displayName' thành 'name'
                     this.name = "${server.serverName}: Tập ${episode.name}"
                     this.data = episode.m3u8 ?: episode.embed ?: ""
                 }
@@ -148,20 +146,16 @@ class NguonCProvider : MainAPI() { // Lỗi được sửa bằng cách đảm b
                 this.posterUrl = poster
                 this.year = year
                 this.plot = description
-                // Sửa lỗi: Thay 'cast' thành 'actors'
-                this.actors = cast
+                this.actors = actors // Gán danh sách diễn viên đã được chuyển đổi
                 this.tags = genres
-                // Sửa lỗi: Loại bỏ 'creators' vì không còn được hỗ trợ trong hàm này
             }
         } else {
             newMovieLoadResponse(title, url, TvType.Movie, episodes.firstOrNull()?.data) {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = description
-                // Sửa lỗi: Thay 'cast' thành 'actors'
-                this.actors = cast
+                this.actors = actors // Gán danh sách diễn viên đã được chuyển đổi
                 this.tags = genres
-                // Sửa lỗi: Loại bỏ 'creators' vì không còn được hỗ trợ trong hàm này
             }
         }
     }
