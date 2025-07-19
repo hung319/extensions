@@ -15,6 +15,8 @@ import java.util.Base64
 import okhttp3.Interceptor
 import okhttp3.Response
 import okhttp3.ResponseBody
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.ResponseBody.Companion.toResponseBody
 
 // Data class để truyền dữ liệu từ load() -> loadLinks()
@@ -60,7 +62,7 @@ data class NguonCEpisodeItem(
 
 data class NguonCServer(
     @JsonProperty("server_name") val serverName: String,
-    @JsonProperty("items") val items: List<NguonCEpisodeItem>
+    @JsonProperty("items") val items: List<NguonCEpisodeItem>?
 )
 
 data class NguonCCategoryInfo(
@@ -198,17 +200,47 @@ class NguonCProvider : MainAPI() {
                 this.recommendations = recommendations
             }
         } else {
-            val totalEpisodes = movie.episodes.mapNotNull { it.items?.size }.maxOrNull() ?: movie.totalEpisodes
-            val episodes = (1..totalEpisodes).map { epNum ->
-                val loadData = NguonCLoadData(slug = slug, episodeNum = epNum).toJson()
-                Episode(
-                    data = loadData,
-                    name = "Tập $epNum",
-                    episode = epNum,
-                    season = 1,
-                    posterUrl = movie.thumbUrl
-                )
-            }
+            // SỬA ĐỔI LỚN: Logic gom nhóm và tạo tag cho tập phim
+            val episodes = movie.episodes
+                // Gom tất cả các tập từ tất cả các server vào một danh sách duy nhất
+                .flatMap { server ->
+                    (server.items ?: emptyList()).map { item ->
+                        // Tạo một cặp dữ liệu (số tập, tên server)
+                        Pair(item.name.toIntOrNull(), server.serverName)
+                    }
+                }
+                .filter { it.first != null } // Lọc bỏ những tập không có số
+                .groupBy { it.first!! } // Gom nhóm theo số tập
+                .map { (epNum, sources) ->
+                    // sources ở đây là một danh sách các tên server cho tập epNum
+                    // ví dụ: ["Vietsub #1", "Thuyết minh #1"]
+                    
+                    // Tạo tag [VS-TM-LT]
+                    val tags = sources.mapNotNull { (_, serverName) ->
+                        when {
+                            serverName.contains("Vietsub", ignoreCase = true) -> "VS"
+                            serverName.contains("Thuyết minh", ignoreCase = true) -> "TM"
+                            serverName.contains("Lồng Tiếng", ignoreCase = true) -> "LT"
+                            else -> null
+                        }
+                    }.distinct().joinToString("-")
+
+                    // Tạo tên hiển thị
+                    val displayName = "Tập $epNum" + if (tags.isNotBlank()) " [$tags]" else ""
+                    
+                    // Tạo dữ liệu để truyền cho loadLinks
+                    val loadData = NguonCLoadData(slug = slug, episodeNum = epNum).toJson()
+
+                    Episode(
+                        data = loadData,
+                        name = displayName,
+                        episode = epNum,
+                        season = 1,
+                        posterUrl = movie.thumbUrl
+                    )
+                }
+                .sortedBy { it.episode } // Sắp xếp lại theo đúng thứ tự tập
+
             return newTvSeriesLoadResponse(title, url, type, episodes) {
                 this.posterUrl = poster
                 this.plot = plot
@@ -233,9 +265,9 @@ class NguonCProvider : MainAPI() {
         movie.episodes.apmap { server ->
             try {
                 val episodeItem = if (movie.totalEpisodes <= 1) {
-                    server.items.firstOrNull()
+                    server.items?.firstOrNull()
                 } else {
-                    server.items.find { it.name.toIntOrNull() == loadData.episodeNum }
+                    server.items?.find { it.name.toIntOrNull() == loadData.episodeNum }
                 }
                 
                 val embedUrl = episodeItem?.embed
@@ -278,10 +310,9 @@ class NguonCProvider : MainAPI() {
                     )
                     val m3u8Content = app.get(finalM3u8Url, headers = playerHeaders).text
 
-                    // SỬA ĐỔI: Chuyển sang upload ở https://text.06.run.place/
-                    val uploadApi = "https://text.06.run.place/nguonc.m3u8"
-                    val uploadBody = mapOf("data" to m3u8Content, "exp" to "6h") // Hết hạn sau 6 giờ
-                    val uploadedUrl = app.post(uploadApi, json = uploadBody).text
+                    val uploadApi = "https://paste.swurl.xyz/nguonc.m3u8"
+                    val requestBodyUpload = m3u8Content.toRequestBody("text/plain".toMediaType())
+                    val uploadedUrl = app.post(uploadApi, requestBody = requestBodyUpload).text
                     
                     callback(
                         ExtractorLink(
