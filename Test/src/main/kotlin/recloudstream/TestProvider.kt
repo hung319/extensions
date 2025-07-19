@@ -28,7 +28,8 @@ class NguonCProvider : MainAPI() {
 
     data class FilmApiResponse(
         @JsonProperty("movie") val movie: MediaItem,
-        @JsonProperty("episodes") val episodes: List<EpisodeServer>
+        // SỬA LỖI: Cho phép danh sách tập phim có thể bị thiếu (null)
+        @JsonProperty("episodes") val episodes: List<EpisodeServer>?
     )
 
     data class MediaItem(
@@ -83,12 +84,9 @@ class NguonCProvider : MainAPI() {
 
     // ============================ Core Provider Functions ============================
 
-    // SỬA LỖI: Cập nhật chữ ký hàm cho đúng với yêu cầu của trình biên dịch
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        // Hàm này thường chỉ được gọi cho trang đầu tiên
         if (page > 1) return HomePageResponse(emptyList())
 
-        // Định nghĩa các mục trên trang chủ
         val sections = listOf(
             "Phim mới cập nhật" to "$API_URL/films/phim-moi-cap-nhat?page=1",
             "Phim lẻ" to "$API_URL/films/danh-sach/phim-le?page=1",
@@ -97,15 +95,12 @@ class NguonCProvider : MainAPI() {
             "Hoạt hình" to "$API_URL/films/danh-sach/hoat-hinh?page=1"
         )
 
-        // Tải dữ liệu cho tất cả các mục cùng lúc để tăng tốc độ
         val homePageList = sections.apmap { (name, url) ->
-            // Sử dụng safeParse để tránh lỗi nếu API không trả về dữ liệu
             val items = app.get(url).parsedSafe<ListApiResponse>()?.items
                 ?.mapNotNull { it.toSearchResult() } ?: emptyList()
             HomePageList(name, items)
         }
 
-        // Chỉ trả về các mục có dữ liệu
         return HomePageResponse(homePageList.filter { it.list.isNotEmpty() })
     }
 
@@ -140,14 +135,15 @@ class NguonCProvider : MainAPI() {
             }
         }
 
-        val episodes = res.episodes.flatMap { server ->
+        // SỬA LỖI: Xử lý an toàn trường hợp `episodes` là null
+        val episodes = res.episodes?.flatMap { server ->
             server.items.map { episode ->
                 newEpisode(episode) {
                     this.name = "${server.serverName}: Tập ${episode.name}"
                     this.data = episode.m3u8 ?: episode.embed ?: ""
                 }
             }
-        }
+        } ?: emptyList() // Nếu `episodes` là null, trả về một danh sách rỗng
 
         return if ((movieInfo.totalEpisodes ?: 1) > 1) {
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
@@ -158,6 +154,9 @@ class NguonCProvider : MainAPI() {
                 this.tags = genres
             }
         } else {
+            // Đối với phim lẻ, link xem phim có thể không có trong 'episodes'.
+            // Cần một cách khác để lấy link, tuy nhiên API hiện tại chưa cung cấp.
+            // Tạm thời vẫn lấy từ `episodes` nếu có.
             newMovieLoadResponse(title, url, TvType.Movie, episodes.firstOrNull()?.data) {
                 this.posterUrl = poster
                 this.year = year
