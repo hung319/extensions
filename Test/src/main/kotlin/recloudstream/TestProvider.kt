@@ -11,6 +11,7 @@ import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.mvvm.suspendSafeApiCall
 import java.net.URI
 import java.text.Normalizer
+import java.util.Base64
 
 // Data class để truyền dữ liệu từ load() -> loadLinks()
 data class NguonCLoadData(
@@ -98,7 +99,7 @@ class NguonCProvider : MainAPI() {
     override var lang = "vi"
     override val hasMainPage = true
     private val apiUrl = "$mainUrl/api"
-    private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36"
+    private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
     private val headers = mapOf("User-Agent" to userAgent)
 
     override val mainPage = mainPageOf(
@@ -236,30 +237,38 @@ class NguonCProvider : MainAPI() {
                 val embedUrl = episodeItem?.embed
                 if (embedUrl.isNullOrBlank()) return@apmap
 
-                // Truy cập trang embed trước để lấy cookie
-                app.get(embedUrl, headers = headers)
+                val embedPageContent = app.get(embedUrl, headers = headers).text
+                val authToken = embedPageContent.substringAfter("const authToken = '").substringBefore("'")
+                val hash = embedPageContent.substringAfter("data-hash=\"").substringBefore("\"")
+                
+                if (authToken.isBlank() || hash.isBlank()) return@apmap
 
+                val streamApiUrl = "$embedUrl?api=stream"
                 val embedOrigin = URI(embedUrl).let { "${it.scheme}://${it.host}" }
-                val streamApiUrl = embedUrl.replace("?", "?api=stream&")
                 
+                // SỬA ĐỔI LỚN: Thêm `Origin` và `Cookie` vào header của yêu cầu POST
                 val apiHeaders = mapOf(
-                    "referer" to embedUrl,
-                    "User-Agent" to userAgent
+                    "Content-Type" to "application/json",
+                    "X-Requested-With" to "XMLHttpRequest",
+                    "X-Embed-Auth" to authToken,
+                    "User-Agent" to userAgent,
+                    "Referer" to embedUrl,
+                    "Origin" to embedOrigin,
+                    "Cookie" to "__dtsu=4C301750475292A9643FBE50677C1A34" // Cookie từ curl
                 )
-                val streamApiResponse = app.get(streamApiUrl, headers = apiHeaders).parsedSafe<StreamApiResponse>()
                 
-                var relativeStreamUrl = streamApiResponse?.streamUrl
-                if (!relativeStreamUrl.isNullOrBlank()) {
-                    if (relativeStreamUrl.contains("/s3/")) {
-                        relativeStreamUrl = "/s3/" + relativeStreamUrl.substringAfterLast("/s3/")
-                    }
-
-                    val finalM3u8Url = if(relativeStreamUrl.startsWith("http")) relativeStreamUrl else "$embedOrigin$relativeStreamUrl"
+                val requestBody = mapOf("hash" to hash).toJson()
+                val streamApiResponse = app.post(streamApiUrl, headers = apiHeaders, data = requestBody).parsedSafe<StreamApiResponse>()
+                
+                val base64StreamUrl = streamApiResponse?.streamUrl
+                if (!base64StreamUrl.isNullOrBlank()) {
+                    val cleanBase64 = base64StreamUrl.replace('-', '+').replace('_', '/')
+                    val padding = "=".repeat((4 - cleanBase64.length % 4) % 4)
+                    val finalM3u8Url = String(Base64.getDecoder().decode(cleanBase64 + padding))
                     
-                    // SỬA ĐỔI: Loại bỏ proxy, truyền header trực tiếp cho player
                     val playerHeaders = mapOf(
                         "Origin" to embedOrigin,
-                        "Referer" to embedUrl,
+                        "Referer" to "$embedOrigin/",
                         "User-Agent" to userAgent
                     )
 
@@ -271,7 +280,7 @@ class NguonCProvider : MainAPI() {
                             referer = embedUrl,
                             quality = Qualities.Unknown.value,
                             type = ExtractorLinkType.M3U8,
-                            headers = playerHeaders // Gửi kèm header cho trình phát video
+                            headers = playerHeaders
                         )
                     )
                     foundLinks = true
