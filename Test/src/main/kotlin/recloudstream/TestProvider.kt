@@ -21,7 +21,7 @@ class NguonCProvider : MainAPI() {
         const val API_URL = "https://phim.nguonc.com/api"
     }
 
-    // ============================ Data Classes for JSON Parsing ============================
+    // Data classes... (Giữ nguyên không thay đổi)
     data class ListApiResponse(
         @JsonProperty("items") val items: List<MediaItem>
     )
@@ -63,9 +63,8 @@ class NguonCProvider : MainAPI() {
         @JsonProperty("embed") val embed: String?,
         @JsonProperty("m3u8") val m3u8: String?
     )
-
-    // ============================ Helper Functions ============================
-
+    
+    // Helper functions... (Giữ nguyên không thay đổi)
     private fun MediaItem.toSearchResult(): SearchResponse {
         val isTvSeries = (this.totalEpisodes ?: 1) > 1
         val url = "$mainUrl/phim/${this.slug}"
@@ -81,8 +80,7 @@ class NguonCProvider : MainAPI() {
         }
     }
 
-    // ============================ Core Provider Functions ============================
-
+    // Core provider functions... (Giữ nguyên không thay đổi)
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         if (page > 1) return HomePageResponse(emptyList())
 
@@ -113,15 +111,13 @@ class NguonCProvider : MainAPI() {
         }
     }
 
+    // THAY ĐỔI DUY NHẤT NẰM Ở ĐÂY
     override suspend fun load(url: String): LoadResponse? {
-        // Nhận vào link định danh: .../phim/cam
         val slug = url.substringAfterLast("/")
-
-        // Tạo ra link API: .../api/film/cam
         val apiLink = "$API_URL/film/$slug"
 
-        // **Sử dụng đúng 'apiLink' để tải dữ liệu**
-        val res = app.get(apiLink).parsedSafe<FilmApiResponse>() ?: return null
+        // THAY ĐỔI: Sử dụng "parsed" thay vì "parsedSafe" để xem lỗi thật sự
+        val res = app.get(apiLink).parsed<FilmApiResponse>()
         
         val movieInfo = res.movie
         val title = movieInfo.name ?: movieInfo.originalName ?: return null
