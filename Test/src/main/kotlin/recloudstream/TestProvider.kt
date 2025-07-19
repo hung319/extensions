@@ -15,8 +15,6 @@ import java.util.Base64
 import okhttp3.Interceptor
 import okhttp3.Response
 import okhttp3.ResponseBody
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.ResponseBody.Companion.toResponseBody
 
 // Data class để truyền dữ liệu từ load() -> loadLinks()
@@ -273,7 +271,6 @@ class NguonCProvider : MainAPI() {
 
                     val finalM3u8Url = if (decodedUrl.startsWith("http")) decodedUrl else embedOrigin + decodedUrl
                     
-                    // SỬA ĐỔI LỚN: Upload nội dung M3U8 lên dịch vụ paste
                     val playerHeaders = mapOf(
                         "Origin" to embedOrigin,
                         "Referer" to "$embedOrigin/",
@@ -281,19 +278,20 @@ class NguonCProvider : MainAPI() {
                     )
                     val m3u8Content = app.get(finalM3u8Url, headers = playerHeaders).text
 
-                    val uploadApi = "https://paste.swurl.xyz/nguonc.m3u8"
-                    val requestBodyUpload = m3u8Content.toRequestBody("text/plain".toMediaType())
-                    val uploadedUrl = app.post(uploadApi, requestBody = requestBodyUpload).text
+                    // SỬA ĐỔI: Chuyển sang upload ở https://text.06.run.place/
+                    val uploadApi = "https://text.06.run.place/nguonc.m3u8"
+                    val uploadBody = mapOf("data" to m3u8Content, "exp" to "6h") // Hết hạn sau 6 giờ
+                    val uploadedUrl = app.post(uploadApi, json = uploadBody).text
                     
                     callback(
                         ExtractorLink(
                             source = this.name,
                             name = server.serverName,
-                            url = uploadedUrl, // Sử dụng link đã được upload
+                            url = uploadedUrl,
                             referer = embedUrl,
                             quality = Qualities.Unknown.value,
                             type = ExtractorLinkType.M3U8,
-                            headers = playerHeaders // Vẫn cần header cho các file segment
+                            headers = playerHeaders
                         )
                     )
                     foundLinks = true
