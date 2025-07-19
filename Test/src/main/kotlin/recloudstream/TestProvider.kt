@@ -16,6 +16,7 @@ import java.util.Base64
 // Thêm các import cần thiết
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import okhttp3.Interceptor
 import okhttp3.Response
 import okhttp3.ResponseBody
@@ -256,80 +257,80 @@ class NguonCProvider : MainAPI() {
         val movie = app.get("$apiUrl/film/${loadData.slug}", headers = headers)
             .parsedSafe<NguonCDetailResponse>()?.movie ?: return false
         
-        // Dùng map + async/awaitAll để lấy link song song
-        movie.episodes.map { server ->
-            async {
-                try {
-                    val episodeItem = if (movie.totalEpisodes <= 1) {
-                        server.items?.firstOrNull()
-                    } else {
-                        server.items?.find { it.name.toIntOrNull() == loadData.episodeNum }
-                    }
-                    
-                    val embedUrl = episodeItem?.embed
-                    if (embedUrl.isNullOrBlank()) return@async
-
-                    val embedPageContent = app.get(embedUrl, headers = headers).text
-                    val authToken = embedPageContent.substringAfter("const authToken = '").substringBefore("'")
-                    val hash = embedPageContent.substringAfter("data-hash=\"").substringBefore("\"")
-                    
-                    if (authToken.isBlank() || hash.isBlank()) return@async
-
-                    val streamApiUrl = if (embedUrl.contains("?")) "$embedUrl&api=stream" else "$embedUrl?api=stream"
-                    val embedOrigin = URI(embedUrl).let { "${it.scheme}://${it.host}" }
-                    
-                    val apiHeaders = mapOf(
-                        "Content-Type" to "application/json",
-                        "X-Requested-With" to "XMLHttpRequest",
-                        "X-Embed-Auth" to authToken,
-                        "User-Agent" to userAgent,
-                        "Referer" to embedUrl,
-                        "Origin" to embedOrigin,
-                        "Cookie" to "__dtsu=4C301750475292A9643FBE50677C1A34"
-                    )
-                    
-                    val requestBody = mapOf("hash" to hash)
-                    val streamApiResponse = app.post(streamApiUrl, headers = apiHeaders, json = requestBody).parsedSafe<StreamApiResponse>()
-                    
-                    val base64StreamUrl = streamApiResponse?.streamUrl
-                    if (!base64StreamUrl.isNullOrBlank()) {
-                        val cleanBase64 = base64StreamUrl.replace('-', '+').replace('_', '/')
-                        val padding = "=".repeat((4 - cleanBase64.length % 4) % 4)
-                        val decodedUrl = String(Base64.getDecoder().decode(cleanBase64 + padding))
-
-                        val finalM3u8Url = if (decodedUrl.startsWith("http")) decodedUrl else embedOrigin + decodedUrl
+        // SỬA LỖI: Sử dụng coroutineScope để gọi async đúng cách
+        val results = coroutineScope {
+            movie.episodes.map { server ->
+                async {
+                    try {
+                        val episodeItem = if (movie.totalEpisodes <= 1) {
+                            server.items?.firstOrNull()
+                        } else {
+                            server.items?.find { it.name.toIntOrNull() == loadData.episodeNum }
+                        }
                         
-                        val playerHeaders = mapOf(
+                        val embedUrl = episodeItem?.embed
+                        if (embedUrl.isNullOrBlank()) return@async false
+
+                        val embedPageContent = app.get(embedUrl, headers = headers).text
+                        val authToken = embedPageContent.substringAfter("const authToken = '").substringBefore("'")
+                        val hash = embedPageContent.substringAfter("data-hash=\"").substringBefore("\"")
+                        
+                        if (authToken.isBlank() || hash.isBlank()) return@async false
+
+                        val streamApiUrl = if (embedUrl.contains("?")) "$embedUrl&api=stream" else "$embedUrl?api=stream"
+                        val embedOrigin = URI(embedUrl).let { "${it.scheme}://${it.host}" }
+                        
+                        val apiHeaders = mapOf(
+                            "Content-Type" to "application/json",
+                            "X-Requested-With" to "XMLHttpRequest",
+                            "X-Embed-Auth" to authToken,
+                            "User-Agent" to userAgent,
+                            "Referer" to embedUrl,
                             "Origin" to embedOrigin,
-                            "Referer" to "$embedOrigin/",
-                            "User-Agent" to userAgent
+                            "Cookie" to "__dtsu=4C301750475292A9643FBE50677C1A34"
                         )
-                        val m3u8Content = app.get(finalM3u8Url, headers = playerHeaders).text
-
-                        // SỬA ĐỔI: Chuyển sang upload ở https://paste.swurl.xyz/
-                        val uploadApi = "https://paste.swurl.xyz/nguonc.m3u8"
-                        val requestBodyUpload = m3u8Content.toRequestBody("text/plain".toMediaType())
-                        val uploadedUrl = app.post(uploadApi, requestBody = requestBodyUpload).text
                         
-                        callback(
-                            ExtractorLink(
-                                source = this.name,
-                                name = server.serverName,
-                                url = uploadedUrl,
-                                referer = embedUrl,
-                                quality = Qualities.Unknown.value,
-                                type = ExtractorLinkType.M3U8,
-                                headers = playerHeaders
+                        val requestBody = mapOf("hash" to hash)
+                        val streamApiResponse = app.post(streamApiUrl, headers = apiHeaders, json = requestBody).parsedSafe<StreamApiResponse>()
+                        
+                        val base64StreamUrl = streamApiResponse?.streamUrl
+                        if (!base64StreamUrl.isNullOrBlank()) {
+                            val cleanBase64 = base64StreamUrl.replace('-', '+').replace('_', '/')
+                            val padding = "=".repeat((4 - cleanBase64.length % 4) % 4)
+                            val decodedUrl = String(Base64.getDecoder().decode(cleanBase64 + padding))
+
+                            val finalM3u8Url = if (decodedUrl.startsWith("http")) decodedUrl else embedOrigin + decodedUrl
+                            
+                            val playerHeaders = mapOf(
+                                "Origin" to embedOrigin,
+                                "Referer" to "$embedOrigin/",
+                                "User-Agent" to userAgent
                             )
-                        )
+
+                            callback(
+                                ExtractorLink(
+                                    source = this@NguonCProvider.name,
+                                    name = server.serverName,
+                                    url = finalM3u8Url,
+                                    referer = embedUrl,
+                                    quality = Qualities.Unknown.value,
+                                    type = ExtractorLinkType.M3U8,
+                                    headers = playerHeaders
+                                )
+                            )
+                            true // Trả về true nếu thành công
+                        } else {
+                            false // Trả về false nếu thất bại
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        false // Trả về false nếu có lỗi
                     }
-                } catch (e: Exception) {
-                    e.printStackTrace()
                 }
-            }
-        }.awaitAll()
+            }.awaitAll()
+        }
         
-        return true
+        return results.any { it }
     }
 
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
