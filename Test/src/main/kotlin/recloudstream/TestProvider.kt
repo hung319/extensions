@@ -19,9 +19,6 @@ import okhttp3.ResponseBody
 import okhttp3.ResponseBody.Companion.toResponseBody
 import java.util.EnumSet
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.awaitAll
 
 // === Provider Class ===
 class Anime47Provider : MainAPI() {
@@ -82,7 +79,6 @@ class Anime47Provider : MainAPI() {
             }
         }
 
-        // SỬA CẢNH BÁO: Dùng newAnimeSearchResponse thay vì constructor
         return newAnimeSearchResponse(title, href, TvType.Anime) {
             this.posterUrl = posterUrl
             this.otherName = ribbon
@@ -124,21 +120,23 @@ class Anime47Provider : MainAPI() {
         try {
             val watchPageDoc = app.get(watchUrl, interceptor = interceptor).document
             
-            watchPageDoc.select("div.name").forEach { nameDiv ->
-                val serverName = nameDiv.selectFirst("span")?.text()?.trim() ?: "Server"
-                val episodeElements = nameDiv.nextElementSibling()?.select("ul li a")
+            // **SỬA LỖI: Thay đổi hoàn toàn logic lấy server và tập phim**
+            // Tìm tất cả các khối server. Mỗi khối có thể có nhiều tab (1-100, 101-200,...)
+            watchPageDoc.select("div.server").forEach { serverBlock ->
+                val serverName = serverBlock.selectFirst(".name span")?.text()?.trim() ?: "Server"
+                
+                // Lấy tất cả các link tập phim bên trong khối server này, bao gồm cả các tab
+                val episodeElements = serverBlock.select("div.episodes ul li a, div.tab-content div.tab-pane ul li a")
 
-                if (episodeElements != null) {
-                    episodeElements.forEach {
-                        val epHref = fixUrl(it.attr("href"))
-                        val epRawName = it.attr("title").ifEmpty { it.text() }.trim()
-                        val epName = "Tập $epRawName"
-                        val epNum = epRawName.substringBefore("-").filter { c -> c.isDigit() }.toIntOrNull()
+                episodeElements.forEach {
+                    val epHref = fixUrl(it.attr("href"))
+                    val epRawName = it.attr("title").ifEmpty { it.text() }.trim()
+                    val epName = "Tập $epRawName"
+                    val epNum = epRawName.substringBefore("-").filter { c -> c.isDigit() }.toIntOrNull()
 
-                        if (epNum != null) {
-                            val episodeInfo = episodesByNumber.getOrPut(epNum) { EpisodeInfo(name = epName, sources = mutableMapOf()) }
-                            episodeInfo.sources[serverName] = epHref
-                        }
+                    if (epNum != null) {
+                        val episodeInfo = episodesByNumber.getOrPut(epNum) { EpisodeInfo(name = epName, sources = mutableMapOf()) }
+                        episodeInfo.sources[serverName] = epHref
                     }
                 }
             }
@@ -147,7 +145,6 @@ class Anime47Provider : MainAPI() {
         }
 
         if (episodesByNumber.isEmpty()) {
-            // SỬA CẢNH BÁO: Dùng newMovieLoadResponse
             return newMovieLoadResponse(title, url, tvType, watchUrl) {
                 this.posterUrl = poster; this.plot = plot; this.tags = tags; this.year = year
             }
@@ -155,14 +152,12 @@ class Anime47Provider : MainAPI() {
 
         val episodes = episodesByNumber.entries.map { (epNum, epInfo) ->
             val data = epInfo.sources.toJson()
-            // SỬA CẢNH BÁO: Dùng newEpisode
             newEpisode(data) {
                 this.name = epInfo.name
                 this.episode = null
             }
         }.sortedBy { it.episode }
 
-        // SỬA CẢNH BÁO: Dùng newTvSeriesLoadResponse
         return newTvSeriesLoadResponse(title, url, tvType, episodes) {
             this.posterUrl = poster
             this.plot = plot
@@ -217,7 +212,6 @@ class Anime47Provider : MainAPI() {
         val sources = try { parseJson<Map<String, String>>(data) } catch(e: Exception) { mapOf("Default" to data) }
         val hasLoadedSubtitles = AtomicBoolean(false)
 
-        // SỬA CẢNH BÁO: Thay thế apmap bằng coroutineScope
         coroutineScope {
             sources.map { (sourceName, url) ->
                 async {
