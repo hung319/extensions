@@ -1,9 +1,11 @@
-package recloudstream // Dòng package đã được thêm vào
+package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
+import com.lagradost.cloudstream3.network.Cloudflare // Thêm import cần thiết
 
+@Cloudflare // Thêm annotation để xử lý Cloudflare
 class HentaiTvProvider : MainAPI() {
     override var mainUrl = "https://hentai.tv"
     override var name = "Hentai.tv"
