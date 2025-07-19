@@ -124,41 +124,28 @@ class Anime47Provider : MainAPI() {
             val watchPageDoc = app.get(watchUrl, interceptor = interceptor).document
             
             // Logic mới để xử lý tất cả các trường hợp
-            val hasTabs = watchPageDoc.selectFirst("ul.nav-tabs") != null
-
-            if (hasTabs) {
-                // Trường hợp 1: Có phân trang theo tab (ví dụ: Vô Thượng Thần Đế)
-                val serverName = watchPageDoc.selectFirst("div.name span")?.text()?.trim() ?: "Tổng Hợp"
-                val episodeElements = watchPageDoc.select("div.tab-content div.tab-pane ul li a")
-
-                episodeElements.forEach {
-                    val epHref = fixUrl(it.attr("href"))
-                    val epRawName = it.attr("title").ifEmpty { it.text() }.trim()
-                    val epName = "Tập $epRawName"
-                    val epNum = epRawName.substringBefore("-").filter { c -> c.isDigit() }.toIntOrNull()
-
-                    if (epNum != null) {
-                        val episodeInfo = episodesByNumber.getOrPut(epNum) { EpisodeInfo(name = epName, sources = mutableMapOf()) }
-                        episodeInfo.sources[serverName] = epHref
-                    }
-                }
-            } else {
-                // Trường hợp 2: Không có tab, có thể có nhiều nguồn (ví dụ: Jashin-chan)
-                watchPageDoc.select("div.name").forEach { nameDiv ->
+            watchPageDoc.select("div.server").forEach { serverBlock ->
+                // Xử lý trường hợp HTML lỗi (nhiều div.name trong 1 div.server)
+                serverBlock.select("div.name").forEach { nameDiv ->
                     val serverName = nameDiv.selectFirst("span")?.text()?.trim() ?: "Server"
-                    val episodeElements = nameDiv.nextElementSibling()?.select("ul li a")
+                    var episodeContainer = nameDiv.nextElementSibling()
 
-                    if (episodeElements != null) {
-                        episodeElements.forEach {
-                            val epHref = fixUrl(it.attr("href"))
-                            val epRawName = it.attr("title").ifEmpty { it.text() }.trim()
-                            val epName = "Tập $epRawName"
-                            val epNum = epRawName.substringBefore("-").filter { c -> c.isDigit() }.toIntOrNull()
+                    // Xử lý trường hợp có tab phân trang (1-100, 101-200)
+                    if (episodeContainer?.hasClass("nav-tabs") == true) {
+                        episodeContainer = episodeContainer.nextElementSibling()
+                    }
+                    
+                    val episodeElements = episodeContainer?.select("ul li a, div.tab-pane ul li a")
 
-                            if (epNum != null) {
-                                val episodeInfo = episodesByNumber.getOrPut(epNum) { EpisodeInfo(name = epName, sources = mutableMapOf()) }
-                                episodeInfo.sources[serverName] = epHref
-                            }
+                    episodeElements?.forEach {
+                        val epHref = fixUrl(it.attr("href"))
+                        val epRawName = it.attr("title").ifEmpty { it.text() }.trim()
+                        val epName = "Tập $epRawName"
+                        val epNum = epRawName.substringBefore("-").filter { c -> c.isDigit() }.toIntOrNull()
+
+                        if (epNum != null) {
+                            val episodeInfo = episodesByNumber.getOrPut(epNum) { EpisodeInfo(name = epName, sources = mutableMapOf()) }
+                            episodeInfo.sources[serverName] = epHref
                         }
                     }
                 }
