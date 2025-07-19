@@ -116,50 +116,55 @@ class NguonCProvider : MainAPI() {
         val slug = url.substringAfterLast("/")
         val apiLink = "$API_URL/film/$slug"
 
-        // THAY ĐỔI: Sử dụng "parsed" thay vì "parsedSafe" để xem lỗi thật sự
-        val res = app.get(apiLink).parsed<FilmApiResponse>()
-        
-        val movieInfo = res.movie
-        val title = movieInfo.name ?: movieInfo.originalName ?: return null
-        val poster = movieInfo.posterUrl ?: movieInfo.thumbUrl
-        val description = movieInfo.description?.let { Jsoup.parse(it).text() }
-        val actors = movieInfo.casts?.split(",")?.map { ActorData(Actor(it.trim())) }
+        // Sử dụng try-catch để bắt và báo cáo lỗi chi tiết
+        try {
+            val res = app.get(apiLink).parsed<FilmApiResponse>()
+            
+            val movieInfo = res.movie
+            val title = movieInfo.name ?: movieInfo.originalName ?: return null
+            val poster = movieInfo.posterUrl ?: movieInfo.thumbUrl
+            val description = movieInfo.description?.let { Jsoup.parse(it).text() }
+            val actors = movieInfo.casts?.split(",")?.map { ActorData(Actor(it.trim())) }
 
-        var year: Int? = null
-        var genres: List<String>? = null
-        movieInfo.category?.values?.forEach { group ->
-            if (group.list.any { it.name?.toIntOrNull() != null }) {
-                year = group.list.firstOrNull()?.name?.toIntOrNull()
-            } else if (group.list.any { it.name?.length ?: 0 > 2 }) {
-                genres = group.list.mapNotNull { it.name }
-            }
-        }
-
-        val episodes = res.episodes?.flatMap { server ->
-            server.items.map { episode ->
-                newEpisode(episode) {
-                    this.name = "${server.serverName}: Tập ${episode.name}"
-                    this.data = episode.m3u8 ?: episode.embed ?: ""
+            var year: Int? = null
+            var genres: List<String>? = null
+            movieInfo.category?.values?.forEach { group ->
+                if (group.list.any { it.name?.toIntOrNull() != null }) {
+                    year = group.list.firstOrNull()?.name?.toIntOrNull()
+                } else if (group.list.any { it.name?.length ?: 0 > 2 }) {
+                    genres = group.list.mapNotNull { it.name }
                 }
             }
-        } ?: emptyList()
 
-        return if ((movieInfo.totalEpisodes ?: 1) > 1) {
-            newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
-                this.posterUrl = poster
-                this.year = year
-                this.plot = description
-                this.actors = actors
-                this.tags = genres
+            val episodes = res.episodes?.flatMap { server ->
+                server.items.map { episode ->
+                    newEpisode(episode) {
+                        this.name = "${server.serverName}: Tập ${episode.name}"
+                        this.data = episode.m3u8 ?: episode.embed ?: ""
+                    }
+                }
+            } ?: emptyList()
+
+            return if ((movieInfo.totalEpisodes ?: 1) > 1) {
+                newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+                    this.posterUrl = poster
+                    this.year = year
+                    this.plot = description
+                    this.actors = actors
+                    this.tags = genres
+                }
+            } else {
+                newMovieLoadResponse(title, url, TvType.Movie, episodes.firstOrNull()?.data) {
+                    this.posterUrl = poster
+                    this.year = year
+                    this.plot = description
+                    this.actors = actors
+                    this.tags = genres
+                }
             }
-        } else {
-            newMovieLoadResponse(title, url, TvType.Movie, episodes.firstOrNull()?.data) {
-                this.posterUrl = poster
-                this.year = year
-                this.plot = description
-                this.actors = actors
-                this.tags = genres
-            }
+        } catch (e: Exception) {
+            // Ném ra một lỗi mới với thông tin đầy đủ để gỡ lỗi
+            throw Exception("Lỗi tùy chỉnh tại hàm load cho URL: $url. Lỗi gốc: ${e.message}")
         }
     }
 
