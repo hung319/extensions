@@ -111,16 +111,14 @@ class NguonCProvider : MainAPI() {
         }
     }
 
-    // **THAY ĐỔI LỚN NHẤT NẰM Ở ĐÂY**
+    // **THAY ĐỔI DUY NHẤT NẰM Ở ĐÂY**
     override suspend fun load(url: String): LoadResponse? {
         val slug = url.substringAfterLast("/")
         val apiLink = "$API_URL/film/$slug"
 
         try {
-            // 1. Vẫn thử tải và phân tích như bình thường
             val res = app.get(apiLink).parsed<FilmApiResponse>()
             
-            // ... (Logic thành công không thay đổi)
             val movieInfo = res.movie
             val title = movieInfo.name ?: movieInfo.originalName ?: return null
             val poster = movieInfo.posterUrl ?: movieInfo.thumbUrl
@@ -154,15 +152,12 @@ class NguonCProvider : MainAPI() {
                 }
             }
         } catch (e: Exception) {
-            // 2. Nếu có lỗi, bắt lỗi lại và thực hiện gỡ lỗi
-            // Thử lấy nội dung text thô từ API
             val rawResponse = try {
                 app.get(apiLink).text
             } catch (e2: Exception) {
                 "Không thể tải phản hồi thô. Lỗi mạng: ${e2.message}"
             }
 
-            // 3. Tạo một đoạn mô tả chi tiết chứa thông tin lỗi
             val debugDescription = """
                 --- LỖI PLUGIN ---
                 
@@ -180,8 +175,8 @@ class NguonCProvider : MainAPI() {
                 --------------------
             """.trimIndent()
 
-            // 4. Trả về một phim "giả" với tên là LỖI và mô tả là thông tin gỡ lỗi
-            return newMovieLoadResponse(name = "LỖI - $slug", url = url, type = TvType.Movie, dataUrl = null) {
+            // SỬA LỖI: Thay đổi dataUrl = null thành dataUrl = ""
+            return newMovieLoadResponse(name = "LỖI - $slug", url = url, type = TvType.Movie, dataUrl = "") {
                 this.plot = debugDescription
             }
         }
