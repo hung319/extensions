@@ -214,46 +214,53 @@ class NguonCProvider : MainAPI() {
         }
     }
 
+    // Chế độ gỡ lỗi: Lấy nội dung M3U8
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val loadData = parseJson<NguonCLoadData>(data)
-        val movie = app.get("$apiUrl/film/${loadData.slug}", headers = headers)
-            .parsedSafe<NguonCDetailResponse>()?.movie ?: return false
-        
-        var foundLinks = false
-        
-        movie.episodes.apmap { server ->
-            try {
-                val episodeItem = if (movie.totalEpisodes <= 1) {
-                    server.items.firstOrNull()
-                } else {
-                    server.items.find { it.name.toIntOrNull() == loadData.episodeNum }
-                }
-                
+        val debugLogs = mutableListOf<String>()
+        try {
+            val loadData = parseJson<NguonCLoadData>(data)
+            debugLogs.add("1. OK: Phân tích dữ liệu: slug='${loadData.slug}', tập='${loadData.episodeNum}'")
+
+            val movie = app.get("$apiUrl/film/${loadData.slug}", headers = headers)
+                .parsedSafe<NguonCDetailResponse>()?.movie
+            if(movie == null) {
+                debugLogs.add("2. LỖI: Không lấy được chi tiết phim từ API NguonC.")
+                throw Exception(debugLogs.joinToString("\n\n"))
+            }
+            debugLogs.add("2. OK: Lấy được chi tiết phim '${movie.name}'")
+
+            // Dùng forEach để log tuần tự, dễ đọc hơn
+            movie.episodes.forEach { server ->
+                debugLogs.add("--- Đang xử lý Server: ${server.serverName} ---")
+
+                val episodeItem = if (movie.totalEpisodes <= 1) server.items.firstOrNull()
+                else server.items.find { it.name.toIntOrNull() == loadData.episodeNum }
+
                 val embedUrl = episodeItem?.embed
-                if (embedUrl.isNullOrBlank()) return@apmap
-
-                app.get(embedUrl, headers = headers)
-
-                val embedOrigin = URI(embedUrl).let { "${it.scheme}://${it.host}" }
-
-                // SỬA LỖI: Tạo link API chính xác bằng cách kiểm tra dấu '?'
-                val streamApiUrl = if (embedUrl.contains("?")) {
-                    "$embedUrl&api=stream"
-                } else {
-                    "$embedUrl?api=stream"
+                if (embedUrl.isNullOrBlank()) {
+                    debugLogs.add("3. Lỗi: Không tìm thấy link embed cho server này.")
+                    return@forEach
                 }
-                
+                debugLogs.add("3. OK: Link embed: $embedUrl")
+
                 val embedPageContent = app.get(embedUrl, headers = headers).text
                 val authToken = embedPageContent.substringAfter("const authToken = '").substringBefore("'")
                 val hash = embedPageContent.substringAfter("data-hash=\"").substringBefore("\"")
                 
-                if (authToken.isBlank() || hash.isBlank()) return@apmap
+                if (authToken.isBlank() || hash.isBlank()) {
+                    debugLogs.add("4. LỖI: Không trích xuất được authToken hoặc hash.")
+                    return@forEach
+                }
+                debugLogs.add("4. OK: Trích xuất authToken và hash thành công.")
 
+                val streamApiUrl = if (embedUrl.contains("?")) "$embedUrl&api=stream" else "$embedUrl?api=stream"
+                val embedOrigin = URI(embedUrl).let { "${it.scheme}://${it.host}" }
+                
                 val apiHeaders = mapOf(
                     "Content-Type" to "application/json",
                     "X-Requested-With" to "XMLHttpRequest",
@@ -265,37 +272,39 @@ class NguonCProvider : MainAPI() {
                 )
                 
                 val requestBody = mapOf("hash" to hash)
-                val streamApiResponse = app.post(streamApiUrl, headers = apiHeaders, json = requestBody).parsedSafe<StreamApiResponse>()
+                val streamApiResponse = app.post(streamApiUrl, headers = apiHeaders, json = requestBody)
+                debugLogs.add("5. OK: Yêu cầu POST hoàn tất, Status: ${streamApiResponse.code}")
+
+                val base64StreamUrl = streamApiResponse.parsedSafe<StreamApiResponse>()?.streamUrl
+                if (base64StreamUrl.isNullOrBlank()) {
+                    debugLogs.add("6. LỖI: Không tìm thấy 'streamUrl' trong response. Body: ${streamApiResponse.text.take(300)}")
+                    return@forEach
+                }
+                debugLogs.add("6. OK: Lấy được streamUrl Base64.")
+
+                val cleanBase64 = base64StreamUrl.replace('-', '+').replace('_', '/')
+                val padding = "=".repeat((4 - cleanBase64.length % 4) % 4)
+                val finalM3u8Url = String(Base64.getDecoder().decode(cleanBase64 + padding))
+                debugLogs.add("7. OK: Giải mã được link M3U8: $finalM3u8Url")
                 
-                val base64StreamUrl = streamApiResponse?.streamUrl
-                if (!base64StreamUrl.isNullOrBlank()) {
-                    val cleanBase64 = base64StreamUrl.replace('-', '+').replace('_', '/')
-                    val padding = "=".repeat((4 - cleanBase64.length % 4) % 4)
-                    val finalM3u8Url = String(Base64.getDecoder().decode(cleanBase64 + padding))
-                    
+                // Lấy nội dung của file M3U8
+                try {
                     val playerHeaders = mapOf(
                         "Origin" to embedOrigin,
                         "Referer" to "$embedOrigin/",
                         "User-Agent" to userAgent
                     )
-
-                    callback(
-                        ExtractorLink(
-                            source = this.name,
-                            name = server.serverName,
-                            url = finalM3u8Url,
-                            referer = embedUrl,
-                            quality = Qualities.Unknown.value,
-                            type = ExtractorLinkType.M3U8,
-                            headers = playerHeaders
-                        )
-                    )
-                    foundLinks = true
+                    val m3u8Content = app.get(finalM3u8Url, headers = playerHeaders).text
+                    debugLogs.add("8. THÀNH CÔNG: Nội dung file M3U8:\n--- BẮT ĐẦU M3U8 ---\n$m3u8Content\n--- KẾT THÚC M3U8 ---")
+                } catch (e: Exception) {
+                    debugLogs.add("8. LỖI khi lấy nội dung M3U8: ${e.javaClass.simpleName} - ${e.message}")
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
             }
+        } catch (e: Exception) {
+            debugLogs.add("LỖI NGHIÊM TRỌNG: ${e.javaClass.simpleName} - ${e.message}")
+            e.printStackTrace()
         }
-        return foundLinks
+        
+        throw Exception(debugLogs.joinToString("\n\n"))
     }
 }
