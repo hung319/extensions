@@ -3,9 +3,7 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-import com.lagradost.cloudstream3.network.CloudflareKiller // Thêm import cần thiết
 
-@CloudflareKiller // Thêm annotation để xử lý Cloudflare
 class HentaiTvProvider : MainAPI() {
     override var mainUrl = "https://hentai.tv"
     override var name = "Hentai.tv"
@@ -35,7 +33,9 @@ class HentaiTvProvider : MainAPI() {
     private fun Element.toSearchResult(): SearchResponse? {
         val title = this.selectFirst("a")?.text()?.trim() ?: return null
         val href = this.selectFirst("a")?.attr("href") ?: return null
-        val posterUrl = this.selectFirst("img")?.attr("src")
+        val posterUrl = this.selectFirst("img")?.let {
+            it.attr("data-src").ifEmpty { it.attr("src") }
+        }
 
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
@@ -53,17 +53,22 @@ class HentaiTvProvider : MainAPI() {
         val document = app.get(url).document
 
         val title = document.selectFirst("h1")?.text()?.trim() ?: return null
-        val poster = document.selectFirst("aside.flex-1 img")?.attr("src")
+        
+        val poster = document.selectFirst("aside.w-\\[40vw\\] img")?.attr("src")
         val tags = document.select("div.flex.flex-wrap.pb-3 a").map { it.text() }
         val description = document.selectFirst("div.prose")?.text()?.trim()
         
-        // The main video is in an iframe
         val iframeSrc = document.selectFirst("div.aspect-video iframe")?.attr("src") ?: return null
+
+        val recommendations = document.select("div.mb-2 article").mapNotNull {
+            it.toSearchResult()
+        }
 
         return newMovieLoadResponse(title, url, TvType.NSFW, iframeSrc) {
             this.posterUrl = poster
             this.plot = description
             this.tags = tags
+            this.recommendations = recommendations
         }
     }
     
@@ -73,8 +78,6 @@ class HentaiTvProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // The 'data' is the iframe URL from load()
-        // We let the built-in extractors handle the link
         loadExtractor(data, subtitleCallback, callback)
         return true
     }
