@@ -1,15 +1,28 @@
 package recloudstream
 
-// Thêm các import cần thiết
-import com.lagradost.cloudstream3.network.CloudflareKiller
-import com.lagradost.cloudstream3.Requests
-
-import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.lagradost.cloudstream3.Actor
+import com.lagradost.cloudstream3.ActorData
+import com.lagradost.cloudstream3.HomePageList
+import com.lagradost.cloudstream3.HomePageResponse
+import com.lagradost.cloudstream3.LoadResponse
+import com.lagradost.cloudstream3.MainAPI
+import com.lagradost.cloudstream3.MainPageRequest
+import com.lagradost.cloudstream3.SearchResponse
+import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.mainPageOf
+import com.lagradost.cloudstream3.newEpisode
+import com.lagradost.cloudstream3.newMovieLoadResponse
+import com.lagradost.cloudstream3.newMovieSearchResponse
+import com.lagradost.cloudstream3.newTvSeriesLoadResponse
+import com.lagradost.cloudstream3.newTvSeriesSearchResponse
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.apmap
+import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.Jsoup
 
-// Define the main provider class
 class NguonCProvider : MainAPI() {
     override var mainUrl = "https://phim.nguonc.com"
     override var name = "NguonC"
@@ -25,12 +38,7 @@ class NguonCProvider : MainAPI() {
         const val API_URL = "https://phim.nguonc.com/api"
     }
 
-    // TẠO ĐỐI TƯỢNG REQUEST RIÊNG VỚI CLOUDFLAREKILLER
-    private val requests = Requests(
-        interceptor = CloudflareKiller()
-    )
-
-    // Data classes... (Giữ nguyên không thay đổi)
+    // ============================ Data Classes ============================
     data class ListApiResponse(
         @JsonProperty("items") val items: List<MediaItem>
     )
@@ -44,26 +52,10 @@ class NguonCProvider : MainAPI() {
         @JsonProperty("name") val name: String?,
         @JsonProperty("slug") val slug: String?,
         @JsonProperty("original_name") val originalName: String?,
-        @JsonProperty("thumb_url") val thumbUrl: String?,
         @JsonProperty("poster_url") val posterUrl: String?,
-        @JsonProperty("description") val description: String?,
         @JsonProperty("total_episodes") val totalEpisodes: Int?,
+        @JsonProperty("description") val description: String?,
         @JsonProperty("casts") val casts: String?,
-        @JsonProperty("director") val director: String?,
-        @JsonProperty("category") val category: Map<String, CategoryGroup>?
-    )
-
-    data class CategoryGroup(
-        @JsonProperty("group") val group: CategoryName,
-        @JsonProperty("list") val list: List<CategoryItem>
-    )
-
-    data class CategoryName(
-        @JsonProperty("name") val name: String?
-    )
-
-    data class CategoryItem(
-        @JsonProperty("name") val name: String?
     )
 
     data class EpisodeServer(
@@ -73,55 +65,51 @@ class NguonCProvider : MainAPI() {
 
     data class EpisodeData(
         @JsonProperty("name") val name: String?,
-        @JsonProperty("slug") val slug: String?,
         @JsonProperty("embed") val embed: String?,
         @JsonProperty("m3u8") val m3u8: String?
     )
-    
-    // Helper functions... (Giữ nguyên không thay đổi)
+
+    // ============================ Helper Functions ============================
     private fun MediaItem.toSearchResult(): SearchResponse {
         val isTvSeries = (this.totalEpisodes ?: 1) > 1
         val url = "$mainUrl/phim/${this.slug}"
 
         return if (isTvSeries) {
             newTvSeriesSearchResponse(this.name ?: this.originalName ?: "", url) {
-                posterUrl = this@toSearchResult.posterUrl ?: this@toSearchResult.thumbUrl
+                posterUrl = this@toSearchResult.posterUrl
             }
         } else {
             newMovieSearchResponse(this.name ?: this.originalName ?: "", url) {
-                posterUrl = this@toSearchResult.posterUrl ?: this@toSearchResult.thumbUrl
+                posterUrl = this@toSearchResult.posterUrl
             }
         }
     }
 
-    // Core provider functions...
+    // ============================ Core Provider Functions ============================
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        if (page > 1) return HomePageResponse(emptyList())
-
         val sections = listOf(
-            "Phim mới cập nhật" to "$API_URL/films/phim-moi-cap-nhat?page=1",
-            "Phim lẻ" to "$API_URL/films/danh-sach/phim-le?page=1",
-            "Phim bộ" to "$API_URL/films/danh-sach/phim-bo?page=1",
-            "Phim đang chiếu" to "$API_URL/films/danh-sach/phim-dang-chieu?page=1",
-            "Hoạt hình" to "$API_URL/films/danh-sach/hoat-hinh?page=1"
+            "Phim mới cập nhật" to "$API_URL/films/phim-moi-cap-nhat",
+            "Phim lẻ" to "$API_URL/films/danh-sach/phim-le",
+            "Phim bộ" to "$API_URL/films/danh-sach/phim-bo",
         )
 
         val homePageList = sections.apmap { (name, url) ->
-            // THAY ĐỔI: Dùng `requests` thay vì `app`
-            val items = requests.get(url).parsedSafe<ListApiResponse>()?.items
-                ?.mapNotNull { it.toSearchResult() } ?: emptyList()
-            HomePageList(name, items)
-        }
+            try {
+                val response = app.get("$url?page=$page").parsed<ListApiResponse>()
+                val items = response.items.mapNotNull { it.toSearchResult() }
+                HomePageList(name, items)
+            } catch (e: Exception) {
+                null
+            }
+        }.filterNotNull()
 
-        return HomePageResponse(homePageList.filter { it.list.isNotEmpty() })
+        return HomePageResponse(homePageList)
     }
-
 
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$API_URL/films/search?keyword=$query"
         return try {
-            // THAY ĐỔI: Dùng `requests` thay vì `app`
-            requests.get(url).parsed<ListApiResponse>().items.mapNotNull { it.toSearchResult() }
+            app.get(url).parsed<ListApiResponse>().items.mapNotNull { it.toSearchResult() }
         } catch (e: Exception) {
             emptyList()
         }
@@ -132,17 +120,15 @@ class NguonCProvider : MainAPI() {
         val apiLink = "$API_URL/film/$slug"
 
         try {
-            // THAY ĐỔI: Dùng `requests` thay vì `app`
-            val res = requests.get(apiLink).parsedSafe<FilmApiResponse>() ?: throw Exception("Phản hồi từ API là null hoặc không hợp lệ.")
+            val res = app.get(apiLink).parsed<FilmApiResponse>()
             
             val movieInfo = res.movie
-            val title = movieInfo.name ?: movieInfo.originalName ?: throw Exception("Phim không có Tên hoặc Tên gốc.")
+            val title = movieInfo.name ?: movieInfo.originalName ?: return null
             
-            val poster = movieInfo.posterUrl ?: movieInfo.thumbUrl
+            val poster = movieInfo.posterUrl
             val description = movieInfo.description?.let { Jsoup.parse(it).text() }
             val actors = movieInfo.casts?.split(",")?.map { ActorData(Actor(it.trim())) }
-            val year = movieInfo.category?.values?.find { it.group.name == "Năm" }?.list?.firstOrNull()?.name?.toIntOrNull()
-            val genres = movieInfo.category?.values?.find { it.group.name == "Thể loại" }?.list?.mapNotNull { it.name }
+
             val episodes = res.episodes?.flatMap { server ->
                 server.items.map { episode ->
                     newEpisode(episode) {
@@ -154,32 +140,19 @@ class NguonCProvider : MainAPI() {
 
             return if ((movieInfo.totalEpisodes ?: 1) > 1) {
                 newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
-                    this.posterUrl = poster; this.year = year; this.plot = description; this.actors = actors; this.tags = genres
+                    this.posterUrl = poster
+                    this.plot = description
+                    this.actors = actors
                 }
             } else {
                 newMovieLoadResponse(title, url, TvType.Movie, episodes.firstOrNull()?.data) {
-                    this.posterUrl = poster; this.year = year; this.plot = description; this.actors = actors; this.tags = genres
+                    this.posterUrl = poster
+                    this.plot = description
+                    this.actors = actors
                 }
             }
         } catch (e: Exception) {
-            val rawResponse = try {
-                // THAY ĐỔI: Dùng `requests` thay vì `app`
-                requests.get(apiLink).text
-            } catch (e2: Exception) {
-                "Không thể tải phản hồi thô. Lỗi mạng: ${e2.message}"
-            }
-            val debugDescription = """
-                --- LỖI PLUGIN ---
-                URL ĐÃ GỌI: $apiLink
-                LỖI GỐC: ${e.message}
-                PHẢN HỒI THÔ TỪ API:
-                --------------------
-                $rawResponse
-                --------------------
-            """.trimIndent()
-            return newTvSeriesLoadResponse(name = "LỖI - $slug", url = url, type = TvType.TvSeries, episodes = emptyList()) {
-                this.plot = debugDescription
-            }
+            return null
         }
     }
 
@@ -190,7 +163,17 @@ class NguonCProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         if (data.isBlank()) return false
-        loadExtractor(data, mainUrl, subtitleCallback, callback)
+        
+        callback.invoke(
+            ExtractorLink(
+                this.name,
+                this.name,
+                data,
+                mainUrl,
+                Qualities.Unknown.value,
+                isM3u8 = data.contains(".m3u8")
+            )
+        )
         return true
     }
 }
