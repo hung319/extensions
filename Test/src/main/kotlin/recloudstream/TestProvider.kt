@@ -66,18 +66,17 @@ class NguonCProvider : MainAPI() {
 
     // ============================ Helper Functions ============================
 
-    // Sửa lỗi: Hàm này phải nằm BÊN TRONG class NguonCProvider
     private fun MediaItem.toSearchResult(): SearchResponse {
         val isTvSeries = (this.totalEpisodes ?: 1) > 1
         val url = "$mainUrl/phim/${this.slug}"
 
-        // Sửa lỗi: Sử dụng đúng cú pháp lambda { ... }
+        // SỬA LỖI CHÍNH: Sử dụng đúng tên hàm bạn cung cấp
         return if (isTvSeries) {
-            newTvSeries(this.name ?: this.originalName ?: "", url) {
+            newTvSeriesSearchResponse(this.name ?: this.originalName ?: "", url) {
                 posterUrl = this@toSearchResult.posterUrl ?: this@toSearchResult.thumbUrl
             }
         } else {
-            newMovie(this.name ?: this.originalName ?: "", url) {
+            newMovieSearchResponse(this.name ?: this.originalName ?: "", url) {
                 posterUrl = this@toSearchResult.posterUrl ?: this@toSearchResult.thumbUrl
             }
         }
@@ -118,9 +117,7 @@ class NguonCProvider : MainAPI() {
         val title = movieInfo.name ?: movieInfo.originalName ?: return null
         val poster = movieInfo.posterUrl ?: movieInfo.thumbUrl
         val description = movieInfo.description?.let { Jsoup.parse(it).text() }
-
-        // SỬA LỖI CHÍNH: Chuyển đổi List<String> thành List<Actor>
-        val actors = movieInfo.casts?.split(",")?.map { Actor(it.trim()) }
+        val actors = movieInfo.casts?.split(",")?.map { ActorData(Actor(it.trim())) }
 
         var year: Int? = null
         var genres: List<String>? = null
@@ -146,7 +143,7 @@ class NguonCProvider : MainAPI() {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = description
-                this.actors = actors // Gán danh sách diễn viên đã được chuyển đổi
+                this.actors = actors
                 this.tags = genres
             }
         } else {
@@ -154,7 +151,7 @@ class NguonCProvider : MainAPI() {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = description
-                this.actors = actors // Gán danh sách diễn viên đã được chuyển đổi
+                this.actors = actors
                 this.tags = genres
             }
         }
