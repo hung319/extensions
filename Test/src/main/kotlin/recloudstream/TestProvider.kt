@@ -246,7 +246,6 @@ class NguonCProvider : MainAPI() {
                 val streamApiUrl = "$embedUrl?api=stream"
                 val embedOrigin = URI(embedUrl).let { "${it.scheme}://${it.host}" }
                 
-                // SỬA ĐỔI LỚN: Thêm `Origin` và `Cookie` vào header của yêu cầu POST
                 val apiHeaders = mapOf(
                     "Content-Type" to "application/json",
                     "X-Requested-With" to "XMLHttpRequest",
@@ -254,11 +253,12 @@ class NguonCProvider : MainAPI() {
                     "User-Agent" to userAgent,
                     "Referer" to embedUrl,
                     "Origin" to embedOrigin,
-                    "Cookie" to "__dtsu=4C301750475292A9643FBE50677C1A34" // Cookie từ curl
+                    "Cookie" to "__dtsu=4C301750475292A9643FBE50677C1A34"
                 )
                 
-                val requestBody = mapOf("hash" to hash).toJson()
-                val streamApiResponse = app.post(streamApiUrl, headers = apiHeaders, data = requestBody).parsedSafe<StreamApiResponse>()
+                // SỬA LỖI: Chuyển `requestBody` vào đúng tham số `json`
+                val requestBody = mapOf("hash" to hash)
+                val streamApiResponse = app.post(streamApiUrl, headers = apiHeaders, json = requestBody).parsedSafe<StreamApiResponse>()
                 
                 val base64StreamUrl = streamApiResponse?.streamUrl
                 if (!base64StreamUrl.isNullOrBlank()) {
