@@ -19,11 +19,14 @@ import okhttp3.ResponseBody
 import okhttp3.ResponseBody.Companion.toResponseBody
 import java.util.EnumSet
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.awaitAll
 
 // === Provider Class ===
 class Anime47Provider : MainAPI() {
     override var mainUrl = "https://anime47.com"
-    private var baseUrl = "https://anime47.shop"
+    private var baseUrl = "https://anime47.shop" 
     override var name = "Anime47"
     override val hasMainPage = true
     override var lang = "vi"
@@ -38,8 +41,7 @@ class Anime47Provider : MainAPI() {
         "/danh-sach/anime-mua-moi-update.html" to "Anime Mùa Mới",
         "/danh-sach/jpdrama/1.html" to "Live action",
     )
-
-    // SỬA LỖI: Xóa từ khóa 'override'
+    
     private suspend fun AwaitDown(url: String): Boolean {
         return try {
             val redirectedUrl = app.get(
@@ -47,7 +49,6 @@ class Anime47Provider : MainAPI() {
                 interceptor = interceptor,
                 allowRedirects = true
             ).url
-            // Lấy scheme và host từ URL sau khi chuyển hướng (ví dụ: "https://anime47.shop")
             baseUrl = Regex("(https?://[^/]+)").find(redirectedUrl)?.groupValues?.get(1) ?: baseUrl
             true
         } catch (e: Exception) {
@@ -81,10 +82,13 @@ class Anime47Provider : MainAPI() {
             }
         }
 
-        return AnimeSearchResponse(
-            name = title, url = href, apiName = this@Anime47Provider.name, type = TvType.Anime,
-            posterUrl = posterUrl, dubStatus = EnumSet.of(DubStatus.Subbed), otherName = ribbon, episodes = episodes
-        )
+        // SỬA CẢNH BÁO: Dùng newAnimeSearchResponse thay vì constructor
+        return newAnimeSearchResponse(title, href, TvType.Anime) {
+            this.posterUrl = posterUrl
+            this.otherName = ribbon
+            this.dubStatus = EnumSet.of(DubStatus.Subbed)
+            this.episodes = episodes
+        }
     }
     
     override suspend fun search(query: String): List<SearchResponse> {
@@ -120,19 +124,21 @@ class Anime47Provider : MainAPI() {
         try {
             val watchPageDoc = app.get(watchUrl, interceptor = interceptor).document
             
-            watchPageDoc.select("div.block2.servers > div.server").forEach { serverBlock ->
-                val serverName = serverBlock.selectFirst(".name span")?.text()?.trim() ?: "Server"
-                val episodeElements = serverBlock.select("div.episodes ul li a, div.tab-content div.tab-pane ul li a")
+            watchPageDoc.select("div.name").forEach { nameDiv ->
+                val serverName = nameDiv.selectFirst("span")?.text()?.trim() ?: "Server"
+                val episodeElements = nameDiv.nextElementSibling()?.select("ul li a")
 
-                episodeElements.forEach {
-                    val epHref = fixUrl(it.attr("href"))
-                    val epRawName = it.attr("title").ifEmpty { it.text() }.trim()
-                    val epName = "Tập $epRawName"
-                    val epNum = epRawName.substringBefore("-").filter { c -> c.isDigit() }.toIntOrNull()
+                if (episodeElements != null) {
+                    episodeElements.forEach {
+                        val epHref = fixUrl(it.attr("href"))
+                        val epRawName = it.attr("title").ifEmpty { it.text() }.trim()
+                        val epName = "Tập $epRawName"
+                        val epNum = epRawName.substringBefore("-").filter { c -> c.isDigit() }.toIntOrNull()
 
-                    if (epNum != null) {
-                        val episodeInfo = episodesByNumber.getOrPut(epNum) { EpisodeInfo(name = epName, sources = mutableMapOf()) }
-                        episodeInfo.sources[serverName] = epHref
+                        if (epNum != null) {
+                            val episodeInfo = episodesByNumber.getOrPut(epNum) { EpisodeInfo(name = epName, sources = mutableMapOf()) }
+                            episodeInfo.sources[serverName] = epHref
+                        }
                     }
                 }
             }
@@ -141,21 +147,28 @@ class Anime47Provider : MainAPI() {
         }
 
         if (episodesByNumber.isEmpty()) {
-            return MovieLoadResponse(
-                name = title, url = url, apiName = this.name, type = tvType, dataUrl = watchUrl,
-                posterUrl = poster, year = year, plot = plot, tags = tags
-            )
+            // SỬA CẢNH BÁO: Dùng newMovieLoadResponse
+            return newMovieLoadResponse(title, url, tvType, watchUrl) {
+                this.posterUrl = poster; this.plot = plot; this.tags = tags; this.year = year
+            }
         }
 
         val episodes = episodesByNumber.entries.map { (epNum, epInfo) ->
             val data = epInfo.sources.toJson()
-            Episode(data = data, name = epInfo.name, episode = epNum)
+            // SỬA CẢNH BÁO: Dùng newEpisode
+            newEpisode(data) {
+                this.name = epInfo.name
+                this.episode = null
+            }
         }.sortedBy { it.episode }
 
-        return TvSeriesLoadResponse(
-            name = title, url = url, apiName = this.name, type = tvType,
-            episodes = episodes, posterUrl = poster, year = year, plot = plot, tags = tags
-        )
+        // SỬA CẢNH BÁO: Dùng newTvSeriesLoadResponse
+        return newTvSeriesLoadResponse(title, url, tvType, episodes) {
+            this.posterUrl = poster
+            this.plot = plot
+            this.tags = tags
+            this.year = year
+        }
     }
     
     private data class CryptoJsJson(val ct: String, val iv: String, val s: String)
@@ -204,44 +217,49 @@ class Anime47Provider : MainAPI() {
         val sources = try { parseJson<Map<String, String>>(data) } catch(e: Exception) { mapOf("Default" to data) }
         val hasLoadedSubtitles = AtomicBoolean(false)
 
-        sources.apmap { (sourceName, url) ->
-            try {
-                val episodeId = url.substringAfterLast('/').substringBefore('.').trim()
-                val serverId = "4"
-                val postData = mapOf("ID" to episodeId, "SV" to serverId, "SV4" to serverId)
+        // SỬA CẢNH BÁO: Thay thế apmap bằng coroutineScope
+        coroutineScope {
+            sources.map { (sourceName, url) ->
+                async {
+                    try {
+                        val episodeId = url.substringAfterLast('/').substringBefore('.').trim()
+                        val serverId = "4"
+                        val postData = mapOf("ID" to episodeId, "SV" to serverId, "SV4" to serverId)
 
-                val playerResponseText = app.post(
-                    "$baseUrl/player/player.php", data = postData,
-                    referer = url, headers = mapOf("X-Requested-With" to "XMLHttpRequest")
-                ).text
-                
-                val encryptedDataB64 = Regex("""var thanhhoa = atob\("([^"]+)"\)""").find(playerResponseText)?.groupValues?.get(1)
-                    ?: return@apmap
+                        val playerResponseText = app.post(
+                            "$baseUrl/player/player.php", data = postData,
+                            referer = url, headers = mapOf("X-Requested-With" to "XMLHttpRequest")
+                        ).text
+                        
+                        val encryptedDataB64 = Regex("""var thanhhoa = atob\("([^"]+)"\)""").find(playerResponseText)?.groupValues?.get(1)
+                            ?: return@async
 
-                val videoUrl = decryptSource(encryptedDataB64, "caphedaklak") ?: return@apmap
+                        val videoUrl = decryptSource(encryptedDataB64, "caphedaklak") ?: return@async
 
-                callback(
-                    ExtractorLink(
-                        source = this.name, name = sourceName, url = videoUrl, referer = "$baseUrl/",
-                        quality = Qualities.Unknown.value, type = ExtractorLinkType.M3U8,
-                    )
-                )
-                
-                if (hasLoadedSubtitles.compareAndSet(false, true)) {
-                    val tracksJsonBlock = Regex("""tracks:\s*(\[.*?\])""").find(playerResponseText)?.groupValues?.get(1)
-                    if (tracksJsonBlock != null) {
-                        val subtitleRegex = Regex("""\{file:\s*["']([^"']+)["'],\s*label:\s*["']([^"']+)["']""")
-                        subtitleRegex.findAll(tracksJsonBlock).forEach { match ->
-                            val file = match.groupValues[1]; val label = match.groupValues[2]
-                            if (file.isNotBlank()) {
-                                subtitleCallback(SubtitleFile(label, fixUrl(file)))
+                        callback(
+                            ExtractorLink(
+                                source = this@Anime47Provider.name, name = sourceName, url = videoUrl, referer = "$baseUrl/",
+                                quality = Qualities.Unknown.value, type = ExtractorLinkType.M3U8,
+                            )
+                        )
+                        
+                        if (hasLoadedSubtitles.compareAndSet(false, true)) {
+                            val tracksJsonBlock = Regex("""tracks:\s*(\[.*?\])""").find(playerResponseText)?.groupValues?.get(1)
+                            if (tracksJsonBlock != null) {
+                                val subtitleRegex = Regex("""\{file:\s*["']([^"']+)["'],\s*label:\s*["']([^"']+)["']""")
+                                subtitleRegex.findAll(tracksJsonBlock).forEach { match ->
+                                    val file = match.groupValues[1]; val label = match.groupValues[2]
+                                    if (file.isNotBlank()) {
+                                        subtitleCallback(SubtitleFile(label, fixUrl(file)))
+                                    }
+                                }
                             }
                         }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
                     }
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
+            }.awaitAll()
         }
         
         return true
@@ -254,7 +272,7 @@ class Anime47Provider : MainAPI() {
                 val response = chain.proceed(request)
                 val url = request.url.toString()
                 
-                if (url.contains("nonprofit.asia")) {
+                if (url.contains(".nonprofit.asia")) {
                     response.body?.let { body ->
                         try {
                             val fixedBytes = skipByteError(body)
