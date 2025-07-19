@@ -19,7 +19,6 @@ import okhttp3.ResponseBody
 import okhttp3.ResponseBody.Companion.toResponseBody
 import java.util.EnumSet
 import java.util.concurrent.atomic.AtomicBoolean
-// SỬA LỖI: Thêm các import cần thiết cho coroutine
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.awaitAll
@@ -124,20 +123,27 @@ class Anime47Provider : MainAPI() {
         try {
             val watchPageDoc = app.get(watchUrl, interceptor = interceptor).document
             
-            watchPageDoc.select("div.name").forEach { nameDiv ->
-                val serverName = nameDiv.selectFirst("span")?.text()?.trim() ?: "Server"
-                val episodeElements = nameDiv.nextElementSibling()?.select("ul li a")
+            // Xử lý các khối server có cấu trúc HTML bị lỗi
+            watchPageDoc.select("div.server").forEach { serverBlock ->
+                // Tìm tất cả các `div.name` bên trong khối server hiện tại
+                serverBlock.select("div.name").forEach { nameDiv ->
+                    val serverName = nameDiv.selectFirst("span")?.text()?.trim() ?: "Server"
+                    // Lấy khối `div.episodes` ngay sau `div.name`
+                    val episodeBlock = nameDiv.nextElementSibling()
+                    
+                    if (episodeBlock?.hasClass("episodes") == true) {
+                        val episodeElements = episodeBlock.select("ul li a, div.tab-content div.tab-pane ul li a")
+                        
+                        episodeElements.forEach {
+                            val epHref = fixUrl(it.attr("href"))
+                            val epRawName = it.attr("title").ifEmpty { it.text() }.trim()
+                            val epName = "Tập $epRawName"
+                            val epNum = epRawName.substringBefore("-").filter { c -> c.isDigit() }.toIntOrNull()
 
-                if (episodeElements != null) {
-                    episodeElements.forEach {
-                        val epHref = fixUrl(it.attr("href"))
-                        val epRawName = it.attr("title").ifEmpty { it.text() }.trim()
-                        val epName = "Tập $epRawName"
-                        val epNum = epRawName.substringBefore("-").filter { c -> c.isDigit() }.toIntOrNull()
-
-                        if (epNum != null) {
-                            val episodeInfo = episodesByNumber.getOrPut(epNum) { EpisodeInfo(name = epName, sources = mutableMapOf()) }
-                            episodeInfo.sources[serverName] = epHref
+                            if (epNum != null) {
+                                val episodeInfo = episodesByNumber.getOrPut(epNum) { EpisodeInfo(name = epName, sources = mutableMapOf()) }
+                                episodeInfo.sources[serverName] = epHref
+                            }
                         }
                     }
                 }
