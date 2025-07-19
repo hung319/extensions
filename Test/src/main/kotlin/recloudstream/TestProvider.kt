@@ -214,7 +214,7 @@ class NguonCProvider : MainAPI() {
         }
     }
 
-    // Chế độ gỡ lỗi: Lấy nội dung M3U8
+    // Chế độ gỡ lỗi: Lấy nội dung M3U8 và hiển thị trong Exception
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -234,7 +234,6 @@ class NguonCProvider : MainAPI() {
             }
             debugLogs.add("2. OK: Lấy được chi tiết phim '${movie.name}'")
 
-            // Dùng forEach để log tuần tự, dễ đọc hơn
             movie.episodes.forEach { server ->
                 debugLogs.add("--- Đang xử lý Server: ${server.serverName} ---")
 
@@ -243,7 +242,7 @@ class NguonCProvider : MainAPI() {
 
                 val embedUrl = episodeItem?.embed
                 if (embedUrl.isNullOrBlank()) {
-                    debugLogs.add("3. Lỗi: Không tìm thấy link embed cho server này.")
+                    debugLogs.add("3. Lỗi: Không tìm thấy link embed.")
                     return@forEach
                 }
                 debugLogs.add("3. OK: Link embed: $embedUrl")
@@ -284,7 +283,9 @@ class NguonCProvider : MainAPI() {
 
                 val cleanBase64 = base64StreamUrl.replace('-', '+').replace('_', '/')
                 val padding = "=".repeat((4 - cleanBase64.length % 4) % 4)
-                val finalM3u8Url = String(Base64.getDecoder().decode(cleanBase64 + padding))
+                val decodedUrl = String(Base64.getDecoder().decode(cleanBase64 + padding))
+                
+                val finalM3u8Url = if (decodedUrl.startsWith("http")) decodedUrl else embedOrigin + decodedUrl
                 debugLogs.add("7. OK: Giải mã được link M3U8: $finalM3u8Url")
                 
                 // Lấy nội dung của file M3U8
