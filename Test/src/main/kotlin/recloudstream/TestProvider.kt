@@ -111,21 +111,21 @@ class NguonCProvider : MainAPI() {
         }
     }
 
-    // THAY ĐỔI DUY NHẤT NẰM Ở ĐÂY
+    // **THAY ĐỔI LỚN NHẤT NẰM Ở ĐÂY**
     override suspend fun load(url: String): LoadResponse? {
         val slug = url.substringAfterLast("/")
         val apiLink = "$API_URL/film/$slug"
 
-        // Sử dụng try-catch để bắt và báo cáo lỗi chi tiết
         try {
+            // 1. Vẫn thử tải và phân tích như bình thường
             val res = app.get(apiLink).parsed<FilmApiResponse>()
             
+            // ... (Logic thành công không thay đổi)
             val movieInfo = res.movie
             val title = movieInfo.name ?: movieInfo.originalName ?: return null
             val poster = movieInfo.posterUrl ?: movieInfo.thumbUrl
             val description = movieInfo.description?.let { Jsoup.parse(it).text() }
             val actors = movieInfo.casts?.split(",")?.map { ActorData(Actor(it.trim())) }
-
             var year: Int? = null
             var genres: List<String>? = null
             movieInfo.category?.values?.forEach { group ->
@@ -135,7 +135,6 @@ class NguonCProvider : MainAPI() {
                     genres = group.list.mapNotNull { it.name }
                 }
             }
-
             val episodes = res.episodes?.flatMap { server ->
                 server.items.map { episode ->
                     newEpisode(episode) {
@@ -147,24 +146,44 @@ class NguonCProvider : MainAPI() {
 
             return if ((movieInfo.totalEpisodes ?: 1) > 1) {
                 newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
-                    this.posterUrl = poster
-                    this.year = year
-                    this.plot = description
-                    this.actors = actors
-                    this.tags = genres
+                    this.posterUrl = poster; this.year = year; this.plot = description; this.actors = actors; this.tags = genres
                 }
             } else {
                 newMovieLoadResponse(title, url, TvType.Movie, episodes.firstOrNull()?.data) {
-                    this.posterUrl = poster
-                    this.year = year
-                    this.plot = description
-                    this.actors = actors
-                    this.tags = genres
+                    this.posterUrl = poster; this.year = year; this.plot = description; this.actors = actors; this.tags = genres
                 }
             }
         } catch (e: Exception) {
-            // Ném ra một lỗi mới với thông tin đầy đủ để gỡ lỗi
-            throw Exception("Lỗi tùy chỉnh tại hàm load cho URL: $url. Lỗi gốc: ${e.message}")
+            // 2. Nếu có lỗi, bắt lỗi lại và thực hiện gỡ lỗi
+            // Thử lấy nội dung text thô từ API
+            val rawResponse = try {
+                app.get(apiLink).text
+            } catch (e2: Exception) {
+                "Không thể tải phản hồi thô. Lỗi mạng: ${e2.message}"
+            }
+
+            // 3. Tạo một đoạn mô tả chi tiết chứa thông tin lỗi
+            val debugDescription = """
+                --- LỖI PLUGIN ---
+                
+                Plugin đã gặp sự cố khi tải dữ liệu cho phim này.
+                
+                URL ĐÃ GỌI:
+                $apiLink
+                
+                LỖI GỐC:
+                ${e.message}
+                
+                PHẢN HỒI THÔ TỪ API:
+                --------------------
+                $rawResponse
+                --------------------
+            """.trimIndent()
+
+            // 4. Trả về một phim "giả" với tên là LỖI và mô tả là thông tin gỡ lỗi
+            return newMovieLoadResponse(name = "LỖI - $slug", url = url, type = TvType.Movie, dataUrl = null) {
+                this.plot = debugDescription
+            }
         }
     }
 
