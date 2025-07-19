@@ -17,11 +17,14 @@ import okhttp3.Interceptor
 import okhttp3.Response
 import okhttp3.ResponseBody
 import okhttp3.ResponseBody.Companion.toResponseBody
+import java.util.EnumSet
 import java.util.concurrent.atomic.AtomicBoolean
 
 // === Provider Class ===
 class Anime47Provider : MainAPI() {
-    override var mainUrl = "https://anime47.shop"
+    // **THAY ĐỔI 1: Đặt mainUrl thành link gốc để tự động chuyển hướng**
+    override var mainUrl = "https://anime47.com"
+    private var baseUrl = "https://anime47.shop" // Đặt một link ổn định làm dự phòng
     override var name = "Anime47"
     override val hasMainPage = true
     override var lang = "vi"
@@ -30,14 +33,33 @@ class Anime47Provider : MainAPI() {
 
     private val interceptor = CloudflareKiller()
 
+    // **THAY ĐỔI 2: Thêm mục Live Action và dùng link tương đối**
     override val mainPage = mainPageOf(
-        "$mainUrl/danh-sach/phim-moi/1.html" to "Anime Mới Cập Nhật",
-        "$mainUrl/the-loai/hoat-hinh-trung-quoc-75/1.html" to "Hoạt Hình Trung Quốc",
-        "$mainUrl/danh-sach/anime-mua-moi-update.html" to "Anime Mùa Mới",
+        "/danh-sach/phim-moi/1.html" to "Anime Mới Cập Nhật",
+        "/the-loai/hoat-hinh-trung-quoc-75/1.html" to "Hoạt Hình Trung Quốc",
+        "/danh-sach/anime-mua-moi-update.html" to "Anime Mùa Mới",
+        "/danh-sach/jpdrama/1.html" to "Live action",
     )
 
+    // **THAY ĐỔI 3: Hàm tự động lấy tên miền mới nhất**
+    override suspend fun AwaitDown(url: String): Boolean {
+        return try {
+            val redirectedUrl = app.get(
+                url,
+                interceptor = interceptor,
+                allowRedirects = true
+            ).url
+            baseUrl = redirectedUrl.substringBefore("/")
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = if (page == 1) request.data else request.data.replace("/1.html", "/$page.html")
+        // Luôn gọi AwaitDown để đảm bảo baseUrl được cập nhật
+        AwaitDown(mainUrl)
+        val url = baseUrl + if (page == 1) request.data else request.data.replace("/1.html", "/$page.html")
         val document = app.get(url, interceptor = interceptor).document
         val home = document.select("ul.last-film-box > li").mapNotNull { it.toSearchResult() }
         return newHomePageResponse(request.name, home)
@@ -52,15 +74,29 @@ class Anime47Provider : MainAPI() {
         val posterUrl = this.selectFirst("div.public-film-item-thumb")?.attr("style")
             ?.substringAfter("url('")?.substringBefore("')")
         val ribbon = this.selectFirst("span.ribbon")?.text()?.trim()
-
-        return newAnimeSearchResponse(title, href, TvType.Anime) {
-            this.posterUrl = posterUrl
-            if (ribbon != null) { this.otherName = "Tập $ribbon" }
+        
+        val episodes = mutableMapOf<DubStatus, Int>()
+        ribbon?.let {
+            val epNum = it.substringBefore("/").filter { c -> c.isDigit() }.toIntOrNull()
+            if (epNum != null) {
+                episodes[DubStatus.Subbed] = epNum
+            }
         }
+
+        return AnimeSearchResponse(
+            name = title,
+            url = href,
+            apiName = this@Anime47Provider.name,
+            type = TvType.Anime,
+            posterUrl = posterUrl,
+            dubStatus = EnumSet.of(DubStatus.Subbed),
+            otherName = ribbon,
+            episodes = episodes
+        )
     }
     
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/tim-nang-cao/?keyword=${URLEncoder.encode(query, "UTF-8")}&sapxep=1"
+        val searchUrl = "$baseUrl/tim-nang-cao/?keyword=${URLEncoder.encode(query, "UTF-8")}&sapxep=1"
         val document = app.get(searchUrl, interceptor = interceptor).document
         return document.select("ul.last-film-box > li").mapNotNull { it.toSearchResult() }
     }
@@ -76,7 +112,7 @@ class Anime47Provider : MainAPI() {
         val tags = document.select("dd.movie-dd.dd-cat a").map { it.text() }
         val year = document.selectFirst("span.title-year")?.text()?.removeSurrounding("(", ")")?.toIntOrNull()
         
-        val tvType = if (tags.any { it.contains("Hoạt hình Trung Quốc", ignoreCase = true) }) {
+        val tvType = if (tags.any { it.contains("Hoạt hình Trung Quốc", ignoreCase = true) || it.contains("Tokusatsu", ignoreCase = true) }) {
             TvType.Cartoon
         } else {
             TvType.Anime
@@ -91,13 +127,11 @@ class Anime47Provider : MainAPI() {
         try {
             val watchPageDoc = app.get(watchUrl, interceptor = interceptor).document
             
-            // **SỬA LỖI: Thay đổi hoàn toàn logic lấy server**
-            // Tìm tất cả các div.name, sau đó tìm div.episodes ngay sau nó
-            watchPageDoc.select("div.name").forEach { nameDiv ->
-                val serverName = nameDiv.selectFirst("span")?.text()?.trim() ?: "Server"
-                val episodeElements = nameDiv.nextElementSibling()?.select("ul li a")
+            watchPageDoc.select("div.block2.servers > div.server").forEach { serverBlock ->
+                val serverName = serverBlock.selectFirst(".name span")?.text()?.trim() ?: "Server"
+                val episodeElements = serverBlock.select("div.episodes ul li a, div.tab-content div.tab-pane ul li a")
 
-                episodeElements?.forEach {
+                episodeElements.forEach {
                     val epHref = fixUrl(it.attr("href"))
                     val epRawName = it.attr("title").ifEmpty { it.text() }.trim()
                     val epName = "Tập $epRawName"
@@ -114,22 +148,21 @@ class Anime47Provider : MainAPI() {
         }
 
         if (episodesByNumber.isEmpty()) {
-            return newMovieLoadResponse(title, url, tvType, watchUrl) {
-                this.posterUrl = poster; this.plot = plot; this.tags = tags; this.year = year
-            }
+            return MovieLoadResponse(
+                name = title, url = url, apiName = this.name, type = tvType, dataUrl = watchUrl,
+                posterUrl = poster, year = year, plot = plot, tags = tags
+            )
         }
 
         val episodes = episodesByNumber.entries.map { (epNum, epInfo) ->
             val data = epInfo.sources.toJson()
-            Episode(data = data, name = epInfo.name, episode = epNum)
+            Episode(data = data, name = epInfo.name, episode = null)
         }.sortedBy { it.episode }
 
-        return newTvSeriesLoadResponse(title, url, tvType, episodes) {
-            this.posterUrl = poster
-            this.plot = plot
-            this.tags = tags
-            this.year = year
-        }
+        return TvSeriesLoadResponse(
+            name = title, url = url, apiName = this.name, type = tvType,
+            episodes = episodes, posterUrl = poster, year = year, plot = plot, tags = tags
+        )
     }
     
     private data class CryptoJsJson(val ct: String, val iv: String, val s: String)
@@ -185,7 +218,7 @@ class Anime47Provider : MainAPI() {
                 val postData = mapOf("ID" to episodeId, "SV" to serverId, "SV4" to serverId)
 
                 val playerResponseText = app.post(
-                    "$mainUrl/player/player.php", data = postData,
+                    "$baseUrl/player/player.php", data = postData,
                     referer = url, headers = mapOf("X-Requested-With" to "XMLHttpRequest")
                 ).text
                 
@@ -196,7 +229,7 @@ class Anime47Provider : MainAPI() {
 
                 callback(
                     ExtractorLink(
-                        source = this.name, name = sourceName, url = videoUrl, referer = "$mainUrl/",
+                        source = this.name, name = sourceName, url = videoUrl, referer = "$baseUrl/",
                         quality = Qualities.Unknown.value, type = ExtractorLinkType.M3U8,
                     )
                 )
