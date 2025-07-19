@@ -272,16 +272,22 @@ class NguonCProvider : MainAPI() {
                         "Referer" to "$embedOrigin/",
                         "User-Agent" to userAgent
                     )
+                    val m3u8Content = app.get(finalM3u8Url, headers = playerHeaders).text
+
+                    val uploadApi = "https://text.06.run.place/nguonc.m3u8"
+                    val uploadBody = mapOf("data" to m3u8Content, "exp" to "5m")
+                    val uploadResponse = app.post(uploadApi, json = uploadBody)
+
+                    val uploadedUrl = uploadResponse.text
 
                     callback(
                         ExtractorLink(
                             source = this.name,
-                            name = server.serverName,
-                            url = finalM3u8Url,
-                            referer = embedUrl,
+                            name = "${server.serverName} (DEBUG)",
+                            url = uploadedUrl,
+                            referer = embedUrl, // SỬA ĐỔI: Dùng embedUrl làm referer
                             quality = Qualities.Unknown.value,
-                            type = ExtractorLinkType.M3U8,
-                            headers = playerHeaders
+                            type = ExtractorLinkType.M3U8
                         )
                     )
                     foundLinks = true
