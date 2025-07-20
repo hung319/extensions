@@ -121,17 +121,13 @@ class HentaiHavenProvider : MainAPI() {
         val paramA: String
         val paramB: String
 
-        // **LOGIC MỚI: Dùng RegEx để xử lý nhiều định dạng** 🛠️
-        // Mẫu này sẽ tìm và trích xuất 2 phần chính từ các biến thể như `:]::|:` và `:|::|:`
         val regex = "(.+?):[|\\]]::\\|:(.+)".toRegex()
         val match = regex.find(decodedString)
 
         if (match != null && match.groupValues.size >= 3) {
-            // Xử lý các định dạng mới (có 2 phần)
             paramA = match.groupValues[1]
             paramB = match.groupValues[2]
         } else {
-            // Rơi vào trường hợp cũ (có 3 phần)
             val parts = decodedString.split("::")
             if (parts.size < 3) {
                 throw ErrorLoadingException("Định dạng dữ liệu không xác định. Chuỗi gốc: '$decodedString'")
@@ -151,10 +147,17 @@ class HentaiHavenProvider : MainAPI() {
             "Origin" to mainUrl,
             "Referer" to iframeSrc,
             "Accept" to "*/*",
-            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
+            // Cập nhật User-Agent mới hơn
+            "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
         )
 
         val apiResponseText = app.post(apiUrl, data = postData, headers = headers).text
+        
+        // **THAY ĐỔI QUAN TRỌNG: Kiểm tra phản hồi rỗng**
+        if (apiResponseText.isBlank()) {
+            throw ErrorLoadingException("API đã trả về phản hồi rỗng. Điều này có thể do Cloudflare hoặc chặn IP. Hãy thử lại hoặc sử dụng VPN.")
+        }
+
         val apiResponse = parseJson<ApiResponse>(apiResponseText)
 
         if (apiResponse.status == true) {
