@@ -105,7 +105,7 @@ class JavHDzProvider : MainAPI() {
         }
 
         return if (videoUrl != null) {
-            newMovieLoadResponse(title, url, TvType.Movie, videoUrl) {
+            newMovieLoadResponse(title, url, TvType.NSFW, videoUrl) {
                 this.posterUrl = poster
                 this.plot = description
                 this.recommendations = recommendations
