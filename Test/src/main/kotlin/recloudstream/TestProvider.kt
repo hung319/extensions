@@ -1,7 +1,6 @@
 package recloudstream
 
 // Import các thư viện cần thiết
-import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -17,11 +16,6 @@ class HentaiHavenProvider : MainAPI() {
     override var lang = "en"
     override var supportedTypes = setOf(TvType.NSFW)
     override val hasMainPage = true
-
-    // Dùng để lọc log trong Logcat
-    companion object {
-        private const val TAG = "HentaiHavenProvider"
-    }
 
     // Data class cho JSON trả về từ API
     private data class Source(val src: String?, val label: String?)
@@ -124,73 +118,68 @@ class HentaiHavenProvider : MainAPI() {
     }
 
     override suspend fun loadLinks(
-        data: String, // data là URL của trang tập phim
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d(TAG, "Trying HentaiHaven")
-        try {
-            Log.d(TAG, "loadLinks called with data: $data")
+        // Khởi tạo một danh sách để lưu lại toàn bộ quá trình
+        val debugLog = mutableListOf<String>()
+        debugLog.add("--- HentaiHaven Debug Log ---")
 
-            // Bước 1: Lấy HTML của trang tập phim để tìm iframe
+        try {
+            debugLog.add("1. Bắt đầu loadLinks với data: $data")
+
             val document = app.get(data).document
-            Log.d(TAG, "Successfully fetched document for page: $data")
-            
+            debugLog.add("2. Lấy HTML của trang tập phim thành công.")
+
             val iframeSrc = document.selectFirst("div.player_logic_item iframe")?.attr("src")
                 ?: throw ErrorLoadingException("Không tìm thấy iframe của trình phát.")
-            Log.d(TAG, "Found iframe src: $iframeSrc")
+            debugLog.add("3. Tìm thấy iframe src: $iframeSrc")
 
-            // Bước 2: Trích xuất và giải mã tham số 'data' từ URL của iframe
             val encodedData = iframeSrc.substringAfter("?data=", "")
             if (encodedData.isBlank()) {
                 throw ErrorLoadingException("Không tìm thấy tham số 'data' trong URL của iframe.")
             }
-            Log.d(TAG, "Extracted encodedData: $encodedData")
-            
+            debugLog.add("4. Trích xuất encodedData: ${encodedData.take(60)}...")
+
             val decodedString = String(Base64.getDecoder().decode(encodedData))
-            Log.d(TAG, "Decoded string: '$decodedString'")
+            debugLog.add("5. Chuỗi sau khi giải mã Base64: '$decodedString'")
 
             val parts = decodedString.split("::")
-            Log.d(TAG, "Split decoded string into ${parts.size} parts")
+            debugLog.add("6. Tách chuỗi thành ${parts.size} phần.")
 
             if (parts.size < 3) {
-                throw ErrorLoadingException("Dữ liệu sau khi giải mã không hợp lệ.")
+                throw ErrorLoadingException("Dữ liệu sau khi giải mã không hợp lệ (không đủ 3 phần).")
             }
-            
+
             val paramA = parts[0]
             val paramB = parts[2]
-            Log.d(TAG, "paramA: $paramA")
-            Log.d(TAG, "paramB: $paramB")
+            debugLog.add("7. Lấy paramA: ${paramA.take(60)}...")
+            debugLog.add("8. Lấy paramB: $paramB")
 
-            // Bước 3: Gửi POST request đến API
             val apiUrl = "$mainUrl/wp-content/plugins/player-logic/api.php"
-            val postData = mapOf(
-                "action" to "zarat_get_data_player_ajax",
-                "a" to paramA,
-                "b" to paramB
-            )
-
+            val postData = mapOf("action" to "zarat_get_data_player_ajax", "a" to paramA, "b" to paramB)
             val headers = mapOf(
                 "Origin" to mainUrl,
                 "Referer" to iframeSrc,
                 "Accept" to "*/*",
                 "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
             )
-            
-            Log.d(TAG, "Making POST request to $apiUrl")
-            val apiResponseText = app.post(apiUrl, data = postData, headers = headers).text
-            Log.d(TAG, "API Response text: $apiResponseText")
 
-            // Bước 4: Phân tích JSON và trích xuất link
+            debugLog.add("9. Gửi POST request đến API: $apiUrl")
+            val apiResponseText = app.post(apiUrl, data = postData, headers = headers).text
+            debugLog.add("10. Phản hồi từ API: $apiResponseText")
+
             val apiResponse = parseJson<ApiResponse>(apiResponseText)
-            
+
             if (apiResponse.status == true) {
-                Log.d(TAG, "API response status is true. Found ${apiResponse.data?.sources?.size ?: 0} sources.")
+                val sourceCount = apiResponse.data?.sources?.size ?: 0
+                debugLog.add("11. API trả về status true. Tìm thấy $sourceCount link.")
                 apiResponse.data?.sources?.forEach { source ->
                     val videoUrl = source.src ?: return@forEach
                     val quality = source.label ?: "Default"
-                    Log.d(TAG, "Extracted source: $quality -> $videoUrl")
+                    debugLog.add("  -> Trích xuất link: $quality - $videoUrl")
 
                     callback(
                         newExtractorLink(
@@ -203,15 +192,22 @@ class HentaiHavenProvider : MainAPI() {
                         }
                     )
                 }
+                debugLog.add("\n[SUCCESS] Hoàn tất quá trình lấy link.")
             } else {
-                throw ErrorLoadingException("API không trả về link hoặc có lỗi xảy ra. Response: $apiResponseText")
+                throw ErrorLoadingException("API không trả về link hoặc có lỗi xảy ra.")
             }
+
+            // Ném ra Exception chứa log ngay cả khi thành công
+            throw Exception(debugLog.joinToString("\n"))
             
         } catch (e: Exception) {
-            Log.e(TAG, "Failed link loading on HentaiHaven using data: $data", e)
-            throw e
+            // Nếu có lỗi, thêm thông tin lỗi vào log và ném ra
+            if (!e.message.orEmpty().contains("HentaiHaven Debug Log")) { // Tránh ghi lặp lại tiêu đề
+                debugLog.add("\n[ERROR] Đã xảy ra lỗi: ${e.message}")
+                debugLog.add("Stack Trace:\n${e.stackTraceToString().take(500)}...")
+            }
+            throw Exception(debugLog.joinToString("\n"))
         }
-        return true
     }
 }
 
