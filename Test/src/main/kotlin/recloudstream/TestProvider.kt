@@ -1,7 +1,5 @@
 package recloudstream
 
-// Import các thư viện cần thiết
-// (Không cần import Log nữa vì chúng ta đã gỡ bỏ nó)
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -18,13 +16,11 @@ class HentaiHavenProvider : MainAPI() {
     override var supportedTypes = setOf(TvType.NSFW)
     override val hasMainPage = true
 
-    // Data class cho JSON trả về từ API
     private data class Source(val src: String?, val label: String?)
     private data class VideoData(val sources: List<Source>?)
     private data class ApiResponse(val status: Boolean?, val data: VideoData?)
 
     // --- Các hàm getMainPage, search, load giữ nguyên ---
-    // (Mã nguồn cho các hàm này không thay đổi)
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page == 1) mainUrl else "$mainUrl/page/$page/"
         val document = app.get(url).document
@@ -111,12 +107,10 @@ class HentaiHavenProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Lấy HTML của trang tập phim
         val document = app.get(data).document
         val iframeSrc = document.selectFirst("div.player_logic_item iframe")?.attr("src")
             ?: throw ErrorLoadingException("Không tìm thấy iframe của trình phát.")
 
-        // Trích xuất và giải mã tham số 'data'
         val encodedData = iframeSrc.substringAfter("?data=", "")
         if (encodedData.isBlank()) {
             throw ErrorLoadingException("Không tìm thấy tham số 'data' trong URL của iframe.")
@@ -124,29 +118,28 @@ class HentaiHavenProvider : MainAPI() {
 
         val decodedString = String(Base64.getDecoder().decode(encodedData))
 
-        // **LOGIC MỚI: Xử lý nhiều định dạng**
         val paramA: String
         val paramB: String
 
-        if (decodedString.contains(":]::|:")) {
-            // Xử lý định dạng mới: paramA:]::|:paramB
-            val parts = decodedString.split(":]::|:")
-            if (parts.size < 2) {
-                throw ErrorLoadingException("Dữ liệu (định dạng mới) không hợp lệ. Chuỗi gốc: '$decodedString'")
-            }
-            paramA = parts[0]
-            paramB = parts[1]
+        // **LOGIC MỚI: Dùng RegEx để xử lý nhiều định dạng** 🛠️
+        // Mẫu này sẽ tìm và trích xuất 2 phần chính từ các biến thể như `:]::|:` và `:|::|:`
+        val regex = "(.+?):[|\\]]::\\|:(.+)".toRegex()
+        val match = regex.find(decodedString)
+
+        if (match != null && match.groupValues.size >= 3) {
+            // Xử lý các định dạng mới (có 2 phần)
+            paramA = match.groupValues[1]
+            paramB = match.groupValues[2]
         } else {
-            // Xử lý định dạng cũ: paramA::nonce::paramB
+            // Rơi vào trường hợp cũ (có 3 phần)
             val parts = decodedString.split("::")
             if (parts.size < 3) {
-                throw ErrorLoadingException("Dữ liệu (định dạng cũ) không hợp lệ. Chuỗi gốc: '$decodedString'")
+                throw ErrorLoadingException("Định dạng dữ liệu không xác định. Chuỗi gốc: '$decodedString'")
             }
             paramA = parts[0]
             paramB = parts[2]
         }
 
-        // Gửi POST request đến API
         val apiUrl = "$mainUrl/wp-content/plugins/player-logic/api.php"
         val postData = mapOf(
             "action" to "zarat_get_data_player_ajax",
@@ -162,15 +155,12 @@ class HentaiHavenProvider : MainAPI() {
         )
 
         val apiResponseText = app.post(apiUrl, data = postData, headers = headers).text
-
-        // Phân tích JSON và trích xuất link
         val apiResponse = parseJson<ApiResponse>(apiResponseText)
 
         if (apiResponse.status == true) {
             apiResponse.data?.sources?.forEach { source ->
                 val videoUrl = source.src ?: return@forEach
                 val quality = source.label ?: "Default"
-
                 callback(
                     newExtractorLink(
                         source = this.name,
@@ -183,9 +173,8 @@ class HentaiHavenProvider : MainAPI() {
                 )
             }
         } else {
-            throw ErrorLoadingException("API không trả về link hoặc có lỗi xảy ra. Phản hồi: $apiResponseText")
+            throw ErrorLoadingException("API không trả về link hoặc có lỗi. Phản hồi: $apiResponseText")
         }
-
         return true
     }
 }
