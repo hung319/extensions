@@ -7,7 +7,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.getQualityFromName
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.nodes.Element
-import java.util.Base64
+import java.net.URI
 
 class HentaiHavenProvider : MainAPI() {
     override var name = "HentaiHaven"
@@ -15,10 +15,6 @@ class HentaiHavenProvider : MainAPI() {
     override var lang = "en"
     override var supportedTypes = setOf(TvType.NSFW)
     override val hasMainPage = true
-
-    private data class Source(val src: String?, val label: String?)
-    private data class VideoData(val sources: List<Source>?)
-    private data class ApiResponse(val status: Boolean?, val data: VideoData?)
 
     // --- Các hàm getMainPage, search, load giữ nguyên ---
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -101,83 +97,41 @@ class HentaiHavenProvider : MainAPI() {
     }
     // --- Kết thúc các hàm giữ nguyên ---
 
+    /**
+     * Hàm loadLinks đã được đơn giản hóa hoàn toàn
+     * để tạo link M3U8 trực tiếp từ URL của tập phim.
+     */
     override suspend fun loadLinks(
-        data: String,
+        data: String, // data là URL của trang tập phim
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data).document
-        val iframeSrc = document.selectFirst("div.player_logic_item iframe")?.attr("src")
-            ?: throw ErrorLoadingException("Không tìm thấy iframe của trình phát.")
+        // Lấy đường dẫn từ URL, ví dụ: "/watch/oni-chichi-harem/episode-4"
+        val path = URI(data).path
 
-        val encodedData = iframeSrc.substringAfter("?data=", "")
-        if (encodedData.isBlank()) {
-            throw ErrorLoadingException("Không tìm thấy tham số 'data' trong URL của iframe.")
-        }
+        // Biến đổi đường dẫn thành slug video
+        // 1. Bỏ "/watch/" -> "oni-chichi-harem/episode-4"
+        // 2. Thay "/episode-" bằng "-" -> "oni-chichi-harem-4"
+        // 3. Thêm "-eng" -> "oni-chichi-harem-4-eng"
+        val videoSlug = path.removePrefix("/watch/")
+            .replace("/episode-", "-")
+            .plus("-eng")
 
-        val decodedString = String(Base64.getDecoder().decode(encodedData))
+        // Tạo URL M3U8 cuối cùng
+        val m3u8Url = "https://master-lengs.org/api/v3/hh/$videoSlug/master.m3u8"
 
-        val paramA: String
-        val paramB: String
-
-        val regex = "(.+?):[|\\]]::\\|:(.+)".toRegex()
-        val match = regex.find(decodedString)
-
-        if (match != null && match.groupValues.size >= 3) {
-            paramA = match.groupValues[1]
-            paramB = match.groupValues[2]
-        } else {
-            val parts = decodedString.split("::")
-            if (parts.size < 3) {
-                throw ErrorLoadingException("Định dạng dữ liệu không xác định. Chuỗi gốc: '$decodedString'")
+        callback(
+            newExtractorLink(
+                source = this.name,
+                name = this.name, // Đặt tên mặc định
+                url = m3u8Url,
+                type = ExtractorLinkType.M3U8
+            ) {
+                this.quality = getQualityFromName("Auto")
             }
-            paramA = parts[0]
-            paramB = parts[2]
-        }
-
-        val apiUrl = "$mainUrl/wp-content/plugins/player-logic/api.php"
-        val postData = mapOf(
-            "action" to "zarat_get_data_player_ajax",
-            "a" to paramA,
-            "b" to paramB
         )
 
-        val headers = mapOf(
-            "Origin" to mainUrl,
-            "Referer" to iframeSrc,
-            "Accept" to "*/*",
-            // Cập nhật User-Agent mới hơn
-            "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
-        )
-
-        val apiResponseText = app.post(apiUrl, data = postData, headers = headers).text
-        
-        // **THAY ĐỔI QUAN TRỌNG: Kiểm tra phản hồi rỗng**
-        if (apiResponseText.isBlank()) {
-            throw ErrorLoadingException("API đã trả về phản hồi rỗng. Điều này có thể do Cloudflare hoặc chặn IP. Hãy thử lại hoặc sử dụng VPN.")
-        }
-
-        val apiResponse = parseJson<ApiResponse>(apiResponseText)
-
-        if (apiResponse.status == true) {
-            apiResponse.data?.sources?.forEach { source ->
-                val videoUrl = source.src ?: return@forEach
-                val quality = source.label ?: "Default"
-                callback(
-                    newExtractorLink(
-                        source = this.name,
-                        name = quality,
-                        url = videoUrl,
-                        type = ExtractorLinkType.M3U8
-                    ) {
-                        this.quality = getQualityFromName(quality)
-                    }
-                )
-            }
-        } else {
-            throw ErrorLoadingException("API không trả về link hoặc có lỗi. Phản hồi: $apiResponseText")
-        }
         return true
     }
 }
