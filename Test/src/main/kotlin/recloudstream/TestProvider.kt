@@ -97,41 +97,79 @@ class HentaiHavenProvider : MainAPI() {
     }
     // --- Kết thúc các hàm giữ nguyên ---
 
-    /**
-     * Hàm loadLinks đã được đơn giản hóa hoàn toàn
-     * để tạo link M3U8 trực tiếp từ URL của tập phim.
-     */
+    // Data class để phân tích JSON chứa thông tin poster
+    private data class PlayerData(val image: String?)
+    private data class PlayerApiResponse(val data: PlayerData?)
+
     override suspend fun loadLinks(
-        data: String, // data là URL của trang tập phim
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Lấy đường dẫn từ URL, ví dụ: "/watch/oni-chichi-harem/episode-4"
-        val path = URI(data).path
+        // Bước 1 & 2: Vào trang tập phim và lấy link iframe
+        val document = app.get(data).document
+        val iframeSrc = document.selectFirst("div.player_logic_item iframe")?.attr("src")
+            ?: throw ErrorLoadingException("Không tìm thấy iframe của trình phát.")
 
-        // Biến đổi đường dẫn thành slug video
-        // 1. Bỏ "/watch/" -> "oni-chichi-harem/episode-4"
-        // 2. Thay "/episode-" bằng "-" -> "oni-chichi-harem-4"
-        // 3. Thêm "-eng" -> "oni-chichi-harem-4-eng"
-        val videoSlug = path.removePrefix("/watch/")
-            .replace("/episode-", "-")
-            .plus("-eng")
+        // Bước 3: Dùng lại logic POST request để lấy dữ liệu JSON đáng tin cậy
+        // vì đây là cách trang web hoạt động, thay vì phân tích HTML của iframe
+        val encodedData = iframeSrc.substringAfter("?data=", "")
+        if (encodedData.isBlank()) throw ErrorLoadingException("Không có tham số data trong iframe.")
 
-        // Tạo URL M3U8 cuối cùng
+        val decodedString = String(java.util.Base64.getDecoder().decode(encodedData))
+
+        val paramA: String
+        val paramB: String
+        val regex = "(.+?):[|\\]]::\\|:(.+)".toRegex()
+        val match = regex.find(decodedString)
+
+        if (match != null && match.groupValues.size >= 3) {
+            paramA = match.groupValues[1]
+            paramB = match.groupValues[2]
+        } else {
+            val parts = decodedString.split("::")
+            if (parts.size < 3) throw ErrorLoadingException("Định dạng dữ liệu không xác định: '$decodedString'")
+            paramA = parts[0]
+            paramB = parts[2]
+        }
+        
+        val apiUrl = "$mainUrl/wp-content/plugins/player-logic/api.php"
+        val postData = mapOf("action" to "zarat_get_data_player_ajax", "a" to paramA, "b" to paramB)
+        val headers = mapOf(
+            "Origin" to mainUrl,
+            "Referer" to iframeSrc,
+            "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
+        )
+
+        val apiResponseText = app.post(apiUrl, data = postData, headers = headers).text
+        if (apiResponseText.isBlank()) {
+            throw ErrorLoadingException("API trả về phản hồi rỗng, có thể do Cloudflare chặn.")
+        }
+        
+        val apiResponse = parseJson<PlayerApiResponse>(apiResponseText)
+
+        // Bước 4 & 5: Lấy URL poster và trích xuất slug
+        val posterUrl = apiResponse.data?.image
+            ?: throw ErrorLoadingException("Không tìm thấy URL poster trong phản hồi API.")
+
+        // posterUrl có dạng: https://himg.nl/images/hh/{video-slug}/poster.jpg
+        val videoSlug = posterUrl.split("/").getOrNull(5)
+            ?: throw ErrorLoadingException("Không thể trích xuất video slug từ URL poster: $posterUrl")
+
+        // Bước 6: Tạo link M3U8 cuối cùng
         val m3u8Url = "https://master-lengs.org/api/v3/hh/$videoSlug/master.m3u8"
 
         callback(
             newExtractorLink(
                 source = this.name,
-                name = this.name, // Đặt tên mặc định
+                name = this.name,
                 url = m3u8Url,
-                type = ExtractorLinkType.M3U8
+                type = ExtractorLinkType.M3U8,
             ) {
                 this.quality = getQualityFromName("Auto")
             }
         )
-
         return true
     }
 }
