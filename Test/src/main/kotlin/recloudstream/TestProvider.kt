@@ -51,14 +51,6 @@ class MotchillProvider : MainAPI() {
         TvType.Movie,
         TvType.TvSeries
     )
-    
-    // === START: THAY ĐỔI CÁC GRID TRANG CHỦ ===
-    override val mainPageOf = mainPageOf(
-        "phim-moi" to "Phim Mới",
-        "phim-bo" to "Phim Bộ",
-        "phim-le" to "Phim Lẻ"
-    )
-    // === END: THAY ĐỔI CÁC GRID TRANG CHỦ ===
 
     init {
         Security.getProvider("BC") ?: Security.addProvider(BouncyCastleProvider())
@@ -163,20 +155,9 @@ class MotchillProvider : MainAPI() {
         }
     }
     
-    // === START: VIẾT LẠI getMainPage ĐỂ HỖ TRỢ CÁC GRID MỚI ===
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val currentUrl = getBaseUrl()
-
-        val urlToFetch = when (request.data) {
-            "phim-moi" -> if (page <= 1) currentUrl else "$currentUrl/phim-moi-page-$page/"
-            "phim-bo" -> if (page <= 1) "$currentUrl/phim-bo/" else "$currentUrl/phim-bo-trang-$page/"
-            "phim-le" -> if (page <= 1) "$currentUrl/phim-le/" else "$currentUrl/phim-le-trang-$page/"
-            else -> return newHomePageResponse(emptyList())
-        }
-        
-        val document = app.get(urlToFetch, interceptor = cfKiller).document
-
-        val movies = document.select("ul.list-film li").mapNotNull { item ->
+    // Hàm helper để parse phim từ một trang HTML
+    private fun parseMoviesFromPage(document: Element): List<SearchResponse> {
+        return document.select("ul.list-film li").mapNotNull { item ->
             val titleElement = item.selectFirst("div.info h4.name a")
             val nameText = titleElement?.text()
             val yearText = item.selectFirst("div.info h4.name")?.ownText()?.trim()
@@ -207,7 +188,43 @@ class MotchillProvider : MainAPI() {
                 }
             } else null
         }
-        return newHomePageResponse(request.name, movies, hasNext = movies.isNotEmpty())
+    }
+    
+    // === START: VIẾT LẠI getMainPage ĐỂ SỬA LỖI PHÂN TRANG ===
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val currentUrl = getBaseUrl()
+        // Định nghĩa các grid trang chủ
+        val pages = listOf(
+            Triple("Phim Mới", "$currentUrl/phim-moi-page-$page/", "$currentUrl/"),
+            Triple("Phim Bộ", "$currentUrl/phim-bo-trang-$page/", "$currentUrl/phim-bo/"),
+            Triple("Phim Lẻ", "$currentUrl/phim-le-trang-$page/", "$currentUrl/phim-le/")
+        )
+
+        // Nếu là trang 1, tải tất cả các grid song song
+        if (page == 1) {
+            val homePageList = coroutineScope {
+                pages.map { (title, _, firstPageUrl) ->
+                    async {
+                        try {
+                            val document = app.get(firstPageUrl, interceptor = cfKiller).document
+                            val movies = parseMoviesFromPage(document)
+                            if (movies.isNotEmpty()) HomePageList(title, movies) else null
+                        } catch (e: Exception) {
+                            null
+                        }
+                    }
+                }.awaitAll().filterNotNull()
+            }
+            return newHomePageResponse(homePageList, hasNext = true)
+        } 
+        // Nếu là các trang sau (do app tự gọi), chỉ tải grid "Phim Mới"
+        else {
+            if (page > 10) return newHomePageResponse(emptyList()) // Giới hạn phân trang
+            val document = app.get(pages[0].second, interceptor = cfKiller).document
+            val movies = parseMoviesFromPage(document)
+            // Lưu ý: Cloudstream chỉ hỗ trợ phân trang cho grid đầu tiên trong danh sách
+            return newHomePageResponse(listOf(HomePageList(pages[0].first, movies)), hasNext = movies.isNotEmpty())
+        }
     }
     // === END: VIẾT LẠI getMainPage ===
 
@@ -217,20 +234,7 @@ class MotchillProvider : MainAPI() {
         val searchUrl = "$currentUrl/search/$searchQuery/"
         val document = app.get(searchUrl, interceptor = cfKiller).document
         
-        return document.select("ul.list-film li").mapNotNull { item ->
-            val titleElement = item.selectFirst("div.info div.name a"); val nameText = titleElement?.text(); val movieUrl = fixUrlNull(titleElement?.attr("href"))
-            val yearRegex = Regex("""\s+(\d{4})$"""); val yearMatch = nameText?.let { yearRegex.find(it) }; val year = yearMatch?.groupValues?.get(1)?.toIntOrNull()
-            val name = yearMatch?.let { nameText.removeSuffix(it.value) }?.trim() ?: nameText?.trim()
-            var posterUrl = fixUrlNull(item.selectFirst("img")?.attr("src"))
-            if (posterUrl.isNullOrEmpty() || posterUrl.contains("p21-ad-sg.ibyteimg.com")) {
-                val onerrorPoster = item.selectFirst("img")?.attr("onerror")
-                if (onerrorPoster?.contains("this.src=") == true) posterUrl = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
-            }
-            if (posterUrl.isNullOrEmpty()) posterUrl = fixUrlNull(item.selectFirst("img")?.attr("data-src"))
-            val statusText = item.selectFirst("div.status")?.text()?.trim(); val hdText = item.selectFirst("div.HD")?.text()?.trim(); val qualityString = hdText ?: statusText
-            val type = if (statusText?.contains("Tập") == true || (statusText?.contains("/") == true && statusText != "Full")) TvType.TvSeries else TvType.Movie
-            if (name != null && movieUrl != null) newMovieSearchResponse(name, movieUrl) {this.type = type; this.posterUrl = posterUrl; this.year = year; this.quality = getQualityFromSearchString(qualityString)} else null
-        }
+        return parseMoviesFromPage(document)
     }
 
     override suspend fun load(url: String): LoadResponse? {
@@ -248,14 +252,17 @@ class MotchillProvider : MainAPI() {
         val genres = document.select("dl.movie-dl dd.movie-dd.dd-cat a").mapNotNull { it.text().trim() }.toMutableList()
         document.select("div#tags div.tag-list h3 a").forEach { tagElement -> val tagText = tagElement.text().trim(); if (!genres.contains(tagText)) genres.add(tagText) }
         
+        // === START: SỬA LỖI NULL-SAFETY VÀ POSTER TRONG RECOMMENDATIONS ===
         val recommendations = document.select("div#movie-hot div.owl-carousel div.item").mapNotNull { item ->
             val recLinkTag = item.selectFirst("a")
             val recUrl = fixUrlNull(recLinkTag?.attr("href")) ?: return@mapNotNull null
-            var recName = recLinkTag.attr("title")
-            if (recName.isNullOrEmpty()) recName = item.selectFirst("div.overlay h4.name a")?.text()?.trim()
-            if (recName.isNullOrEmpty()) return@mapNotNull null
             
-            // Bước 1: Thử lấy trực tiếp
+            // Sửa lỗi null-safety
+            val recName = recLinkTag.attr("title")?.takeIf { it.isNotBlank() }
+                ?: item.selectFirst("div.overlay h4.name a")?.text()?.trim()?.takeIf { it.isNotBlank() }
+                ?: return@mapNotNull null
+
+            // ... (Logic lấy poster 2 bước giữ nguyên) ...
             var recPosterUrl = fixUrlNull(item.selectFirst("img")?.attr("src"))
             if (recPosterUrl.isNullOrEmpty() || recPosterUrl.contains("p21-ad-sg.ibyteimg.com")) {
                 val onerrorPoster = item.selectFirst("img")?.attr("onerror")
@@ -263,23 +270,20 @@ class MotchillProvider : MainAPI() {
             }
             if (recPosterUrl.isNullOrEmpty()) recPosterUrl = fixUrlNull(item.selectFirst("img")?.attr("data-src"))
             
-            // Bước 2: Nếu thất bại, vào trang chi tiết để lấy
             if (recPosterUrl.isNullOrEmpty()) {
                 try {
-                    println("$name: Poster for '$recName' not found directly, fetching from page: $recUrl")
                     val recPageDoc = app.get(recUrl, referer = url).document
                     var fallbackPoster = fixUrlNull(recPageDoc.selectFirst("div.movie-image div.poster img")?.attr("src"))
                     if (fallbackPoster.isNullOrEmpty()) {
                         fallbackPoster = fixUrlNull(recPageDoc.selectFirst("div.movie-image div.poster img")?.attr("data-src"))
                     }
                     recPosterUrl = fallbackPoster
-                } catch (e: Exception) {
-                    println("$name: Failed to fetch fallback poster for '$recName'. Error: ${e.message}")
-                }
+                } catch (_: Exception) { }
             }
             
             newMovieSearchResponse(recName, recUrl) { this.type = TvType.Movie; this.posterUrl = recPosterUrl }
         }
+        // === END: SỬA LỖI ===
         
         val episodes = ArrayList<Episode>()
         val episodeElements = document.select("div.page-tap ul li a")
