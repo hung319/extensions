@@ -24,22 +24,34 @@ class MotchillProvider : MainAPI() {
         "$mainUrl/the-loai/phim-chieu-rap" to "Phim Chiếu Rạp"
     )
 
-    // SỬA LỖI: Hàm phân tích cú pháp đã được làm cho ổn định hơn
+    // SỬA LỖI: Cập nhật hàm toSearchResponse để lấy poster chính xác
     private fun Element.toSearchResponse(): SearchResponse? {
-        // Chọn thẻ <a> bao quanh ảnh để lấy link
-        val linkElement = this.selectFirst("div.inner > a") ?: return null
-        val href = linkElement.attr("href")
-
-        // Lấy tiêu đề phim
-        val title = this.selectFirst("div.info .name a")?.text() ?: linkElement.attr("title") ?: return null
+        val href = this.selectFirst("a")?.attr("href") ?: return null
+        val title = this.selectFirst(".name a")?.text() ?: this.selectFirst("a")?.attr("title") ?: return null
         
-        // Lấy ảnh từ bên trong linkElement và dùng fixUrlNull để đảm bảo URL luôn đúng
-        val imgElement = linkElement.selectFirst("img")
-        val posterUrl = fixUrlNull(imgElement?.attr("data-src") ?: imgElement?.attr("src"))
+        val img = this.selectFirst("img")
+        var posterUrl: String? = null
 
-        // Trả về kết quả
+        // Logic lấy poster mới, ưu tiên các nguồn đáng tin cậy hơn
+        // 1. Ưu tiên lấy URL từ thuộc tính "onerror" vì đây là link dự phòng của chính trang web.
+        val onerrorAttr = img?.attr("onerror")
+        if (!onerrorAttr.isNullOrBlank()) {
+            // Dùng Regex để trích xuất URL từ chuỗi: "this.onerror=null;this.src='URL_Cần_Lấy'"
+            posterUrl = Regex("""this\.src='([^']+)""").find(onerrorAttr)?.groupValues?.get(1)
+        }
+
+        // 2. Nếu không có onerror, thử lấy từ data-src (cho lazy-loading).
+        if (posterUrl.isNullOrBlank()) {
+            posterUrl = img?.attr("data-src")
+        }
+
+        // 3. Nếu vẫn không có, lấy từ src như một phương án cuối cùng.
+        if (posterUrl.isNullOrBlank()) {
+            posterUrl = img?.attr("src")
+        }
+
         return newAnimeSearchResponse(title, href, TvType.TvSeries) {
-            this.posterUrl = posterUrl
+            this.posterUrl = fixUrlNull(posterUrl)
         }
     }
     
@@ -71,7 +83,6 @@ class MotchillProvider : MainAPI() {
         val yearText = document.selectFirst("span.title-year")?.text()?.removeSurrounding("(", ")")
         val year = yearText?.toIntOrNull()
         
-        // Lấy danh sách tập phim từ các thẻ <a> trong .page-tap
         val episodes = document.select(".page-tap li a").mapNotNull {
             val epHref = it.attr("href")
             val epName = it.attr("title")?.ifEmpty { "Tập ${it.text()}" } ?: "Tập ${it.text()}"
@@ -81,14 +92,13 @@ class MotchillProvider : MainAPI() {
             }
         }
 
-        // Nếu không có danh sách tập -> Phim lẻ
         return if (episodes.isEmpty()) {
             newMovieLoadResponse(title, url, TvType.Movie, url) {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = description
             }
-        } else { // Nếu có -> Phim bộ
+        } else {
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = poster
                 this.year = year
@@ -102,15 +112,13 @@ class MotchillProvider : MainAPI() {
 
     // Hàm quan trọng nhất: Lấy link video trực tiếp (m3u8) để phát
     override suspend fun loadLinks(
-        data: String, // Đây là URL của tập phim
+        data: String, 
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Lấy toàn bộ nội dung HTML của trang xem phim
         val response = app.get(data)
         
-        // Sử dụng Regex để tìm link video trong script của JWPlayer
         jwplayerSourceRegex.find(response.text)?.groupValues?.get(1)?.let { link ->
             callback.invoke(
                 ExtractorLink(
@@ -122,7 +130,7 @@ class MotchillProvider : MainAPI() {
                     type = ExtractorLinkType.M3U8
                 )
             )
-        } ?: return false // Nếu không tìm thấy link, báo lỗi
+        } ?: return false
 
         return true
     }
