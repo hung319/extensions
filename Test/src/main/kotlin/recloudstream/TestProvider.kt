@@ -30,13 +30,12 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 
 class MotchillProvider : MainAPI() {
-    // === START: THAY ĐỔI CHO DOMAIN ĐỘNG ===
+    // === CƠ CHẾ DOMAIN ĐỘNG ===
     override var mainUrl = "https://phimlongtieng.link" // URL cổng kiểm tra
-    private var baseUrl = mainUrl // Sẽ được cập nhật thành domain mới nhất
+    private var baseUrl = "https://motchill.tv" // Một domain mặc định phòng trường hợp kiểm tra thất bại
     private var domainCheckPerformed = false // Cờ để đảm bảo chỉ kiểm tra 1 lần
-    // === END: THAY ĐỔI CHO DOMAIN ĐỘNG ===
 
-    override var name = "Phim Đỉnh Cao"
+    override var name = "MotChill"
     override val hasMainPage = true
     override var lang = "vi"
     override val hasDownloadSupport = true
@@ -51,33 +50,41 @@ class MotchillProvider : MainAPI() {
 
     private val cfKiller = CloudflareKiller()
     
-    // Header User-Agent vẫn giữ nguyên, Origin sẽ được thêm động
     private val userAgentHeader = mapOf("User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36")
 
-    // === START: HÀM MỚI ĐỂ LẤY DOMAIN ĐỘNG ===
+    // === START: HÀM LẤY DOMAIN ĐỘNG ĐÃ SỬA LẠI ===
     private suspend fun getBaseUrl(): String {
         if (domainCheckPerformed) {
             return baseUrl
         }
         try {
-            val response = app.get(mainUrl, allowRedirects = true)
-            val finalUrl = response.url
+            // Thực hiện yêu cầu và cho phép client tự động theo dõi các chuyển hướng.
+            val response = app.get(mainUrl, allowRedirects = true, interceptor = cfKiller)
+            
+            // Lấy URL cuối cùng sau khi tất cả các chuyển hướng đã hoàn tất.
+            val finalUrl = response.url 
+            
             if (finalUrl.isNotBlank()) {
+                // Trích xuất phần protocol và host (ví dụ: "https://www.motchill97.com")
                 val newBase = URL(finalUrl).let { "${it.protocol}://${it.host}" }
-                if (newBase != baseUrl) {
-                    println("Domain changed from $baseUrl to $newBase")
+                
+                // Cập nhật baseUrl nếu tìm thấy domain mới hợp lệ và khác domain cũ.
+                if (newBase != baseUrl && (newBase.contains("motchill") || newBase.contains("motphim"))) {
+                    println("$name: Domain updated from $baseUrl to $newBase")
                     baseUrl = newBase
                 }
             }
         } catch (e: Exception) {
-            println("Failed to get new domain, using default: $baseUrl. Error: ${e.message}")
+            println("$name: Failed to get new domain, using default: $baseUrl. Error: ${e.message}")
         } finally {
+            // Đánh dấu đã kiểm tra để chỉ chạy 1 lần.
             domainCheckPerformed = true
         }
         return baseUrl
     }
-    // === END: HÀM MỚI ĐỂ LẤY DOMAIN ĐỘNG ===
+    // === END: HÀM LẤY DOMAIN ĐỘNG ĐÃ SỬA LẠI ===
 
+    // ... (Các hàm crypto, getQuality... giữ nguyên) ...
     private data class EncryptedSourceJson(
         val ciphertext: String,
         val salt: String,
@@ -123,7 +130,6 @@ class MotchillProvider : MainAPI() {
     }
 
     private fun getQualityFromSearchString(qualityString: String?): SearchQuality? {
-        // ... (Giữ nguyên)
         return when {
             qualityString == null -> null; qualityString.contains("1080") -> SearchQuality.HD
             qualityString.contains("720") -> SearchQuality.HD
@@ -139,7 +145,6 @@ class MotchillProvider : MainAPI() {
     }
 
     private fun getQualityForLink(url: String): Int {
-        // ... (Giữ nguyên)
         return when {
             url.contains("1080p", ignoreCase = true) -> Qualities.P1080.value
             url.contains("720p", ignoreCase = true) -> Qualities.P720.value
@@ -150,13 +155,18 @@ class MotchillProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val currentUrl = getBaseUrl() // Sử dụng domain động
-        if (page > 1) return newHomePageResponse(listOf(), false)
-        val document = app.get(currentUrl, interceptor = cfKiller).document
+        val currentUrl = getBaseUrl()
+        
+        val urlToFetch = if (page <= 1) {
+            currentUrl
+        } else {
+            "$currentUrl/phim-moi-page-$page/"
+        }
+        val document = app.get(urlToFetch, interceptor = cfKiller).document
+        
         val homePageList = ArrayList<HomePageList>()
 
         fun parseMovieListFromUl(element: Element?, title: String): HomePageList? {
-            // ... (Giữ nguyên)
             if (element == null) return null
             val movies = element.select("li").mapNotNull { item ->
                 val titleElement = item.selectFirst("div.info h4.name a")
@@ -210,15 +220,17 @@ class MotchillProvider : MainAPI() {
             val sectionTitle = sectionTitleText?.trim()
             if (sectionTitle != null && movieListElement != null) parseMovieListFromUl(movieListElement, sectionTitle)?.let { homePageList.add(it) }
         }
-        return newHomePageResponse(homePageList.filter { it.list.isNotEmpty() }, false)
+        
+        val homeList = homePageList.filter { it.list.isNotEmpty() }
+        return newHomePageResponse(homeList, hasNext = homeList.any { it.list.isNotEmpty() })
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val currentUrl = getBaseUrl() // Sử dụng domain động
+        val currentUrl = getBaseUrl()
         val searchQuery = query.trim().replace(Regex("\\s+"), "-").lowercase()
         val searchUrl = "$currentUrl/search/$searchQuery/"
         val document = app.get(searchUrl, interceptor = cfKiller).document
-        // ... (Giữ nguyên logic còn lại)
+        
         return document.select("ul.list-film li").mapNotNull { item ->
             val titleElement = item.selectFirst("div.info div.name a"); val nameText = titleElement?.text(); val movieUrl = fixUrlNull(titleElement?.attr("href"))
             val yearRegex = Regex("""\s+(\d{4})$"""); val yearMatch = nameText?.let { yearRegex.find(it) }; val year = yearMatch?.groupValues?.get(1)?.toIntOrNull()
@@ -236,9 +248,8 @@ class MotchillProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val currentUrl = getBaseUrl() // Sử dụng domain động
+        val currentUrl = getBaseUrl()
         val document = app.get(url, interceptor = cfKiller, referer = currentUrl).document
-        // ... (Giữ nguyên logic còn lại)
         val title = document.selectFirst("h1.movie-title span.title-1")?.text()?.trim() ?: return null
         val year = document.selectFirst("h1.movie-title span.title-year")?.text()?.replace("(", "")?.replace(")", "")?.trim()?.toIntOrNull()
         var poster = fixUrlNull(document.selectFirst("div.movie-image div.poster img")?.attr("src"))
@@ -250,17 +261,21 @@ class MotchillProvider : MainAPI() {
         val plot = document.selectFirst("div#info-film div.detail-content-main")?.text()?.trim()
         val genres = document.select("dl.movie-dl dd.movie-dd.dd-cat a").mapNotNull { it.text().trim() }.toMutableList()
         document.select("div#tags div.tag-list h3 a").forEach { tagElement -> val tagText = tagElement.text().trim(); if (!genres.contains(tagText)) genres.add(tagText) }
+        
         val recommendations = document.select("div#movie-hot div.owl-carousel div.item").mapNotNull { item ->
             val recLinkTag = item.selectFirst("a"); val recUrl = fixUrlNull(recLinkTag?.attr("href")); var recName = recLinkTag?.attr("title")
             if (recName.isNullOrEmpty()) recName = item.selectFirst("div.overlay h4.name a")?.text()?.trim()
+            
             var recPosterUrl = fixUrlNull(item.selectFirst("img")?.attr("src"))
             if (recPosterUrl.isNullOrEmpty() || recPosterUrl.contains("p21-ad-sg.ibyteimg.com")) {
                 val onerrorPoster = item.selectFirst("img")?.attr("onerror")
                 if (onerrorPoster?.contains("this.src=") == true) recPosterUrl = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
             }
             if (recPosterUrl.isNullOrEmpty()) recPosterUrl = fixUrlNull(item.selectFirst("img")?.attr("data-src"))
+            
             if (recName != null && recUrl != null) newMovieSearchResponse(recName, recUrl) {this.type = TvType.Movie; this.posterUrl = recPosterUrl} else null
         }
+        
         val episodes = ArrayList<Episode>()
         val episodeElements = document.select("div.page-tap ul li a")
         val isTvSeriesBasedOnNames = episodeElements.any { val epName = it.selectFirst("span")?.text()?.trim() ?: it.text().trim(); Regex("""Tập\s*\d+""", RegexOption.IGNORE_CASE).containsMatchIn(epName) && !epName.contains("Full", ignoreCase = true) }
@@ -322,7 +337,6 @@ class MotchillProvider : MainAPI() {
     }
     
     private suspend fun extractVideoFromPlay2Page(pageUrl: String, pageRefererForGet: String): String? {
-        // ... (Giữ nguyên)
         try {
             val pageDocument = app.get(pageUrl, interceptor = cfKiller, referer = pageRefererForGet).document
             val scriptElements = pageDocument.select("script:containsData(CryptoJSAesDecrypt)")
@@ -352,7 +366,7 @@ class MotchillProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit, 
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val currentUrl = getBaseUrl() // Sử dụng domain động
+        val currentUrl = getBaseUrl()
         val initialPageDocument = app.get(data, interceptor = cfKiller, referer = currentUrl).document
         
         val scriptElementsInitial = initialPageDocument.select("script:containsData(CryptoJSAesDecrypt)")
@@ -380,66 +394,62 @@ class MotchillProvider : MainAPI() {
         println("$name: Player Page URL (player.html): $absoluteIframeUrlPlayerPage")
         val playerPageDocument = app.get(absoluteIframeUrlPlayerPage, interceptor = cfKiller, referer = data).document
         
-        // Thêm Origin header động
         val headers = userAgentHeader + mapOf("Origin" to currentUrl)
         
-        // *** START: THAY THẾ apmap BẰNG coroutineScope/async/awaitAll ***
         return coroutineScope {
             val foundLinks = playerPageDocument.select("div#vb_server_list span.vb_btnt-primary").map { button ->
-                async { // Chạy mỗi server trong một coroutine riêng
+                async {
                     val serverName = button.text()?.trim() ?: "Unknown Server"
                     if (serverName.contains("HY3", ignoreCase = true)) {
                         println("$name: Skipping server $serverName.")
-                        return@async false // Bỏ qua và trả về false cho coroutine này
-                    }
-
-                    val onclickAttr = button.attr("onclick")
-                    val urlRegex = Regex("""vb_load_player\(\s*this\s*,\s*['"]([^'"]+)['"]\s*\)""")
-                    val serverUrlStringFromButton = urlRegex.find(onclickAttr)?.groupValues?.get(1)
-                    
-                    if (serverUrlStringFromButton.isNullOrBlank()) {
-                        return@async false
-                    }
-
-                    val fullServerUrlTarget = fixUrl(serverUrlStringFromButton)
-                    var directVideoUrl: String? = null
-
-                    if (fullServerUrlTarget.contains("play2.php")) { 
-                        directVideoUrl = extractVideoFromPlay2Page(fullServerUrlTarget, absoluteIframeUrlPlayerPage) 
-                    } else if (fullServerUrlTarget.startsWith("http")) {
-                        directVideoUrl = fullServerUrlTarget
-                    }
-
-                    if (directVideoUrl != null) {
-                        println("$name: Found source for $serverName: $directVideoUrl")
-                        val refererForLink = if (fullServerUrlTarget.contains("play2.php")) fullServerUrlTarget else absoluteIframeUrlPlayerPage
-                        
-                        callback(
-                            ExtractorLink(
-                                source = this@MotChillProvider.name,
-                                name = serverName,
-                                url = directVideoUrl,
-                                referer = refererForLink,
-                                quality = getQualityForLink(directVideoUrl),
-                                type = if (directVideoUrl.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
-                                headers = headers
-                            )
-                        )
-                        true // Trả về true vì đã tìm thấy link
+                        false
                     } else {
-                        println("$name: Failed to extract from server: $serverName ($fullServerUrlTarget)")
-                        false // Trả về false vì không tìm thấy link
+                        val onclickAttr = button.attr("onclick")
+                        val urlRegex = Regex("""vb_load_player\(\s*this\s*,\s*['"]([^'"]+)['"]\s*\)""")
+                        val serverUrlStringFromButton = urlRegex.find(onclickAttr)?.groupValues?.get(1)
+                        
+                        if (serverUrlStringFromButton.isNullOrBlank()) {
+                            false
+                        } else {
+                            val fullServerUrlTarget = fixUrl(serverUrlStringFromButton)
+                            var directVideoUrl: String? = null
+
+                            if (fullServerUrlTarget.contains("play2.php")) { 
+                                directVideoUrl = extractVideoFromPlay2Page(fullServerUrlTarget, absoluteIframeUrlPlayerPage) 
+                            } else if (fullServerUrlTarget.startsWith("http")) {
+                                directVideoUrl = fullServerUrlTarget
+                            }
+
+                            if (directVideoUrl != null) {
+                                println("$name: Found source for $serverName: $directVideoUrl")
+                                val refererForLink = if (fullServerUrlTarget.contains("play2.php")) fullServerUrlTarget else absoluteIframeUrlPlayerPage
+                                
+                                callback(
+                                    ExtractorLink(
+                                        source = this@MotChillProvider.name,
+                                        name = serverName,
+                                        url = directVideoUrl,
+                                        referer = refererForLink,
+                                        quality = getQualityForLink(directVideoUrl),
+                                        type = if (directVideoUrl.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
+                                        headers = headers
+                                    )
+                                )
+                                true
+                            } else {
+                                println("$name: Failed to extract from server: $serverName ($fullServerUrlTarget)")
+                                false
+                            }
+                        }
                     }
                 }
-            }.awaitAll() // Đợi tất cả các coroutine hoàn thành
+            }.awaitAll()
             
-            foundLinks.any { it } // Trả về true nếu bất kỳ coroutine nào trả về true
+            foundLinks.any { it }
         }
-        // *** END: THAY THẾ ***
     }
     
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
-        // ... (Giữ nguyên)
         return object : Interceptor {
             override fun intercept(chain: Interceptor.Chain): Response {
                 val request = chain.request()
@@ -453,7 +463,7 @@ class MotchillProvider : MainAPI() {
                             val newBody = fixedBytes.toResponseBody(body.contentType())
                             return response.newBuilder().body(newBody).build()
                         } catch (e: Exception) {
-                            // Bỏ qua và trả về response gốc nếu có lỗi
+                            // Bỏ qua
                         }
                     }
                 }
@@ -464,7 +474,6 @@ class MotchillProvider : MainAPI() {
 }
 
 private fun skipByteError(responseBody: ResponseBody): ByteArray {
-    // ... (Giữ nguyên)
     val source = responseBody.source()
     source.request(Long.MAX_VALUE)
     val buffer = source.buffer.clone()
