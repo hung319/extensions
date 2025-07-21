@@ -20,7 +20,7 @@ import java.security.Security
 import java.util.Base64
 import org.bouncycastle.jce.provider.BouncyCastleProvider
 
-class MotChillProvider : MainAPI() {
+class MotchillProvider : MainAPI() {
     override var mainUrl = "https://www.motchill97.com"
     override var name = "MotChill"
     override val hasMainPage = true
