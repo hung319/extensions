@@ -426,7 +426,7 @@ class MotchillProvider : MainAPI() {
                                 
                                 callback(
                                     ExtractorLink(
-                                        source = this@MotChillProvider.name,
+                                        source = name,
                                         name = serverName,
                                         url = directVideoUrl,
                                         referer = refererForLink,
