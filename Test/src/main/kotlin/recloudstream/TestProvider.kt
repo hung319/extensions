@@ -6,7 +6,6 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.utils.Qualities
-// import com.lagradost.cloudstream3.utils.M3u8Helper2 // Không còn sử dụng
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.SearchQuality
@@ -20,14 +19,20 @@ import java.security.Security
 import java.util.Base64
 import org.bouncycastle.jce.provider.BouncyCastleProvider
 
-// *** THÊM CÁC IMPORT CẦN THIẾT CHO INTERCEPTOR ***
+// Imports cho Interceptor và xử lý URL động
 import okhttp3.Interceptor
 import okhttp3.Response
 import okhttp3.ResponseBody
 import okhttp3.ResponseBody.Companion.toResponseBody
+import java.net.URL
 
 class MotchillProvider : MainAPI() {
-    override var mainUrl = "https://www.motchill97.com"
+    // === START: THAY ĐỔI CHO DOMAIN ĐỘNG ===
+    override var mainUrl = "https://phimlongtieng.link" // URL cổng kiểm tra
+    private var baseUrl = mainUrl // Sẽ được cập nhật thành domain mới nhất
+    private var domainCheckPerformed = false // Cờ để đảm bảo chỉ kiểm tra 1 lần
+    // === END: THAY ĐỔI CHO DOMAIN ĐỘNG ===
+
     override var name = "MotChill"
     override val hasMainPage = true
     override var lang = "vi"
@@ -42,11 +47,33 @@ class MotchillProvider : MainAPI() {
     }
 
     private val cfKiller = CloudflareKiller()
+    
+    // Header User-Agent vẫn giữ nguyên, Origin sẽ được thêm động
+    private val userAgentHeader = mapOf("User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36")
 
-    private val defaultHeaders = mapOf(
-        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36",
-        "Origin" to mainUrl
-    )
+    // === START: HÀM MỚI ĐỂ LẤY DOMAIN ĐỘNG ===
+    private suspend fun getBaseUrl(): String {
+        if (domainCheckPerformed) {
+            return baseUrl
+        }
+        try {
+            val response = app.get(mainUrl, allowRedirects = true)
+            val finalUrl = response.url
+            if (finalUrl.isNotBlank()) {
+                val newBase = URL(finalUrl).let { "${it.protocol}://${it.host}" }
+                if (newBase != baseUrl) {
+                    println("Domain changed from $baseUrl to $newBase")
+                    baseUrl = newBase
+                }
+            }
+        } catch (e: Exception) {
+            println("Failed to get new domain, using default: $baseUrl. Error: ${e.message}")
+        } finally {
+            domainCheckPerformed = true
+        }
+        return baseUrl
+    }
+    // === END: HÀM MỚI ĐỂ LẤY DOMAIN ĐỘNG ===
 
     private data class EncryptedSourceJson(
         val ciphertext: String,
@@ -93,6 +120,7 @@ class MotchillProvider : MainAPI() {
     }
 
     private fun getQualityFromSearchString(qualityString: String?): SearchQuality? {
+        // ... (Giữ nguyên)
         return when {
             qualityString == null -> null; qualityString.contains("1080") -> SearchQuality.HD
             qualityString.contains("720") -> SearchQuality.HD
@@ -108,6 +136,7 @@ class MotchillProvider : MainAPI() {
     }
 
     private fun getQualityForLink(url: String): Int {
+        // ... (Giữ nguyên)
         return when {
             url.contains("1080p", ignoreCase = true) -> Qualities.P1080.value
             url.contains("720p", ignoreCase = true) -> Qualities.P720.value
@@ -118,12 +147,13 @@ class MotchillProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // ... (Giữ nguyên)
+        val currentUrl = getBaseUrl() // Sử dụng domain động
         if (page > 1) return newHomePageResponse(listOf(), false)
-        val document = app.get(mainUrl, interceptor = cfKiller).document
+        val document = app.get(currentUrl, interceptor = cfKiller).document
         val homePageList = ArrayList<HomePageList>()
 
         fun parseMovieListFromUl(element: Element?, title: String): HomePageList? {
+            // ... (Giữ nguyên)
             if (element == null) return null
             val movies = element.select("li").mapNotNull { item ->
                 val titleElement = item.selectFirst("div.info h4.name a")
@@ -181,10 +211,11 @@ class MotchillProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        // ... (Giữ nguyên)
+        val currentUrl = getBaseUrl() // Sử dụng domain động
         val searchQuery = query.trim().replace(Regex("\\s+"), "-").lowercase()
-        val searchUrl = "$mainUrl/search/$searchQuery/"
+        val searchUrl = "$currentUrl/search/$searchQuery/"
         val document = app.get(searchUrl, interceptor = cfKiller).document
+        // ... (Giữ nguyên logic còn lại)
         return document.select("ul.list-film li").mapNotNull { item ->
             val titleElement = item.selectFirst("div.info div.name a"); val nameText = titleElement?.text(); val movieUrl = fixUrlNull(titleElement?.attr("href"))
             val yearRegex = Regex("""\s+(\d{4})$"""); val yearMatch = nameText?.let { yearRegex.find(it) }; val year = yearMatch?.groupValues?.get(1)?.toIntOrNull()
@@ -202,8 +233,9 @@ class MotchillProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        // ... (Giữ nguyên)
-        val document = app.get(url, interceptor = cfKiller).document
+        val currentUrl = getBaseUrl() // Sử dụng domain động
+        val document = app.get(url, interceptor = cfKiller, referer = currentUrl).document
+        // ... (Giữ nguyên logic còn lại)
         val title = document.selectFirst("h1.movie-title span.title-1")?.text()?.trim() ?: return null
         val year = document.selectFirst("h1.movie-title span.title-year")?.text()?.replace("(", "")?.replace(")", "")?.trim()?.toIntOrNull()
         var poster = fixUrlNull(document.selectFirst("div.movie-image div.poster img")?.attr("src"))
@@ -285,8 +317,9 @@ class MotchillProvider : MainAPI() {
             }
         }
     }
-
+    
     private suspend fun extractVideoFromPlay2Page(pageUrl: String, pageRefererForGet: String): String? {
+        // ... (Giữ nguyên)
         try {
             val pageDocument = app.get(pageUrl, interceptor = cfKiller, referer = pageRefererForGet).document
             val scriptElements = pageDocument.select("script:containsData(CryptoJSAesDecrypt)")
@@ -316,8 +349,9 @@ class MotchillProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit, 
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // ... (Logic không thay đổi)
-        val initialPageDocument = app.get(data, interceptor = cfKiller, referer = mainUrl).document
+        val currentUrl = getBaseUrl() // Sử dụng domain động
+        val initialPageDocument = app.get(data, interceptor = cfKiller, referer = currentUrl).document
+        // ... (Logic còn lại giữ nguyên)
         val scriptElementsInitial = initialPageDocument.select("script:containsData(CryptoJSAesDecrypt)")
         var iframeUrlPlayerPage: String? = null 
 
@@ -343,6 +377,9 @@ class MotchillProvider : MainAPI() {
         println("$name: Player Page URL (player.html): $absoluteIframeUrlPlayerPage")
         val playerPageDocument = app.get(absoluteIframeUrlPlayerPage, interceptor = cfKiller, referer = data).document
         var foundAnyLink = false
+        
+        // Thêm Origin header động
+        val headers = userAgentHeader + mapOf("Origin" to currentUrl)
 
         playerPageDocument.select("div#vb_server_list span.vb_btnt-primary").apmap { button ->
             val serverName = button.text()?.trim() ?: "Unknown Server"
@@ -377,7 +414,7 @@ class MotchillProvider : MainAPI() {
                             referer = refererForLink,
                             quality = getQualityForLink(directVideoUrl),
                             type = if (directVideoUrl.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
-                            headers = defaultHeaders
+                            headers = headers // Sử dụng headers động
                         )
                     )
                     foundAnyLink = true
@@ -389,18 +426,14 @@ class MotchillProvider : MainAPI() {
         return foundAnyLink
     }
     
-    // *** BẮT ĐẦU THÊM MỚI ***
-    /**
-     * Interceptor để sửa lỗi phát video từ một số server.
-     */
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
+        // ... (Giữ nguyên)
         return object : Interceptor {
             override fun intercept(chain: Interceptor.Chain): Response {
                 val request = chain.request()
                 val response = chain.proceed(request)
                 val url = request.url.toString()
 
-                // Điều kiện kiểm tra URL segment theo yêu cầu của bạn
                 if (url.contains("api.cloudbeta.win") || url.contains(".tiktokcdn.")) {
                     response.body?.let { body ->
                         try {
@@ -416,15 +449,10 @@ class MotchillProvider : MainAPI() {
             }
         }
     }
-    // *** KẾT THÚC THÊM MỚI ***
 }
 
-// *** BẮT ĐẦU THÊM MỚI ***
-/**
- * Hàm phụ trợ cho interceptor, đặt ở ngoài class.
- * Dùng để sửa lỗi video bằng cách bỏ qua các byte lỗi ở đầu.
- */
 private fun skipByteError(responseBody: ResponseBody): ByteArray {
+    // ... (Giữ nguyên)
     val source = responseBody.source()
     source.request(Long.MAX_VALUE)
     val buffer = source.buffer.clone()
@@ -442,4 +470,3 @@ private fun skipByteError(responseBody: ResponseBody): ByteArray {
     }
     return if (start > 0) byteArray.copyOfRange(start, byteArray.size) else byteArray
 }
-// *** KẾT THÚC THÊM MỚI ***
