@@ -24,13 +24,20 @@ class MotchillProvider : MainAPI() {
         "$mainUrl/the-loai/phim-chieu-rap" to "Phim Chiếu Rạp"
     )
 
-    // Hàm phân tích cú pháp cho mỗi item phim
+    // SỬA LỖI: Hàm phân tích cú pháp đã được làm cho ổn định hơn
     private fun Element.toSearchResponse(): SearchResponse? {
-        val linkElement = this.selectFirst("a") ?: return null
+        // Chọn thẻ <a> bao quanh ảnh để lấy link
+        val linkElement = this.selectFirst("div.inner > a") ?: return null
         val href = linkElement.attr("href")
-        val title = this.selectFirst(".name a")?.text() ?: linkElement.attr("title") ?: return null
-        val posterUrl = this.selectFirst("img")?.attr("data-src") ?: this.selectFirst("img")?.attr("src")
 
+        // Lấy tiêu đề phim
+        val title = this.selectFirst("div.info .name a")?.text() ?: linkElement.attr("title") ?: return null
+        
+        // Lấy ảnh từ bên trong linkElement và dùng fixUrlNull để đảm bảo URL luôn đúng
+        val imgElement = linkElement.selectFirst("img")
+        val posterUrl = fixUrlNull(imgElement?.attr("data-src") ?: imgElement?.attr("src"))
+
+        // Trả về kết quả
         return newAnimeSearchResponse(title, href, TvType.TvSeries) {
             this.posterUrl = posterUrl
         }
@@ -69,7 +76,6 @@ class MotchillProvider : MainAPI() {
             val epHref = it.attr("href")
             val epName = it.attr("title")?.ifEmpty { "Tập ${it.text()}" } ?: "Tập ${it.text()}"
             
-            // SỬA LỖI: Sử dụng hàm newEpisode thay vì constructor đã lỗi thời
             newEpisode(epHref) {
                 this.name = epName
             }
