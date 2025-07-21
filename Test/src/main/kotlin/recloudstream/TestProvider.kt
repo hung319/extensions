@@ -55,8 +55,6 @@ class MotchillProvider : MainAPI() {
     // === Cấu trúc trang chủ ===
     override val mainPage = mainPageOf(
         "phim-moi" to "Phim Mới",
-        "phim-bo" to "Phim Bộ",
-        "phim-le" to "Phim Lẻ"
     )
 
     init {
@@ -201,8 +199,6 @@ class MotchillProvider : MainAPI() {
 
         val urlToFetch = when (request.data) {
             "phim-moi" -> if (page <= 1) currentUrl else "$currentUrl/phim-moi-page-$page/"
-            "phim-bo" -> if (page <= 1) "$currentUrl/phim-bo/" else "$currentUrl/phim-bo-trang-$page/"
-            "phim-le" -> if (page <= 1) "$currentUrl/phim-le/" else "$currentUrl/phim-le-trang-$page/"
             else -> return newHomePageResponse(emptyList())
         }
         
