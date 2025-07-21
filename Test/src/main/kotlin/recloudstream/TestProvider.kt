@@ -19,12 +19,15 @@ import java.security.Security
 import java.util.Base64
 import org.bouncycastle.jce.provider.BouncyCastleProvider
 
-// Imports cho Interceptor và xử lý URL động
+// Imports cho Interceptor, xử lý URL động, và coroutines
 import okhttp3.Interceptor
 import okhttp3.Response
 import okhttp3.ResponseBody
 import okhttp3.ResponseBody.Companion.toResponseBody
 import java.net.URL
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 
 class MotchillProvider : MainAPI() {
     // === START: THAY ĐỔI CHO DOMAIN ĐỘNG ===
@@ -33,7 +36,7 @@ class MotchillProvider : MainAPI() {
     private var domainCheckPerformed = false // Cờ để đảm bảo chỉ kiểm tra 1 lần
     // === END: THAY ĐỔI CHO DOMAIN ĐỘNG ===
 
-    override var name = "MotChill"
+    override var name = "Phim Đỉnh Cao"
     override val hasMainPage = true
     override var lang = "vi"
     override val hasDownloadSupport = true
@@ -351,7 +354,7 @@ class MotchillProvider : MainAPI() {
     ): Boolean {
         val currentUrl = getBaseUrl() // Sử dụng domain động
         val initialPageDocument = app.get(data, interceptor = cfKiller, referer = currentUrl).document
-        // ... (Logic còn lại giữ nguyên)
+        
         val scriptElementsInitial = initialPageDocument.select("script:containsData(CryptoJSAesDecrypt)")
         var iframeUrlPlayerPage: String? = null 
 
@@ -376,54 +379,63 @@ class MotchillProvider : MainAPI() {
         val absoluteIframeUrlPlayerPage = fixUrl(iframeUrlPlayerPage) 
         println("$name: Player Page URL (player.html): $absoluteIframeUrlPlayerPage")
         val playerPageDocument = app.get(absoluteIframeUrlPlayerPage, interceptor = cfKiller, referer = data).document
-        var foundAnyLink = false
         
         // Thêm Origin header động
         val headers = userAgentHeader + mapOf("Origin" to currentUrl)
+        
+        // *** START: THAY THẾ apmap BẰNG coroutineScope/async/awaitAll ***
+        return coroutineScope {
+            val foundLinks = playerPageDocument.select("div#vb_server_list span.vb_btnt-primary").map { button ->
+                async { // Chạy mỗi server trong một coroutine riêng
+                    val serverName = button.text()?.trim() ?: "Unknown Server"
+                    if (serverName.contains("HY3", ignoreCase = true)) {
+                        println("$name: Skipping server $serverName.")
+                        return@async false // Bỏ qua và trả về false cho coroutine này
+                    }
 
-        playerPageDocument.select("div#vb_server_list span.vb_btnt-primary").apmap { button ->
-            val serverName = button.text()?.trim() ?: "Unknown Server"
-            if (serverName.contains("HY3", ignoreCase = true)) {
-                 println("$name: Skipping server $serverName.")
-                return@apmap
-            }
-
-            val onclickAttr = button.attr("onclick")
-            val urlRegex = Regex("""vb_load_player\(\s*this\s*,\s*['"]([^'"]+)['"]\s*\)""")
-            val serverUrlStringFromButton = urlRegex.find(onclickAttr)?.groupValues?.get(1)
-
-            if (!serverUrlStringFromButton.isNullOrBlank()) {
-                val fullServerUrlTarget = fixUrl(serverUrlStringFromButton)
-                var directVideoUrl: String? = null
-
-                if (fullServerUrlTarget.contains("play2.php")) { 
-                    directVideoUrl = extractVideoFromPlay2Page(fullServerUrlTarget, absoluteIframeUrlPlayerPage) 
-                } else if (fullServerUrlTarget.startsWith("http")) { // Chấp nhận mọi link http
-                    directVideoUrl = fullServerUrlTarget
-                }
-
-                if (directVideoUrl != null) {
-                    println("$name: Found source for $serverName: $directVideoUrl")
-                    val refererForLink = if (fullServerUrlTarget.contains("play2.php")) fullServerUrlTarget else absoluteIframeUrlPlayerPage
+                    val onclickAttr = button.attr("onclick")
+                    val urlRegex = Regex("""vb_load_player\(\s*this\s*,\s*['"]([^'"]+)['"]\s*\)""")
+                    val serverUrlStringFromButton = urlRegex.find(onclickAttr)?.groupValues?.get(1)
                     
-                    callback(
-                        ExtractorLink(
-                            source = this.name,
-                            name = serverName,
-                            url = directVideoUrl,
-                            referer = refererForLink,
-                            quality = getQualityForLink(directVideoUrl),
-                            type = if (directVideoUrl.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
-                            headers = headers // Sử dụng headers động
+                    if (serverUrlStringFromButton.isNullOrBlank()) {
+                        return@async false
+                    }
+
+                    val fullServerUrlTarget = fixUrl(serverUrlStringFromButton)
+                    var directVideoUrl: String? = null
+
+                    if (fullServerUrlTarget.contains("play2.php")) { 
+                        directVideoUrl = extractVideoFromPlay2Page(fullServerUrlTarget, absoluteIframeUrlPlayerPage) 
+                    } else if (fullServerUrlTarget.startsWith("http")) {
+                        directVideoUrl = fullServerUrlTarget
+                    }
+
+                    if (directVideoUrl != null) {
+                        println("$name: Found source for $serverName: $directVideoUrl")
+                        val refererForLink = if (fullServerUrlTarget.contains("play2.php")) fullServerUrlTarget else absoluteIframeUrlPlayerPage
+                        
+                        callback(
+                            ExtractorLink(
+                                source = this@MotChillProvider.name,
+                                name = serverName,
+                                url = directVideoUrl,
+                                referer = refererForLink,
+                                quality = getQualityForLink(directVideoUrl),
+                                type = if (directVideoUrl.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
+                                headers = headers
+                            )
                         )
-                    )
-                    foundAnyLink = true
-                } else {
-                     println("$name: Failed to extract from server: $serverName ($fullServerUrlTarget)")
+                        true // Trả về true vì đã tìm thấy link
+                    } else {
+                        println("$name: Failed to extract from server: $serverName ($fullServerUrlTarget)")
+                        false // Trả về false vì không tìm thấy link
+                    }
                 }
-            }
+            }.awaitAll() // Đợi tất cả các coroutine hoàn thành
+            
+            foundLinks.any { it } // Trả về true nếu bất kỳ coroutine nào trả về true
         }
-        return foundAnyLink
+        // *** END: THAY THẾ ***
     }
     
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
