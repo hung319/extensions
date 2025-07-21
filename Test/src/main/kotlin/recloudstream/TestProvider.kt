@@ -1,120 +1,126 @@
-package com.lagradost.cloudstream3.movieprovider
+package recloudstream
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.ExtractorApiKt.newEpisode
-import com.lagradost.cloudstream3.utils.ExtractorApiKt.newMovieLoadResponse
-import com.lagradost.cloudstream3.utils.ExtractorApiKt.newMovieSearchResponse
-import com.lagradost.cloudstream3.utils.ExtractorApiKt.newTvSeriesLoadResponse
+import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-import java.util.ArrayList
 
+// Định nghĩa lớp Provider chính, kế thừa từ MainAPI
 class MotchillProvider : MainAPI() {
-    override var mainUrl = "https://www.motchill97.com"
+    // Ghi đè các thuộc tính cơ bản của provider
     override var name = "Motchill"
-    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
+    override var mainUrl = "https://www.motchill97.com"
     override var lang = "vi"
     override val hasMainPage = true
+    override val supportedTypes = setOf(
+        TvType.Movie,
+        TvType.TvSeries
+    )
 
+    // Hàm lấy danh sách các mục trên trang chính (Phim mới, Phim lẻ, Phim bộ, v.v.)
+    override val mainPage = mainPageOf(
+        "$mainUrl/phim-moi" to "Phim Mới Cập Nhật",
+        "$mainUrl/phim-le" to "Phim Lẻ",
+        "$mainUrl/phim-bo" to "Phim Bộ",
+        "$mainUrl/the-loai/phim-chieu-rap" to "Phim Chiếu Rạp"
+    )
+
+    // Hàm phân tích cú pháp cho mỗi item phim
+    // Dựa trên cấu trúc <ul class="list-film"> <li> <div class="inner">...
     private fun Element.toSearchResponse(): SearchResponse? {
-        val link = this.selectFirst("a")?.attr("href") ?: return null
-        val title = this.selectFirst("h4.name a")?.text() ?: this.selectFirst(".name a")?.text() ?: return null
-        val posterUrl = this.selectFirst("img")?.attr("src")
+        // Lấy thẻ <a> chính chứa link và tiêu đề
+        val linkElement = this.selectFirst("a") ?: return null
+        val href = linkElement.attr("href")
+        // Lấy tiêu đề từ thẻ div.name bên trong
+        val title = this.selectFirst(".name a")?.text() ?: linkElement.attr("title") ?: return null
+        // Ưu tiên lấy ảnh lazy-load từ "data-src", nếu không có thì lấy "src"
+        val posterUrl = this.selectFirst("img")?.attr("data-src") ?: this.selectFirst("img")?.attr("src")
 
-        return newMovieSearchResponse(title, link) {
+        return newAnimeSearchResponse(title, href, TvType.TvSeries) {
             this.posterUrl = posterUrl
         }
     }
-
+    
+    // Hàm thực hiện tải trang chính và phân tích cú pháp
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get(mainUrl).document
-        val homePageList = ArrayList<HomePageList>()
-
-        document.select("div.heading-phim").forEach { heading ->
-            val title = heading.selectFirst("h2 a span")?.text()?.trim() ?: return@forEach
-            val filmList = heading.nextElementSibling()?.select("ul.list-film li")
-            
-            if (!filmList.isNullOrEmpty()) {
-                val movies = filmList.mapNotNull { it.toSearchResponse() }
-                if (movies.isNotEmpty()) {
-                    homePageList.add(HomePageList(title, movies))
-                }
-            }
+        val document = app.get(request.data).document
+        val home = document.select("ul.list-film > li").mapNotNull {
+            it.toSearchResponse()
         }
-        
-        return HomePageResponse(homePageList)
+        return newHomePageResponse(request.name, home)
     }
 
+    // Hàm thực hiện tìm kiếm phim
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/search/$query/"
+        val searchUrl = "$mainUrl/tim-kiem/$query"
         val document = app.get(searchUrl).document
-
-        return document.select("ul.list-film li").mapNotNull {
-            val link = it.selectFirst("a")?.attr("href") ?: return@mapNotNull null
-            val title = it.selectFirst("div.name a")?.text() ?: return@mapNotNull null
-            val posterUrl = it.selectFirst("img")?.attr("src")
-
-            newMovieSearchResponse(title, link) {
-                this.posterUrl = posterUrl
-            }
+        return document.select("ul.list-film > li").mapNotNull {
+            it.toSearchResponse()
         }
     }
 
+    // Hàm tải thông tin chi tiết của một phim (hoặc phim bộ)
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
-        val title = document.selectFirst("h1.movie-title span.title-1")?.text()?.trim() ?: "Loading..."
-        val poster = document.selectFirst("div.poster img")?.attr("src")
-        val plot = document.selectFirst("div.detail-content-main")?.text()?.trim()
-        val yearText = document.selectFirst("span.title-year")?.text()?.filter { it.isDigit() }
+        val title = document.selectFirst("h1.movie-title .title-1")?.text()?.trim() ?: "Không tìm thấy tiêu đề"
+        val poster = document.selectFirst(".poster img")?.attr("src")
+        val description = document.selectFirst(".detail-content-main")?.text()?.trim()
+        val yearText = document.selectFirst("span.title-year")?.text()?.removeSurrounding("(", ")")
         val year = yearText?.toIntOrNull()
-
-        val episodes = document.select("div.page-tap ul li a").mapNotNull { epElement ->
-            val epUrl = epElement.attr("href") ?: return@mapNotNull null
-            val epName = "Tập ${epElement.selectFirst("span")?.text()?.trim()}"
-            newEpisode(epUrl) {
-                this.name = epName
-            }
+        
+        // Lấy danh sách tập phim từ các thẻ <a> trong .page-tap
+        val episodes = document.select(".page-tap li a").mapNotNull {
+            val epHref = it.attr("href")
+            val epName = it.attr("title")?.ifEmpty { "Tập ${it.text()}" } ?: "Tập ${it.text()}"
+            Episode(
+                data = epHref,
+                name = epName
+            )
         }
 
-        return if (episodes.size > 1) {
+        // Nếu không có danh sách tập -> Phim lẻ
+        return if (episodes.isEmpty()) {
+            newMovieLoadResponse(title, url, TvType.Movie, url) {
+                this.posterUrl = poster
+                this.year = year
+                this.plot = description
+            }
+        } else { // Nếu có -> Phim bộ
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = poster
-                this.plot = plot
                 this.year = year
-            }
-        } else {
-            newMovieLoadResponse(title, url, TvType.Movie, episodes.firstOrNull()?.data) {
-                this.posterUrl = poster
-                this.plot = plot
-                this.year = year
+                this.plot = description
             }
         }
     }
 
+    // Regex để tìm link video .m3u8 trong mã nguồn của trang
+    private val jwplayerSourceRegex = Regex("""sources:\s*\[\s*\{file:\s*"(.*?m3u8.*?)"""")
+
+    // Hàm quan trọng nhất: Lấy link video trực tiếp (m3u8) để phát
     override suspend fun loadLinks(
-        data: String,
+        data: String, // Đây là URL của tập phim
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val episodeDocument = app.get(data).document
-        val scriptContent = episodeDocument.select("script").html()
-        val videoUrl = Regex("""sources:\s*\[\{file:\s*"(.*?)"''').find(scriptContent)?.groupValues?.get(1)
-
-        if (videoUrl != null) {
-            callback(
+        // Lấy toàn bộ nội dung HTML của trang xem phim
+        val response = app.get(data)
+        
+        // Sử dụng Regex để tìm link video trong script của JWPlayer
+        jwplayerSourceRegex.find(response.text)?.groupValues?.get(1)?.let { link ->
+            callback.invoke(
                 ExtractorLink(
                     source = this.name,
-                    name = "Motchill Server",
-                    url = videoUrl,
-                    referer = data,
+                    name = this.name,
+                    url = link,
+                    referer = "$mainUrl/",
                     quality = Qualities.Unknown.value,
-                    type = ExtractorLinkType.M3U8
+                    type = ExtractorLinkType.M3U8 // Đã cập nhật theo API mới
                 )
             )
-            return true
-        }
+        } ?: return false // Nếu không tìm thấy link, báo lỗi
 
-        return false
+        return true
     }
 }
