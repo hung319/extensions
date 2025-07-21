@@ -53,7 +53,7 @@ class MotchillProvider : MainAPI() {
     )
     
     // === Cấu trúc trang chủ ===
-    override val mainPageOf = mainPageOf(
+    override val mainPage = mainPageOf(
         "phim-moi" to "Phim Mới",
         "phim-bo" to "Phim Bộ",
         "phim-le" to "Phim Lẻ"
