@@ -25,14 +25,10 @@ class MotchillProvider : MainAPI() {
     )
 
     // Hàm phân tích cú pháp cho mỗi item phim
-    // Dựa trên cấu trúc <ul class="list-film"> <li> <div class="inner">...
     private fun Element.toSearchResponse(): SearchResponse? {
-        // Lấy thẻ <a> chính chứa link và tiêu đề
         val linkElement = this.selectFirst("a") ?: return null
         val href = linkElement.attr("href")
-        // Lấy tiêu đề từ thẻ div.name bên trong
         val title = this.selectFirst(".name a")?.text() ?: linkElement.attr("title") ?: return null
-        // Ưu tiên lấy ảnh lazy-load từ "data-src", nếu không có thì lấy "src"
         val posterUrl = this.selectFirst("img")?.attr("data-src") ?: this.selectFirst("img")?.attr("src")
 
         return newAnimeSearchResponse(title, href, TvType.TvSeries) {
@@ -72,10 +68,11 @@ class MotchillProvider : MainAPI() {
         val episodes = document.select(".page-tap li a").mapNotNull {
             val epHref = it.attr("href")
             val epName = it.attr("title")?.ifEmpty { "Tập ${it.text()}" } ?: "Tập ${it.text()}"
-            Episode(
-                data = epHref,
-                name = epName
-            )
+            
+            // SỬA LỖI: Sử dụng hàm newEpisode thay vì constructor đã lỗi thời
+            newEpisode(epHref) {
+                this.name = epName
+            }
         }
 
         // Nếu không có danh sách tập -> Phim lẻ
@@ -116,7 +113,7 @@ class MotchillProvider : MainAPI() {
                     url = link,
                     referer = "$mainUrl/",
                     quality = Qualities.Unknown.value,
-                    type = ExtractorLinkType.M3U8 // Đã cập nhật theo API mới
+                    type = ExtractorLinkType.M3U8
                 )
             )
         } ?: return false // Nếu không tìm thấy link, báo lỗi
