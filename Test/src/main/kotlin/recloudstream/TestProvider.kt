@@ -6,7 +6,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.M3u8Helper2
+// import com.lagradost.cloudstream3.utils.M3u8Helper2 // Không còn sử dụng
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.SearchQuality
@@ -19,6 +19,12 @@ import javax.crypto.spec.SecretKeySpec
 import java.security.Security
 import java.util.Base64
 import org.bouncycastle.jce.provider.BouncyCastleProvider
+
+// *** THÊM CÁC IMPORT CẦN THIẾT CHO INTERCEPTOR ***
+import okhttp3.Interceptor
+import okhttp3.Response
+import okhttp3.ResponseBody
+import okhttp3.ResponseBody.Companion.toResponseBody
 
 class MotchillProvider : MainAPI() {
     override var mainUrl = "https://www.motchill97.com"
@@ -112,6 +118,7 @@ class MotchillProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        // ... (Giữ nguyên)
         if (page > 1) return newHomePageResponse(listOf(), false)
         val document = app.get(mainUrl, interceptor = cfKiller).document
         val homePageList = ArrayList<HomePageList>()
@@ -174,6 +181,7 @@ class MotchillProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
+        // ... (Giữ nguyên)
         val searchQuery = query.trim().replace(Regex("\\s+"), "-").lowercase()
         val searchUrl = "$mainUrl/search/$searchQuery/"
         val document = app.get(searchUrl, interceptor = cfKiller).document
@@ -194,6 +202,7 @@ class MotchillProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        // ... (Giữ nguyên)
         val document = app.get(url, interceptor = cfKiller).document
         val title = document.selectFirst("h1.movie-title span.title-1")?.text()?.trim() ?: return null
         val year = document.selectFirst("h1.movie-title span.title-year")?.text()?.replace("(", "")?.replace(")", "")?.trim()?.toIntOrNull()
@@ -277,50 +286,28 @@ class MotchillProvider : MainAPI() {
         }
     }
 
-    private suspend fun extractAndSubmitM3u8(
-        sourceName: String,
-        targetUrl: String,
-        referer: String,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        var directVideoUrl: String? = null
-        if (targetUrl.contains("play2.php")) {
-            try {
-                println("$name: Extracting video from play2 page: $targetUrl (GET Referer: $referer)")
-                val pageDocument = app.get(targetUrl, interceptor = cfKiller, referer = referer).document
-                val scriptElements = pageDocument.select("script:containsData(CryptoJSAesDecrypt)")
-                for (scriptElement in scriptElements) {
-                    val scriptContent = scriptElement.html()
-                    val trailerRegex = Regex("""function\s+trailer\s*\(\s*\)\s*\{\s*return\s+CryptoJSAesDecrypt\(\s*'Encrypt'\s*,\s*`([^`]*)`\s*\)\s*;\s*\}""")
-                    val matchResult = trailerRegex.find(scriptContent)
-                    if (matchResult != null) {
-                        val encryptedJsonString = matchResult.groupValues[1]
-                        if (encryptedJsonString.startsWith("{") && encryptedJsonString.endsWith("}")) {
-                            directVideoUrl = cryptoJSAesDecrypt("Encrypt", encryptedJsonString)
-                            if (directVideoUrl != null) break
+    private suspend fun extractVideoFromPlay2Page(pageUrl: String, pageRefererForGet: String): String? {
+        try {
+            val pageDocument = app.get(pageUrl, interceptor = cfKiller, referer = pageRefererForGet).document
+            val scriptElements = pageDocument.select("script:containsData(CryptoJSAesDecrypt)")
+            for (scriptElement in scriptElements) {
+                val scriptContent = scriptElement.html()
+                val trailerRegex = Regex("""function\s+trailer\s*\(\s*\)\s*\{\s*return\s+CryptoJSAesDecrypt\(\s*'Encrypt'\s*,\s*`([^`]*)`\s*\)\s*;\s*\}""")
+                val matchResult = trailerRegex.find(scriptContent)
+                if (matchResult != null) {
+                    val encryptedJsonString = matchResult.groupValues[1]
+                    if (encryptedJsonString.startsWith("{") && encryptedJsonString.endsWith("}")) {
+                        val decryptedLink = cryptoJSAesDecrypt("Encrypt", encryptedJsonString)
+                        if (decryptedLink != null) {
+                            return decryptedLink
                         }
                     }
                 }
-            } catch (e: Exception) {
-                println("$name: Error fetching/parsing play2 page $targetUrl: ${e.message}")
             }
-        } else if (targetUrl.startsWith("http") && (targetUrl.contains(".m3u8", ignoreCase = true) || targetUrl.contains(".mp4", ignoreCase = true))) {
-            directVideoUrl = targetUrl
+        } catch (e: Exception) {
+            println("$name: Error fetching/parsing play2 page $pageUrl: ${e.message}")
         }
-
-        if (directVideoUrl != null && directVideoUrl.contains(".m3u8", ignoreCase = true)) {
-            println("$name: Found M3U8 for $sourceName: $directVideoUrl")
-            M3u8Helper2.generateM3u8(
-                source = sourceName,
-                streamUrl = directVideoUrl,
-                referer = referer,
-                headers = defaultHeaders
-            ).forEach(callback)
-            return true
-        }
-
-        println("$name: Failed to extract M3U8 from $sourceName ($targetUrl)")
-        return false
+        return null
     }
 
     override suspend fun loadLinks(
@@ -329,6 +316,7 @@ class MotchillProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit, 
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // ... (Logic không thay đổi)
         val initialPageDocument = app.get(data, interceptor = cfKiller, referer = mainUrl).document
         val scriptElementsInitial = initialPageDocument.select("script:containsData(CryptoJSAesDecrypt)")
         var iframeUrlPlayerPage: String? = null 
@@ -347,7 +335,7 @@ class MotchillProvider : MainAPI() {
         }
 
         if (iframeUrlPlayerPage.isNullOrBlank()) {
-            println("$name: Could not get iframeUrlPlayerPage from $data. Trying initial JWPlayer fallback.")
+            println("$name: Could not get iframeUrlPlayerPage from $data.")
             return false 
         }
         
@@ -359,7 +347,7 @@ class MotchillProvider : MainAPI() {
         playerPageDocument.select("div#vb_server_list span.vb_btnt-primary").apmap { button ->
             val serverName = button.text()?.trim() ?: "Unknown Server"
             if (serverName.contains("HY3", ignoreCase = true)) {
-                 println("$name: Skipping server $serverName as requested.")
+                 println("$name: Skipping server $serverName.")
                 return@apmap
             }
 
@@ -369,12 +357,89 @@ class MotchillProvider : MainAPI() {
 
             if (!serverUrlStringFromButton.isNullOrBlank()) {
                 val fullServerUrlTarget = fixUrl(serverUrlStringFromButton)
-                
-                if (this.extractAndSubmitM3u8(serverName, fullServerUrlTarget, absoluteIframeUrlPlayerPage, callback)) {
+                var directVideoUrl: String? = null
+
+                if (fullServerUrlTarget.contains("play2.php")) { 
+                    directVideoUrl = extractVideoFromPlay2Page(fullServerUrlTarget, absoluteIframeUrlPlayerPage) 
+                } else if (fullServerUrlTarget.startsWith("http")) { // Chấp nhận mọi link http
+                    directVideoUrl = fullServerUrlTarget
+                }
+
+                if (directVideoUrl != null) {
+                    println("$name: Found source for $serverName: $directVideoUrl")
+                    val refererForLink = if (fullServerUrlTarget.contains("play2.php")) fullServerUrlTarget else absoluteIframeUrlPlayerPage
+                    
+                    callback(
+                        ExtractorLink(
+                            source = this.name,
+                            name = serverName,
+                            url = directVideoUrl,
+                            referer = refererForLink,
+                            quality = getQualityForLink(directVideoUrl),
+                            type = if (directVideoUrl.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
+                            headers = defaultHeaders
+                        )
+                    )
                     foundAnyLink = true
+                } else {
+                     println("$name: Failed to extract from server: $serverName ($fullServerUrlTarget)")
                 }
             }
         }
         return foundAnyLink
     }
+    
+    // *** BẮT ĐẦU THÊM MỚI ***
+    /**
+     * Interceptor để sửa lỗi phát video từ một số server.
+     */
+    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
+        return object : Interceptor {
+            override fun intercept(chain: Interceptor.Chain): Response {
+                val request = chain.request()
+                val response = chain.proceed(request)
+                val url = request.url.toString()
+
+                // Điều kiện kiểm tra URL segment theo yêu cầu của bạn
+                if (url.contains("api.cloudbeta.win") || url.contains(".tiktokcdn.")) {
+                    response.body?.let { body ->
+                        try {
+                            val fixedBytes = skipByteError(body)
+                            val newBody = fixedBytes.toResponseBody(body.contentType())
+                            return response.newBuilder().body(newBody).build()
+                        } catch (e: Exception) {
+                            // Bỏ qua và trả về response gốc nếu có lỗi
+                        }
+                    }
+                }
+                return response
+            }
+        }
+    }
+    // *** KẾT THÚC THÊM MỚI ***
 }
+
+// *** BẮT ĐẦU THÊM MỚI ***
+/**
+ * Hàm phụ trợ cho interceptor, đặt ở ngoài class.
+ * Dùng để sửa lỗi video bằng cách bỏ qua các byte lỗi ở đầu.
+ */
+private fun skipByteError(responseBody: ResponseBody): ByteArray {
+    val source = responseBody.source()
+    source.request(Long.MAX_VALUE)
+    val buffer = source.buffer.clone()
+    source.close()
+
+    val byteArray = buffer.readByteArray()
+    val length = byteArray.size - 188
+    var start = 0
+    for (i in 0 until length) {
+        val nextIndex = i + 188
+        if (nextIndex < byteArray.size && byteArray[i].toInt() == 71 && byteArray[nextIndex].toInt() == 71) {
+            start = i
+            break
+        }
+    }
+    return if (start > 0) byteArray.copyOfRange(start, byteArray.size) else byteArray
+}
+// *** KẾT THÚC THÊM MỚI ***
