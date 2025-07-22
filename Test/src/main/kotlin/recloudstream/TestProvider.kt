@@ -1,164 +1,170 @@
-package recloudstream
+// Đã thay đổi package name theo yêu cầu
+package com.recloudstream.sieutamphim
 
-// FIX: Cập nhật lại toàn bộ import cho chính xác
-import com.google.gson.reflect.TypeToken
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import com.lagradost.cloudstream3.utils.ExtractorApiKt.loadExtractor
-import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
+import java.net.URLEncoder
+import android.util.Base64
 
 class SieuTamPhimProvider : MainAPI() {
-    override var name = "Siêu Tầm Phim"
+    // Thông tin cơ bản của provider
     override var mainUrl = "https://www.sieutamphim.org"
+    override var name = "Siêu Tầm Phim"
+    override val supportedTypes = setOf(TvType.TvSeries, TvType.Movie)
     override var lang = "vi"
     override val hasMainPage = true
-    override val hasChromecastSupport = true
-    override val supportedTypes = setOf(
-        TvType.Movie,
-        TvType.TvSeries
-    )
 
+    // Hàm helper để parse một item phim (dùng chung cho trang chủ và tìm kiếm)
+    private fun parseSearchResult(element: Element): SearchResponse? {
+        val linkTag = element.selectFirst("a") ?: return null
+        val href = fixUrl(linkTag.attr("href"))
+        val title = element.selectFirst("h5.post-title a")?.text()?.substringBefore("– Status:")?.trim() ?: return null
+        val posterUrl = fixUrlNull(element.selectFirst("div.box-image img")?.attr("src"))
+        
+        // Xác định loại phim dựa vào link (nếu có thể) hoặc mặc định là phim
+        val tvType = if (href.contains("/phim-bo/")) TvType.TvSeries else TvType.Movie
+
+        return movieSearchResponse(title, href, tvType) {
+            this.posterUrl = posterUrl
+        }
+    }
+
+    // Hàm để lấy danh sách phim trên trang chủ
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // FIX: app.get bây giờ sẽ được nhận diện đúng
         val document = app.get(mainUrl).document
-        val homePageList = ArrayList<HomePageList>()
-        
-        val mainSections = document.select("section.section")
-        
-        mainSections.forEach { section ->
-            val title = section.selectFirst("h2")?.text()?.trim() ?: return@forEach
-            val movies = section.select(".col.post-item").mapNotNull {
-                it.toSearchResult()
-            }
-            if (movies.isNotEmpty()) {
-                homePageList.add(HomePageList(title, movies))
+        val homePageList = mutableListOf<HomePageList>()
+
+        // Tìm tất cả các section phim trên trang chủ
+        document.select("div.title-source").forEach { sectionTitle ->
+            try {
+                val title = sectionTitle.selectFirst("h2")?.text() ?: "Unknown"
+                val filmListContainer = sectionTitle.parent?.nextElementSibling()?.selectFirst(".row.slider") 
+                                        ?: sectionTitle.parent?.parent?.nextElementSibling()?.selectFirst(".row")
+                
+                filmListContainer?.let {
+                    val movies = it.select("div.col.post-item").mapNotNull { element ->
+                        parseSearchResult(element)
+                    }
+                    if (movies.isNotEmpty()) {
+                        homePageList.add(HomePageList(title, movies))
+                    }
+                }
+            } catch (e: Exception) {
+                // Bỏ qua nếu có lỗi ở một section
             }
         }
         
         return HomePageResponse(homePageList)
     }
 
-    private fun Element.toSearchResult(): SearchResponse? {
-        val linkTag = this.selectFirst("a.plain") ?: return null
-        val href = linkTag.attr("href")
-        val title = linkTag.attr("aria-label")
-                      .replaceAfter("– Status:", "").removeSuffix("– Status:")
-                      .trim()
-
-        val posterUrl = this.selectFirst("img")?.attr("src")
-        val isTvSeries = href.contains("/phim-bo/") || title.contains(Regex("Tập|Phần|Season"))
-
-        return if (isTvSeries) {
-            newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
-                this.posterUrl = posterUrl
-            }
-        } else {
-            newMovieSearchResponse(title, href, TvType.Movie) {
-                this.posterUrl = posterUrl
-            }
-        }
-    }
-
+    // Hàm tìm kiếm
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/search/$query"
+        // Trang web này sử dụng định dạng URL khác cho tìm kiếm
+        val searchUrl = "$mainUrl/?s=$query"
         val document = app.get(searchUrl).document
-        return document.select(".col.post-item").mapNotNull {
-            it.toSearchResult()
+
+        return document.select("div.col.post-item").mapNotNull { element ->
+            parseSearchResult(element)
         }
     }
 
-    override suspend fun load(url: String): LoadResponse {
+    // Hàm lấy thông tin chi tiết của phim/series
+    override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
-
         val title = document.selectFirst("meta[property=og:title]")?.attr("content")
-            ?.replaceAfter("– Status:", "")?.removeSuffix("– Status:")?.trim()
-            ?: throw ErrorLoadingException("Không thể lấy tiêu đề")
+            ?.substringBefore("– Status:")?.trim() ?: return null
+        val posterUrl = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
+        val plot = document.selectFirst("meta[property=og:description]")?.attr("content")
 
-        val posterUrl = document.selectFirst("meta[property=og:image]")?.attr("content")
+        val tags = document.select("div.the-tim-kiem a[rel=tag]")?.map { it.text() }
+        val yearTag = tags?.firstOrNull { it.matches(Regex("\\d{4}")) }
+        val year = yearTag?.toIntOrNull()
+
+        // Lấy danh sách tập phim từ thuộc tính data-episodes
+        val episodeDataString = document.selectFirst("div.button-group.episodeGroup")
+            ?.attr("data-episodes") ?: return null
+
+        // Dùng Regex để trích xuất các cặp dữ liệu mã hóa và số tập
+        val episodeRegex = Regex("""\{"([^"]+)","([^"]+)"\}""")
+        val episodes = episodeRegex.findAll(episodeDataString).mapNotNull { matchResult ->
+            val (obfuscatedData, episodeNum) = matchResult.destructured
+            val episodeName = "Tập $episodeNum"
+            Episode(data = obfuscatedData, name = episodeName, episode = episodeNum.toIntOrNull())
+        }.toList()
+
+        // Nếu không có episodes, có thể đây là phim lẻ chỉ có 1 link
+        if (episodes.isEmpty()) {
+             return newMovieLoadResponse(title, url, TvType.Movie, episodeDataString) {
+                this.posterUrl = posterUrl
+                this.plot = plot
+                this.year = year
+                this.tags = tags
+            }
+        }
         
-        val plotJson = document.selectFirst("div.title-movie-information")?.attr("data-description")
-        val plot = try {
-            plotJson?.let { jsonString ->
-                // FIX: Thay thế GSON.fromJson bằng app.parseJson an toàn hơn
-                val list = parseJson<List<String>>(jsonString)
-                list.filter { it != "br" }.joinToString("\n")
-            }
-        } catch (e: Exception) {
-            document.selectFirst("meta[property=og:description]")?.attr("content")
-        }
-
-        val encodedEpisodesJson = document.selectFirst(".episodeGroup")?.attr("data-episodes")
-            ?: throw ErrorLoadingException("Không tìm thấy danh sách tập phim mã hóa")
-        val episodeNamesJson = document.selectFirst(".panelz")?.attr("data-episode-container")
-            ?: throw ErrorLoadingException("Không tìm thấy tên tập phim")
-
-        // FIX: Sử dụng app.parseJson
-        val encodedEpisodes = parseJson<List<List<String>>>(encodedEpisodesJson)
-        val episodeNames = parseJson<List<String>>(episodeNamesJson).filter { it != "br" }
-
-        val episodes = encodedEpisodes.mapIndexedNotNull { index, encodedPair ->
-            val encodedUrl = encodedPair.getOrNull(0) ?: return@mapIndexedNotNull null
-            val epNum = encodedPair.getOrNull(1)?.toIntOrNull()
-            val epName = episodeNames.getOrNull(index) ?: "Tập $epNum"
-
-            // FIX: Sử dụng hàm newEpisode thay vì constructor đã cũ
-            newEpisode(encodedUrl) {
-                this.name = epName
-                this.episode = epNum
-            }
-        }
-
-        // FIX: episodes.size bây giờ sẽ hoạt động bình thường
+        // Phân loại là TV Series hay Movie dựa vào số lượng tập
         return if (episodes.size > 1) {
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = posterUrl
                 this.plot = plot
+                this.year = year
+                this.tags = tags
             }
         } else {
-            // FIX: episodes.firstOrNull()?.data cũng sẽ hoạt động
-            newMovieLoadResponse(title, url, TvType.Movie, episodes.firstOrNull()?.data) {
+            // Nếu chỉ có 1 tập, coi như là phim lẻ và truyền thẳng data đã mã hóa
+            newMovieLoadResponse(title, url, TvType.Movie, episodes.first().data) {
                 this.posterUrl = posterUrl
                 this.plot = plot
+                this.year = year
+                this.tags = tags
             }
         }
-    }
-    
-    private fun decodeUrl(encoded: String): String {
-        var result = ""
-        for (char in encoded) {
-            result += when (char) {
-                '~' -> '0'; '!' -> '1'; '@' -> '2'; '#' -> '3'; '$' -> '4'
-                '%' -> '5'; '^' -> '6'; '&' -> '7'; '*' -> '8'; '(' -> '9'
-                else -> char
-            }
-        }
-        return result
     }
 
+    // Hàm helper để mã hóa Base64 theo đúng logic của trang web
+    private fun encodeToExactBase64(input: String): String {
+        val urlEncoded = URLEncoder.encode(input, "UTF-8")
+                            .replace(Regex("%([0-9A-F]{2})")) {
+                                it.groupValues[1].toInt(16).toChar().toString()
+                            }
+        return Base64.encodeToString(urlEncoded.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+    }
+    
+    // Hàm lấy link xem phim
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
+        callback: (ExtractorLink) -> Boolean
     ): Boolean {
-        val decodedUrl = decodeUrl(data)
-        val document = app.get(decodedUrl, referer = mainUrl).document
+        // Dữ liệu 'data' giờ là chuỗi đã được mã hóa từ hàm load()
+        val obfuscatedData = data
+        
+        // Mã hóa chuỗi này theo logic của trang web để tạo URL embed
+        val encodedData = encodeToExactBase64(obfuscatedData)
+        val embedUrl = "$mainUrl/embed.html?url=$encodedData"
+        
+        // Tải nội dung của trang embed
+        val embedDoc = app.get(embedUrl, referer = mainUrl).document
+        val scriptContent = embedDoc.select("script").firstOrNull { it.data().contains("sources") }?.data()
+            ?: return false
+            
+        // Trích xuất link .m3u8 từ script
+        val streamUrlRegex = Regex("""file:\s*"(https?://[^"]+\.m3u8)"""")
+        val streamUrl = streamUrlRegex.find(scriptContent)?.groupValues?.get(1) ?: return false
 
-        val iframeSrc = document.selectFirst("iframe")?.attr("src")
-        val sourceLinks = if (iframeSrc != null) {
-            app.get(iframeSrc, referer = decodedUrl).document.select("source, video")
-        } else {
-            document.select("source, video")
-        }
-
-        sourceLinks.apmap {
-            val videoUrl = it.attr("src")
-            if (videoUrl.isNotBlank()) {
-                // FIX: loadExtractor bây giờ sẽ được nhận diện đúng
-                loadExtractor(videoUrl, mainUrl, subtitleCallback, callback)
-            }
-        }
+        callback.invoke(
+            ExtractorLink(
+                source = this.name,
+                name = "Siêu Tầm Phim Server",
+                url = streamUrl,
+                referer = mainUrl,
+                quality = Qualities.Unknown.value,
+                // Đã cập nhật theo yêu cầu
+                type = ExtractorLinkType.M3U8 
+            )
+        )
 
         return true
     }
