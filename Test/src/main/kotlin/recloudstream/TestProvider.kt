@@ -1,4 +1,3 @@
-// Đã thay đổi package name theo yêu cầu
 package com.recloudstream.sieutamphim
 
 import com.lagradost.cloudstream3.*
@@ -22,10 +21,10 @@ class SieuTamPhimProvider : MainAPI() {
         val title = element.selectFirst("h5.post-title a")?.text()?.substringBefore("– Status:")?.trim() ?: return null
         val posterUrl = fixUrlNull(element.selectFirst("div.box-image img")?.attr("src"))
         
-        // Xác định loại phim dựa vào link (nếu có thể) hoặc mặc định là phim
         val tvType = if (href.contains("/phim-bo/")) TvType.TvSeries else TvType.Movie
 
-        return movieSearchResponse(title, href, tvType) {
+        // FIX: Đổi thành newMovieSearchResponse
+        return newMovieSearchResponse(title, href, tvType) {
             this.posterUrl = posterUrl
         }
     }
@@ -35,12 +34,12 @@ class SieuTamPhimProvider : MainAPI() {
         val document = app.get(mainUrl).document
         val homePageList = mutableListOf<HomePageList>()
 
-        // Tìm tất cả các section phim trên trang chủ
         document.select("div.title-source").forEach { sectionTitle ->
             try {
                 val title = sectionTitle.selectFirst("h2")?.text() ?: "Unknown"
-                val filmListContainer = sectionTitle.parent?.nextElementSibling()?.selectFirst(".row.slider") 
-                                        ?: sectionTitle.parent?.parent?.nextElementSibling()?.selectFirst(".row")
+                // FIX: Thêm dấu ngoặc () cho các hàm parent()
+                val filmListContainer = sectionTitle.parent()?.nextElementSibling()?.selectFirst(".row.slider") 
+                                        ?: sectionTitle.parent()?.parent()?.nextElementSibling()?.selectFirst(".row")
                 
                 filmListContainer?.let {
                     val movies = it.select("div.col.post-item").mapNotNull { element ->
@@ -60,7 +59,6 @@ class SieuTamPhimProvider : MainAPI() {
 
     // Hàm tìm kiếm
     override suspend fun search(query: String): List<SearchResponse> {
-        // Trang web này sử dụng định dạng URL khác cho tìm kiếm
         val searchUrl = "$mainUrl/?s=$query"
         val document = app.get(searchUrl).document
 
@@ -81,19 +79,19 @@ class SieuTamPhimProvider : MainAPI() {
         val yearTag = tags?.firstOrNull { it.matches(Regex("\\d{4}")) }
         val year = yearTag?.toIntOrNull()
 
-        // Lấy danh sách tập phim từ thuộc tính data-episodes
         val episodeDataString = document.selectFirst("div.button-group.episodeGroup")
             ?.attr("data-episodes") ?: return null
 
-        // Dùng Regex để trích xuất các cặp dữ liệu mã hóa và số tập
         val episodeRegex = Regex("""\{"([^"]+)","([^"]+)"\}""")
         val episodes = episodeRegex.findAll(episodeDataString).mapNotNull { matchResult ->
             val (obfuscatedData, episodeNum) = matchResult.destructured
-            val episodeName = "Tập $episodeNum"
-            Episode(data = obfuscatedData, name = episodeName, episode = episodeNum.toIntOrNull())
+            // FIX: Sử dụng newEpisode thay vì constructor cũ
+            newEpisode(obfuscatedData) {
+                this.name = "Tập $episodeNum"
+                this.episode = episodeNum.toIntOrNull()
+            }
         }.toList()
 
-        // Nếu không có episodes, có thể đây là phim lẻ chỉ có 1 link
         if (episodes.isEmpty()) {
              return newMovieLoadResponse(title, url, TvType.Movie, episodeDataString) {
                 this.posterUrl = posterUrl
@@ -103,7 +101,6 @@ class SieuTamPhimProvider : MainAPI() {
             }
         }
         
-        // Phân loại là TV Series hay Movie dựa vào số lượng tập
         return if (episodes.size > 1) {
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = posterUrl
@@ -112,7 +109,6 @@ class SieuTamPhimProvider : MainAPI() {
                 this.tags = tags
             }
         } else {
-            // Nếu chỉ có 1 tập, coi như là phim lẻ và truyền thẳng data đã mã hóa
             newMovieLoadResponse(title, url, TvType.Movie, episodes.first().data) {
                 this.posterUrl = posterUrl
                 this.plot = plot
@@ -122,7 +118,6 @@ class SieuTamPhimProvider : MainAPI() {
         }
     }
 
-    // Hàm helper để mã hóa Base64 theo đúng logic của trang web
     private fun encodeToExactBase64(input: String): String {
         val urlEncoded = URLEncoder.encode(input, "UTF-8")
                             .replace(Regex("%([0-9A-F]{2})")) {
@@ -132,36 +127,31 @@ class SieuTamPhimProvider : MainAPI() {
     }
     
     // Hàm lấy link xem phim
+    // FIX: Sửa lại signature của hàm cho đúng với MainAPI
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Boolean
+        callback: (ExtractorLink) -> Unit // Sửa từ Boolean -> Unit
     ): Boolean {
-        // Dữ liệu 'data' giờ là chuỗi đã được mã hóa từ hàm load()
         val obfuscatedData = data
-        
-        // Mã hóa chuỗi này theo logic của trang web để tạo URL embed
         val encodedData = encodeToExactBase64(obfuscatedData)
         val embedUrl = "$mainUrl/embed.html?url=$encodedData"
         
-        // Tải nội dung của trang embed
         val embedDoc = app.get(embedUrl, referer = mainUrl).document
         val scriptContent = embedDoc.select("script").firstOrNull { it.data().contains("sources") }?.data()
             ?: return false
             
-        // Trích xuất link .m3u8 từ script
         val streamUrlRegex = Regex("""file:\s*"(https?://[^"]+\.m3u8)"""")
         val streamUrl = streamUrlRegex.find(scriptContent)?.groupValues?.get(1) ?: return false
 
-        callback.invoke(
+        callback( // Bỏ .invoke đi cho gọn
             ExtractorLink(
                 source = this.name,
                 name = "Siêu Tầm Phim Server",
                 url = streamUrl,
                 referer = mainUrl,
                 quality = Qualities.Unknown.value,
-                // Đã cập nhật theo yêu cầu
                 type = ExtractorLinkType.M3U8 
             )
         )
