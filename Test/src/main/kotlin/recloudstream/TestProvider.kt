@@ -1,161 +1,216 @@
-package com.recloudstream.sieutamphim
+package recloudstream // Thay đổi dòng này
 
-import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
-import org.jsoup.nodes.Element
-import java.net.URLEncoder
-import android.util.Base64
+// --- Imports cần thiết ---
+import com.lagradost.cloudstream3.* // Import chính
+import com.lagradost.cloudstream3.utils.* // Import các utils
+import org.jsoup.nodes.Element           // Cho Element của Jsoup
+import com.lagradost.cloudstream3.utils.ExtractorLink // Link trích xuất
+import com.lagradost.cloudstream3.utils.ExtractorLinkType // Loại link
+import org.jsoup.Jsoup                   // Cần cho Jsoup.parse trong load
 
-class SieuTamPhimProvider : MainAPI() {
-    // Thông tin cơ bản của provider
-    override var mainUrl = "https://www.sieutamphim.org"
-    override var name = "Siêu Tầm Phim"
-    override val supportedTypes = setOf(TvType.TvSeries, TvType.Movie)
-    override var lang = "vi"
+// Định nghĩa lớp Plugin chính
+class HentaiCityProvider : MainAPI() {
+    // --- Thông tin cơ bản về Plugin ---
+    override var name = "HentaiCity"
+    override var mainUrl = "https://www.hentaicity.com"
+    override var lang = "en"
     override val hasMainPage = true
+    override var hasChromecastSupport = true
+    override val supportedTypes = setOf(TvType.NSFW)
 
-    // Hàm helper để parse một item phim (dùng chung cho trang chủ và tìm kiếm)
-    private fun parseSearchResult(element: Element): SearchResponse? {
-        val linkTag = element.selectFirst("a") ?: return null
-        val href = fixUrl(linkTag.attr("href"))
-        val title = element.selectFirst("h5.post-title a")?.text()?.substringBefore("– Status:")?.trim() ?: return null
-        val posterUrl = fixUrlNull(element.selectFirst("div.box-image img")?.attr("src"))
-        
-        val tvType = if (href.contains("/phim-bo/")) TvType.TvSeries else TvType.Movie
+    // --- Helper Function để Parse Item (Video) ---
+     private fun parseItem(element: Element): MovieSearchResponse? {
+        val linkElement = element.selectFirst("a.thumb-img")
+        val titleElement = element.selectFirst("p > a.video-title")
 
-        // FIX: Đổi thành newMovieSearchResponse
+        val href = fixUrlNull(linkElement?.attr("href"))
+        val title = titleElement?.text()?.trim()?.takeIf { it.isNotBlank() }
+            ?: titleElement?.attr("title")?.trim()?.takeIf { it.isNotBlank() }
+            ?: element.selectFirst("a.video-title")?.attr("title")?.trim()?.takeIf { it.isNotBlank() }
+            ?: "Item (Title N/A) - ${href?.take(20)}..."
+
+        if (href.isNullOrBlank()) return null
+
+        val posterElement = linkElement?.selectFirst("img.thumbtrailer__image")
+                           ?: element.selectFirst("img[src]")
+        val posterUrl = fixUrlNull(posterElement?.attr("src"))
+
+        if (posterUrl.isNullOrBlank()) {
+            println("HentaiCityProvider WARNING: Poster URL is blank for '$title'.")
+        }
+
+        val qualityElement = linkElement?.selectFirst("span.flag-hd")
+                          ?: element.selectFirst("span.flag-hd")
+        val quality = if (qualityElement != null) SearchQuality.HD else SearchQuality.SD
+
+        val tvType = if (href.contains("/video/")) TvType.NSFW else TvType.NSFW
+
         return newMovieSearchResponse(title, href, tvType) {
             this.posterUrl = posterUrl
+            this.quality = quality
         }
     }
 
-    // Hàm để lấy danh sách phim trên trang chủ
+
+    // --- Hàm lấy dữ liệu Trang Chủ (Sửa lỗi constructor HomePageResponse) ---
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(mainUrl).document
         val homePageList = mutableListOf<HomePageList>()
 
-        document.select("div.title-source").forEach { sectionTitle ->
-            try {
-                val title = sectionTitle.selectFirst("h2")?.text() ?: "Unknown"
-                // FIX: Thêm dấu ngoặc () cho các hàm parent()
-                val filmListContainer = sectionTitle.parent()?.nextElementSibling()?.selectFirst(".row.slider") 
-                                        ?: sectionTitle.parent()?.parent()?.nextElementSibling()?.selectFirst(".row")
-                
-                filmListContainer?.let {
-                    val movies = it.select("div.col.post-item").mapNotNull { element ->
-                        parseSearchResult(element)
-                    }
-                    if (movies.isNotEmpty()) {
-                        homePageList.add(HomePageList(title, movies))
-                    }
-                }
-            } catch (e: Exception) {
-                // Bỏ qua nếu có lỗi ở một section
+        // Hàm cục bộ để thêm section
+        fun addSectionLocal(title: String, elements: List<Element>?) {
+            if (elements.isNullOrEmpty()) {
+                println("HentaiCityProvider WARNING: No elements selected for section '$title'.")
+                 return
+             }
+            val items = elements.mapNotNull { parseItem(it) }
+            if (items.isNotEmpty()) {
+                homePageList.add(HomePageList(title, items))
+            } else {
+                println("HentaiCityProvider WARNING: No items successfully parsed for section '$title'.")
             }
         }
-        
-        return HomePageResponse(homePageList)
+
+        try {
+            // Section 1: New Hentai Releases
+            addSectionLocal("New Hentai Releases", document.select("div.new-releases > div.item"))
+
+            // Section 2: Most Popular Videos
+            addSectionLocal("Most Popular Videos", document.select("h2:contains(Most Popular Videos) ~ div.thumb-list > div.outer-item > div.item").take(24))
+
+            // Section 3: Recent Videos
+            var recentElements: List<Element>? = null
+            val recentContainer = document.select("h2:contains(Recent Videos) ~ div#taglink.thumb-list").firstOrNull()
+            if (recentContainer != null) {
+                recentElements = recentContainer.select("div.recent > div.item")
+            }
+            addSectionLocal("Recent Videos", recentElements)
+
+            // Section 4: Manga/Comics - Đã bị loại bỏ theo yêu cầu trước
+            // println("HentaiCityProvider INFO: Manga/Comics section intentionally skipped.")
+
+        } catch (e: Exception) {
+            println("HentaiCityProvider ERROR: Exception during getMainPage: ${e.message}")
+            e.printStackTrace()
+        }
+
+        if (homePageList.isEmpty()) {
+            println("HentaiCityProvider WARNING: getMainPage finished but HomePageList is empty.")
+        }
+
+        // *** SỬA LỖI: Sử dụng positional argument thay vì named argument ***
+        return newHomePageResponse(homePageList, false)
     }
 
-    // Hàm tìm kiếm
+
+    // --- Hàm Tìm Kiếm ---
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/?s=$query"
-        val document = app.get(searchUrl).document
-
-        return document.select("div.col.post-item").mapNotNull { element ->
-            parseSearchResult(element)
+        val searchUrl = "$mainUrl/search/video/$query"
+        return try {
+            val document = app.get(searchUrl).document
+            document.select("section.content > div.thumb-list div.outer-item > div.item").mapNotNull {
+                parseItem(it)
+            }
+        } catch (e: Exception) {
+            println("$name Search failed for query '$query': ${e.message}")
+            emptyList()
         }
     }
 
-    // Hàm lấy thông tin chi tiết của phim/series
-    override suspend fun load(url: String): LoadResponse? {
+    // --- Hàm Tải Chi Tiết Video (Sử dụng Selector chính xác hơn cho Recommendations) ---
+override suspend fun load(url: String): LoadResponse? {
+     return try {
         val document = app.get(url).document
-        val title = document.selectFirst("meta[property=og:title]")?.attr("content")
-            ?.substringBefore("– Status:")?.trim() ?: return null
-        val posterUrl = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
-        val plot = document.selectFirst("meta[property=og:description]")?.attr("content")
-
-        val tags = document.select("div.the-tim-kiem a[rel=tag]")?.map { it.text() }
-        val yearTag = tags?.firstOrNull { it.matches(Regex("\\d{4}")) }
-        val year = yearTag?.toIntOrNull()
-
-        val episodeDataString = document.selectFirst("div.button-group.episodeGroup")
-            ?.attr("data-episodes") ?: return null
-
-        val episodeRegex = Regex("""\{"([^"]+)","([^"]+)"\}""")
-        val episodes = episodeRegex.findAll(episodeDataString).mapNotNull { matchResult ->
-            val (obfuscatedData, episodeNum) = matchResult.destructured
-            // FIX: Sử dụng newEpisode thay vì constructor cũ
-            newEpisode(obfuscatedData) {
-                this.name = "Tập $episodeNum"
-                this.episode = episodeNum.toIntOrNull()
-            }
-        }.toList()
-
-        if (episodes.isEmpty()) {
-             return newMovieLoadResponse(title, url, TvType.Movie, episodeDataString) {
-                this.posterUrl = posterUrl
-                this.plot = plot
-                this.year = year
-                this.tags = tags
-            }
+        val title = document.selectFirst("h1")?.text()?.trim() ?: return null
+        val poster = fixUrlNull(document.selectFirst("div#playerz video")?.attr("poster"))
+            ?: fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
+        val synopsis = document.selectFirst("div.detail-box > div.ubox-text")?.html()?.replace("<br>", "\n")?.let { Jsoup.parse(it).text() }
+                       ?: document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
+        val tags = document.select("div#taglink a:not(:has(svg))")
+                         .mapNotNull { it.text()?.trim()?.takeIf { tag -> tag.isNotEmpty() } }
+        val rating = document.selectFirst("div.info span:contains('%')")?.text()?.replace("%", "")?.trim()?.toIntOrNull()?.times(100)
+        var year: Int? = null
+        try {
+            val infoDiv = document.selectFirst("div.fp_title div.information")?.text()
+            if (infoDiv != null) {
+                 val dateRegex = Regex("""(\w+\s+\d{1,2},\s*\d{4})""")
+                 val dateMatch = dateRegex.find(infoDiv)
+                 year = dateMatch?.groupValues?.get(1)?.split(",")?.lastOrNull()?.trim()?.toIntOrNull()
+             }
+        } catch (e: Exception){
+             println("$name Error parsing year: ${e.message}")
         }
-        
-        return if (episodes.size > 1) {
-            newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
-                this.posterUrl = posterUrl
-                this.plot = plot
-                this.year = year
-                this.tags = tags
-            }
-        } else {
-            newMovieLoadResponse(title, url, TvType.Movie, episodes.first().data) {
-                this.posterUrl = posterUrl
-                this.plot = plot
-                this.year = year
-                this.tags = tags
-            }
-        }
-    }
 
-    private fun encodeToExactBase64(input: String): String {
-        val urlEncoded = URLEncoder.encode(input, "UTF-8")
-                            .replace(Regex("%([0-9A-F]{2})")) {
-                                it.groupValues[1].toInt(16).toChar().toString()
-                            }
-        return Base64.encodeToString(urlEncoded.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-    }
-    
-    // Hàm lấy link xem phim
-    // FIX: Sửa lại signature của hàm cho đúng với MainAPI
-    override suspend fun loadLinks(
-        data: String,
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit // Sửa từ Boolean -> Unit
-    ): Boolean {
-        val obfuscatedData = data
-        val encodedData = encodeToExactBase64(obfuscatedData)
-        val embedUrl = "$mainUrl/embed.html?url=$encodedData"
-        
-        val embedDoc = app.get(embedUrl, referer = mainUrl).document
-        val scriptContent = embedDoc.select("script").firstOrNull { it.data().contains("sources") }?.data()
-            ?: return false
-            
-        val streamUrlRegex = Regex("""file:\s*"(https?://[^"]+\.m3u8)"""")
-        val streamUrl = streamUrlRegex.find(scriptContent)?.groupValues?.get(1) ?: return false
+        // *** Lấy video liên quan (recommendations) - Dùng Selector chính xác và Log ***
+         var recommendations: List<SearchResponse> = emptyList()
+         try {
+             // *** Sử dụng selector chính xác dựa trên cấu trúc HTML đã phân tích ***
+             val recommendationSelector = "div#related_videos div.outer-item > div.item"
+             val recommendationElements = document.select(recommendationSelector)
+             println("HentaiCityProvider DEBUG Load: Found ${recommendationElements.size} potential recommendation elements using '$recommendationSelector'.")
 
-        callback( // Bỏ .invoke đi cho gọn
-            ExtractorLink(
-                source = this.name,
-                name = "Siêu Tầm Phim Server",
-                url = streamUrl,
-                referer = mainUrl,
-                quality = Qualities.Unknown.value,
-                type = ExtractorLinkType.M3U8 
-            )
-        )
+             recommendations = recommendationElements.mapNotNull { element ->
+                 // Log phần tử đầu tiên để debug cấu trúc nếu cần
+                 // if (recommendations.isEmpty()) println("HentaiCityProvider DEBUG Load: First recommendation element HTML: ${element.outerHtml().take(200)}")
+                 parseItem(element) // Gọi parseItem cho từng phần tử item
+             }
+             println("HentaiCityProvider DEBUG Load: Successfully parsed ${recommendations.size} recommendations.")
 
-        return true
-    }
+         } catch (e: Exception) {
+              println("HentaiCityProvider ERROR Load: Exception parsing recommendations: ${e.message}")
+              e.printStackTrace()
+         }
+
+         newMovieLoadResponse(title, url, TvType.NSFW, url) {
+             this.posterUrl = poster
+             this.plot = synopsis
+             this.tags = tags
+             this.score = rating?.let { Score.from10(it) }
+             this.recommendations = recommendations // Gán recommendations
+             this.year = year
+         }
+     } catch (e: Exception) {
+         println("$name Load failed for url '$url': ${e.message}")
+         null
+     }
 }
+    // --- Hàm Lấy Link Xem Video ---
+    override suspend fun loadLinks(
+        data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        return try {
+            val document = app.get(data).document
+            var foundLink = false
+            document.selectFirst("div#playerz video source[type=\"application/x-mpegURL\"]")?.attr("src")?.let { hlsUrl ->
+                if (hlsUrl.isNotBlank() && hlsUrl.contains("master.m3u8")) {
+                    callback(newExtractorLink(source = this.name, name = "${this.name}", url = fixUrl(hlsUrl), type = ExtractorLinkType.M3U8) { this.referer = mainUrl })
+                    foundLink = true
+                }
+            }
+            fixUrlNull(document.selectFirst("meta[property=og:video:url]")?.attr("content"))?.let { mp4Url ->
+                callback(newExtractorLink(source = this.name, name = "${this.name}", url = mp4Url, type = ExtractorLinkType.VIDEO) { this.referer = mainUrl; this.quality = Qualities.P480.value })
+                if (!foundLink) foundLink = true
+            }
+            if (!foundLink) {
+                document.select("script").find { script ->
+                    if (script.data().contains("fluidPlayer(")) {
+                        val scriptData = script.data()
+                        val hlsRegex = Regex("""source\s*:\s*["']([^"']+\.m3u8[^"']*)["']""")
+                        hlsRegex.find(scriptData)?.groupValues?.get(1)?.let { extractedHlsUrl ->
+                            if (extractedHlsUrl.isNotBlank()) {
+                                callback(newExtractorLink(source = this.name, name = "${this.name}", url = fixUrl(extractedHlsUrl), type = ExtractorLinkType.M3U8) { this.referer = mainUrl })
+                                foundLink = true
+                                return@find true
+                            }
+                        }
+                    }
+                    false
+                }
+            }
+            foundLink
+        } catch (e: Exception) {
+            println("$name loadLinks failed for url '$data': ${e.message}")
+            false
+        }
+    }
+} // Kết thúc class HentaiCityProvider
