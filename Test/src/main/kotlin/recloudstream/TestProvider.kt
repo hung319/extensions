@@ -118,6 +118,7 @@ class HentaiCityProvider : MainAPI() {
     }
 
     // --- Hàm Tải Chi Tiết Video (Sử dụng Selector chính xác hơn cho Recommendations) ---
+// --- Hàm Tải Chi Tiết Video (SỬA LẠI CÁCH TÍNH SCORE) ---
 override suspend fun load(url: String): LoadResponse? {
      return try {
         val document = app.get(url).document
@@ -128,7 +129,11 @@ override suspend fun load(url: String): LoadResponse? {
                        ?: document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
         val tags = document.select("div#taglink a:not(:has(svg))")
                          .mapNotNull { it.text()?.trim()?.takeIf { tag -> tag.isNotEmpty() } }
-        val rating = document.selectFirst("div.info span:contains('%')")?.text()?.replace("%", "")?.trim()?.toIntOrNull()?.times(100)
+
+        // *** SỬA ĐỔI 1: Lấy điểm số gốc (ví dụ: 85) mà không nhân thêm ***
+        val rating = document.selectFirst("div.info span:contains('%')")?.text()
+            ?.replace("%", "")?.trim()?.toIntOrNull()
+
         var year: Int? = null
         try {
             val infoDiv = document.selectFirst("div.fp_title div.information")?.text()
@@ -141,21 +146,13 @@ override suspend fun load(url: String): LoadResponse? {
              println("$name Error parsing year: ${e.message}")
         }
 
-        // *** Lấy video liên quan (recommendations) - Dùng Selector chính xác và Log ***
-         var recommendations: List<SearchResponse> = emptyList()
+        var recommendations: List<SearchResponse> = emptyList()
          try {
-             // *** Sử dụng selector chính xác dựa trên cấu trúc HTML đã phân tích ***
              val recommendationSelector = "div#related_videos div.outer-item > div.item"
              val recommendationElements = document.select(recommendationSelector)
-             println("HentaiCityProvider DEBUG Load: Found ${recommendationElements.size} potential recommendation elements using '$recommendationSelector'.")
-
              recommendations = recommendationElements.mapNotNull { element ->
-                 // Log phần tử đầu tiên để debug cấu trúc nếu cần
-                 // if (recommendations.isEmpty()) println("HentaiCityProvider DEBUG Load: First recommendation element HTML: ${element.outerHtml().take(200)}")
-                 parseItem(element) // Gọi parseItem cho từng phần tử item
+                 parseItem(element)
              }
-             println("HentaiCityProvider DEBUG Load: Successfully parsed ${recommendations.size} recommendations.")
-
          } catch (e: Exception) {
               println("HentaiCityProvider ERROR Load: Exception parsing recommendations: ${e.message}")
               e.printStackTrace()
@@ -165,8 +162,9 @@ override suspend fun load(url: String): LoadResponse? {
              this.posterUrl = poster
              this.plot = synopsis
              this.tags = tags
-             this.score = rating?.let { Score.from10(it) }
-             this.recommendations = recommendations // Gán recommendations
+             // *** SỬA ĐỔI 2: Sử dụng Score.from(score, maxScore) với maxScore = 100 ***
+             this.score = rating?.let { Score.from(it, 100) }
+             this.recommendations = recommendations
              this.year = year
          }
      } catch (e: Exception) {
@@ -174,6 +172,7 @@ override suspend fun load(url: String): LoadResponse? {
          null
      }
 }
+
     // --- Hàm Lấy Link Xem Video ---
     override suspend fun loadLinks(
         data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit
