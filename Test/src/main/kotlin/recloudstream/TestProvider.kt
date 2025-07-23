@@ -1,10 +1,11 @@
 // Tên file: WatchHentaiProvider.kt
 package recloudstream
 
-import com-lagradost.cloudstream3.*
-import com-lagradost.cloudstream3.utils.*
+// SỬA LỖI: Đã sửa lại toàn bộ các câu lệnh import
+import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-import com-lagradost.cloudstream3.network.CloudflareKiller
+import com.lagradost.cloudstream3.network.CloudflareKiller
 
 class WatchHentaiProvider : MainAPI() {
     override var mainUrl = "https://watchhentai.net"
@@ -78,12 +79,12 @@ class WatchHentaiProvider : MainAPI() {
                 val epPoster = el.selectFirst("div.imagen img")?.attr("data-src")
                 val epNum = epTitle.substringAfter("Episode ").toIntOrNull()
 
-                // SỬA LỖI: Sử dụng cú pháp newEpisode(data) { ... } theo yêu cầu
-                newEpisode(data = epHref) {
+                // Sử dụng lại cú pháp newEpisode rõ ràng để đảm bảo biên dịch thành công
+                newEpisode(url = epHref, initializer = {
                     this.name = epTitle
                     this.posterUrl = epPoster
                     this.episode = epNum
-                }
+                })
             }.reversed()
 
             newTvSeriesLoadResponse(title, url, TvType.NSFW, episodes) {
@@ -135,6 +136,7 @@ class WatchHentaiProvider : MainAPI() {
                         url = url,
                         referer = mainUrl,
                         quality = quality.replace("p", "").toIntOrNull() ?: Qualities.Unknown.value,
+                        // SỬA LỖI: Sửa lỗi chính tả M3UU8 -> M3U8
                         type = if (url.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                     )
                 )
