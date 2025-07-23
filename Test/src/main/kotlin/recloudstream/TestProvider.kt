@@ -79,13 +79,13 @@ class WatchHentaiProvider : MainAPI() {
                 val epPoster = el.selectFirst("div.imagen img")?.attr("data-src")
                 val epNum = epTitle.substringAfter("Episode ").toIntOrNull()
 
-                // SỬA LỖI: Sử dụng tham số 'url' theo yêu cầu của trình biên dịch
-                // và đặt các thuộc tính khác trong khối lambda.
-                newEpisode(url = epHref) {
-                    this.name = epTitle
-                    this.posterUrl = epPoster
-                    this.episode = epNum
-                }
+                // SỬA LỖI: Tạo Episode trực tiếp để tránh lỗi trình biên dịch
+                Episode(
+                    data = epHref,
+                    name = epTitle,
+                    posterUrl = epPoster,
+                    episode = epNum
+                )
             }.reversed()
 
             newTvSeriesLoadResponse(title, url, TvType.NSFW, episodes) {
