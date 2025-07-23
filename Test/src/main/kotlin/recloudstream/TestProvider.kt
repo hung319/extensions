@@ -132,7 +132,7 @@ override suspend fun load(url: String): LoadResponse? {
 
         // *** SỬA ĐỔI 1: Lấy điểm số gốc (ví dụ: 85) mà không nhân thêm ***
         val rating = document.selectFirst("div.info span:contains('%')")?.text()
-            ?.replace("%", "")?.trim()?.toIntOrNull()
+            ?.replace("%", "")?.trim()?.toFloatOrNull()
 
         var year: Int? = null
         try {
