@@ -1,10 +1,10 @@
 // Tên file: WatchHentaiProvider.kt
 package recloudstream
 
-import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
+import com-lagradost.cloudstream3.*
+import com-lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-import com.lagradost.cloudstream3.network.CloudflareKiller
+import com-lagradost.cloudstream3.network.CloudflareKiller
 
 class WatchHentaiProvider : MainAPI() {
     override var mainUrl = "https://watchhentai.net"
@@ -16,7 +16,6 @@ class WatchHentaiProvider : MainAPI() {
         TvType.NSFW
     )
 
-    // Interceptor để xử lý Cloudflare
     private val cfInterceptor = CloudflareKiller()
     
     override val mainPage = mainPageOf(
@@ -79,13 +78,12 @@ class WatchHentaiProvider : MainAPI() {
                 val epPoster = el.selectFirst("div.imagen img")?.attr("data-src")
                 val epNum = epTitle.substringAfter("Episode ").toIntOrNull()
 
-                // SỬA LỖI: Tạo Episode trực tiếp để tránh lỗi trình biên dịch
-                Episode(
-                    data = epHref,
-                    name = epTitle,
-                    posterUrl = epPoster,
-                    episode = epNum
-                )
+                // SỬA LỖI: Sử dụng cú pháp newEpisode(data) { ... } theo yêu cầu
+                newEpisode(data = epHref) {
+                    this.name = epTitle
+                    this.posterUrl = epPoster
+                    this.episode = epNum
+                }
             }.reversed()
 
             newTvSeriesLoadResponse(title, url, TvType.NSFW, episodes) {
