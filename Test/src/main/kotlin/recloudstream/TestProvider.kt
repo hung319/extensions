@@ -79,11 +79,13 @@ class WatchHentaiProvider : MainAPI() {
                 val epPoster = el.selectFirst("div.imagen img")?.attr("data-src")
                 val epNum = epTitle.substringAfter("Episode ").toIntOrNull()
 
-                newEpisode(epHref) {
-                    name = epTitle
-                    posterUrl = epPoster
+                // SỬA LỖI: Truyền tham số trực tiếp để tránh lỗi 'val' cannot be reassigned
+                newEpisode(
+                    data = epHref,
+                    name = epTitle,
+                    posterUrl = epPoster,
                     episode = epNum
-                }
+                )
             }.reversed()
 
             newTvSeriesLoadResponse(title, url, TvType.NSFW, episodes) {
@@ -128,7 +130,6 @@ class WatchHentaiProvider : MainAPI() {
             val quality = labelRegex.find(source)?.groupValues?.get(1)
             
             if (url != null && quality != null) {
-                // SỬA LỖI: Sử dụng constructor ExtractorLink trực tiếp
                 callback(
                     ExtractorLink(
                         source = this.name,
