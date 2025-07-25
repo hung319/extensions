@@ -1,14 +1,21 @@
-// Tên file: WatchHentaiProvider.kt
+// Dành cho CloudStream 3
+// Ngôn ngữ: Kotlin
+// Tác giả: CoderAI
+// package: recloudstream
+
 package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.network.CloudflareKiller
+import com.google.gson.Gson
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 
-class WatchHentaiProvider : MainAPI() {
-    override var mainUrl = "https://watchhentai.net"
-    override var name = "WatchHentai"
+// Định nghĩa plugin
+class EpornerPlugin : MainAPI() {
+    override var mainUrl = "https://www.eporner.com"
+    override var name = "Eporner"
     override val hasMainPage = true
     override var lang = "en"
     override val hasDownloadSupport = true
@@ -16,137 +23,116 @@ class WatchHentaiProvider : MainAPI() {
         TvType.NSFW
     )
 
-    private val cfInterceptor = CloudflareKiller()
-    
-    override val mainPage = mainPageOf(
-        "$mainUrl/videos/" to "Recent Episodes",
-        "$mainUrl/series/" to "Hentai Series",
-        "$mainUrl/genre/uncensored/" to "Uncensored",
-        "$mainUrl/genre/harem/" to "Harem",
-        "$mainUrl/genre/school-girls/" to "School Girls",
-    )
+    // Can thiệp để xử lý Cloudflare
+    override val mainPageInterceptors = listOf(CloudflareKiller())
 
-    override suspend fun getMainPage(
-        page: Int,
-        request: MainPageRequest
-    ): HomePageResponse {
-        val url = if (page == 1) request.data else "${request.data}page/$page/"
-        val document = app.get(url, interceptor = cfInterceptor).document
-        val home = document.select("article.item").mapNotNull {
-            it.toSearchResult()
-        }
-        return newHomePageResponse(request.name, home)
+    // Hàm lấy danh sách video trang chủ
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val document = app.get("$mainUrl/page/$page/").document
+        val home = document.select("div#vidresults div.mb")
+            .mapNotNull { it.toSearchResult() }
+
+        // Tạo các danh sách cho trang chủ
+        return newHomePageResponse(
+            list = listOf(
+                HomePageList(
+                    name = "Recent HD Porn Videos",
+                    list = home,
+                    isHorizontal = true
+                )
+            ),
+            hasNext = true
+        )
     }
 
+    // Hàm chuyển đổi Element sang SearchResponse
     private fun Element.toSearchResult(): SearchResponse? {
-        val title = this.selectFirst("div.data h3 a, div.title a")?.text()?.trim() ?: return null
-        val href = this.selectFirst("a")?.attr("href") ?: return null
-        val posterUrl = this.selectFirst("img")?.let {
-            it.attr("data-src").ifBlank { it.attr("src") }
+        val title = this.selectFirst("p.mbtit a")?.text() ?: return null
+        // Đảm bảo href là một URL đầy đủ
+        val href = fixUrl(this.selectFirst("a")?.attr("href") ?: return null)
+        val posterUrl = this.selectFirst("img")?.let { img ->
+            fixUrlNull(img.attr("data-src").ifEmpty { img.attr("src") })
         }
+        val quality = this.selectFirst(".mvhdico span")?.text()
 
-        return if (href.contains("/series/")) {
-            newTvSeriesSearchResponse(title, href, TvType.NSFW) {
-                this.posterUrl = posterUrl
-            }
-        } else {
-            newMovieSearchResponse(title, href, TvType.NSFW) {
-                this.posterUrl = posterUrl
-            }
+        return newMovieSearchResponse(title, href, TvType.NSFW) {
+            this.posterUrl = posterUrl
+            addQuality(quality)
         }
     }
 
+    // Hàm tìm kiếm
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/?s=$query"
-        val document = app.get(searchUrl, interceptor = cfInterceptor).document
-        return document.select("div.result-item article").mapNotNull {
+        val searchUrl = "$mainUrl/search/$query/"
+        val document = app.get(searchUrl).document
+
+        return document.select("div#vidresults div.mb").mapNotNull {
             it.toSearchResult()
         }
     }
 
+    // Hàm tải thông tin chi tiết (metadata)
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url, interceptor = cfInterceptor).document
-        val isSeriesPage = url.contains("/series/")
+        val document = app.get(url).document
 
-        return if (isSeriesPage) {
-            val title = document.selectFirst("div.data h1")?.text()?.trim() ?: "Unknown Series"
-            val posterUrl = document.selectFirst("div.poster img")?.attr("data-src")
-            val synopsis = document.selectFirst("div.wp-content p")?.text()?.trim()
-            val episodes = document.select("ul.episodios li").mapNotNull { el ->
-                val epHref = el.selectFirst("div.episodiotitle a")?.attr("href") ?: return@mapNotNull null
-                val epTitle = el.selectFirst("div.episodiotitle a")?.text()?.trim() ?: "Episode"
-                val epPoster = el.selectFirst("div.imagen img")?.attr("data-src")
-                val epNum = epTitle.substringAfter("Episode ").toIntOrNull()
+        // Trích xuất dữ liệu từ script application/ld+json
+        val jsonLdScript = document.selectFirst("script[type=\"application/ld+json\"]")?.data()
+        val gson = Gson()
+        val videoData = gson.fromJson(jsonLdScript, VideoObject::class.java)
 
-                newEpisode(url = epHref, initializer = {
-                    this.name = epTitle
-                    this.posterUrl = epPoster
-                    this.episode = epNum
-                })
-            }.reversed()
+        val title = videoData.name ?: document.selectFirst("h1")?.text() ?: return null
+        val poster = videoData.thumbnailUrl?.firstOrNull() ?: document.selectFirst("meta[property=\"og:image\"]")?.attr("content")
+        val description = videoData.description
+        val tags = document.select("#video-info-tags li.vit-category a").map { it.text() }
+        val recommendations = document.select("div#relateddiv div.mb").mapNotNull { it.toSearchResult() }
 
-            // BẮT ĐẦU: Lấy danh sách đề xuất
-            val recommendations = document.select("div#single_relacionados article").mapNotNull {
-                it.toSearchResult()
-            }
-            // KẾT THÚC: Lấy danh sách đề xuất
-
-            newTvSeriesLoadResponse(title, url, TvType.NSFW, episodes) {
-                this.posterUrl = posterUrl
-                this.plot = synopsis
-                // THÊM: Gán danh sách đề xuất
-                this.recommendations = recommendations
-            }
-        } else {
-            val title = document.selectFirst("div.data h1")?.text()?.trim() ?: "Unknown Episode"
-            val posterUrl = document.selectFirst("meta[property=og:image]")?.attr("content")
-            val synopsis = document.selectFirst("div.synopsis p")?.text()?.trim()
-            
-            newMovieLoadResponse(title, url, TvType.NSFW, dataUrl = url) {
-                 this.posterUrl = posterUrl
-                 this.plot = synopsis
-            }
+        // Trả về metadata, url sẽ được dùng trong loadLinks
+        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
+            this.posterUrl = poster
+            this.plot = description
+            this.tags = tags
+            this.recommendations = recommendations
         }
     }
-    
+
+    // Hàm tải liên kết video
     override suspend fun loadLinks(
-        data: String,
+        data: String, // 'data' ở đây là URL từ hàm load()
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val episodePageDoc = app.get(data, interceptor = cfInterceptor).document
-        val iframeSrc = episodePageDoc.selectFirst("iframe.metaframe")?.attr("src") ?: return false
-        val iframeDoc = app.get(iframeSrc, interceptor = cfInterceptor, referer = data).document
-        val scriptContent = iframeDoc.select("script").firstOrNull { 
-            it.data().contains("jwplayer('player').setup") 
-        }?.data() ?: return false
-        
-        val sourcesRegex = """sources:\s*\[([^\]]+)\]""".toRegex()
-        val sourcesBlock = sourcesRegex.find(scriptContent)?.groupValues?.get(1) ?: return false
+        val document = app.get(data).document
+        var foundLinks = false
 
-        val fileRegex = """file:\s*"([^"]+)"""".toRegex()
-        val labelRegex = """label:\s*"([^"]+)"""".toRegex()
-        
-        val sources = sourcesBlock.split("},").filter { it.isNotBlank() }
-
-        sources.forEach { source ->
-            val url = fileRegex.find(source)?.groupValues?.get(1)
-            val quality = labelRegex.find(source)?.groupValues?.get(1)
+        // Trích xuất link download từ nhiều chất lượng
+        document.select("#downloaddiv .dloaddivcol a").forEach {
+            val linkUrl = fixUrl(it.attr("href"))
+            val qualityText = it.text()
+            // Trích xuất chất lượng từ text, ví dụ: "Download MP4 (720p...)" -> "720p"
+            val quality = Regex("(\\d+p)").find(qualityText)?.groupValues?.get(1) ?: "Default"
             
-            if (url != null && quality != null) {
-                callback(
-                    ExtractorLink(
-                        source = this.name,
-                        name = "${this.name} $quality",
-                        url = url,
-                        referer = mainUrl,
-                        quality = quality.replace("p", "").toIntOrNull() ?: Qualities.Unknown.value,
-                        type = if (url.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                    )
+            callback(
+                ExtractorLink(
+                    source = this.name,
+                    name = "${this.name} - $quality",
+                    url = linkUrl,
+                    referer = data, // referer là trang video
+                    quality = getQualityFromName(quality),
+                    type = ExtractorLinkType.VIDEO // Loại là VIDEO vì link là .mp4
                 )
-            }
+            )
+            foundLinks = true
         }
-        return true
+        
+        return foundLinks
     }
+
+    // Data class để parse JSON-LD
+    private data class VideoObject(
+        val name: String?,
+        val description: String?,
+        val thumbnailUrl: List<String>?,
+        val contentUrl: String?
+    )
 }
