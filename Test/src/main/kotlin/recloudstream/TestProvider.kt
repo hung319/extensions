@@ -24,19 +24,21 @@ class EpornerPlugin : MainAPI() {
 
     // Hàm lấy danh sách video trang chủ
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get("$mainUrl/page/$page/").document
-        val home = document.select("div#vidresults div.mb")
-            .mapNotNull { it.toSearchResult() }
+        // Xử lý URL cho phân trang
+        val url = if (page > 1) "$mainUrl/$page/" else mainUrl
+        val document = app.get(url).document
 
-        // Tạo các danh sách cho trang chủ (đã sửa lỗi 'isHorizontal')
+        // Sửa lỗi: Sử dụng selector chung hơn để lấy tất cả video trên trang
+        val home = document.select("div.mb").mapNotNull { it.toSearchResult() }
+
         return newHomePageResponse(
             list = listOf(
                 HomePageList(
-                    name = "Recent HD Porn Videos",
+                    name = "Eporner Videos",
                     list = home
                 )
             ),
-            hasNext = true
+            hasNext = document.selectFirst(".nmnext") != null
         )
     }
 
@@ -51,7 +53,6 @@ class EpornerPlugin : MainAPI() {
 
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
-            // Sửa lỗi: Chỉ thêm quality nếu nó không null
             quality?.let { addQuality(it) }
         }
     }
@@ -69,12 +70,12 @@ class EpornerPlugin : MainAPI() {
     // Hàm tải thông tin chi tiết (metadata)
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
+        val gson = Gson()
 
         // Trích xuất dữ liệu từ script application/ld+json
         val jsonLdScript = document.selectFirst("script[type=\"application/ld+json\"]")?.data()
-        // Sử dụng try-catch để phòng trường hợp JSON không hợp lệ
         val videoData = try {
-            Gson().fromJson(jsonLdScript, VideoObject::class.java)
+            gson.fromJson(jsonLdScript, VideoObject::class.java)
         } catch (e: Exception) {
             null
         }
@@ -103,8 +104,8 @@ class EpornerPlugin : MainAPI() {
         val document = app.get(data).document
         var foundLinks = false
 
-        // Trích xuất link download từ nhiều chất lượng
-        document.select("#downloaddiv .dloaddivcol a").forEach {
+        // Sửa lỗi: Cụ thể hóa selector để chỉ lấy link h264 và tránh trùng lặp
+        document.select("#downloaddiv .dloaddivcol .download-h264 a").forEach {
             val linkUrl = fixUrl(it.attr("href"))
             val qualityText = it.text()
             val quality = Regex("(\\d+p)").find(qualityText)?.groupValues?.get(1) ?: "Default"
@@ -116,7 +117,7 @@ class EpornerPlugin : MainAPI() {
                     url = linkUrl,
                     referer = data,
                     quality = getQualityFromName(quality),
-                    type = ExtractorLinkType.VIDEO // Loại là VIDEO vì link là .mp4
+                    type = ExtractorLinkType.VIDEO
                 )
             )
             foundLinks = true
