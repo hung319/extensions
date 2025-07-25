@@ -8,7 +8,6 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.google.gson.Gson
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 
@@ -23,22 +22,18 @@ class EpornerPlugin : MainAPI() {
         TvType.NSFW
     )
 
-    // Can thiệp để xử lý Cloudflare
-    override val mainPageInterceptors = listOf(CloudflareKiller())
-
     // Hàm lấy danh sách video trang chủ
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get("$mainUrl/page/$page/").document
         val home = document.select("div#vidresults div.mb")
             .mapNotNull { it.toSearchResult() }
 
-        // Tạo các danh sách cho trang chủ
+        // Tạo các danh sách cho trang chủ (đã sửa lỗi 'isHorizontal')
         return newHomePageResponse(
             list = listOf(
                 HomePageList(
                     name = "Recent HD Porn Videos",
-                    list = home,
-                    isHorizontal = true
+                    list = home
                 )
             ),
             hasNext = true
@@ -48,7 +43,6 @@ class EpornerPlugin : MainAPI() {
     // Hàm chuyển đổi Element sang SearchResponse
     private fun Element.toSearchResult(): SearchResponse? {
         val title = this.selectFirst("p.mbtit a")?.text() ?: return null
-        // Đảm bảo href là một URL đầy đủ
         val href = fixUrl(this.selectFirst("a")?.attr("href") ?: return null)
         val posterUrl = this.selectFirst("img")?.let { img ->
             fixUrlNull(img.attr("data-src").ifEmpty { img.attr("src") })
@@ -57,7 +51,8 @@ class EpornerPlugin : MainAPI() {
 
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
-            addQuality(quality)
+            // Sửa lỗi: Chỉ thêm quality nếu nó không null
+            quality?.let { addQuality(it) }
         }
     }
 
@@ -77,16 +72,19 @@ class EpornerPlugin : MainAPI() {
 
         // Trích xuất dữ liệu từ script application/ld+json
         val jsonLdScript = document.selectFirst("script[type=\"application/ld+json\"]")?.data()
-        val gson = Gson()
-        val videoData = gson.fromJson(jsonLdScript, VideoObject::class.java)
+        // Sử dụng try-catch để phòng trường hợp JSON không hợp lệ
+        val videoData = try {
+            Gson().fromJson(jsonLdScript, VideoObject::class.java)
+        } catch (e: Exception) {
+            null
+        }
 
-        val title = videoData.name ?: document.selectFirst("h1")?.text() ?: return null
-        val poster = videoData.thumbnailUrl?.firstOrNull() ?: document.selectFirst("meta[property=\"og:image\"]")?.attr("content")
-        val description = videoData.description
+        val title = videoData?.name ?: document.selectFirst("h1")?.text() ?: return null
+        val poster = videoData?.thumbnailUrl?.firstOrNull() ?: document.selectFirst("meta[property=\"og:image\"]")?.attr("content")
+        val description = videoData?.description
         val tags = document.select("#video-info-tags li.vit-category a").map { it.text() }
         val recommendations = document.select("div#relateddiv div.mb").mapNotNull { it.toSearchResult() }
 
-        // Trả về metadata, url sẽ được dùng trong loadLinks
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
             this.plot = description
@@ -109,7 +107,6 @@ class EpornerPlugin : MainAPI() {
         document.select("#downloaddiv .dloaddivcol a").forEach {
             val linkUrl = fixUrl(it.attr("href"))
             val qualityText = it.text()
-            // Trích xuất chất lượng từ text, ví dụ: "Download MP4 (720p...)" -> "720p"
             val quality = Regex("(\\d+p)").find(qualityText)?.groupValues?.get(1) ?: "Default"
             
             callback(
@@ -117,7 +114,7 @@ class EpornerPlugin : MainAPI() {
                     source = this.name,
                     name = "${this.name} - $quality",
                     url = linkUrl,
-                    referer = data, // referer là trang video
+                    referer = data,
                     quality = getQualityFromName(quality),
                     type = ExtractorLinkType.VIDEO // Loại là VIDEO vì link là .mp4
                 )
