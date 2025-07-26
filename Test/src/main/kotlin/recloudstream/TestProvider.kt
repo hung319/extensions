@@ -2,16 +2,13 @@
 // Author: Coder
 // Date: 2025-07-26
 
-package recloudstream // <-- Đã đổi package name
+package recloudstream
 
-import android.content.Context
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.getQualityFromName
 import org.jsoup.nodes.Element
-
-// <-- Đã xóa class FullxcinemaProvider
 
 class Fullxcinema : MainAPI() {
     override var mainUrl = "https://fullxcinema.com"
@@ -19,26 +16,20 @@ class Fullxcinema : MainAPI() {
     override val hasMainPage = true
     override var lang = "en"
     override val hasDownloadSupport = true
+    
     override val supportedTypes = setOf(
-        TvType.Movie,
         TvType.NSFW
     )
 
     private fun Element.toSearchResponse(): SearchResponse? {
         val href = this.selectFirst("a")?.attr("href") ?: return null
         val title = this.selectFirst("header.entry-header span")?.text() ?: return null
-        // Sửa lỗi lazy loading ảnh, sử dụng data-src
         val posterUrl = this.selectFirst("div.post-thumbnail-container img")?.attr("data-src")
 
-        return MovieSearchResponse(
-            title,
-            href,
-            this@Fullxcinema.name,
-            TvType.Movie,
-            posterUrl,
-            null,
-            null
-        )
+        // FIX: Dùng lại newMovieSearchResponse
+        return newMovieSearchResponse(title, href, this@Fullxcinema.name) {
+            this.posterUrl = posterUrl
+        }
     }
 
     override suspend fun getMainPage(
@@ -49,14 +40,13 @@ class Fullxcinema : MainAPI() {
         val home = document.select("article.loop-video.thumb-block").mapNotNull {
             it.toSearchResponse()
         }
-        return newHomePageResponse(
-            list = HomePageList(
-                name = "Latest Movies",
-                list = home,
-                isHorizontal = true
-            ),
-            hasNext = true
+        
+        val homePageList = HomePageList(
+            name = "Latest Movies",
+            list = home,
         )
+        
+        return newHomePageResponse(homePageList, hasNext = true)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -74,19 +64,19 @@ class Fullxcinema : MainAPI() {
             ?: throw ErrorLoadingException("Could not load title")
         val poster = document.selectFirst("""meta[property="og:image"]""")?.attr("content")
         val description = document.selectFirst("div.video-description div.desc.more")?.text()?.trim()
-        val tags = document.select("div.tags-list a[rel='tag']").map { it.text() }
         val iframeUrl = document.selectFirst("div.responsive-player iframe")?.attr("src")
             ?: throw ErrorLoadingException("Could not find video iframe")
 
+        // FIX: Dùng lại newMovieLoadResponse
         return newMovieLoadResponse(
             name = title,
             url = url,
-            type = TvType.Movie,
+            type = TvType.NSFW, // Type vẫn là NSFW
             dataUrl = iframeUrl
         ) {
             this.posterUrl = poster
             this.plot = description
-            this.tags = tags
+            this.tags = document.select("div.tags-list a[rel='tag']").map { it.text() }
         }
     }
 
@@ -106,8 +96,7 @@ class Fullxcinema : MainAPI() {
                 name = this.name,
                 url = videoUrl,
                 referer = "$mainUrl/",
-                quality = getQualityFromName(""), // Auto quality
-                // Cập nhật isM3u8 sang ExtractorLinkType
+                quality = getQualityFromName(""),
                 type = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
             )
         )
