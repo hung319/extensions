@@ -1,4 +1,4 @@
-package recloudstream // Tên package đã được thêm vào
+package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
@@ -10,6 +10,8 @@ class WowXXXProvider : MainAPI() {
     override var name = "WowXXX"
     // URL chính của trang web
     override var mainUrl = "https://www.wow.xxx"
+    // Báo cho app biết provider này có trang chính
+    override var hasMainPage = true
     // Ngôn ngữ được hỗ trợ
     override var lang = "en"
     // Các loại nội dung được hỗ trợ
@@ -53,7 +55,6 @@ class WowXXXProvider : MainAPI() {
         val title = document.selectFirst("div.headline h1")?.text()?.trim() ?: ""
         val poster = document.selectFirst("video")?.attr("poster")
         
-        // SỬA Ở ĐÂY: Chuyển đổi mỗi tên diễn viên thành đối tượng ActorData
         val actors = document.select("div.item:contains(Pornstars) a.btn_model").map {
             ActorData(Actor(it.text()))
         }
@@ -62,7 +63,7 @@ class WowXXXProvider : MainAPI() {
 
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
-            this.actors = actors // Bây giờ kiểu dữ liệu đã khớp
+            this.actors = actors
             this.tags = tags
         }
     }
@@ -85,7 +86,6 @@ class WowXXXProvider : MainAPI() {
                     url = videoUrl,
                     referer = mainUrl,
                     quality = getQualityFromName(quality),
-                    // Thêm type cho ExtractorLink, đây là một liên kết video trực tiếp
                     type = ExtractorLinkType.VIDEO
                 )
             )
