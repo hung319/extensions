@@ -4,9 +4,8 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import android.widget.Toast
-// Import chính xác cho các hàm tiện ích
-import com.lagradost.cloudstream3.utils.Coroutines.launchOnMain
-import com.lagradost.cloudstream3.CommonActivity.showToast
+// Thêm import cho hàm showToast
+import import com.lagradost.cloudstream3.CommonActivity.showToast
 
 // Định nghĩa lớp provider, kế thừa từ MainAPI
 class WowXXXProvider : MainAPI() {
@@ -25,11 +24,8 @@ class WowXXXProvider : MainAPI() {
 
     // Hàm để lấy danh sách phim cho trang chính, hỗ trợ phân trang
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Chạy lệnh showToast trên luồng UI chính một cách an toàn
-        launchOnMain {
-            // 'it' ở đây chính là Activity hiện tại được cung cấp bởi launchOnMain
-            showToast(it, "Chào mừng đến với WowXXX Provider!", Toast.LENGTH_LONG)
-        }
+        // SỬA LỖI: Cung cấp `app.currentActivity` cho hàm showToast
+        showToast(app.currentActivity, "Chào mừng đến với WowXXX Provider!", Toast.LENGTH_LONG)
 
         // Xây dựng URL dựa trên số trang
         val url = if (page <= 1) mainUrl else "$mainUrl/latest-updates/$page/"
@@ -86,7 +82,7 @@ class WowXXXProvider : MainAPI() {
             it.toSearchResult()
         }
 
-        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
+        return newMovieSearchResponse(title, url, TvType.NSFW) {
             this.posterUrl = poster
             this.actors = actors
             this.tags = tags
