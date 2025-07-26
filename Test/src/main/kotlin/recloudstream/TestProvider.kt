@@ -10,7 +10,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.getQualityFromName
 import org.jsoup.nodes.Element
 
-class Fullxcinema : MainAPI() {
+class Fullxcinema : MainAPI() { // <-- Đã đổi lại tên class thành Fullxcinema
     override var mainUrl = "https://fullxcinema.com"
     override var name = "Fullxcinema"
     override val hasMainPage = true
@@ -26,8 +26,7 @@ class Fullxcinema : MainAPI() {
         val title = this.selectFirst("header.entry-header span")?.text() ?: return null
         val posterUrl = this.selectFirst("div.post-thumbnail-container img")?.attr("data-src")
 
-        // FIX: Dùng lại newMovieSearchResponse
-        return newMovieSearchResponse(title, href, this@Fullxcinema.name) {
+        return newMovieSearchResponse(title, href, this@Fullxcinema.name, TvType.NSFW) {
             this.posterUrl = posterUrl
         }
     }
@@ -67,11 +66,10 @@ class Fullxcinema : MainAPI() {
         val iframeUrl = document.selectFirst("div.responsive-player iframe")?.attr("src")
             ?: throw ErrorLoadingException("Could not find video iframe")
 
-        // FIX: Dùng lại newMovieLoadResponse
         return newMovieLoadResponse(
             name = title,
             url = url,
-            type = TvType.NSFW, // Type vẫn là NSFW
+            type = TvType.NSFW,
             dataUrl = iframeUrl
         ) {
             this.posterUrl = poster
