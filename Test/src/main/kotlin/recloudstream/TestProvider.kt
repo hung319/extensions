@@ -3,7 +3,7 @@ package recloudstream
 // Info: Plugin for phevkl.gg
 // Author: Coder
 // Date: 2025-07-26
-// Version: 2.1 (Modified)
+// Version: 2.4 (Reverted to wildcard imports)
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
@@ -16,8 +16,10 @@ class Phevkl : MainAPI() {
     override val hasMainPage = true
     override var lang = "vi"
     override val hasDownloadSupport = true
+    
+    // Set the supported type to Movie
     override val supportedTypes = setOf(
-        TvType.NSFW
+        TvType.Movie 
     )
 
     override val mainPage = mainPageOf(
@@ -46,15 +48,15 @@ class Phevkl : MainAPI() {
         return newHomePageResponse(request.name, home)
     }
 
-    private fun Element.toSearchResult(): TvShowSearchResponse? {
+    // This function now correctly returns a MovieSearchResponse
+    private fun Element.toSearchResult(): SearchResponse? {
         val link = this.selectFirst("a") ?: return null
         val title = link.attr("title").trim()
         val href = link.attr("href")
-        // Use data-src for lazily loaded images if available, otherwise fallback to src
         val posterUrl = this.selectFirst("img.video-image")?.let { it.attr("data-src").ifEmpty { it.attr("src") } }
 
         return if (href.isNotBlank() && title.isNotBlank()) {
-            newMovieSearchResponse(title, href, TvType.NSFW) {
+            newMovieSearchResponse(title, href, TvType.Movie) {
                 this.posterUrl = posterUrl
             }
         } else {
@@ -70,6 +72,7 @@ class Phevkl : MainAPI() {
         }
     }
 
+    // Changed to use newMovieLoadResponse for single videos
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
         val title = document.selectFirst("h1#page-title")?.text()?.trim() ?: return null
@@ -77,24 +80,17 @@ class Phevkl : MainAPI() {
         val description = document.selectFirst("div.video-description")?.text()?.trim()
         val tags = document.select("div.actress-tag a").map { it.text() }
         
-        val episodes = listOf(
-            newEpisode(url) {
-                this.name = "Xem Phim"
-            }
-        )
-
-        return newTvShowLoadResponse(title, url, TvType.NSFW, episodes) {
+        return newMovieLoadResponse(title, url, TvType.Movie, url) {
             this.posterUrl = poster
             this.plot = description
             this.tags = tags
         }
     }
     
-    // Data class to parse the JSON response from the AJAX call
     private data class AjaxResponse(val type: String?, val player: String?)
 
     override suspend fun loadLinks(
-        data: String, // This is the movie URL
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
@@ -104,7 +100,6 @@ class Phevkl : MainAPI() {
         val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
         var foundLinks = false
 
-        // Iterate through the available servers
         for (server in 1..2) {
             try {
                 val response = app.post(
@@ -120,7 +115,6 @@ class Phevkl : MainAPI() {
                 if (response?.player != null) {
                     val iframeSrc = Jsoup.parse(response.player).selectFirst("iframe")?.attr("src")
                     if (!iframeSrc.isNullOrBlank()) {
-                        // The loadExtractor function is a powerful tool that can handle many video hosts.
                         if (loadExtractor(iframeSrc, data, subtitleCallback, callback)) {
                             foundLinks = true
                         }
