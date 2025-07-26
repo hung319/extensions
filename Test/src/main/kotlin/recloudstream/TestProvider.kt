@@ -52,12 +52,17 @@ class WowXXXProvider : MainAPI() {
         val document = app.get(url).document
         val title = document.selectFirst("div.headline h1")?.text()?.trim() ?: ""
         val poster = document.selectFirst("video")?.attr("poster")
-        val actors = document.select("div.item:contains(Pornstars) a.btn_model").map { it.text() }
+        
+        // SỬA Ở ĐÂY: Chuyển đổi mỗi tên diễn viên thành đối tượng ActorData
+        val actors = document.select("div.item:contains(Pornstars) a.btn_model").map {
+            ActorData(Actor(it.text()))
+        }
+        
         val tags = document.select("div.item:contains(Categories) a.btn_tag").map { it.text() }
 
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
-            this.actors = actors
+            this.actors = actors // Bây giờ kiểu dữ liệu đã khớp
             this.tags = tags
         }
     }
