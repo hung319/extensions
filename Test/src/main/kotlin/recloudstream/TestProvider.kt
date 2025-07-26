@@ -3,6 +3,7 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
+import android.widget.Toast // Thêm import này
 
 // Định nghĩa lớp provider, kế thừa từ MainAPI
 class WowXXXProvider : MainAPI() {
@@ -21,6 +22,9 @@ class WowXXXProvider : MainAPI() {
 
     // Hàm để lấy danh sách phim cho trang chính, hỗ trợ phân trang
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        // Hiển thị thông báo Toast ngay khi người dùng mở plugin
+        showToast("Chào mừng đến với WowXXX Provider!", Toast.LENGTH_LONG)
+
         // Xây dựng URL dựa trên số trang
         val url = if (page <= 1) mainUrl else "$mainUrl/latest-updates/$page/"
         val document = app.get(url).document
@@ -80,7 +84,6 @@ class WowXXXProvider : MainAPI() {
             this.posterUrl = poster
             this.actors = actors
             this.tags = tags
-            // Gán trực tiếp List<SearchResponse> thay vì gói trong HomePageList
             this.recommendations = recommendations 
         }
     }
