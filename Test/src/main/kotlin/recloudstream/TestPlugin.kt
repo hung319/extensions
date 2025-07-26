@@ -1,21 +1,16 @@
 package recloudstream 
 
 import android.content.Context
-import android.widget.Toast
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
+// Import này có thể cần thiết nếu registerMainAPI là extension function
+// import com.lagradost.cloudstream3.plugins.PluginManager.registerMainAPI
 
-@CloudstreamPlugin
-class TestPlugin : Plugin() {
+@CloudstreamPlugin // Đánh dấu đây là plugin
+class TestPlugin: Plugin() { // Kế thừa Plugin
     override fun load(context: Context) {
-        // 🌟 Đăng ký provider
-        registerMainAPI(WowXXXProvider())
-
-        // 💬 Hiện thông báo trong Cloudstream
-        Toast.makeText(
-            context,
-            "✨ Plugin của Yuu Onii-chan đã được bật rồi đó~! 🥰",
-            Toast.LENGTH_LONG
-        ).show()
+        // Tất cả provider nên được thêm vào theo cách này.
+        // Đăng ký AnimeHayProvider
+        registerMainAPI(WowXXXProvider()) // Gọi đăng ký provider ở đây
     }
 }
