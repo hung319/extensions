@@ -21,12 +21,6 @@ class YuuPlugin : Plugin() {
 
         // ❌ Check nếu sai package hoặc sai tên app
         if (currentPackage != expectedPackage || !currentAppName.contains(expectedAppName, ignoreCase = true)) {
-            // Hiện cảnh báo toast
-            Toast.makeText(
-                context,
-                "❌ Plugin từ Yuu Onii-chan từ chối chạy trên app lạ!",
-                Toast.LENGTH_LONG
-            ).show()
 
             // Dừng plugin không cho load
             throw Error("Ứng dụng không hợp lệ: $currentPackage - $currentAppName")
