@@ -26,8 +26,6 @@ class Fullxcinema : MainAPI() {
         val title = this.selectFirst("header.entry-header span")?.text() ?: return null
         val posterUrl = this.selectFirst("div.post-thumbnail-container img")?.attr("data-src")
 
-        // FIX: Sửa lại lời gọi hàm cho đúng với signature
-        // newMovieSearchResponse(name: String, url: String, type: TvType)
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
         }
@@ -68,6 +66,11 @@ class Fullxcinema : MainAPI() {
         val iframeUrl = document.selectFirst("div.responsive-player iframe")?.attr("src")
             ?: throw ErrorLoadingException("Could not find video iframe")
 
+        // FIX: Thêm danh sách đề xuất (recommendations)
+        val recommendations = document.select("div.under-video-block article.loop-video.thumb-block").mapNotNull {
+            it.toSearchResponse()
+        }
+
         return newMovieLoadResponse(
             name = title,
             url = url,
@@ -77,6 +80,7 @@ class Fullxcinema : MainAPI() {
             this.posterUrl = poster
             this.plot = description
             this.tags = document.select("div.tags-list a[rel='tag']").map { it.text() }
+            this.recommendations = recommendations // <-- Thêm danh sách đề xuất vào đây
         }
     }
 
