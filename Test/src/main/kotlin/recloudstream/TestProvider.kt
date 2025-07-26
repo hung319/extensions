@@ -5,7 +5,7 @@ import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import android.widget.Toast
 // Thêm import cho hàm showToast
-import import com.lagradost.cloudstream3.CommonActivity.showToast
+import com.lagradost.cloudstream3.CommonActivity.showToast
 
 // Định nghĩa lớp provider, kế thừa từ MainAPI
 class WowXXXProvider : MainAPI() {
