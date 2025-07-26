@@ -3,7 +3,7 @@ package recloudstream
 // Info: Plugin for phevkl.gg
 // Author: Coder
 // Date: 2025-07-26
-// Version: 2.4 (Reverted to wildcard imports)
+// Version: 2.6 (Updated ExtractorLink API)
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
@@ -17,7 +17,6 @@ class Phevkl : MainAPI() {
     override var lang = "vi"
     override val hasDownloadSupport = true
     
-    // Set the supported type to Movie
     override val supportedTypes = setOf(
         TvType.Movie 
     )
@@ -48,7 +47,6 @@ class Phevkl : MainAPI() {
         return newHomePageResponse(request.name, home)
     }
 
-    // This function now correctly returns a MovieSearchResponse
     private fun Element.toSearchResult(): SearchResponse? {
         val link = this.selectFirst("a") ?: return null
         val title = link.attr("title").trim()
@@ -72,7 +70,6 @@ class Phevkl : MainAPI() {
         }
     }
 
-    // Changed to use newMovieLoadResponse for single videos
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
         val title = document.selectFirst("h1#page-title")?.text()?.trim() ?: return null
@@ -112,14 +109,45 @@ class Phevkl : MainAPI() {
                     )
                 ).parsedSafe<AjaxResponse>()
 
-                if (response?.player != null) {
-                    val iframeSrc = Jsoup.parse(response.player).selectFirst("iframe")?.attr("src")
-                    if (!iframeSrc.isNullOrBlank()) {
-                        if (loadExtractor(iframeSrc, data, subtitleCallback, callback)) {
-                            foundLinks = true
-                        }
+                val iframeSrc = response?.player?.let {
+                    Jsoup.parse(it).selectFirst("iframe")?.attr("src")
+                } ?: continue
+
+                if (iframeSrc.contains("cnd-videosvn.online")) {
+                    val videoId = iframeSrc.substringAfterLast('/')
+                    val m3u8Url = "https://oss1.dlhls.xyz/videos/$videoId/main.m3u8"
+                    callback.invoke(
+                        ExtractorLink(
+                            this.name,
+                            "Server 1 - CDN",
+                            m3u8Url,
+                            mainUrl,
+                            Qualities.Unknown.value,
+                            type = ExtractorLinkType.M3U8 // Updated parameter
+                        )
+                    )
+                    foundLinks = true
+                } else if (iframeSrc.contains("helvid.net")) {
+                    val iframeContent = app.get(iframeSrc, referer = data).document
+                    val playerScript = iframeContent.select("script").find { it.data().contains("jwplayer.key") }?.data()
+                    val m3u8Path = Regex("""file:\s*"(.*?)",""").find(playerScript ?: "")?.groupValues?.get(1)
+
+                    if (m3u8Path != null) {
+                        val m3u8Url = "https://helvid.net$m3u8Path"
+                         callback.invoke(
+                            ExtractorLink(
+                                this.name,
+                                "Server 2 - Helvid",
+                                m3u8Url,
+                                iframeSrc, // Referer should be the iframe page
+                                Qualities.Unknown.value,
+                                type = ExtractorLinkType.M3U8 // Updated parameter
+                            )
+                        )
+                        foundLinks = true
                     }
                 }
+
             } catch (e: Exception) {
                 // Ignore exceptions and try the next server
             }
