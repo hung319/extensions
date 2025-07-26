@@ -19,20 +19,30 @@ class WowXXXProvider : MainAPI() {
         TvType.NSFW
     )
 
-    // Hàm để lấy danh sách phim cho trang chính
+    // Hàm để lấy danh sách phim cho trang chính, hỗ trợ phân trang
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get(mainUrl).document
+        // Xây dựng URL dựa trên số trang
+        val url = if (page <= 1) mainUrl else "$mainUrl/latest-updates/$page/"
+        val document = app.get(url).document
+
         val home = document.select("div.list-videos div.item").mapNotNull {
             it.toSearchResult()
         }
-        return HomePageResponse(listOf(HomePageList("Latest", home)))
+        
+        // Sử dụng newHomePageResponse để tránh cảnh báo và kiểm tra xem có trang tiếp theo không
+        val list = HomePageList("Latest", home)
+        return newHomePageResponse(list, home.isNotEmpty())
     }
 
     // Hàm tiện ích để chuyển đổi một phần tử HTML thành đối tượng MovieSearchResponse
     private fun Element.toSearchResult(): MovieSearchResponse? {
-        val href = this.selectFirst("a")?.attr("href") ?: return null
+        // Lấy URL, đảm bảo URL là tuyệt đối
+        val href = this.selectFirst("a")?.attr("href")?.let { mainUrl + it } ?: return null
         val title = this.selectFirst("strong.title")?.text() ?: return null
-        val posterUrl = this.selectFirst("img.thumb")?.attr("data-src")
+        // Lấy ảnh thumbnail từ data-src hoặc src
+        val posterUrl = this.selectFirst("img.thumb")?.let {
+            it.attr("data-src").ifBlank { it.attr("src") }
+        }
 
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
@@ -49,7 +59,7 @@ class WowXXXProvider : MainAPI() {
         }
     }
 
-    // Hàm tải thông tin chi tiết của một phim
+    // Hàm tải thông tin chi tiết của một phim và danh sách đề xuất
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
         val title = document.selectFirst("div.headline h1")?.text()?.trim() ?: ""
@@ -60,11 +70,18 @@ class WowXXXProvider : MainAPI() {
         }
         
         val tags = document.select("div.item:contains(Categories) a.btn_tag").map { it.text() }
+        
+        // Lấy danh sách phim liên quan (đề xuất)
+        val recommendations = document.select("div.related-video div.list-videos div.item").mapNotNull {
+            it.toSearchResult()
+        }
+        val recList = HomePageList("Related Videos", recommendations)
 
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
             this.actors = actors
             this.tags = tags
+            this.recommendations = listOf(recList) // Thêm danh sách đề xuất
         }
     }
 
