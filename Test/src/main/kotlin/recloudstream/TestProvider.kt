@@ -1,110 +1,90 @@
-// Desription: This is a plugin for the website fullxcinema.com
-// Author: Coder
-// Date: 2025-07-26
-
-package recloudstream
+package recloudstream // Tên package đã được thêm vào
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.getQualityFromName
+import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 
-class Fullxcinema : MainAPI() {
-    override var mainUrl = "https://fullxcinema.com"
-    override var name = "Fullxcinema"
-    override val hasMainPage = true
+// Định nghĩa lớp provider, kế thừa từ MainAPI
+class WowXXXProvider : MainAPI() {
+    // Tên của provider sẽ hiển thị trong ứng dụng
+    override var name = "WowXXX"
+    // URL chính của trang web
+    override var mainUrl = "https://www.wow.xxx"
+    // Ngôn ngữ được hỗ trợ
     override var lang = "en"
-    override val hasDownloadSupport = true
-    
+    // Các loại nội dung được hỗ trợ
     override val supportedTypes = setOf(
         TvType.NSFW
     )
 
-    private fun Element.toSearchResponse(): SearchResponse? {
+    // Hàm để lấy danh sách phim cho trang chính
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val document = app.get(mainUrl).document
+        val home = document.select("div.list-videos div.item").mapNotNull {
+            it.toSearchResult()
+        }
+        return HomePageResponse(listOf(HomePageList("Latest", home)))
+    }
+
+    // Hàm tiện ích để chuyển đổi một phần tử HTML thành đối tượng MovieSearchResponse
+    private fun Element.toSearchResult(): MovieSearchResponse? {
         val href = this.selectFirst("a")?.attr("href") ?: return null
-        val title = this.selectFirst("header.entry-header span")?.text() ?: return null
-        val posterUrl = this.selectFirst("div.post-thumbnail-container img")?.attr("data-src")
+        val title = this.selectFirst("strong.title")?.text() ?: return null
+        val posterUrl = this.selectFirst("img.thumb")?.attr("data-src")
 
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
         }
     }
 
-    override suspend fun getMainPage(
-        page: Int,
-        request : MainPageRequest
-    ): HomePageResponse {
-        val document = app.get("$mainUrl/page/$page/").document
-        val home = document.select("article.loop-video.thumb-block").mapNotNull {
-            it.toSearchResponse()
-        }
-        
-        val homePageList = HomePageList(
-            name = "Latest Movies",
-            list = home,
-        )
-        
-        return newHomePageResponse(homePageList, hasNext = true)
-    }
-
+    // Hàm tìm kiếm phim
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/?s=$query"
-        val document = app.get(searchUrl).document
-        return document.select("article.loop-video.thumb-block").mapNotNull {
-            it.toSearchResponse()
-        }
-    }
-
-    override suspend fun load(url: String): LoadResponse {
+        val url = "$mainUrl/search/$query/relevance/"
         val document = app.get(url).document
 
-        val title = document.selectFirst("h1.entry-title")?.text()?.trim()
-            ?: throw ErrorLoadingException("Could not load title")
-        val poster = document.selectFirst("""meta[property="og:image"]""")?.attr("content")
-        val description = document.selectFirst("div.video-description div.desc.more")?.text()?.trim()
-        val iframeUrl = document.selectFirst("div.responsive-player iframe")?.attr("src")
-            ?: throw ErrorLoadingException("Could not find video iframe")
-
-        // FIX: Thêm danh sách đề xuất (recommendations)
-        val recommendations = document.select("div.under-video-block article.loop-video.thumb-block").mapNotNull {
-            it.toSearchResponse()
-        }
-
-        return newMovieLoadResponse(
-            name = title,
-            url = url,
-            type = TvType.NSFW,
-            dataUrl = iframeUrl
-        ) {
-            this.posterUrl = poster
-            this.plot = description
-            this.tags = document.select("div.tags-list a[rel='tag']").map { it.text() }
-            this.recommendations = recommendations // <-- Thêm danh sách đề xuất vào đây
+        return document.select("div.list-videos div.item").mapNotNull {
+            it.toSearchResult()
         }
     }
 
+    // Hàm tải thông tin chi tiết của một phim
+    override suspend fun load(url: String): LoadResponse {
+        val document = app.get(url).document
+        val title = document.selectFirst("div.headline h1")?.text()?.trim() ?: ""
+        val poster = document.selectFirst("video")?.attr("poster")
+        val actors = document.select("div.item:contains(Pornstars) a.btn_model").map { it.text() }
+        val tags = document.select("div.item:contains(Categories) a.btn_tag").map { it.text() }
+
+        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
+            this.posterUrl = poster
+            this.actors = actors
+            this.tags = tags
+        }
+    }
+
+    // Hàm tải các liên kết xem phim
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val iframeDocument = app.get(data).document
-        val videoUrl = iframeDocument.selectFirst("video > source")?.attr("src")
-            ?: throw ErrorLoadingException("Could not extract video source from iframe")
-
-        callback(
-            ExtractorLink(
-                source = this.name,
-                name = this.name,
-                url = videoUrl,
-                referer = "$mainUrl/",
-                quality = getQualityFromName(""),
-                type = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
+        val document = app.get(data).document
+        document.select("video source").forEach {
+            val videoUrl = it.attr("src")
+            val quality = it.attr("label")
+            callback.invoke(
+                ExtractorLink(
+                    source = this.name,
+                    name = "$name $quality",
+                    url = videoUrl,
+                    referer = mainUrl,
+                    quality = getQualityFromName(quality),
+                    // Thêm type cho ExtractorLink, đây là một liên kết video trực tiếp
+                    type = ExtractorLinkType.VIDEO
+                )
             )
-        )
-
+        }
         return true
     }
 }
