@@ -36,8 +36,8 @@ class WowXXXProvider : MainAPI() {
 
     // Hàm tiện ích để chuyển đổi một phần tử HTML thành đối tượng MovieSearchResponse
     private fun Element.toSearchResult(): MovieSearchResponse? {
-        // Lấy URL, đảm bảo URL là tuyệt đối
-        val href = this.selectFirst("a")?.attr("href")?.let { mainUrl + it } ?: return null
+        // Lấy URL từ thuộc tính href của thẻ a
+        val href = this.selectFirst("a")?.attr("href") ?: return null
         val title = this.selectFirst("strong.title")?.text() ?: return null
         // Lấy ảnh thumbnail từ data-src hoặc src
         val posterUrl = this.selectFirst("img.thumb")?.let {
@@ -75,13 +75,13 @@ class WowXXXProvider : MainAPI() {
         val recommendations = document.select("div.related-video div.list-videos div.item").mapNotNull {
             it.toSearchResult()
         }
-        val recList = HomePageList("Related Videos", recommendations)
 
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
             this.actors = actors
             this.tags = tags
-            this.recommendations = listOf(recList) // Thêm danh sách đề xuất
+            // Gán trực tiếp List<SearchResponse> thay vì gói trong HomePageList
+            this.recommendations = recommendations 
         }
     }
 
