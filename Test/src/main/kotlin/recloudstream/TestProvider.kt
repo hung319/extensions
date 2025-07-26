@@ -22,8 +22,8 @@ class WowXXXProvider : MainAPI() {
 
     // Hàm để lấy danh sách phim cho trang chính, hỗ trợ phân trang
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Hiển thị thông báo Toast ngay khi người dùng mở plugin
-        showToast("Chào mừng đến với WowXXX Provider!", Toast.LENGTH_LONG)
+        // Dòng mã đã sửa
+        showToast(app.currentActivity, "Chào mừng đến với WowXXX Provider!", Toast.LENGTH_LONG)
 
         // Xây dựng URL dựa trên số trang
         val url = if (page <= 1) mainUrl else "$mainUrl/latest-updates/$page/"
