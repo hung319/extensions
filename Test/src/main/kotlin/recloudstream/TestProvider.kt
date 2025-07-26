@@ -3,7 +3,7 @@ package recloudstream
 // Info: Plugin for phevkl.gg
 // Author: Coder
 // Date: 2025-07-26
-// Version: 2.6 (Updated ExtractorLink API)
+// Version: 2.7 (Added Recommendations & Reordered Main Page)
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
@@ -22,12 +22,12 @@ class Phevkl : MainAPI() {
     )
 
     override val mainPage = mainPageOf(
+        "$mainUrl/page/%d/" to "Mới cập nhật",
         "$mainUrl/phim-sex-hay/" to "Phim sex hay",
         "$mainUrl/phim-sex-viet-nam/" to "Phim sex Việt Nam",
         "$mainUrl/phim-sex-trung-quoc/" to "Phim sex Trung Quốc",
         "$mainUrl/phim-sex-onlyfans/" to "Sex Onlyfans",
-        "$mainUrl/phim-sex-tiktok/" to "Sex Tiktok",
-        "$mainUrl/page/%d/" to "Mới cập nhật",
+        "$mainUrl/phim-sex-tiktok/" to "Sex Tiktok"
     )
 
     override suspend fun getMainPage(
@@ -77,10 +77,16 @@ class Phevkl : MainAPI() {
         val description = document.selectFirst("div.video-description")?.text()?.trim()
         val tags = document.select("div.actress-tag a").map { it.text() }
         
+        // Extract recommendations from the "Phim sex liên quan" section
+        val recommendations = document.select("div#video-list div.video-item").mapNotNull {
+            it.toSearchResult()
+        }
+        
         return newMovieLoadResponse(title, url, TvType.Movie, url) {
             this.posterUrl = poster
             this.plot = description
             this.tags = tags
+            this.recommendations = recommendations
         }
     }
     
@@ -123,7 +129,7 @@ class Phevkl : MainAPI() {
                             m3u8Url,
                             mainUrl,
                             Qualities.Unknown.value,
-                            type = ExtractorLinkType.M3U8 // Updated parameter
+                            type = ExtractorLinkType.M3U8
                         )
                     )
                     foundLinks = true
@@ -139,9 +145,9 @@ class Phevkl : MainAPI() {
                                 this.name,
                                 "Server 2 - Helvid",
                                 m3u8Url,
-                                iframeSrc, // Referer should be the iframe page
+                                iframeSrc,
                                 Qualities.Unknown.value,
-                                type = ExtractorLinkType.M3U8 // Updated parameter
+                                type = ExtractorLinkType.M3U8
                             )
                         )
                         foundLinks = true
