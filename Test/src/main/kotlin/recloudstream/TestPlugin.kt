@@ -3,10 +3,6 @@ package recloudstream
 import android.content.Context
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
-import com.lagradost.cloudstream3.CommonActivity.showToast
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import android.widget.Toast
 
 @CloudstreamPlugin
 class YuuPlugin : Plugin() {
@@ -38,12 +34,5 @@ class YuuPlugin : Plugin() {
 
         // ✅ Nếu hợp lệ, đăng ký provider như thường
         registerMainAPI(WowXXXProvider())
-
-        // 🔔 Gửi toast xác nhận
-        withContext(Dispatchers.Main) {
-            CommonActivity.activity?.let { activity ->
-                showToast(activity, "Free Repo From SIX [H4RS]\nTelegram/Discord: hung319", Toast.LENGTH_LONG)
-            }
-        }
     }
 }
