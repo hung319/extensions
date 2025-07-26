@@ -3,12 +3,6 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-import android.widget.Toast
-// Import ĐÚNG cho showToast
-import com.lagradost.cloudstream3.CommonActivity.showToast
-// Import tiêu chuẩn cho Coroutines
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 // Định nghĩa lớp provider, kế thừa từ MainAPI
 class WowXXXProvider : MainAPI() {
@@ -27,14 +21,6 @@ class WowXXXProvider : MainAPI() {
 
     // Hàm để lấy danh sách phim cho trang chính, hỗ trợ phân trang
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Sử dụng withContext để chuyển sang luồng UI chính
-        withContext(Dispatchers.Main) {
-            // Lấy activity hiện tại và hiển thị toast
-            // Sử dụng ?.let để đảm bảo activity không bị null
-            CommonActivity.activity?.let { activity ->
-                showToast(activity, "Free Repo From SIX [H4RS]\nTelegram/Discord: hung319", Toast.LENGTH_LONG)
-            }
-        }
 
         // Xây dựng URL dựa trên số trang
         val url = if (page <= 1) mainUrl else "$mainUrl/latest-updates/$page/"
