@@ -7,7 +7,7 @@ import com.lagradost.cloudstream3.plugins.Plugin
 @CloudstreamPlugin
 class YuuPlugin : Plugin() {
     override fun load(context: Context) {
-        val expectedPackage = "com.lagradost.cloudstream3"
+        val expectedPackage = "com.lagradost"
         val expectedAppName = "CloudStream"
 
         // 🔍 Lấy package hiện tại
