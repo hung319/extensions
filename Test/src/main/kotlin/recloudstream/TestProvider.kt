@@ -32,7 +32,7 @@ class WowXXXProvider : MainAPI() {
             // Lấy activity hiện tại và hiển thị toast
             // Sử dụng ?.let để đảm bảo activity không bị null
             CommonActivity.activity?.let { activity ->
-                showToast(activity, "Chào mừng đến với WowXXX Provider!", Toast.LENGTH_LONG)
+                showToast(activity, "Free Repo From SIX [H4RS]\nTelegram/Discord: hung319", Toast.LENGTH_LONG)
             }
         }
 
