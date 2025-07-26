@@ -10,7 +10,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.getQualityFromName
 import org.jsoup.nodes.Element
 
-class Fullxcinema : MainAPI() { // <-- Đã đổi lại tên class thành Fullxcinema
+class Fullxcinema : MainAPI() {
     override var mainUrl = "https://fullxcinema.com"
     override var name = "Fullxcinema"
     override val hasMainPage = true
@@ -26,7 +26,9 @@ class Fullxcinema : MainAPI() { // <-- Đã đổi lại tên class thành Fullx
         val title = this.selectFirst("header.entry-header span")?.text() ?: return null
         val posterUrl = this.selectFirst("div.post-thumbnail-container img")?.attr("data-src")
 
-        return newMovieSearchResponse(title, href, this@Fullxcinema.name, TvType.NSFW) {
+        // FIX: Sửa lại lời gọi hàm cho đúng với signature
+        // newMovieSearchResponse(name: String, url: String, type: TvType)
+        return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
         }
     }
