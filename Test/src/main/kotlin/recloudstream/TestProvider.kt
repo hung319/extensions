@@ -284,47 +284,28 @@ class TvHayProvider : MainAPI() {
 
             val unpacked = getAndUnpack(script)
             
-            // <<<< BẮT ĐẦU THAY ĐỔI >>>>
-            // Phương án 1: Thử tìm link m3u8 trực tiếp trong script đã giải mã
-            val m3u8Link = Regex("""sources:\s*\[\{\s*file:\s*['"]([^'"]+\.m3u8)['"]""").find(unpacked)?.groupValues?.get(1)
-            if (m3u8Link != null) {
-                logBuilder.appendLine("3. Found direct .m3u8 link: $m3u8Link")
-                callback(
-                    ExtractorLink(
-                        name = this.name,
-                        source = document.selectFirst("a.activesv")?.attr("title")?.replace("Server ", "") ?: "Direct",
-                        url = m3u8Link,
-                        referer = mainUrl,
-                        quality = Qualities.Unknown.value,
-                        type = ExtractorLinkType.M3U8 
-                    )
-                )
-                return true
-            }
-
-            // Phương án 2: Nếu không có link trực tiếp, quay lại logic iframe
-            logBuilder.appendLine("3b. No direct .m3u8 link found. Falling back to iframe logic.")
-            val iframeUrl = Regex("""<iframe src="([^"]+)""").find(unpacked)?.groupValues?.get(1)
-                ?: throw Exception(logBuilder.appendLine("Error: Could not extract iframeUrl or direct link from unpacked script.").toString())
-            logBuilder.appendLine("4. Extracted iframeUrl: $iframeUrl")
-
+            // <<<< THAY ĐỔI REGEX TẠI ĐÂY >>>>
+            // Regex mới tìm URL được gán cho thuộc tính .src
+            val iframeUrl = Regex("""['"](https://tvhay\.io/embed/embedsp\.php\?link=[^'"]+)['"]""").find(unpacked)?.groupValues?.get(1)
+                ?: throw Exception(logBuilder.appendLine("Error: Could not extract iframeUrl from unpacked script.").toString())
+            logBuilder.appendLine("3. Extracted iframeUrl: $iframeUrl")
+            
             val iframeDoc = app.get(iframeUrl, referer = "$mainUrl/").document
             val iframeScript = iframeDoc.select("script").find { it.data().contains("const idfile_enc") }?.data()
                 ?: throw Exception(logBuilder.appendLine("Error: Could not find script with encrypted data in iframe.").toString())
-            logBuilder.appendLine("5. Found script with encrypted data.")
-            // <<<< KẾT THÚC THAY ĐỔI >>>>
-
+            logBuilder.appendLine("4. Found script with encrypted data.")
+            
             val idfileEnc = Regex("""const idfile_enc = "([^"]+)""").find(iframeScript)?.groupValues?.get(1) ?: throw Exception("idfile_enc not found")
             val iduserEnc = Regex("""const idUser_enc = "([^"]+)""").find(iframeScript)?.groupValues?.get(1) ?: throw Exception("idUser_enc not found")
             val domainApi = Regex("""const DOMAIN_API = '([^']+)""").find(iframeScript)?.groupValues?.get(1) ?: throw Exception("DOMAIN_API not found")
-            logBuilder.appendLine("6. Extracted domainApi: $domainApi")
+            logBuilder.appendLine("5. Extracted domainApi: $domainApi")
 
             val ip = app.get("https://api.ipify.org/").text
-            logBuilder.appendLine("7. Got IP: $ip")
+            logBuilder.appendLine("6. Got IP: $ip")
 
             val idfile = K_Utility.decrypt(idfileEnc, "jcLycoRJT6OWjoWspgLMOZwS3aSS0lEn") ?: throw Exception(logBuilder.appendLine("Error: Failed to decrypt idfile").toString())
             val iduser = K_Utility.decrypt(iduserEnc, "PZZ3J3LDbLT0GY7qSA5wW5vchqgpO36O") ?: throw Exception(logBuilder.appendLine("Error: Failed to decrypt iduser").toString())
-            logBuilder.appendLine("8. Decrypted idfile: $idfile, iduser: $iduser")
+            logBuilder.appendLine("7. Decrypted idfile: $idfile, iduser: $iduser")
 
             val payload = Payload(
                 idfile = idfile,
@@ -343,17 +324,17 @@ class TvHayProvider : MainAPI() {
             
             val encryptedPayload = aesEncrypt(payload.toJson(), "vlVbUQhkOhoSfyteyzGeeDzU0BHoeTyZ") ?: throw Exception(logBuilder.appendLine("Error: Failed to encrypt payload").toString())
             val finalData = "$encryptedPayload|${md5(encryptedPayload + "KRWN3AdgmxEMcd2vLN1ju9qKe8Feco5h")}"
-            logBuilder.appendLine("9. Payload created and encrypted.")
+            logBuilder.appendLine("8. Payload created and encrypted.")
 
             val response = app.post(
                 url = "$domainApi/playiframe",
                 data = mapOf("data" to finalData)
             ).parsed<ResponseToken>()
-            logBuilder.appendLine("10. API Response: $response")
+            logBuilder.appendLine("9. API Response: $response")
 
             if (response.status == 1 && response.type == "url-m3u8-encv1" && response.data != null) {
                 val decryptedLink = K_Utility.decrypt(response.data.replace("\"", ""), "oJwmvmVBajMaRCTklxbfjavpQO7SZpsL") ?: throw Exception(logBuilder.appendLine("Error: Failed to decrypt final M3U8 link").toString())
-                logBuilder.appendLine("11. Successfully decrypted final link: $decryptedLink")
+                logBuilder.appendLine("10. Successfully decrypted final link: $decryptedLink")
                 
                 callback(
                     ExtractorLink(
