@@ -3,12 +3,8 @@ package recloudstream
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import org.jsoup.nodes.Element
-import com.lagradost.nicehttp.Requests
-import com.lagradost.nicehttp.RequestBodyTypes
-import okhttp3.Interceptor
-import okhttp3.Response
 import java.security.MessageDigest
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
@@ -16,7 +12,6 @@ import javax.crypto.spec.SecretKeySpec
 import kotlin.text.Charsets
 
 // ================= K_UTILITY CHO MÃ HÓA/GIẢI MÃ =================
-// Lớp và các hàm tiện ích được viết lại để mô phỏng CryptoJS.java
 private object K_Utility {
     private const val HASH_CIPHER = "AES/CBC/PKCS5Padding"
     private const val KDF_DIGEST = "MD5"
@@ -84,7 +79,6 @@ private fun aesEncrypt(data: String, key: String): String? {
         null
     }
 }
-
 
 // ================= DATA CLASSES CHO PAYLOAD =================
 private data class ResponseToken(
@@ -240,10 +234,10 @@ class TvHayProvider : MainAPI() {
         
         if (isTvSeries) {
             val episodes = watchPageDoc.select("ul.episodelist li a").map {
-                Episode(
-                    data = it.attr("href"),
+                // SỬA LỖI 1: Dùng newEpisode
+                newEpisode(it.attr("href")) {
                     name = it.text().trim()
-                )
+                }
             }.reversed()
 
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
@@ -254,9 +248,10 @@ class TvHayProvider : MainAPI() {
             }
         } else { 
              val movieServers = servers.mapNotNull {
-                val serverUrl = it.attr("href")
-                val serverName = it.attr("title").replace("Server ", "").trim()
-                Episode(data = serverUrl, name = serverName)
+                // SỬA LỖI 1: Dùng newEpisode
+                newEpisode(it.attr("href")) {
+                    name = it.attr("title").replace("Server ", "").trim()
+                }
             }
             return newMovieLoadResponse(title, url, TvType.Movie, movieServers) {
                 this.posterUrl = posterUrl
@@ -306,13 +301,14 @@ class TvHayProvider : MainAPI() {
                 features = JWPlayerFeatures(true, true, true)
             )
         )
-        val encryptedPayload = aesEncrypt(parseJson(payload), "vlVbUQhkOhoSfyteyzGeeDzU0BHoeTyZ") ?: return false
+        // SỬA LỖI 2: Chuyển payload thành chuỗi JSON
+        val encryptedPayload = aesEncrypt(toJson(payload), "vlVbUQhkOhoSfyteyzGeeDzU0BHoeTyZ") ?: return false
         val finalData = "$encryptedPayload|${md5(encryptedPayload + "KRWN3AdgmxEMcd2vLN1ju9qKe8Feco5h")}"
 
+        // SỬA LỖI 3 & 4: Sửa lại cú pháp app.post
         val response = app.post(
-            "$domainApi/playiframe",
-            data = mapOf("data" to finalData),
-            requestBodyType = RequestBodyTypes.Form
+            url = "$domainApi/playiframe",
+            data = mapOf("data" to finalData)
         ).parsed<ResponseToken>()
 
         if (response.status == 1 && response.type == "url-m3u8-encv1" && response.data != null) {
@@ -325,7 +321,7 @@ class TvHayProvider : MainAPI() {
                     url = decryptedLink,
                     referer = "https://play.plhqtvhay.xyz/",
                     quality = Qualities.Unknown.value,
-                    type = ExtractorLinkType.M3U8 // <<<< ĐÃ THAY ĐỔI Ở ĐÂY
+                    type = ExtractorLinkType.M3U8 
                 )
             )
             return true
