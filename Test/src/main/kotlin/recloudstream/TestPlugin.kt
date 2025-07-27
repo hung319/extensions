@@ -25,6 +25,6 @@ class TestPlugin: Plugin() { // Kế thừa Plugin
         }
 
         // ✅ Nếu hợp lệ, chạy tiếp
-        registerMainAPI(TvPhimBidProvider())
+        registerMainAPI(TvPhimProvider())
     }
 }
