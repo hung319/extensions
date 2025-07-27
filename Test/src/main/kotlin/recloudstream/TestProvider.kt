@@ -157,6 +157,7 @@ class TvHayProvider : MainAPI() {
     override var lang = "vi"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
     
+    // ... các hàm getMainPage, search, load giữ nguyên ...
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
@@ -268,25 +269,39 @@ class TvHayProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // <<<< BIẾN LOG ĐỂ GOM TẤT CẢ LOG >>>>
+        val logBuilder = StringBuilder()
+        logBuilder.appendLine("loadLinks called with data: $data")
+
         try {
             val document = app.get(data).document
-            
-            val script = document.select("script").find { it.data().contains("eval(function(w,i,s,e)") }?.data() ?: return false
+            logBuilder.appendLine("1. Fetched document for data url.")
+
+            val script = document.select("script").find { it.data().contains("eval(function(w,i,s,e)") }?.data()
+                ?: throw Exception(logBuilder.appendLine("Error: eval script not found on page.").toString())
+            logBuilder.appendLine("2. Found eval script.")
+
             val unpacked = getAndUnpack(script)
-            
-            val iframeUrl = Regex("""<iframe src="([^"]+)""").find(unpacked)?.groupValues?.get(1) ?: return false
+            val iframeUrl = Regex("""<iframe src="([^"]+)""").find(unpacked)?.groupValues?.get(1)
+                ?: throw Exception(logBuilder.appendLine("Error: Could not extract iframeUrl from unpacked script.").toString())
+            logBuilder.appendLine("3. Extracted iframeUrl: $iframeUrl")
 
             val iframeDoc = app.get(iframeUrl, referer = "$mainUrl/").document
-            val iframeScript = iframeDoc.select("script").find { it.data().contains("const idfile_enc") }?.data() ?: return false
+            val iframeScript = iframeDoc.select("script").find { it.data().contains("const idfile_enc") }?.data()
+                ?: throw Exception(logBuilder.appendLine("Error: Could not find script with encrypted data in iframe.").toString())
+            logBuilder.appendLine("4. Found script with encrypted data.")
 
-            val idfileEnc = Regex("""const idfile_enc = "([^"]+)""").find(iframeScript)?.groupValues?.get(1) ?: return false
-            val iduserEnc = Regex("""const idUser_enc = "([^"]+)""").find(iframeScript)?.groupValues?.get(1) ?: return false
-            val domainApi = Regex("""const DOMAIN_API = '([^']+)""").find(iframeScript)?.groupValues?.get(1) ?: return false
+            val idfileEnc = Regex("""const idfile_enc = "([^"]+)""").find(iframeScript)?.groupValues?.get(1) ?: throw Exception("idfile_enc not found")
+            val iduserEnc = Regex("""const idUser_enc = "([^"]+)""").find(iframeScript)?.groupValues?.get(1) ?: throw Exception("idUser_enc not found")
+            val domainApi = Regex("""const DOMAIN_API = '([^']+)""").find(iframeScript)?.groupValues?.get(1) ?: throw Exception("DOMAIN_API not found")
+            logBuilder.appendLine("5. Extracted domainApi: $domainApi")
 
             val ip = app.get("https://api.ipify.org/").text
-            
-            val idfile = K_Utility.decrypt(idfileEnc, "jcLycoRJT6OWjoWspgLMOZwS3aSS0lEn") ?: return false
-            val iduser = K_Utility.decrypt(iduserEnc, "PZZ3J3LDbLT0GY7qSA5wW5vchqgpO36O") ?: return false
+            logBuilder.appendLine("6. Got IP: $ip")
+
+            val idfile = K_Utility.decrypt(idfileEnc, "jcLycoRJT6OWjoWspgLMOZwS3aSS0lEn") ?: throw Exception(logBuilder.appendLine("Error: Failed to decrypt idfile").toString())
+            val iduser = K_Utility.decrypt(iduserEnc, "PZZ3J3LDbLT0GY7qSA5wW5vchqgpO36O") ?: throw Exception(logBuilder.appendLine("Error: Failed to decrypt iduser").toString())
+            logBuilder.appendLine("7. Decrypted idfile: $idfile, iduser: $iduser")
 
             val payload = Payload(
                 idfile = idfile,
@@ -303,16 +318,19 @@ class TvHayProvider : MainAPI() {
                 )
             )
             
-            val encryptedPayload = aesEncrypt(payload.toJson(), "vlVbUQhkOhoSfyteyzGeeDzU0BHoeTyZ") ?: return false
+            val encryptedPayload = aesEncrypt(payload.toJson(), "vlVbUQhkOhoSfyteyzGeeDzU0BHoeTyZ") ?: throw Exception(logBuilder.appendLine("Error: Failed to encrypt payload").toString())
             val finalData = "$encryptedPayload|${md5(encryptedPayload + "KRWN3AdgmxEMcd2vLN1ju9qKe8Feco5h")}"
+            logBuilder.appendLine("8. Payload created and encrypted.")
 
             val response = app.post(
                 url = "$domainApi/playiframe",
                 data = mapOf("data" to finalData)
             ).parsed<ResponseToken>()
+            logBuilder.appendLine("9. API Response: $response")
 
             if (response.status == 1 && response.type == "url-m3u8-encv1" && response.data != null) {
-                val decryptedLink = K_Utility.decrypt(response.data.replace("\"", ""), "oJwmvmVBajMaRCTklxbfjavpQO7SZpsL") ?: return false
+                val decryptedLink = K_Utility.decrypt(response.data.replace("\"", ""), "oJwmvmVBajMaRCTklxbfjavpQO7SZpsL") ?: throw Exception(logBuilder.appendLine("Error: Failed to decrypt final M3U8 link").toString())
+                logBuilder.appendLine("10. Successfully decrypted final link: $decryptedLink")
                 
                 callback(
                     ExtractorLink(
@@ -325,12 +343,13 @@ class TvHayProvider : MainAPI() {
                     )
                 )
                 return true
+            } else {
+                 throw Exception(logBuilder.appendLine("Error: API call was not successful or returned invalid data. Status: ${response.status}, Type: ${response.type}").toString())
             }
         } catch (e: Exception) {
-            // <<<< ĐÃ BỎ logError(e) THEO YÊU CẦU >>>>
-            throw e
+            val finalLog = logBuilder.appendLine("Final Error: ${e.message}").toString()
+            throw Exception(finalLog, e) // Ném ra Exception mới chứa toàn bộ log và exception gốc
         }
-        return false
     }
     
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor {
