@@ -2,7 +2,7 @@ package recloudstream
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.network.CloudflareKiller // <--- ĐÃ THAY ĐỔI ĐƯỜNG DẪN
+import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
@@ -10,7 +10,6 @@ import org.jsoup.nodes.Element
 
 // TvPhim.bid Provider
 class TvPhimBidProvider : MainAPI() {
-    // Thông tin cơ bản của provider
     override var mainUrl = "https://tvphim.bid"
     override var name = "TVPhim"
     override val hasMainPage = true
@@ -20,21 +19,35 @@ class TvPhimBidProvider : MainAPI() {
         TvType.Movie,
         TvType.TvSeries,
     )
-    
-    // Khởi tạo CloudflareKiller để sử dụng cho tất cả request
+
     private val cloudflareKiller = CloudflareKiller()
 
-    /**
-     * Hàm này dùng để tải dữ liệu cho trang chủ của plugin
-     */
+    // =================== CẬP NHẬT SELECTORS ===================
+
+    // Selector cho các mục trên trang chủ (Phim lẻ mới, Phim bộ mới,...)
+    private val homePageSectionSelector = "div.left-content > div.section"
+    // Selector cho danh sách phim trong mỗi mục
+    private val movieItemSelector = "div.movies-list > div.item.movies"
+    // Selector cho danh sách phim trên trang tìm kiếm
+    private val searchResultSelector = "div.page-content div.movies-list > div.item.movies"
+    
+    // ==========================================================
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(mainUrl, interceptor = cloudflareKiller).document
         val homePageList = ArrayList<HomePageList>()
+        
+        // Sử dụng selector đã được cập nhật
+        val sections = document.select(homePageSectionSelector)
 
-        val sections = document.select("div.section")
+        if (sections.isEmpty()) {
+            throw Exception("Lỗi Trang Chủ: Không tìm thấy mục phim nào. HTML nhận được: ${document.html()}")
+        }
+
         sections.forEach { section ->
-            val title = section.selectFirst("div.section-title")?.text()?.trim() ?: "Unknown"
-            val movies = section.select("div.item.movies").mapNotNull { it.toSearchResult() }
+            val title = section.selectFirst("div.section-title")?.text()?.trim() ?: "N/A"
+            // Sử dụng selector đã được cập nhật
+            val movies = section.select(movieItemSelector).mapNotNull { it.toSearchResult() }
             if (movies.isNotEmpty()) {
                 homePageList.add(HomePageList(title, movies))
             }
@@ -43,40 +56,38 @@ class TvPhimBidProvider : MainAPI() {
         return HomePageResponse(homePageList)
     }
 
-    /**
-     * Hàm tiện ích để chuyển đổi một phần tử HTML thành đối tượng SearchResponse
-     */
     private fun Element.toSearchResult(): SearchResponse? {
-        val title = this.selectFirst("div.name a")?.text() ?: return null
-        val href = fixUrl(this.selectFirst("a")?.attr("href") ?: return null)
+        // Selector bên trong item không đổi vì đã khá tối ưu
+        val linkElement = this.selectFirst("a") ?: return null
+        val href = fixUrl(linkElement.attr("href"))
+        val name = linkElement.attr("title")
         val posterUrl = this.selectFirst("div.poster img")?.attr("src")
 
-        return newMovieSearchResponse(title, href, TvType.Movie) {
+        return newMovieSearchResponse(name, href, TvType.Movie) {
             this.posterUrl = posterUrl
         }
     }
 
-    /**
-     * Hàm này được gọi khi người dùng thực hiện tìm kiếm
-     */
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/tim-kiem/$query/"
         val document = app.get(searchUrl, interceptor = cloudflareKiller).document
 
-        return document.select("div.movies-list div.item.movies").mapNotNull {
-            it.toSearchResult()
+        // Sử dụng selector đã được cập nhật
+        val searchResults = document.select(searchResultSelector)
+        
+        if (searchResults.isEmpty() && document.selectFirst("div.no-results") == null) {
+            throw Exception("Lỗi Tìm Kiếm: Không tìm thấy kết quả. HTML nhận được: ${document.html()}")
         }
+
+        return searchResults.mapNotNull { it.toSearchResult() }
     }
 
-    /**
-     * Hàm này được gọi khi người dùng nhấn vào một bộ phim để xem chi tiết
-     */
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url, interceptor = cloudflareKiller).document
 
         val title = document.selectFirst("h1[itemprop=name]")?.text()?.trim() ?: "N/A"
         val poster = document.selectFirst("div.poster img")?.attr("src")
-        val plot = document.selectFirst("div.entry-content p")?.text()?.trim()
+        val plot = document.selectFirst("div.entry-content p, div.entry-content")?.text()?.trim()
 
         val isTvSeries = document.select("div#list_episodes").isNotEmpty()
 
@@ -84,11 +95,8 @@ class TvPhimBidProvider : MainAPI() {
             val episodes = document.select("div#list_episodes a").map {
                 val epUrl = fixUrl(it.attr("href"))
                 val epName = it.text().trim()
-                newEpisode(epUrl) {
-                    this.name = epName
-                }
+                newEpisode(epUrl) { this.name = epName }
             }.reversed()
-
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = poster
                 this.plot = plot
@@ -101,13 +109,8 @@ class TvPhimBidProvider : MainAPI() {
         }
     }
 
-    private data class PlayerResponse(
-        @JsonProperty("file") val file: String,
-    )
+    private data class PlayerResponse(@JsonProperty("file") val file: String)
 
-    /**
-     * Hàm quan trọng nhất: Lấy link video trực tiếp
-     */
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -115,35 +118,26 @@ class TvPhimBidProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val episodePage = app.get(data, interceptor = cloudflareKiller).document
-
-        val script = episodePage.select("script").find {
-            it.data().contains("var film_id")
-        }?.data() ?: return false
-
-        val filmId = Regex("""var film_id = '(\d+)'""").find(script)?.groupValues?.get(1)
-        val tapPhim = Regex("""var tập_phim = '(.+?)'""").find(script)?.groupValues?.get(1)
+        val script = episodePage.select("script:containsData(var film_id)").firstOrNull()?.data() ?: return false
+        
+        val filmId = Regex("""var film_id\s*=\s*'(\d+)'""").find(script)?.groupValues?.get(1)
+        val tapPhim = Regex("""var tập_phim\s*=\s*'(.+?)'""").find(script)?.groupValues?.get(1)
 
         if (filmId == null || tapPhim == null) return false
 
         val playerUrl = "$mainUrl/player.php"
         val playerResponse = app.post(
             playerUrl,
-            headers = mapOf("X-Requested-With" to "XMLHttpRequest"),
+            headers = mapOf("X-Requested-With" to "XMLHttpRequest", "Referer" to data),
             data = mapOf("film_id" to filmId, "tap_phim" to tapPhim),
             interceptor = cloudflareKiller
         ).parsed<PlayerResponse>()
-
+        
         callback.invoke(
             ExtractorLink(
-                source = this.name,
-                name = this.name,
-                url = playerResponse.file,
-                referer = mainUrl,
-                quality = Qualities.Unknown.value,
-                type = ExtractorLinkType.M3U8
+                this.name, this.name, playerResponse.file, mainUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8
             )
         )
-
         return true
     }
 }
