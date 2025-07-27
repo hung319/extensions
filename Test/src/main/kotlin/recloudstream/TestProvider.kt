@@ -268,7 +268,6 @@ class TvHayProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // <<<< BẮT ĐẦU KHỐI TRY-CATCH >>>>
         try {
             val document = app.get(data).document
             
@@ -327,10 +326,9 @@ class TvHayProvider : MainAPI() {
                 )
                 return true
             }
-            // <<<< KẾT THÚC KHỐI TRY-CATCH >>>>
         } catch (e: Exception) {
-            logError(e) // Ghi lại lỗi để dễ dàng debug
-            throw e     // Ném lại lỗi để hệ thống gom log
+            // <<<< ĐÃ BỎ logError(e) THEO YÊU CẦU >>>>
+            throw e
         }
         return false
     }
