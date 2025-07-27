@@ -2,6 +2,7 @@ package recloudstream
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.utils.CloudflareKiller // Thêm import cho CloudflareKiller
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
@@ -19,11 +20,19 @@ class TvPhimBidProvider : MainAPI() {
         TvType.Movie,
         TvType.TvSeries,
     )
+    
+    // Khởi tạo CloudflareKiller để sử dụng cho tất cả request
+    private val cloudflareKiller = CloudflareKiller()
 
+    /**
+     * Hàm này dùng để tải dữ liệu cho trang chủ của plugin
+     */
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get(mainUrl).document
+        // Thêm interceptor vào request để vượt qua Cloudflare
+        val document = app.get(mainUrl, interceptor = cloudflareKiller).document
         val homePageList = ArrayList<HomePageList>()
 
+        // Lấy các mục phim như "Phim Lẻ Mới", "Phim Bộ Mới"
         val sections = document.select("div.section")
         sections.forEach { section ->
             val title = section.selectFirst("div.section-title")?.text()?.trim() ?: "Unknown"
@@ -36,6 +45,9 @@ class TvPhimBidProvider : MainAPI() {
         return HomePageResponse(homePageList)
     }
 
+    /**
+     * Hàm tiện ích để chuyển đổi một phần tử HTML thành đối tượng SearchResponse
+     */
     private fun Element.toSearchResult(): SearchResponse? {
         val title = this.selectFirst("div.name a")?.text() ?: return null
         val href = fixUrl(this.selectFirst("a")?.attr("href") ?: return null)
@@ -46,17 +58,25 @@ class TvPhimBidProvider : MainAPI() {
         }
     }
 
+    /**
+     * Hàm này được gọi khi người dùng thực hiện tìm kiếm
+     */
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/tim-kiem/$query/"
-        val document = app.get(searchUrl).document
+        // Thêm interceptor vào request để vượt qua Cloudflare
+        val document = app.get(searchUrl, interceptor = cloudflareKiller).document
 
         return document.select("div.movies-list div.item.movies").mapNotNull {
             it.toSearchResult()
         }
     }
 
+    /**
+     * Hàm này được gọi khi người dùng nhấn vào một bộ phim để xem chi tiết
+     */
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url).document
+        // Thêm interceptor vào request để vượt qua Cloudflare
+        val document = app.get(url, interceptor = cloudflareKiller).document
 
         val title = document.selectFirst("h1[itemprop=name]")?.text()?.trim() ?: "N/A"
         val poster = document.selectFirst("div.poster img")?.attr("src")
@@ -65,11 +85,9 @@ class TvPhimBidProvider : MainAPI() {
         val isTvSeries = document.select("div#list_episodes").isNotEmpty()
 
         if (isTvSeries) {
-            // Lấy danh sách các tập phim
             val episodes = document.select("div#list_episodes a").map {
                 val epUrl = fixUrl(it.attr("href"))
                 val epName = it.text().trim()
-                // SỬA LỖI Ở ĐÂY: Dùng newEpisode thay vì Episode()
                 newEpisode(epUrl) {
                     this.name = epName
                 }
@@ -91,13 +109,17 @@ class TvPhimBidProvider : MainAPI() {
         @JsonProperty("file") val file: String,
     )
 
+    /**
+     * Hàm quan trọng nhất: Lấy link video trực tiếp
+     */
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val episodePage = app.get(data).document
+        // Thêm interceptor vào request để vượt qua Cloudflare
+        val episodePage = app.get(data, interceptor = cloudflareKiller).document
 
         val script = episodePage.select("script").find {
             it.data().contains("var film_id")
@@ -109,10 +131,12 @@ class TvPhimBidProvider : MainAPI() {
         if (filmId == null || tapPhim == null) return false
 
         val playerUrl = "$mainUrl/player.php"
+        // Thêm interceptor vào request để vượt qua Cloudflare
         val playerResponse = app.post(
             playerUrl,
             headers = mapOf("X-Requested-With" to "XMLHttpRequest"),
-            data = mapOf("film_id" to filmId, "tap_phim" to tapPhim)
+            data = mapOf("film_id" to filmId, "tap_phim" to tapPhim),
+            interceptor = cloudflareKiller
         ).parsed<PlayerResponse>()
 
         callback.invoke(
