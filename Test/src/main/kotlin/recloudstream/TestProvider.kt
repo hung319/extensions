@@ -1,112 +1,129 @@
 package recloudstream
 
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType // Quan trọng: Thêm import này
+import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
 
-// Định nghĩa lớp provider, kế thừa từ MainAPI
-class WowXXXProvider : MainAPI() {
-    // Tên của provider sẽ hiển thị trong ứng dụng
-    override var name = "WowXXX"
-    // URL chính của trang web
-    override var mainUrl = "https://www.wow.xxx"
-    // Báo cho app biết provider này có trang chính
-    override var hasMainPage = true
-    // Ngôn ngữ được hỗ trợ
-    override var lang = "en"
-    // Các loại nội dung được hỗ trợ
+// TvPhim.bid Provider
+class TvPhimBidProvider : MainAPI() {
+    // Thông tin cơ bản của provider
+    override var mainUrl = "https://tvphim.bid"
+    override var name = "TVPhim"
+    override val hasMainPage = true
+    override var lang = "vi"
+    override val hasDownloadSupport = true
     override val supportedTypes = setOf(
-        TvType.NSFW
+        TvType.Movie,
+        TvType.TvSeries,
     )
 
-    // Hàm để lấy danh sách phim cho trang chính, hỗ trợ phân trang
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val document = app.get(mainUrl).document
+        val homePageList = ArrayList<HomePageList>()
 
-        // Xây dựng URL dựa trên số trang
-        val url = if (page <= 1) mainUrl else "$mainUrl/latest-updates/$page/"
-        val document = app.get(url).document
-
-        val home = document.select("div.list-videos div.item").mapNotNull {
-            it.toSearchResult()
+        val sections = document.select("div.section")
+        sections.forEach { section ->
+            val title = section.selectFirst("div.section-title")?.text()?.trim() ?: "Unknown"
+            val movies = section.select("div.item.movies").mapNotNull { it.toSearchResult() }
+            if (movies.isNotEmpty()) {
+                homePageList.add(HomePageList(title, movies))
+            }
         }
-        
-        // Sử dụng newHomePageResponse để tránh cảnh báo và kiểm tra xem có trang tiếp theo không
-        val list = HomePageList("Latest", home)
-        return newHomePageResponse(list, home.isNotEmpty())
+
+        return HomePageResponse(homePageList)
     }
 
-    // Hàm tiện ích để chuyển đổi một phần tử HTML thành đối tượng MovieSearchResponse
-    private fun Element.toSearchResult(): MovieSearchResponse? {
-        // Lấy URL từ thuộc tính href của thẻ a
-        val href = this.selectFirst("a")?.attr("href") ?: return null
-        val title = this.selectFirst("strong.title")?.text() ?: return null
-        // Lấy ảnh thumbnail từ data-src hoặc src
-        val posterUrl = this.selectFirst("img.thumb")?.let {
-            it.attr("data-src").ifBlank { it.attr("src") }
-        }
+    private fun Element.toSearchResult(): SearchResponse? {
+        val title = this.selectFirst("div.name a")?.text() ?: return null
+        val href = fixUrl(this.selectFirst("a")?.attr("href") ?: return null)
+        val posterUrl = this.selectFirst("div.poster img")?.attr("src")
 
-        return newMovieSearchResponse(title, href, TvType.NSFW) {
+        return newMovieSearchResponse(title, href, TvType.Movie) {
             this.posterUrl = posterUrl
         }
     }
 
-    // Hàm tìm kiếm phim
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$mainUrl/search/$query/relevance/"
-        val document = app.get(url).document
+        val searchUrl = "$mainUrl/tim-kiem/$query/"
+        val document = app.get(searchUrl).document
 
-        return document.select("div.list-videos div.item").mapNotNull {
+        return document.select("div.movies-list div.item.movies").mapNotNull {
             it.toSearchResult()
         }
     }
 
-    // Hàm tải thông tin chi tiết của một phim và danh sách đề xuất
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
-        val title = document.selectFirst("div.headline h1")?.text()?.trim() ?: ""
-        val poster = document.selectFirst("video")?.attr("poster")
-        
-        val actors = document.select("div.item:contains(Pornstars) a.btn_model").map {
-            ActorData(Actor(it.text()))
-        }
-        
-        val tags = document.select("div.item:contains(Categories) a.btn_tag").map { it.text() }
-        
-        // Lấy danh sách phim liên quan (đề xuất)
-        val recommendations = document.select("div.related-video div.list-videos div.item").mapNotNull {
-            it.toSearchResult()
-        }
 
-        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
-            this.posterUrl = poster
-            this.actors = actors
-            this.tags = tags
-            this.recommendations = recommendations 
+        val title = document.selectFirst("h1[itemprop=name]")?.text()?.trim() ?: "N/A"
+        val poster = document.selectFirst("div.poster img")?.attr("src")
+        val plot = document.selectFirst("div.entry-content p")?.text()?.trim()
+
+        val isTvSeries = document.select("div#list_episodes").isNotEmpty()
+
+        if (isTvSeries) {
+            val episodes = document.select("div#list_episodes a").map {
+                val epUrl = fixUrl(it.attr("href"))
+                val epName = it.text().trim()
+                Episode(epUrl, epName)
+            }.reversed()
+
+            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+                this.posterUrl = poster
+                this.plot = plot
+            }
+        } else {
+            return newMovieLoadResponse(title, url, TvType.Movie, url) {
+                this.posterUrl = poster
+                this.plot = plot
+            }
         }
     }
 
-    // Hàm tải các liên kết xem phim
+    // Không cần dùng PlayerResponse nữa vì chúng ta đã chỉ định rõ type
+    private data class PlayerResponse(
+        @JsonProperty("file") val file: String,
+        // @JsonProperty("type") val type: String // Dòng này không còn cần thiết
+    )
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data).document
-        document.select("video source").forEach {
-            val videoUrl = it.attr("src")
-            val quality = it.attr("label")
-            callback.invoke(
-                ExtractorLink(
-                    source = this.name,
-                    name = "$name $quality",
-                    url = videoUrl,
-                    referer = mainUrl,
-                    quality = getQualityFromName(quality),
-                    type = ExtractorLinkType.VIDEO
-                )
+        val episodePage = app.get(data).document
+
+        val script = episodePage.select("script").find {
+            it.data().contains("var film_id")
+        }?.data() ?: return false
+
+        val filmId = Regex("""var film_id = '(\d+)'""").find(script)?.groupValues?.get(1)
+        val tapPhim = Regex("""var tập_phim = '(.+?)'""").find(script)?.groupValues?.get(1)
+
+        if (filmId == null || tapPhim == null) return false
+
+        val playerUrl = "$mainUrl/player.php"
+        val playerResponse = app.post(
+            playerUrl,
+            headers = mapOf("X-Requested-With" to "XMLHttpRequest"),
+            data = mapOf("film_id" to filmId, "tap_phim" to tapPhim)
+        ).parsed<PlayerResponse>()
+
+        callback.invoke(
+            ExtractorLink(
+                source = this.name,
+                name = this.name,
+                url = playerResponse.file,
+                referer = mainUrl,
+                quality = Qualities.Unknown.value,
+                type = ExtractorLinkType.M3U8 // <--- ĐÃ THAY ĐỔI THEO YÊU CẦU
             )
-        }
+        )
+
         return true
     }
 }
