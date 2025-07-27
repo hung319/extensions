@@ -5,7 +5,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.base64Decode // <-- ĐÃ SỬA LẠI DÒNG NÀY
+import android.util.Base64 // <-- THÊM DÒNG NÀY ĐỂ DÙNG BỘ GIẢI MÃ CÓ SẴN
 import org.jsoup.nodes.Element
 import java.util.regex.Pattern
 
@@ -61,7 +61,9 @@ class TvPhimProvider : MainAPI() {
     private val movieItemSelector = "div.item.movies"
     
     private suspend fun getDomain(): String {
-        val bitlyUrl = "aHR0cHM6Ly9iaXQubHkvZmFudHhwaGlt".base64Decode()
+        // SỬA LỖI: Dùng Base64 của Android
+        val decodedBytes = Base64.decode("aHR0cHM6Ly9iaXQubHkvZmFudHhwaGlt", Base64.DEFAULT)
+        val bitlyUrl = String(decodedBytes)
         return app.get(bitlyUrl, allowRedirects = true).url
     }
 
