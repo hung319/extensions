@@ -1,32 +1,30 @@
-package recloudstream 
+package recloudstream
 
 import android.content.Context
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
+// Import này có thể cần thiết nếu registerMainAPI là extension function
+// import com.lagradost.cloudstream3.plugins.PluginManager.registerMainAPI
 
-@CloudstreamPlugin
-class YuuPlugin : Plugin() {
+@CloudstreamPlugin // Đánh dấu đây là plugin
+class TestPlugin: Plugin() { // Kế thừa Plugin
     override fun load(context: Context) {
-        val expectedPackage = "com.lagradost"
+        val allowedPackages = listOf(
+            "com.lagradost.cloudstream3",
+            "com.lagradost.cloudstream3.prerelease"
+        )
         val expectedAppName = "CloudStream"
 
-        // 🔍 Lấy package hiện tại
+        // 📦 Package và tên app hiện tại
         val currentPackage = context.packageName
-
-        // 🔍 Lấy tên app đang chạy (dạng hiển thị)
         val currentAppName = context.applicationInfo.loadLabel(context.packageManager).toString()
 
-        // 📛 In log nếu muốn debug
-        println("🔎 Đang chạy trên package: $currentPackage - app name: $currentAppName")
-
-        // ❌ Check nếu sai package hoặc sai tên app
-        if (currentPackage != expectedPackage || !currentAppName.contains(expectedAppName, ignoreCase = true)) {
-
-            // Dừng plugin không cho load
-            throw Error("Ứng dụng không hợp lệ: $currentPackage - $currentAppName")
+        // ❌ Nếu không đúng app hoặc package thì chặn
+        if (currentPackage !in allowedPackages || !currentAppName.contains(expectedAppName, ignoreCase = true)) {
+            throw Error("⛔ Ứng dụng không hợp lệ! Bị chặn bởi plugin Yuu.")
         }
 
-        // ✅ Nếu hợp lệ, đăng ký provider như thường
+        // ✅ Nếu hợp lệ, chạy tiếp
         registerMainAPI(WowXXXProvider())
     }
 }
