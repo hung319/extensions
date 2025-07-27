@@ -3,7 +3,7 @@ package recloudstream
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType // Quan trọng: Thêm import này
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
 
@@ -65,10 +65,14 @@ class TvPhimBidProvider : MainAPI() {
         val isTvSeries = document.select("div#list_episodes").isNotEmpty()
 
         if (isTvSeries) {
+            // Lấy danh sách các tập phim
             val episodes = document.select("div#list_episodes a").map {
                 val epUrl = fixUrl(it.attr("href"))
                 val epName = it.text().trim()
-                Episode(epUrl, epName)
+                // SỬA LỖI Ở ĐÂY: Dùng newEpisode thay vì Episode()
+                newEpisode(epUrl) {
+                    this.name = epName
+                }
             }.reversed()
 
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
@@ -83,10 +87,8 @@ class TvPhimBidProvider : MainAPI() {
         }
     }
 
-    // Không cần dùng PlayerResponse nữa vì chúng ta đã chỉ định rõ type
     private data class PlayerResponse(
         @JsonProperty("file") val file: String,
-        // @JsonProperty("type") val type: String // Dòng này không còn cần thiết
     )
 
     override suspend fun loadLinks(
@@ -120,7 +122,7 @@ class TvPhimBidProvider : MainAPI() {
                 url = playerResponse.file,
                 referer = mainUrl,
                 quality = Qualities.Unknown.value,
-                type = ExtractorLinkType.M3U8 // <--- ĐÃ THAY ĐỔI THEO YÊU CẦU
+                type = ExtractorLinkType.M3U8
             )
         )
 
