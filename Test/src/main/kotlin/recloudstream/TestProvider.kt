@@ -3,14 +3,13 @@ package recloudstream
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.utils.AppUtils.toJson // Đảm bảo bạn đã import đúng
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import org.jsoup.nodes.Element
 import java.security.MessageDigest
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import kotlin.text.Charsets
-// SỬA LỖI: Thêm các import cần thiết cho Interceptor
 import okhttp3.Interceptor
 import okhttp3.Response
 
@@ -269,64 +268,70 @@ class TvHayProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data).document
-        
-        val script = document.select("script").find { it.data().contains("eval(function(w,i,s,e)") }?.data() ?: return false
-        val unpacked = getAndUnpack(script)
-        
-        val iframeUrl = Regex("""<iframe src="([^"]+)""").find(unpacked)?.groupValues?.get(1) ?: return false
-
-        val iframeDoc = app.get(iframeUrl, referer = "$mainUrl/").document
-        val iframeScript = iframeDoc.select("script").find { it.data().contains("const idfile_enc") }?.data() ?: return false
-
-        val idfileEnc = Regex("""const idfile_enc = "([^"]+)""").find(iframeScript)?.groupValues?.get(1) ?: return false
-        val iduserEnc = Regex("""const idUser_enc = "([^"]+)""").find(iframeScript)?.groupValues?.get(1) ?: return false
-        val domainApi = Regex("""const DOMAIN_API = '([^']+)""").find(iframeScript)?.groupValues?.get(1) ?: return false
-
-        val ip = app.get("https://api.ipify.org/").text
-        
-        val idfile = K_Utility.decrypt(idfileEnc, "jcLycoRJT6OWjoWspgLMOZwS3aSS0lEn") ?: return false
-        val iduser = K_Utility.decrypt(iduserEnc, "PZZ3J3LDbLT0GY7qSA5wW5vchqgpO36O") ?: return false
-
-        val payload = Payload(
-            idfile = idfile,
-            iduser = iduser,
-            refe = "$mainUrl/",
-            plic = "noplf",
-            addr = ip,
-            t = System.currentTimeMillis().toString(),
-            ispro = true,
-            dev = JWPlayer(
-                browser = JWPlayerBrowser(true, false, false, false, false, false, false, JWPlayerBrowserVersion("129.0", 129, 0), false),
-                os = JWPlayerOS(false, false, false, false, false, false, false, true, JWPlayerOSVersion("10.0", 10, 0), false),
-                features = JWPlayerFeatures(true, true, true)
-            )
-        )
-        // SỬA LỖI: Sửa toJson(payload) thành payload.toJson()
-        val encryptedPayload = aesEncrypt(payload.toJson(), "vlVbUQhkOhoSfyteyzGeeDzU0BHoeTyZ") ?: return false
-        val finalData = "$encryptedPayload|${md5(encryptedPayload + "KRWN3AdgmxEMcd2vLN1ju9qKe8Feco5h")}"
-
-        val response = app.post(
-            url = "$domainApi/playiframe",
-            data = mapOf("data" to finalData)
-        ).parsed<ResponseToken>()
-
-        if (response.status == 1 && response.type == "url-m3u8-encv1" && response.data != null) {
-            val decryptedLink = K_Utility.decrypt(response.data.replace("\"", ""), "oJwmvmVBajMaRCTklxbfjavpQO7SZpsL") ?: return false
+        // <<<< BẮT ĐẦU KHỐI TRY-CATCH >>>>
+        try {
+            val document = app.get(data).document
             
-            callback(
-                ExtractorLink(
-                    name = this.name,
-                    source = document.selectFirst("a.activesv")?.attr("title")?.replace("Server ", "") ?: "Default",
-                    url = decryptedLink,
-                    referer = "https://play.plhqtvhay.xyz/",
-                    quality = Qualities.Unknown.value,
-                    type = ExtractorLinkType.M3U8 
+            val script = document.select("script").find { it.data().contains("eval(function(w,i,s,e)") }?.data() ?: return false
+            val unpacked = getAndUnpack(script)
+            
+            val iframeUrl = Regex("""<iframe src="([^"]+)""").find(unpacked)?.groupValues?.get(1) ?: return false
+
+            val iframeDoc = app.get(iframeUrl, referer = "$mainUrl/").document
+            val iframeScript = iframeDoc.select("script").find { it.data().contains("const idfile_enc") }?.data() ?: return false
+
+            val idfileEnc = Regex("""const idfile_enc = "([^"]+)""").find(iframeScript)?.groupValues?.get(1) ?: return false
+            val iduserEnc = Regex("""const idUser_enc = "([^"]+)""").find(iframeScript)?.groupValues?.get(1) ?: return false
+            val domainApi = Regex("""const DOMAIN_API = '([^']+)""").find(iframeScript)?.groupValues?.get(1) ?: return false
+
+            val ip = app.get("https://api.ipify.org/").text
+            
+            val idfile = K_Utility.decrypt(idfileEnc, "jcLycoRJT6OWjoWspgLMOZwS3aSS0lEn") ?: return false
+            val iduser = K_Utility.decrypt(iduserEnc, "PZZ3J3LDbLT0GY7qSA5wW5vchqgpO36O") ?: return false
+
+            val payload = Payload(
+                idfile = idfile,
+                iduser = iduser,
+                refe = "$mainUrl/",
+                plic = "noplf",
+                addr = ip,
+                t = System.currentTimeMillis().toString(),
+                ispro = true,
+                dev = JWPlayer(
+                    browser = JWPlayerBrowser(true, false, false, false, false, false, false, JWPlayerBrowserVersion("129.0", 129, 0), false),
+                    os = JWPlayerOS(false, false, false, false, false, false, false, true, JWPlayerOSVersion("10.0", 10, 0), false),
+                    features = JWPlayerFeatures(true, true, true)
                 )
             )
-            return true
-        }
+            
+            val encryptedPayload = aesEncrypt(payload.toJson(), "vlVbUQhkOhoSfyteyzGeeDzU0BHoeTyZ") ?: return false
+            val finalData = "$encryptedPayload|${md5(encryptedPayload + "KRWN3AdgmxEMcd2vLN1ju9qKe8Feco5h")}"
 
+            val response = app.post(
+                url = "$domainApi/playiframe",
+                data = mapOf("data" to finalData)
+            ).parsed<ResponseToken>()
+
+            if (response.status == 1 && response.type == "url-m3u8-encv1" && response.data != null) {
+                val decryptedLink = K_Utility.decrypt(response.data.replace("\"", ""), "oJwmvmVBajMaRCTklxbfjavpQO7SZpsL") ?: return false
+                
+                callback(
+                    ExtractorLink(
+                        name = this.name,
+                        source = document.selectFirst("a.activesv")?.attr("title")?.replace("Server ", "") ?: "Default",
+                        url = decryptedLink,
+                        referer = "https://play.plhqtvhay.xyz/",
+                        quality = Qualities.Unknown.value,
+                        type = ExtractorLinkType.M3U8 
+                    )
+                )
+                return true
+            }
+            // <<<< KẾT THÚC KHỐI TRY-CATCH >>>>
+        } catch (e: Exception) {
+            logError(e) // Ghi lại lỗi để dễ dàng debug
+            throw e     // Ném lại lỗi để hệ thống gom log
+        }
         return false
     }
     
