@@ -1,85 +1,73 @@
 package recloudstream
 
-import com.lagradost.cloudstream3.MainAPI
-import com.lagradost.cloudstream3.MainPageRequest
-import com.lagradost.cloudstream3.HomePageResponse
-import com.lagradost.cloudstream3.HomePageList
-import com.lagradost.cloudstream3.SearchResponse
-import com.lagradost.cloudstream3.LoadResponse
-import com.lagradost.cloudstream3.TvType
-import com.lagradost.cloudstream3.newMovieSearchResponse
-import com.lagradost.cloudstream3.newTvSeriesLoadResponse
-import com.lagradost.cloudstream3.newMovieLoadResponse
-import com.lagradost.cloudstream3.newEpisode
-import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorApiKt
-import com.lagradost.cloudstream3.SubtitleFile
-import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.MainAPIKt.base64Decode
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.ExtractorApiKt
+import com.lagradost.cloudstream3.utils.ExtractorLinkType // Import ExtractorLinkType
+import okhttp3.Interceptor
+import okhttp3.Response
 import org.jsoup.nodes.Element
 import java.util.regex.Pattern
 
 /**
  * Helper class to unpack the popular JS packer format `eval(function(p,a,c,k,e,d))`
  */
-class JsUnpacker(private val packedJS: String) {
+private class JsUnpacker(private val packedJS: String) {
     fun unpack(): String? {
-        val p = packedJS.substringAfter("eval(function(p,a,c,k,e,d){").substringBefore("}))")
-        val pattern = Pattern.compile("'.*?'.*?,''.*?'")
-        val matcher = pattern.matcher(p)
-        if (!matcher.find()) return null
+        return try {
+            val p = packedJS.substringAfter("eval(function(p,a,c,k,e,d){").substringBefore("}))")
+            val pattern = Pattern.compile("'.*?'.*?,''.*?'")
+            val matcher = pattern.matcher(p)
+            if (!matcher.find()) return null
 
-        val all = matcher.group(0)
-        val payload = all.substringBeforeLast(",")
-        val dictionary = all.substringAfterLast(",").substringAfter("'").substringBefore("'")
+            val all = matcher.group(0)
+            val payload = all.substringBeforeLast(",")
+            val dictionary = all.substringAfterLast(",").substringAfter("'").substringBefore("'")
 
-        val p2 = payload.substringBeforeLast("'")
-        val a = payload.substringAfterLast(",").toIntOrNull() ?: return null
-        val c = payload.substringAfter(",").substringBefore(",").toIntOrNull() ?: return null
-        val k = dictionary.split('|')
-        val e = c
-        val d = 0
+            val p2 = payload.substringBeforeLast("'")
+            val a = payload.substringAfterLast(",").toIntOrNull() ?: return null
+            val c = payload.substringAfter(",").substringBefore(",").toIntOrNull() ?: return null
+            val k = dictionary.split('|')
 
-        var unpacked = p2.replace("'", "")
+            var unpacked = p2.replace("'", "")
 
-        fun base(num: Int): String {
-            return if (num < a) "" else base(num / a) + when (val rem = num % a) {
-                in 0..9 -> rem.toString()
-                else -> (rem + 29).toChar()
+            fun base(num: Int): String {
+                return if (num < a) "" else base(num / a) + when (val rem = num % a) {
+                    in 0..9 -> rem.toString()
+                    else -> (rem + 29).toChar().toString()
+                }
             }
-        }
 
-        for (i in (c - 1) downTo 0) {
-            if (k[i].isNotEmpty()) {
-                unpacked = unpacked.replace(Regex("\\b${base(i)}\\b"), k[i])
+            for (i in (c - 1) downTo 0) {
+                if (k.getOrNull(i)?.isNotEmpty() == true) {
+                    unpacked = unpacked.replace(Regex("\\b${base(i)}\\b"), k[i])
+                }
             }
+            unpacked
+        } catch (e: Exception) {
+            null
         }
-        return unpacked
     }
 }
 
 
 class TvPhimProvider : MainAPI() {
-    override var mainUrl = "https://tvphim.bid" // Sẽ được cập nhật động
+    override var mainUrl = "https://tvphim.bid"
     override var name = "TvPhim"
     override val hasMainPage = true
     override var lang = "vi"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
-    // Selector đã được tối ưu dựa trên phân tích
     private val movieItemSelector = "div.item.movies"
 
-    // Hàm lấy tên miền động, tương tự logic trong file Java
     private suspend fun getDomain(): String {
-        // "aHR0cHM6Ly9iaXQubHkvZmFudHhwaGlt" là base64 của "https://bit.ly/fantxphim"
         val bitlyUrl = base64Decode("aHR0cHM6Ly9iaXQubHkvZmFudHhwaGlt")
-        // app.get sẽ tự động theo dõi chuyển hướng để lấy URL cuối cùng
         return app.get(bitlyUrl, allowRedirects = true).url
     }
 
     override suspend fun onResume() {
-        // Cập nhật mainUrl mỗi khi resume
         mainUrl = getDomain()
     }
 
@@ -101,7 +89,6 @@ class TvPhimProvider : MainAPI() {
             val movies = section.select(movieItemSelector).mapNotNull { it.toSearchResult() }
             if (movies.isNotEmpty()) HomePageList(title, movies) else null
         }
-
         return HomePageResponse(homePageList)
     }
 
@@ -122,13 +109,11 @@ class TvPhimProvider : MainAPI() {
         }
         val url = "$mainUrl/tim-kiem/$query/"
         val document = app.get(url).document
-
         return document.select(movieItemSelector).mapNotNull { it.toSearchResult() }
     }
 
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
-
         val title = document.selectFirst("h1[itemprop=name]")?.text()?.trim() ?: "N/A"
         val poster = document.selectFirst("div.poster img")?.attr("src")
         val plot = document.selectFirst("div.entry-content p")?.text()?.trim()
@@ -138,7 +123,6 @@ class TvPhimProvider : MainAPI() {
             val episodes = document.select("div#list_episodes a").map {
                 val epUrl = fixUrl(it.attr("href"))
                 val epName = it.text().trim()
-                // Sửa lỗi deprecated constructor
                 newEpisode(epUrl) { this.name = epName }
             }.reversed()
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
@@ -152,6 +136,8 @@ class TvPhimProvider : MainAPI() {
             }
         }
     }
+    
+    // ... (Các phần khác giữ nguyên)
 
     override suspend fun loadLinks(
         data: String,
@@ -159,15 +145,10 @@ class TvPhimProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Phân tích logic từ file loadlinks.html và TvPhimProvider.java
         val document = app.get(data).document
 
-        // Tìm script có chứa logic giải mã link
-        val scripts = document.select("script")
-        val packedScript = scripts.find { it.data().contains("eval(function(w,i,s,e)") }?.data()
-
+        val packedScript = document.select("script").find { it.data().contains("eval(function(w,i,s,e)") }?.data()
         if (packedScript != null) {
-            // Đây là luồng S.PRO, sử dụng Unpacker để giải mã
             val unpacked = JsUnpacker(packedScript).unpack()
             val sourceUrl = unpacked?.let {
                 Regex("""sources:\[\{file:'(.*?)'""").find(it)?.groupValues?.get(1)
@@ -180,13 +161,12 @@ class TvPhimProvider : MainAPI() {
                         sourceUrl,
                         mainUrl,
                         Qualities.Unknown.value,
-                        isM3u8 = true
+                        type = ExtractorLinkType.M3U8 // <-- ĐÃ SỬA
                     )
                 )
             }
         }
 
-        // Tìm các server khác như R.PRO
         document.select("a[title*='Server R.PRO']").firstOrNull()?.attr("href")?.let { rProUrl ->
             if (rProUrl.contains("ok.ru")) {
                 ExtractorApiKt.loadExtractor(rProUrl, mainUrl, subtitleCallback, callback)
