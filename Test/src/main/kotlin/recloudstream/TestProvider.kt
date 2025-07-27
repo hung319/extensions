@@ -284,8 +284,7 @@ class TvHayProvider : MainAPI() {
 
             val unpacked = getAndUnpack(script)
             
-            // <<<< THAY ĐỔI REGEX TẠI ĐÂY >>>>
-            // Regex mới tìm URL được gán cho thuộc tính .src
+            // SỬA LỖI: Cập nhật Regex để tìm URL được gán động cho thuộc tính .src
             val iframeUrl = Regex("""['"](https://tvhay\.io/embed/embedsp\.php\?link=[^'"]+)['"]""").find(unpacked)?.groupValues?.get(1)
                 ?: throw Exception(logBuilder.appendLine("Error: Could not extract iframeUrl from unpacked script.").toString())
             logBuilder.appendLine("3. Extracted iframeUrl: $iframeUrl")
