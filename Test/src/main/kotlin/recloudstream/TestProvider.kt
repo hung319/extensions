@@ -2,7 +2,7 @@ package recloudstream
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.CloudflareKiller // Thêm import cho CloudflareKiller
+import com.lagradost.cloudstream3.network.CloudflareKiller // <--- ĐÃ THAY ĐỔI ĐƯỜNG DẪN
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
@@ -28,11 +28,9 @@ class TvPhimBidProvider : MainAPI() {
      * Hàm này dùng để tải dữ liệu cho trang chủ của plugin
      */
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Thêm interceptor vào request để vượt qua Cloudflare
         val document = app.get(mainUrl, interceptor = cloudflareKiller).document
         val homePageList = ArrayList<HomePageList>()
 
-        // Lấy các mục phim như "Phim Lẻ Mới", "Phim Bộ Mới"
         val sections = document.select("div.section")
         sections.forEach { section ->
             val title = section.selectFirst("div.section-title")?.text()?.trim() ?: "Unknown"
@@ -63,7 +61,6 @@ class TvPhimBidProvider : MainAPI() {
      */
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/tim-kiem/$query/"
-        // Thêm interceptor vào request để vượt qua Cloudflare
         val document = app.get(searchUrl, interceptor = cloudflareKiller).document
 
         return document.select("div.movies-list div.item.movies").mapNotNull {
@@ -75,7 +72,6 @@ class TvPhimBidProvider : MainAPI() {
      * Hàm này được gọi khi người dùng nhấn vào một bộ phim để xem chi tiết
      */
     override suspend fun load(url: String): LoadResponse {
-        // Thêm interceptor vào request để vượt qua Cloudflare
         val document = app.get(url, interceptor = cloudflareKiller).document
 
         val title = document.selectFirst("h1[itemprop=name]")?.text()?.trim() ?: "N/A"
@@ -118,7 +114,6 @@ class TvPhimBidProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Thêm interceptor vào request để vượt qua Cloudflare
         val episodePage = app.get(data, interceptor = cloudflareKiller).document
 
         val script = episodePage.select("script").find {
@@ -131,7 +126,6 @@ class TvPhimBidProvider : MainAPI() {
         if (filmId == null || tapPhim == null) return false
 
         val playerUrl = "$mainUrl/player.php"
-        // Thêm interceptor vào request để vượt qua Cloudflare
         val playerResponse = app.post(
             playerUrl,
             headers = mapOf("X-Requested-With" to "XMLHttpRequest"),
