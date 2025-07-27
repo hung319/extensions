@@ -1,13 +1,12 @@
 package recloudstream
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.MainAPIKt.base64Decode
+// import com.lagradost.cloudstream3.MainAPIKt.base64Decode // Xóa dòng này
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.ExtractorApiKt
-import com.lagradost.cloudstream3.utils.ExtractorLinkType // Import ExtractorLinkType
-import okhttp3.Interceptor
-import okhttp3.Response
+// import com.lagradost.cloudstream3.utils.ExtractorApiKt // Xóa dòng này
+import com.lagradost.cloudstream3.utils.loadExtractor // Thêm dòng này
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import org.jsoup.nodes.Element
 import java.util.regex.Pattern
 
@@ -61,15 +60,17 @@ class TvPhimProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
     private val movieItemSelector = "div.item.movies"
-
+    
     private suspend fun getDomain(): String {
-        val bitlyUrl = base64Decode("aHR0cHM6Ly9iaXQubHkvZmFudHhwaGlt")
+        // SỬA LỖI: Dùng hàm mở rộng .base64Decode()
+        val bitlyUrl = "aHR0cHM6Ly9iaXQubHkvZmFudHhwaGlt".base64Decode()
         return app.get(bitlyUrl, allowRedirects = true).url
     }
 
-    override suspend fun onResume() {
-        mainUrl = getDomain()
-    }
+    // SỬA LỖI: Xóa bỏ hàm onResume() vì không còn tồn tại trong MainAPI
+    // override suspend fun onResume() {
+    //     mainUrl = getDomain()
+    // }
 
     override suspend fun getMainPage(
         page: Int,
@@ -136,8 +137,6 @@ class TvPhimProvider : MainAPI() {
             }
         }
     }
-    
-    // ... (Các phần khác giữ nguyên)
 
     override suspend fun loadLinks(
         data: String,
@@ -156,12 +155,7 @@ class TvPhimProvider : MainAPI() {
             if (sourceUrl != null) {
                 callback.invoke(
                     ExtractorLink(
-                        this.name,
-                        "S.PRO",
-                        sourceUrl,
-                        mainUrl,
-                        Qualities.Unknown.value,
-                        type = ExtractorLinkType.M3U8 // <-- ĐÃ SỬA
+                        this.name, "S.PRO", sourceUrl, mainUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8
                     )
                 )
             }
@@ -169,7 +163,8 @@ class TvPhimProvider : MainAPI() {
 
         document.select("a[title*='Server R.PRO']").firstOrNull()?.attr("href")?.let { rProUrl ->
             if (rProUrl.contains("ok.ru")) {
-                ExtractorApiKt.loadExtractor(rProUrl, mainUrl, subtitleCallback, callback)
+                // SỬA LỖI: Gọi trực tiếp hàm loadExtractor
+                loadExtractor(rProUrl, mainUrl, subtitleCallback, callback)
             }
         }
 
