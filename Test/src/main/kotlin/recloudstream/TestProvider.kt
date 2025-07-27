@@ -3,13 +3,16 @@ package recloudstream
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.utils.AppUtils.toJson
+import com.lagradost.cloudstream3.utils.AppUtils.toJson // Đảm bảo bạn đã import đúng
 import org.jsoup.nodes.Element
 import java.security.MessageDigest
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import kotlin.text.Charsets
+// SỬA LỖI: Thêm các import cần thiết cho Interceptor
+import okhttp3.Interceptor
+import okhttp3.Response
 
 // ================= K_UTILITY CHO MÃ HÓA/GIẢI MÃ =================
 private object K_Utility {
@@ -234,7 +237,6 @@ class TvHayProvider : MainAPI() {
         
         if (isTvSeries) {
             val episodes = watchPageDoc.select("ul.episodelist li a").map {
-                // SỬA LỖI 1: Dùng newEpisode
                 newEpisode(it.attr("href")) {
                     name = it.text().trim()
                 }
@@ -248,7 +250,6 @@ class TvHayProvider : MainAPI() {
             }
         } else { 
              val movieServers = servers.mapNotNull {
-                // SỬA LỖI 1: Dùng newEpisode
                 newEpisode(it.attr("href")) {
                     name = it.attr("title").replace("Server ", "").trim()
                 }
@@ -301,11 +302,10 @@ class TvHayProvider : MainAPI() {
                 features = JWPlayerFeatures(true, true, true)
             )
         )
-        // SỬA LỖI 2: Chuyển payload thành chuỗi JSON
-        val encryptedPayload = aesEncrypt(toJson(payload), "vlVbUQhkOhoSfyteyzGeeDzU0BHoeTyZ") ?: return false
+        // SỬA LỖI: Sửa toJson(payload) thành payload.toJson()
+        val encryptedPayload = aesEncrypt(payload.toJson(), "vlVbUQhkOhoSfyteyzGeeDzU0BHoeTyZ") ?: return false
         val finalData = "$encryptedPayload|${md5(encryptedPayload + "KRWN3AdgmxEMcd2vLN1ju9qKe8Feco5h")}"
 
-        // SỬA LỖI 3 & 4: Sửa lại cú pháp app.post
         val response = app.post(
             url = "$domainApi/playiframe",
             data = mapOf("data" to finalData)
