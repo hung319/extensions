@@ -1,12 +1,11 @@
 package recloudstream
 
 import com.lagradost.cloudstream3.*
-// import com.lagradost.cloudstream3.MainAPIKt.base64Decode // Xóa dòng này
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
-// import com.lagradost.cloudstream3.utils.ExtractorApiKt // Xóa dòng này
-import com.lagradost.cloudstream3.utils.loadExtractor // Thêm dòng này
+import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.base64Decode // <-- ĐÃ SỬA LẠI DÒNG NÀY
 import org.jsoup.nodes.Element
 import java.util.regex.Pattern
 
@@ -62,15 +61,9 @@ class TvPhimProvider : MainAPI() {
     private val movieItemSelector = "div.item.movies"
     
     private suspend fun getDomain(): String {
-        // SỬA LỖI: Dùng hàm mở rộng .base64Decode()
         val bitlyUrl = "aHR0cHM6Ly9iaXQubHkvZmFudHhwaGlt".base64Decode()
         return app.get(bitlyUrl, allowRedirects = true).url
     }
-
-    // SỬA LỖI: Xóa bỏ hàm onResume() vì không còn tồn tại trong MainAPI
-    // override suspend fun onResume() {
-    //     mainUrl = getDomain()
-    // }
 
     override suspend fun getMainPage(
         page: Int,
@@ -163,7 +156,6 @@ class TvPhimProvider : MainAPI() {
 
         document.select("a[title*='Server R.PRO']").firstOrNull()?.attr("href")?.let { rProUrl ->
             if (rProUrl.contains("ok.ru")) {
-                // SỬA LỖI: Gọi trực tiếp hàm loadExtractor
                 loadExtractor(rProUrl, mainUrl, subtitleCallback, callback)
             }
         }
