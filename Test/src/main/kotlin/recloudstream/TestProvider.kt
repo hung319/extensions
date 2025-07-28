@@ -18,34 +18,40 @@ class BluPhimProvider : MainAPI() {
         TvType.TvSeries
     )
 
-    // Hàm để lấy dữ liệu cho trang chính
+    // Thêm các mục phân trang
+    override val mainPage = mainPageOf(
+        "$mainUrl/the-loai/phim-moi-" to "Phim Mới",
+        "$mainUrl/the-loai/phim-cap-nhat-" to "Phim Cập Nhật"
+    )
+
+    // Hàm để lấy dữ liệu cho trang chính và xử lý phân trang
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        // Phân tích cú pháp tài liệu HTML từ URL chính
-        val document = app.get(mainUrl).document
+        val url = if (page == 1) request.data.dropLast(1) else request.data + page.toString()
+        val document = app.get(url).document
+
         val homePageList = ArrayList<HomePageList>()
 
-        // Trích xuất các phần tử "Phim hot"
-        val hotMoviesSection = document.select("div.list-films.film-hot ul#film_hot li.item")
-        if (hotMoviesSection.isNotEmpty()) {
-            val hotMovies = hotMoviesSection.mapNotNull {
-                it.toSearchResult()
+        // Xử lý các yêu cầu phân trang
+        if (page == 1 && request.name != "Phim Mới" && request.name != "Phim Cập Nhật") {
+             // Trích xuất các phần tử "Phim hot" chỉ cho trang đầu tiên
+            val hotMoviesSection = document.select("div.list-films.film-hot ul#film_hot li.item")
+            if (hotMoviesSection.isNotEmpty()) {
+                val hotMovies = hotMoviesSection.mapNotNull {
+                    it.toSearchResult()
+                }
+                homePageList.add(HomePageList("Phim Hot", hotMovies))
             }
-            homePageList.add(HomePageList("Phim Hot", hotMovies))
         }
 
-        // Trích xuất các phần tử "Phim mới cập nhật"
-        val newMoviesSection = document.select("div.list-films.film-new ul.film-moi li.item")
-        if (newMoviesSection.isNotEmpty()) {
-            val newMovies = newMoviesSection.mapNotNull {
-                it.toSearchResult()
-            }
-            homePageList.add(HomePageList("Phim Mới Cập Nhật", newMovies))
+        val movies = document.select("div.list-films.film-new li.item").mapNotNull {
+            it.toSearchResult()
         }
+        homePageList.add(HomePageList(request.name, movies))
 
-        // Trả về danh sách đã xây dựng
+
         return HomePageResponse(homePageList)
     }
 
@@ -87,7 +93,7 @@ class BluPhimProvider : MainAPI() {
 
         // Trích xuất các chi tiết phim
         val title = document.selectFirst("div.text h1 span.title")?.text()?.trim() ?: return null
-        val poster = document.selectFirst("div.poster img")?.let { 
+        val poster = document.selectFirst("div.poster img")?.let {
             val src = it.attr("src")
             if (src.startsWith("http")) src else "$mainUrl$src"
         }
@@ -97,6 +103,9 @@ class BluPhimProvider : MainAPI() {
         val rating = document.select("div.dinfo dl.col dt:contains(Điểm IMDb) + dd a")
             .text().toRatingInt()
         val genres = document.select("dd.theloaidd a").map { it.text() }
+        val recommendations = document.select("div.list-films.film-hot ul#film_related li.item").mapNotNull {
+            it.toSearchResult()
+        }
 
         // Xác định loại TvType (phim lẻ hay phim bộ)
         val tvType = if (document.select("dd.theloaidd a:contains(TV Series - Phim bộ)").isNotEmpty()) {
@@ -107,12 +116,17 @@ class BluPhimProvider : MainAPI() {
 
         // Trả về đối tượng LoadResponse phù hợp
         return if (tvType == TvType.TvSeries) {
-            newTvSeriesLoadResponse(title, url, tvType, emptyList()) {
+            // Lấy danh sách tập phim
+            val watchUrl = document.selectFirst("a.btn-see.btn-stream-link")?.attr("href")
+            val episodes = if (watchUrl != null) getEpisodes(watchUrl) else emptyList()
+
+            newTvSeriesLoadResponse(title, url, tvType, episodes) {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = description
                 this.rating = rating
                 this.tags = genres
+                this.recommendations = recommendations
             }
         } else {
             newMovieLoadResponse(title, url, tvType, url) {
@@ -121,9 +135,30 @@ class BluPhimProvider : MainAPI() {
                 this.plot = description
                 this.rating = rating
                 this.tags = genres
+                this.recommendations = recommendations
             }
         }
     }
+
+    // Hàm để lấy danh sách các tập
+    private suspend fun getEpisodes(watchUrl: String): List<Episode> {
+        val fullWatchUrl = if (watchUrl.startsWith("http")) watchUrl else "$mainUrl$watchUrl"
+        val document = app.get(fullWatchUrl).document
+        val episodeList = ArrayList<Episode>()
+
+        document.select("div.list-episode a").forEach { element ->
+            val href = element.attr("href")
+            val name = element.text().trim()
+            if (href.isNotEmpty()) {
+                episodeList.add(Episode(
+                    data = if (href.startsWith("http")) href else "$mainUrl$href",
+                    name = name
+                ))
+            }
+        }
+        return episodeList
+    }
+
 
     // Hàm giữ chỗ (placeholder) cho việc tải các liên kết
     override suspend fun loadLinks(
