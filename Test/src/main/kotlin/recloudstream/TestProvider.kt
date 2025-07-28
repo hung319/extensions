@@ -133,10 +133,13 @@ class BluPhimProvider : MainAPI() {
         } else {
             TvType.Movie
         }
+        
+        val watchUrl = document.selectFirst("a.btn-see.btn-stream-link")?.attr("href")?.let {
+            if (it.startsWith("http")) it else "$mainUrl$it"
+        } ?: url
 
         return if (tvType == TvType.TvSeries) {
-            val watchUrl = document.selectFirst("a.btn-see.btn-stream-link")?.attr("href")
-            val episodes = if (watchUrl != null) getEpisodes(watchUrl, title, year) else emptyList()
+            val episodes = getEpisodes(watchUrl, title, year)
             newTvSeriesLoadResponse(title, url, tvType, episodes) {
                 this.posterUrl = poster
                 this.year = year
@@ -146,8 +149,8 @@ class BluPhimProvider : MainAPI() {
                 this.recommendations = recommendations
             }
         } else {
-            // Sửa lỗi: Sử dụng cú pháp đối_tượng.toJson()
-            val linkData = LinkData(url = url, title = title, year = year).toJson()
+            // Sửa lỗi: Lấy đúng watchUrl cho phim lẻ
+            val linkData = LinkData(url = watchUrl, title = title, year = year).toJson()
             newMovieLoadResponse(title, url, tvType, linkData) {
                 this.posterUrl = poster
                 this.year = year
@@ -160,15 +163,13 @@ class BluPhimProvider : MainAPI() {
     }
 
     private suspend fun getEpisodes(watchUrl: String, title: String, year: Int?): List<Episode> {
-        val fullWatchUrl = if (watchUrl.startsWith("http")) watchUrl else "$mainUrl$watchUrl"
-        val document = app.get(fullWatchUrl).document
+        val document = app.get(watchUrl).document
         val episodeList = ArrayList<Episode>()
         document.select("div.list-episode a").forEach { element ->
             val href = element.attr("href")
             val name = element.text().trim()
             val epNum = name.filter { it.isDigit() }.toIntOrNull()
             if (href.isNotEmpty() && !name.contains("Server", ignoreCase = true)) {
-                // Sửa lỗi: Sử dụng cú pháp đối_tượng.toJson()
                 val linkData = LinkData(url = if (href.startsWith("http")) href else "$mainUrl$href", title = title, year = year, episode = epNum).toJson()
                 episodeList.add(newEpisode(linkData) {
                     this.name = name
