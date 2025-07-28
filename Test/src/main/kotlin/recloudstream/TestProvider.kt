@@ -5,15 +5,25 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.AcraApplication
 import com.lagradost.cloudstream3.utils.DataStore
+import com.lagradost.cloudstream3.utils.ExtractorApiKt.md5
 import okhttp3.Interceptor
 import okhttp3.Response
-import java.security.MessageDigest // Thêm import cho MessageDigest
+import java.security.MessageDigest
+
+// Lớp dữ liệu để truyền thông tin giữa `load` và `loadLinks`
+data class LinkData(
+    val url: String,
+    val title: String,
+    val year: Int?,
+    val season: Int? = null,
+    val episode: Int? = null
+)
 
 // Xác định lớp provider chính
 class BluPhimProvider : MainAPI() {
-    // Ghi đè các thuộc tính cơ bản của API
     override var mainUrl = "https://bluphim.uk.com"
     override var name = "BluPhim"
     override val hasMainPage = true
@@ -127,7 +137,7 @@ class BluPhimProvider : MainAPI() {
 
         return if (tvType == TvType.TvSeries) {
             val watchUrl = document.selectFirst("a.btn-see.btn-stream-link")?.attr("href")
-            val episodes = if (watchUrl != null) getEpisodes(watchUrl) else emptyList()
+            val episodes = if (watchUrl != null) getEpisodes(watchUrl, title, year) else emptyList()
             newTvSeriesLoadResponse(title, url, tvType, episodes) {
                 this.posterUrl = poster
                 this.year = year
@@ -137,7 +147,9 @@ class BluPhimProvider : MainAPI() {
                 this.recommendations = recommendations
             }
         } else {
-            newMovieLoadResponse(title, url, tvType, url) {
+            // Sửa đổi: Truyền đối tượng LinkData dưới dạng JSON
+            val linkData = toJson(LinkData(url = url, title = title, year = year))
+            newMovieLoadResponse(title, url, tvType, linkData) {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = description
@@ -148,23 +160,26 @@ class BluPhimProvider : MainAPI() {
         }
     }
 
-    private suspend fun getEpisodes(watchUrl: String): List<Episode> {
+    private suspend fun getEpisodes(watchUrl: String, title: String, year: Int?): List<Episode> {
         val fullWatchUrl = if (watchUrl.startsWith("http")) watchUrl else "$mainUrl$watchUrl"
         val document = app.get(fullWatchUrl).document
         val episodeList = ArrayList<Episode>()
         document.select("div.list-episode a").forEach { element ->
             val href = element.attr("href")
             val name = element.text().trim()
+            val epNum = name.filter { it.isDigit() }.toIntOrNull()
             if (href.isNotEmpty() && !name.contains("Server", ignoreCase = true)) {
-                episodeList.add(newEpisode(if (href.startsWith("http")) href else "$mainUrl$href") {
+                // Sửa đổi: Truyền đối tượng LinkData dưới dạng JSON cho mỗi tập
+                val linkData = toJson(LinkData(url = if (href.startsWith("http")) href else "$mainUrl$href", title = title, year = year, episode = epNum))
+                episodeList.add(newEpisode(linkData) {
                     this.name = name
+                    this.episode = epNum
                 })
             }
         }
         return episodeList
     }
 
-    // Sửa lỗi: Thêm hàm md5 thủ công vào trong provider
     private fun String.md5(): String {
         val bytes = MessageDigest.getInstance("MD5").digest(this.toByteArray())
         return bytes.joinToString("") { "%02x".format(it) }
@@ -176,10 +191,33 @@ class BluPhimProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data).document
+        // Sửa đổi: Giải mã LinkData từ chuỗi JSON
+        val linkData = parseJson<LinkData>(data)
+        
+        val document = app.get(linkData.url).document
         val iframeStreamSrc = document.selectFirst("iframe#iframeStream")?.attr("src") ?: return false
-        val iframeStreamDoc = app.get(iframeStreamSrc).document
+        val iframeStreamDoc = app.get(iframeStreamSrc, referer = linkData.url).document
         val iframeEmbedSrc = iframeStreamDoc.selectFirst("iframe#embedIframe")?.attr("src") ?: return false
+
+        // Logic của invokeOPhim
+        val oPhimScript = app.get(iframeEmbedSrc, referer = iframeStreamSrc).document
+            .select("script").find { it.data().contains("var url = '") }?.data()
+        
+        if (oPhimScript != null) {
+            val url = oPhimScript.substringAfter("var url = '").substringBefore("'")
+            val sourceName = if (url.contains("opstream")) "Ổ Phim" else "KKPhim"
+            callback.invoke(ExtractorLink(
+                source = this.name,
+                name = sourceName,
+                url = url,
+                referer = iframeEmbedSrc,
+                quality = Qualities.Unknown.value,
+                type = ExtractorLinkType.M3U8
+            ))
+            return true
+        }
+
+        // Logic của invokeBluPhim
         val playerDoc = app.get(iframeEmbedSrc, referer = iframeStreamSrc).document
         val script = playerDoc.select("script").find { it.data().contains("var videoId =") }?.data() ?: return false
         
@@ -195,11 +233,10 @@ class BluPhimProvider : MainAPI() {
             prefs.edit().putString("bluphim_token", token).apply()
         }
         
-        val linkData = app.post(
+        val videoResponse = app.post(
             url = "${getBaseUrl(iframeEmbedSrc)}/geturl",
             data = mapOf(
                 "videoId" to videoId,
-                // Sửa lỗi: Gọi hàm md5() nội bộ
                 "id" to token.md5(),
                 "domain" to domain
             ),
@@ -207,12 +244,12 @@ class BluPhimProvider : MainAPI() {
             headers = mapOf("X-Requested-With" to "XMLHttpRequest")
         ).parsed<VideoResponse>()
 
-        if (linkData.status == "success") {
-            val sourceUrl = "$cdn/${linkData.url}"
+        if (videoResponse.status == "success") {
+            val sourceUrl = "$cdn/${videoResponse.url}"
             callback.invoke(
                 ExtractorLink(
                     source = this.name,
-                    name = this.name,
+                    name = "BluPhim",
                     url = sourceUrl,
                     referer = getBaseUrl(iframeEmbedSrc) + "/",
                     quality = Qualities.P1080.value,
