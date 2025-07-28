@@ -17,7 +17,7 @@ class BluPhimProvider : MainAPI() {
         TvType.TvSeries
     )
 
-    // Sửa lỗi: Bỏ quickSearch và đưa tất cả vào mainPage
+    // mainPage định nghĩa tất cả các mục trên trang chủ
     override val mainPage = mainPageOf(
         "phim-hot" to "Phim Hot",
         "/the-loai/phim-moi-" to "Phim Mới",
@@ -27,7 +27,7 @@ class BluPhimProvider : MainAPI() {
         "/the-loai/phim-chieu-rap-" to "Phim Chiếu Rạp"
     )
 
-    // Sửa lỗi: Cấu trúc lại getMainPage để xử lý từng mục riêng biệt
+    // getMainPage xử lý việc tải các trang cho từng mục
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
@@ -43,24 +43,24 @@ class BluPhimProvider : MainAPI() {
             return newHomePageResponse(request.name, movies, false)
         }
 
-        // Xử lý các mục có phân trang
-        val url = mainUrl + if (page == 1) request.data.dropLast(1) else (request.data + page)
+        // Sửa lỗi: Luôn luôn nối số trang vào URL, không có trường hợp đặc biệt cho trang 1
+        val url = mainUrl + request.data + page
         val document = app.get(url).document
 
-        val movies = document.select("div.list-films.film-new li.item").mapNotNull {
+        val movies = document.select("div.list-films.film-new div.item").mapNotNull {
             it.toSearchResult()
         }
         
         return newHomePageResponse(request.name, movies, movies.isNotEmpty())
     }
 
-    // Hàm tiện ích được sửa lỗi để xử lý tất cả các layout
+    // Hàm tiện ích được tối ưu để xử lý tất cả các layout
     private fun Element.toSearchResult(): MovieSearchResponse? {
         val href = this.selectFirst("a")?.attr("href") ?: return null
 
-        val title = this.selectFirst("div.text span.title a")?.text()?.trim() // Cho layout "Phim Hot"
-            ?: this.selectFirst("div.name a")?.text()?.trim() // Cho layout "Phim mới"
-            ?: this.selectFirst("div.name span")?.text()?.trim() // Cho layout "Tìm kiếm"
+        // Selector được đơn giản hóa và hiệu quả hơn
+        val title = this.selectFirst("div.text span.title a")?.text()?.trim() // Dành riêng cho layout "Phim Hot"
+            ?: this.selectFirst("div.name")?.text()?.trim() // Dành cho TẤT CẢ các layout còn lại
             ?: this.attr("title").trim().takeIf { it.isNotEmpty() } // Dự phòng
             ?: return null
 
