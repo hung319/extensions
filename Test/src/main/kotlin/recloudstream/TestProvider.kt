@@ -92,8 +92,10 @@ class BluPhimProvider : MainAPI() {
             .text().toIntOrNull()
         val description = document.selectFirst("div.detail div.tab")?.text()?.trim()
         
-        val ratingInt = document.select("div.dinfo dl.col dt:contains(Điểm IMDb) + dd a")
-            .text().toRatingInt()
+        // SỬA LỖI: Sử dụng Score.from() để tạo đối tượng Score từ chuỗi điểm gốc
+        val ratingString = document.select("div.dinfo dl.col dt:contains(Điểm IMDb) + dd a")
+            .text().trim()
+        val score = runCatching { Score.from(ratingString, 10) }.getOrNull()
 
         val genres = document.select("dd.theloaidd a").map { it.text() }
         val recommendations = document.select("div.list-films.film-hot ul#film_related li.item").mapNotNull {
@@ -114,8 +116,7 @@ class BluPhimProvider : MainAPI() {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = description
-                // SỬA LỖI: Tạo đối tượng Score một cách tường minh
-                this.score = ratingInt?.let { Score(it) }
+                this.score = score
                 this.tags = genres
                 this.recommendations = recommendations
             }
@@ -124,8 +125,7 @@ class BluPhimProvider : MainAPI() {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = description
-                // SỬA LỖI: Tạo đối tượng Score một cách tường minh
-                this.score = ratingInt?.let { Score(it) }
+                this.score = score
                 this.tags = genres
                 this.recommendations = recommendations
             }
