@@ -184,6 +184,15 @@ class BluPhimProvider : MainAPI() {
         return bytes.joinToString("") { "%02x".format(it) }
     }
 
+    // Sửa lỗi: Hàm mới để xử lý URL tương đối
+    private fun makeAbsoluteUrl(url: String, baseUrl: String): String {
+        return when {
+            url.startsWith("http") -> url
+            url.startsWith("//") -> "https:${url}"
+            else -> "$mainUrl$url"
+        }
+    }
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -194,12 +203,13 @@ class BluPhimProvider : MainAPI() {
         
         val document = app.get(linkData.url).document
         
-        // Sửa lỗi: Gọi fixUrl chỉ với một tham số
-        val iframeStreamSrc = fixUrl(document.selectFirst("iframe#iframeStream")?.attr("src") ?: return false)
+        val iframeStreamSrcRaw = document.selectFirst("iframe#iframeStream")?.attr("src") ?: return false
+        val iframeStreamSrc = makeAbsoluteUrl(iframeStreamSrcRaw, linkData.url)
+        
         val iframeStreamDoc = app.get(iframeStreamSrc, referer = linkData.url).document
         
-        // Sửa lỗi: Gọi fixUrl chỉ với một tham số
-        val iframeEmbedSrc = fixUrl(iframeStreamDoc.selectFirst("iframe#embedIframe")?.attr("src") ?: return false)
+        val iframeEmbedSrcRaw = iframeStreamDoc.selectFirst("iframe#embedIframe")?.attr("src") ?: return false
+        val iframeEmbedSrc = makeAbsoluteUrl(iframeEmbedSrcRaw, iframeStreamSrc)
 
         val oPhimScript = app.get(iframeEmbedSrc, referer = iframeStreamSrc).document
             .select("script").find { it.data().contains("var url = '") }?.data()
