@@ -25,7 +25,6 @@ class BluPhimProvider : MainAPI() {
         return hotMoviesSection.mapNotNull { it.toSearchResult() }
     }
 
-
     // mainPage định nghĩa các mục có phân trang
     override val mainPage = mainPageOf(
         "/the-loai/phim-moi-" to "Phim Mới",
@@ -37,9 +36,11 @@ class BluPhimProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
+        // request.data sẽ là "/the-loai/phim-moi-"
         val url = "$mainUrl${request.data}$page"
         val document = app.get(url).document
 
+        // Selector này đúng cho các trang phân loại
         val movies = document.select("div.list-films.film-new li.item").mapNotNull {
             it.toSearchResult()
         }
@@ -53,9 +54,10 @@ class BluPhimProvider : MainAPI() {
     private fun Element.toSearchResult(): MovieSearchResponse? {
         val href = this.selectFirst("a")?.attr("href") ?: return null
         
-        // Sửa lỗi: Tạo selector linh hoạt hơn để lấy tiêu đề từ các cấu trúc HTML khác nhau
-        val title = this.selectFirst("div.name span, div.name a, a.title")?.text()?.trim()
-            ?: this.attr("title").trim().takeIf { it.isNotEmpty() }
+        // Sửa lỗi: Tạo selector linh hoạt hơn để xử lý nhiều layout HTML
+        val title = this.selectFirst("div.name span")?.text()?.trim() // Dành cho list phim thường
+            ?: this.selectFirst("div.text span.title a")?.text()?.trim() // Dành cho list "Phim Hot"
+            ?: this.attr("title").trim().takeIf { it.isNotEmpty() } // Fallback
             ?: return null
 
         val posterUrl = this.selectFirst("img")?.attr("src")
@@ -75,7 +77,6 @@ class BluPhimProvider : MainAPI() {
         val url = "$mainUrl/search?k=$query"
         val document = app.get(url).document
 
-        // Phân tích cú pháp kết quả tìm kiếm và ánh xạ chúng
         return document.select("div.list-films.film-new li.item").mapNotNull {
             it.toSearchResult()
         }
@@ -85,7 +86,6 @@ class BluPhimProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
-        // Trích xuất các chi tiết phim
         val title = document.selectFirst("div.text h1 span.title")?.text()?.trim() ?: return null
         val poster = document.selectFirst("div.poster img")?.let {
             val src = it.attr("src")
@@ -101,16 +101,13 @@ class BluPhimProvider : MainAPI() {
             it.toSearchResult()
         }
 
-        // Xác định loại TvType (phim lẻ hay phim bộ)
         val tvType = if (document.select("dd.theloaidd a:contains(TV Series - Phim bộ)").isNotEmpty()) {
             TvType.TvSeries
         } else {
             TvType.Movie
         }
 
-        // Trả về đối tượng LoadResponse phù hợp
         return if (tvType == TvType.TvSeries) {
-            // Lấy danh sách tập phim
             val watchUrl = document.selectFirst("a.btn-see.btn-stream-link")?.attr("href")
             val episodes = if (watchUrl != null) getEpisodes(watchUrl) else emptyList()
 
@@ -143,7 +140,6 @@ class BluPhimProvider : MainAPI() {
         document.select("div.list-episode a").forEach { element ->
             val href = element.attr("href")
             val name = element.text().trim()
-            // Loại bỏ các liên kết server không mong muốn
             if (href.isNotEmpty() && !name.contains("Server", ignoreCase = true)) {
                 episodeList.add(newEpisode(if (href.startsWith("http")) href else "$mainUrl$href") {
                     this.name = name
@@ -153,7 +149,6 @@ class BluPhimProvider : MainAPI() {
         return episodeList
     }
 
-
     // Hàm giữ chỗ (placeholder) cho việc tải các liên kết
     override suspend fun loadLinks(
         data: String,
@@ -161,8 +156,6 @@ class BluPhimProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Hiện tại chưa triển khai
-        // Logic để trích xuất các liên kết video sẽ được thêm vào đây
         throw NotImplementedError("Chức năng loadLinks chưa được triển khai.")
     }
 }
