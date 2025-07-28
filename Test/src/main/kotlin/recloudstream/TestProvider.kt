@@ -20,13 +20,22 @@ class Fpo : MainAPI() {
         "/new-1/" to "Latest Videos",
         "/top-2/" to "Top Rated",
         "/popular-2/" to "Most Popular",
+        "/search/Brazzer/" to "Brazzer",
+        "/search/Milf/" to "Milf",
+        "/search/Step-siblings-caught/" to "Step Siblings Caught",
     )
 
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        val document = app.get("$mainUrl${request.data}$page/").document
+        // Appending page number. For search results, the format is /search/query/page/
+        val url = if (request.data.contains("/search/")) {
+            "$mainUrl${request.data}$page/"
+        } else {
+            "$mainUrl${request.data}$page/"
+        }
+        val document = app.get(url).document
         val home = document.select("div.list-videos div.item").mapNotNull {
             it.toSearchResult()
         }
@@ -56,20 +65,16 @@ class Fpo : MainAPI() {
         val title = document.selectFirst("h1")?.text()?.trim() ?: return null
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         val description = document.selectFirst("meta[property=og:description]")?.attr("content")
-        
-        val script = document.select("script").find { it.data().contains("var flashvars") }?.data() ?: return null
-        
-        // Extract video URLs from the flashvars object
-        val videoUrlRegex = Regex("""'video_url': 'function/0/(.*?)'""")
-        val videoAltUrlRegex = Regex("""'video_alt_url': 'function/0/(.*?)'""")
-        
-        val videoUrl = videoUrlRegex.find(script)?.groups?.get(1)?.value
-        val videoAltUrl = videoAltUrlRegex.find(script)?.groups?.get(1)?.value
 
-        // Use loadLinks to fetch the extractor links
+        // Scrape related videos for recommendations
+        val recommendations = document.select("div.related-videos div.item").mapNotNull {
+            it.toSearchResult()
+        }
+        
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
             this.plot = description
+            this.recommendations = recommendations
         }
     }
 
@@ -85,31 +90,32 @@ class Fpo : MainAPI() {
         val videoUrlRegex = Regex("""'video_url': 'function/0/(.*?)'""")
         val videoAltUrlRegex = Regex("""'video_alt_url': 'function/0/(.*?)'""")
         
-        videoUrlRegex.find(script)?.groups?.get(1)?.value?.let {
+        suspend fun extractAndCallback(url: String?, qualityName: String, qualityValue: String) {
+            if (url == null) return
+            
+            // Make a request but don't follow the redirect
+            val response = app.get(url, allowRedirects = false)
+            
+            // The actual video URL is in the 'Location' header of the 302 response
+            val finalUrl = response.headers["Location"] ?: return
+            
             callback.invoke(
                 ExtractorLink(
                     source = name,
-                    name = "$name LQ",
-                    url = it,
+                    name = "$name $qualityName",
+                    url = finalUrl,
                     referer = mainUrl,
-                    quality = getQualityFromName("360p"), // Assuming LQ is 360p
+                    quality = getQualityFromName(qualityValue),
                     type = ExtractorLinkType.VIDEO
                 )
             )
         }
 
-        videoAltUrlRegex.find(script)?.groups?.get(1)?.value?.let {
-            callback.invoke(
-                ExtractorLink(
-                    source = name,
-                    name = "$name HQ",
-                    url = it,
-                    referer = mainUrl,
-                    quality = getQualityFromName("720p"), // Assuming HQ is 720p
-                    type = ExtractorLinkType.VIDEO
-                )
-            )
-        }
+        val lqUrl = videoUrlRegex.find(script)?.groups?.get(1)?.value
+        val hqUrl = videoAltUrlRegex.find(script)?.groups?.get(1)?.value
+
+        extractAndCallback(lqUrl, "LQ", "360p")
+        extractAndCallback(hqUrl, "HQ", "720p")
         
         return true
     }
