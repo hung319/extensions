@@ -8,7 +8,6 @@ import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.AcraApplication
 import com.lagradost.cloudstream3.utils.DataStore
-import com.lagradost.cloudstream3.utils.ExtractorApiKt.md5
 import okhttp3.Interceptor
 import okhttp3.Response
 import java.security.MessageDigest
@@ -147,8 +146,8 @@ class BluPhimProvider : MainAPI() {
                 this.recommendations = recommendations
             }
         } else {
-            // Sửa đổi: Truyền đối tượng LinkData dưới dạng JSON
-            val linkData = toJson(LinkData(url = url, title = title, year = year))
+            // Sửa lỗi: Sử dụng cú pháp đối_tượng.toJson()
+            val linkData = LinkData(url = url, title = title, year = year).toJson()
             newMovieLoadResponse(title, url, tvType, linkData) {
                 this.posterUrl = poster
                 this.year = year
@@ -169,8 +168,8 @@ class BluPhimProvider : MainAPI() {
             val name = element.text().trim()
             val epNum = name.filter { it.isDigit() }.toIntOrNull()
             if (href.isNotEmpty() && !name.contains("Server", ignoreCase = true)) {
-                // Sửa đổi: Truyền đối tượng LinkData dưới dạng JSON cho mỗi tập
-                val linkData = toJson(LinkData(url = if (href.startsWith("http")) href else "$mainUrl$href", title = title, year = year, episode = epNum))
+                // Sửa lỗi: Sử dụng cú pháp đối_tượng.toJson()
+                val linkData = LinkData(url = if (href.startsWith("http")) href else "$mainUrl$href", title = title, year = year, episode = epNum).toJson()
                 episodeList.add(newEpisode(linkData) {
                     this.name = name
                     this.episode = epNum
@@ -191,7 +190,6 @@ class BluPhimProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Sửa đổi: Giải mã LinkData từ chuỗi JSON
         val linkData = parseJson<LinkData>(data)
         
         val document = app.get(linkData.url).document
@@ -199,7 +197,6 @@ class BluPhimProvider : MainAPI() {
         val iframeStreamDoc = app.get(iframeStreamSrc, referer = linkData.url).document
         val iframeEmbedSrc = iframeStreamDoc.selectFirst("iframe#embedIframe")?.attr("src") ?: return false
 
-        // Logic của invokeOPhim
         val oPhimScript = app.get(iframeEmbedSrc, referer = iframeStreamSrc).document
             .select("script").find { it.data().contains("var url = '") }?.data()
         
@@ -217,7 +214,6 @@ class BluPhimProvider : MainAPI() {
             return true
         }
 
-        // Logic của invokeBluPhim
         val playerDoc = app.get(iframeEmbedSrc, referer = iframeStreamSrc).document
         val script = playerDoc.select("script").find { it.data().contains("var videoId =") }?.data() ?: return false
         
