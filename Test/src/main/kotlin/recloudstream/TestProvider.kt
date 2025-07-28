@@ -93,7 +93,7 @@ class Fpo : MainAPI() {
                     url = it,
                     referer = mainUrl,
                     quality = getQualityFromName("360p"), // Assuming LQ is 360p
-                    type = ExtractorLinkType.MP4
+                    type = ExtractorLinkType.VIDEO
                 )
             )
         }
@@ -106,7 +106,7 @@ class Fpo : MainAPI() {
                     url = it,
                     referer = mainUrl,
                     quality = getQualityFromName("720p"), // Assuming HQ is 720p
-                    type = ExtractorLinkType.MP4
+                    type = ExtractorLinkType.VIDEO
                 )
             )
         }
