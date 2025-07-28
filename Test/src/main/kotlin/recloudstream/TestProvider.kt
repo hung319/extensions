@@ -150,10 +150,10 @@ class BluPhimProvider : MainAPI() {
             val href = element.attr("href")
             val name = element.text().trim()
             if (href.isNotEmpty()) {
-                episodeList.add(Episode(
-                    data = if (href.startsWith("http")) href else "$mainUrl$href",
-                    name = name
-                ))
+                // SỬA LỖI: Sử dụng newEpisode thay vì hàm khởi tạo Episode()
+                episodeList.add(newEpisode(if (href.startsWith("http")) href else "$mainUrl$href") {
+                    this.name = name
+                })
             }
         }
         return episodeList
