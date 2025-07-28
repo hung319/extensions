@@ -188,7 +188,8 @@ class BluPhimProvider : MainAPI() {
         return when {
             url.startsWith("http") -> url
             url.startsWith("//") -> "https:${url}"
-            else -> "$mainUrl$url"
+            url.startsWith("/") -> "$mainUrl$url"
+            else -> url // Giả sử nó là URL đầy đủ nếu không khớp
         }
     }
 
@@ -198,96 +199,31 @@ class BluPhimProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        try {
-            val linkData = parseJson<LinkData>(data)
-            
-            val document = try {
-                app.get(linkData.url).document
-            } catch (e: Exception) {
-                throw Exception("Bước 1 Thất bại: Không thể tải trang xem phim tại ${linkData.url}", e)
-            }
-            
-            val iframeStreamSrcRaw = document.selectFirst("iframe#iframeStream")?.attr("src") 
-                ?: throw Exception("Bước 2 Thất bại: Không tìm thấy iframe#iframeStream trên trang ${linkData.url}")
-            val iframeStreamSrc = makeAbsoluteUrl(iframeStreamSrcRaw)
-            
-            val iframeStreamDoc = try {
-                app.get(iframeStreamSrc, referer = linkData.url).document
-            } catch (e: Exception) {
-                throw Exception("Bước 3 Thất bại: Không thể tải iframeStreamDoc tại $iframeStreamSrc", e)
-            }
-            
-            val iframeEmbedSrcRaw = iframeStreamDoc.selectFirst("iframe#embedIframe")?.attr("src") 
-                ?: throw Exception("Bước 4 Thất bại: Không tìm thấy iframe#embedIframe trên trang $iframeStreamSrc")
-            val iframeEmbedSrc = makeAbsoluteUrl(iframeEmbedSrcRaw)
+        val linkData = parseJson<LinkData>(data)
+        
+        val document = app.get(linkData.url).document
+        
+        val iframeStreamSrcRaw = document.selectFirst("iframe#iframeStream")?.attr("src") 
+            ?: throw Exception("Bước 2 Thất bại: Không tìm thấy iframe#iframeStream trên trang ${linkData.url}")
+        val iframeStreamSrc = makeAbsoluteUrl(iframeStreamSrcRaw)
+        
+        val iframeStreamDoc = app.get(iframeStreamSrc, referer = linkData.url).document
+        
+        val iframeEmbedSrcRaw = iframeStreamDoc.selectFirst("iframe#embedIframe")?.attr("src") 
+            ?: throw Exception("Bước 4 Thất bại: Không tìm thấy iframe#embedIframe trên trang $iframeStreamSrc")
+        val iframeEmbedSrc = makeAbsoluteUrl(iframeEmbedSrcRaw)
 
-            val playerDoc = try {
-                app.get(iframeEmbedSrc, referer = iframeStreamSrc).document
-            } catch (e: Exception) {
-                throw Exception("Bước 5 Thất bại: Không thể tải trang trình phát tại $iframeEmbedSrc", e)
-            }
+        // Sửa đổi: Cố tình ném lỗi để lấy URL cho việc gỡ lỗi
+        throw Exception("Vui lòng lấy nội dung HTML của URL này và gửi lại: $iframeEmbedSrc")
 
-            val script = playerDoc.select("script").find { it.data().contains("var videoId =") || it.data().contains("var url = '") }?.data()
-                
-            // Sửa đổi: Ném lỗi chứa HTML của trang nếu không tìm thấy script
-            if (script == null) {
-                throw Exception("Bước 6 Thất bại: Không tìm thấy script của trình phát. HTML của trang:\n\n${playerDoc.html()}")
-            }
+        // Phần code dưới đây sẽ được sử dụng sau khi có HTML
+        /*
+        val playerDoc = app.get(iframeEmbedSrc, referer = iframeStreamSrc).document
 
-            // Logic OPhim
-            if (script.contains("var url = '")) {
-                val url = script.substringAfter("var url = '").substringBefore("'")
-                val sourceName = if (url.contains("opstream")) "Ổ Phim" else "KKPhim"
-                callback.invoke(ExtractorLink(this.name, sourceName, url, iframeEmbedSrc, Qualities.Unknown.value, type = ExtractorLinkType.M3U8))
-                return true
-            }
-
-            // Logic BluPhim
-            if (script.contains("var videoId =")) {
-                val videoId = script.substringAfter("var videoId = '").substringBefore("'")
-                val cdn = script.substringAfter("var cdn = '").substringBefore("'")
-                val domain = script.substringAfter("var domain = '").substringBefore("'")
-
-                val context = AcraApplication.context!!
-                val prefs = context.getSharedPreferences("bluphim_prefs", Context.MODE_PRIVATE)
-                var token = prefs.getString("bluphim_token", null)
-                if (token == null) {
-                    token = "r" + System.currentTimeMillis()
-                    prefs.edit().putString("bluphim_token", token).apply()
-                }
-                
-                val videoResponse = app.post(
-                    url = "${getBaseUrl(iframeEmbedSrc)}/geturl",
-                    data = mapOf("videoId" to videoId, "id" to token.md5(), "domain" to domain),
-                    referer = iframeEmbedSrc,
-                    headers = mapOf("X-Requested-With" to "XMLHttpRequest")
-                ).parsed<VideoResponse>()
-
-                if (videoResponse.status == "success") {
-                    val sourceUrl = "$cdn/${videoResponse.url}"
-                    callback.invoke(
-                        ExtractorLink(this.name, "BluPhim", sourceUrl, getBaseUrl(iframeEmbedSrc) + "/", Qualities.P1080.value, type = ExtractorLinkType.M3U8)
-                    )
-                }
-
-                val tracks = script.substringAfter("tracks: [", "").substringBefore("]", "")
-                if (tracks.isNotEmpty()) {
-                    val subs = Regex("""\{"file":"([^"]+)","label":"([^"]+)"}""").findAll(tracks)
-                    subs.forEach { sub ->
-                        val subUrl = sub.groupValues[1].replace("\\", "")
-                        val subLabel = sub.groupValues[2]
-                        subtitleCallback.invoke(SubtitleFile(subLabel, subUrl))
-                    }
-                }
-                return true
-            }
-
-            throw Exception("Bước 7 Thất bại: Đã tìm thấy script nhưng không khớp với trình phát nào đã biết.")
-
-        } catch (e: Exception) {
-            // Ném ra lại lỗi để hiển thị trong nhật ký
-            throw e
-        }
+        // ... logic xử lý player ...
+        
+        return true
+        */
     }
 
     private fun getBaseUrl(url: String): String {
