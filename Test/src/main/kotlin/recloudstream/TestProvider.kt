@@ -6,6 +6,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.getQualityFromName
 import org.jsoup.nodes.Element
+import java.lang.System.currentTimeMillis
 
 class Fpo : MainAPI() {
     override var mainUrl = "https://www.fpo.xxx"
@@ -82,16 +83,11 @@ class Fpo : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         try {
-            Log.d(name, "loadLinks started for: $data")
             val document = app.get(data).document
             
             val script = document.select("script").find { it.data().contains("var flashvars") }?.data()
                 ?: throw Exception("FPO Plugin: Flashvars script not found!")
             
-            // LOG QUAN TRỌNG: In toàn bộ script ra để kiểm tra
-            Log.d(name, "Flashvars content: $script")
-
-            // Regex linh hoạt hơn, bỏ qua khoảng trắng
             val videoUrlRegex = Regex("""'video_url'\s*:\s*'function/0/([^']+)""")
             val videoAltUrlRegex = Regex("""'video_alt_url'\s*:\s*'function/0/([^']+)""")
 
@@ -104,15 +100,20 @@ class Fpo : MainAPI() {
             
             suspend fun extractAndCallback(url: String?, qualityName: String, qualityValue: String) {
                 if (url == null) return
-                Log.d(name, "Initial URL ($qualityName): $url")
-                
-                val response = app.get(url, allowRedirects = false)
-                Log.d(name, "Response code for $qualityName: ${response.code}")
 
-                val finalUrl = response.headers["Location"]
-                    ?: throw Exception("FPO Plugin: 'Location' header not found for $qualityName URL: $url")
+                // TẠO TIMESTAMP MỚI
+                val currentTimestamp = currentTimeMillis()
+                // THÊM &rnd=... VÀO CUỐI URL
+                val urlWithFreshTimestamp = "$url&rnd=$currentTimestamp"
                 
-                Log.d(name, "Final URL ($qualityName): $finalUrl")
+                Log.d(name, "Generated URL ($qualityName): $urlWithFreshTimestamp")
+                
+                val response = app.get(urlWithFreshTimestamp, allowRedirects = false)
+                
+                val finalUrl = response.headers["Location"]
+                    ?: throw Exception("FPO Plugin: 'Location' header not found for $qualityName URL: $urlWithFreshTimestamp")
+                
+                Log.d(name, "Final MP4 URL ($qualityName): $finalUrl")
                 
                 callback.invoke(
                     ExtractorLink(
