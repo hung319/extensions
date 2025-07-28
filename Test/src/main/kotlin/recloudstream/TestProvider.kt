@@ -184,8 +184,7 @@ class BluPhimProvider : MainAPI() {
         return bytes.joinToString("") { "%02x".format(it) }
     }
 
-    // Sửa lỗi: Hàm mới để xử lý URL tương đối
-    private fun makeAbsoluteUrl(url: String, baseUrl: String): String {
+    private fun makeAbsoluteUrl(url: String): String {
         return when {
             url.startsWith("http") -> url
             url.startsWith("//") -> "https:${url}"
@@ -199,87 +198,92 @@ class BluPhimProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val linkData = parseJson<LinkData>(data)
-        
-        val document = app.get(linkData.url).document
-        
-        val iframeStreamSrcRaw = document.selectFirst("iframe#iframeStream")?.attr("src") ?: return false
-        val iframeStreamSrc = makeAbsoluteUrl(iframeStreamSrcRaw, linkData.url)
-        
-        val iframeStreamDoc = app.get(iframeStreamSrc, referer = linkData.url).document
-        
-        val iframeEmbedSrcRaw = iframeStreamDoc.selectFirst("iframe#embedIframe")?.attr("src") ?: return false
-        val iframeEmbedSrc = makeAbsoluteUrl(iframeEmbedSrcRaw, iframeStreamSrc)
-
-        val oPhimScript = app.get(iframeEmbedSrc, referer = iframeStreamSrc).document
-            .select("script").find { it.data().contains("var url = '") }?.data()
-        
-        if (oPhimScript != null) {
-            val url = oPhimScript.substringAfter("var url = '").substringBefore("'")
-            val sourceName = if (url.contains("opstream")) "Ổ Phim" else "KKPhim"
-            callback.invoke(ExtractorLink(
-                source = this.name,
-                name = sourceName,
-                url = url,
-                referer = iframeEmbedSrc,
-                quality = Qualities.Unknown.value,
-                type = ExtractorLinkType.M3U8
-            ))
-            return true
-        }
-
-        val playerDoc = app.get(iframeEmbedSrc, referer = iframeStreamSrc).document
-        val script = playerDoc.select("script").find { it.data().contains("var videoId =") }?.data() ?: return false
-        
-        val videoId = script.substringAfter("var videoId = '").substringBefore("'")
-        val cdn = script.substringAfter("var cdn = '").substringBefore("'")
-        val domain = script.substringAfter("var domain = '").substringBefore("'")
-
-        val context = AcraApplication.context!!
-        val prefs = context.getSharedPreferences("bluphim_prefs", Context.MODE_PRIVATE)
-        var token = prefs.getString("bluphim_token", null)
-        if (token == null) {
-            token = "r" + System.currentTimeMillis()
-            prefs.edit().putString("bluphim_token", token).apply()
-        }
-        
-        val videoResponse = app.post(
-            url = "${getBaseUrl(iframeEmbedSrc)}/geturl",
-            data = mapOf(
-                "videoId" to videoId,
-                "id" to token.md5(),
-                "domain" to domain
-            ),
-            referer = iframeEmbedSrc,
-            headers = mapOf("X-Requested-With" to "XMLHttpRequest")
-        ).parsed<VideoResponse>()
-
-        if (videoResponse.status == "success") {
-            val sourceUrl = "$cdn/${videoResponse.url}"
-            callback.invoke(
-                ExtractorLink(
-                    source = this.name,
-                    name = "BluPhim",
-                    url = sourceUrl,
-                    referer = getBaseUrl(iframeEmbedSrc) + "/",
-                    quality = Qualities.P1080.value,
-                    type = ExtractorLinkType.M3U8
-                )
-            )
-        }
-
-        val tracks = script.substringAfter("tracks: [", "").substringBefore("]", "")
-        if (tracks.isNotEmpty()) {
-            val subs = Regex("""\{"file":"([^"]+)","label":"([^"]+)"}""").findAll(tracks)
-            subs.forEach { sub ->
-                val subUrl = sub.groupValues[1].replace("\\", "")
-                val subLabel = sub.groupValues[2]
-                subtitleCallback.invoke(
-                    SubtitleFile(subLabel, subUrl)
-                )
+        try {
+            val linkData = parseJson<LinkData>(data)
+            
+            val document = try {
+                app.get(linkData.url).document
+            } catch (e: Exception) {
+                throw Exception("Bước 1 Thất bại: Không thể tải trang xem phim tại ${linkData.url}", e)
             }
+            
+            val iframeStreamSrcRaw = document.selectFirst("iframe#iframeStream")?.attr("src") 
+                ?: throw Exception("Bước 2 Thất bại: Không tìm thấy iframe#iframeStream trên trang ${linkData.url}")
+            val iframeStreamSrc = makeAbsoluteUrl(iframeStreamSrcRaw)
+            
+            val iframeStreamDoc = try {
+                app.get(iframeStreamSrc, referer = linkData.url).document
+            } catch (e: Exception) {
+                throw Exception("Bước 3 Thất bại: Không thể tải iframeStreamDoc tại $iframeStreamSrc", e)
+            }
+            
+            val iframeEmbedSrcRaw = iframeStreamDoc.selectFirst("iframe#embedIframe")?.attr("src") 
+                ?: throw Exception("Bước 4 Thất bại: Không tìm thấy iframe#embedIframe trên trang $iframeStreamSrc")
+            val iframeEmbedSrc = makeAbsoluteUrl(iframeEmbedSrcRaw)
+
+            val playerDoc = try {
+                app.get(iframeEmbedSrc, referer = iframeStreamSrc).document
+            } catch (e: Exception) {
+                throw Exception("Bước 5 Thất bại: Không thể tải trang trình phát tại $iframeEmbedSrc", e)
+            }
+
+            val script = playerDoc.select("script").find { it.data().contains("var videoId =") || it.data().contains("var url = '") }?.data()
+                ?: throw Exception("Bước 6 Thất bại: Không tìm thấy script của trình phát trên trang $iframeEmbedSrc")
+
+            // Logic OPhim
+            if (script.contains("var url = '")) {
+                val url = script.substringAfter("var url = '").substringBefore("'")
+                val sourceName = if (url.contains("opstream")) "Ổ Phim" else "KKPhim"
+                callback.invoke(ExtractorLink(this.name, sourceName, url, iframeEmbedSrc, Qualities.Unknown.value, type = ExtractorLinkType.M3U8))
+                return true
+            }
+
+            // Logic BluPhim
+            if (script.contains("var videoId =")) {
+                val videoId = script.substringAfter("var videoId = '").substringBefore("'")
+                val cdn = script.substringAfter("var cdn = '").substringBefore("'")
+                val domain = script.substringAfter("var domain = '").substringBefore("'")
+
+                val context = AcraApplication.context!!
+                val prefs = context.getSharedPreferences("bluphim_prefs", Context.MODE_PRIVATE)
+                var token = prefs.getString("bluphim_token", null)
+                if (token == null) {
+                    token = "r" + System.currentTimeMillis()
+                    prefs.edit().putString("bluphim_token", token).apply()
+                }
+                
+                val videoResponse = app.post(
+                    url = "${getBaseUrl(iframeEmbedSrc)}/geturl",
+                    data = mapOf("videoId" to videoId, "id" to token.md5(), "domain" to domain),
+                    referer = iframeEmbedSrc,
+                    headers = mapOf("X-Requested-With" to "XMLHttpRequest")
+                ).parsed<VideoResponse>()
+
+                if (videoResponse.status == "success") {
+                    val sourceUrl = "$cdn/${videoResponse.url}"
+                    callback.invoke(
+                        ExtractorLink(this.name, "BluPhim", sourceUrl, getBaseUrl(iframeEmbedSrc) + "/", Qualities.P1080.value, type = ExtractorLinkType.M3U8)
+                    )
+                }
+
+                val tracks = script.substringAfter("tracks: [", "").substringBefore("]", "")
+                if (tracks.isNotEmpty()) {
+                    val subs = Regex("""\{"file":"([^"]+)","label":"([^"]+)"}""").findAll(tracks)
+                    subs.forEach { sub ->
+                        val subUrl = sub.groupValues[1].replace("\\", "")
+                        val subLabel = sub.groupValues[2]
+                        subtitleCallback.invoke(SubtitleFile(subLabel, subUrl))
+                    }
+                }
+                return true
+            }
+
+            throw Exception("Bước 7 Thất bại: Đã tìm thấy script nhưng không khớp với trình phát nào đã biết.")
+
+        } catch (e: Exception) {
+            // Ném ra lại lỗi để hiển thị trong nhật ký
+            throw e
         }
-        return true
     }
 
     private fun getBaseUrl(url: String): String {
