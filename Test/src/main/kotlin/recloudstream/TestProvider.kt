@@ -17,16 +17,9 @@ class BluPhimProvider : MainAPI() {
         TvType.TvSeries
     )
 
-    // quickSearch sẽ tải các mục trên trang chủ không cần phân trang (vd: Phim Hot)
-    override suspend fun quickSearch(query: String): List<SearchResponse> {
-        val document = app.get(mainUrl).document
-        return document.select("div.list-films.film-hot ul#film_hot li.item").mapNotNull {
-            it.toSearchResult()
-        }
-    }
-
-    // mainPage định nghĩa các mục có phân trang
+    // Sửa lỗi: Bỏ quickSearch và đưa tất cả vào mainPage
     override val mainPage = mainPageOf(
+        "phim-hot" to "Phim Hot",
         "/the-loai/phim-moi-" to "Phim Mới",
         "/the-loai/phim-cap-nhat-" to "Phim Cập Nhật",
         "/the-loai/phim-bo-" to "Phim Bộ",
@@ -34,11 +27,23 @@ class BluPhimProvider : MainAPI() {
         "/the-loai/phim-chieu-rap-" to "Phim Chiếu Rạp"
     )
 
-    // getMainPage xử lý việc tải các trang cho các mục được định nghĩa trong mainPage
+    // Sửa lỗi: Cấu trúc lại getMainPage để xử lý từng mục riêng biệt
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
+        // Xử lý mục "Phim Hot" (không phân trang)
+        if (request.data == "phim-hot") {
+            if (page > 1) return newHomePageResponse(request.name, emptyList(), false)
+
+            val document = app.get(mainUrl).document
+            val movies = document.select("div.list-films.film-hot ul#film_hot li.item").mapNotNull {
+                it.toSearchResult()
+            }
+            return newHomePageResponse(request.name, movies, false)
+        }
+
+        // Xử lý các mục có phân trang
         val url = mainUrl + if (page == 1) request.data.dropLast(1) else (request.data + page)
         val document = app.get(url).document
 
@@ -92,7 +97,6 @@ class BluPhimProvider : MainAPI() {
             .text().toIntOrNull()
         val description = document.selectFirst("div.detail div.tab")?.text()?.trim()
         
-        // SỬA LỖI: Sử dụng Score.from() để tạo đối tượng Score từ chuỗi điểm gốc
         val ratingString = document.select("div.dinfo dl.col dt:contains(Điểm IMDb) + dd a")
             .text().trim()
         val score = runCatching { Score.from(ratingString, 10) }.getOrNull()
