@@ -5,11 +5,11 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
-import com.lagradost.cloudstream3.AcraApplication // Thêm import
-import com.lagradost.cloudstream3.utils.DataStore // Thêm import
-import com.lagradost.cloudstream3.common.Crypto.md5 // Thêm import
+import com.lagradost.cloudstream3.AcraApplication
+import com.lagradost.cloudstream3.utils.DataStore
 import okhttp3.Interceptor
 import okhttp3.Response
+import java.security.MessageDigest // Thêm import cho MessageDigest
 
 // Xác định lớp provider chính
 class BluPhimProvider : MainAPI() {
@@ -24,8 +24,7 @@ class BluPhimProvider : MainAPI() {
         TvType.TvSeries
     )
 
-    // Sửa lỗi: Di chuyển interceptor vào hàm getVideoInterceptor
-    override fun getVideoInterceptor(extractorLink: ExtractorLink?): Interceptor? {
+    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
         return object : Interceptor {
             override fun intercept(chain: Interceptor.Chain): Response {
                 val request = chain.request()
@@ -48,7 +47,6 @@ class BluPhimProvider : MainAPI() {
         }
     }
 
-    // mainPage định nghĩa tất cả các mục trên trang chủ
     override val mainPage = mainPageOf(
         "phim-hot" to "Phim Hot",
         "/the-loai/phim-moi-" to "Phim Mới",
@@ -58,7 +56,6 @@ class BluPhimProvider : MainAPI() {
         "/the-loai/phim-chieu-rap-" to "Phim Chiếu Rạp"
     )
 
-    // getMainPage xử lý việc tải các trang cho từng mục
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
@@ -167,6 +164,12 @@ class BluPhimProvider : MainAPI() {
         return episodeList
     }
 
+    // Sửa lỗi: Thêm hàm md5 thủ công vào trong provider
+    private fun String.md5(): String {
+        val bytes = MessageDigest.getInstance("MD5").digest(this.toByteArray())
+        return bytes.joinToString("") { "%02x".format(it) }
+    }
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -184,7 +187,6 @@ class BluPhimProvider : MainAPI() {
         val cdn = script.substringAfter("var cdn = '").substringBefore("'")
         val domain = script.substringAfter("var domain = '").substringBefore("'")
 
-        // Sửa lỗi: Dùng SharedPreferences thủ công để tương thích
         val context = AcraApplication.context!!
         val prefs = context.getSharedPreferences("bluphim_prefs", Context.MODE_PRIVATE)
         var token = prefs.getString("bluphim_token", null)
@@ -197,6 +199,7 @@ class BluPhimProvider : MainAPI() {
             url = "${getBaseUrl(iframeEmbedSrc)}/geturl",
             data = mapOf(
                 "videoId" to videoId,
+                // Sửa lỗi: Gọi hàm md5() nội bộ
                 "id" to token.md5(),
                 "domain" to domain
             ),
