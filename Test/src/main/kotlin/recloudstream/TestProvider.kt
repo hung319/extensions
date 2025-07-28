@@ -5,6 +5,7 @@ import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
+import com.lagradost.cloudstream3.utils.DataStore
 import okhttp3.Interceptor
 import okhttp3.Response
 
@@ -21,29 +22,28 @@ class BluPhimProvider : MainAPI() {
         TvType.TvSeries
     )
 
-    // Thêm interceptor để xử lý link video và phụ đề
-    override val interceptor = object : Interceptor {
-        override fun intercept(chain: Interceptor.Chain): Response {
-            val request = chain.request()
-            val response = chain.proceed(request)
-            // Logic làm sạch M3U8 từ các nguồn khác nhau
-            if (response.code == 200 && response.body != null) {
-                val url = request.url.toString()
-                if (url.contains(".m3u8")) {
-                    val body = response.body!!.string()
-                    val newBody = body.replace("https://bluphim.uk.com", mainUrl)
-                    return response.newBuilder().body(
-                        okhttp3.ResponseBody.create(
-                            response.body!!.contentType(),
-                            newBody
-                        )
-                    ).build()
+    // Sửa lỗi: Thêm interceptor bằng cách ghi đè http client
+    init {
+        this.overriddenClient = app.baseClient.newBuilder()
+            .addInterceptor { chain ->
+                val request = chain.request()
+                val response = chain.proceed(request)
+                if (response.code == 200 && response.body != null) {
+                    val url = request.url.toString()
+                    if (url.contains(".m3u8")) {
+                        val body = response.body!!.string()
+                        val newBody = body.replace("https://bluphim.uk.com", mainUrl)
+                        return@addInterceptor response.newBuilder().body(
+                            okhttp3.ResponseBody.create(
+                                response.body!!.contentType(),
+                                newBody
+                            )
+                        ).build()
+                    }
                 }
-            }
-            return response
-        }
+                response
+            }.build()
     }
-
 
     // mainPage định nghĩa tất cả các mục trên trang chủ
     override val mainPage = mainPageOf(
@@ -86,9 +86,9 @@ class BluPhimProvider : MainAPI() {
     private fun Element.toSearchResult(): MovieSearchResponse? {
         val href = this.selectFirst("a")?.attr("href") ?: return null
 
-        val title = this.selectFirst("div.text span.title a")?.text()?.trim() // Dành riêng cho layout "Phim Hot"
-            ?: this.selectFirst("div.name")?.text()?.trim() // Dành cho TẤT CẢ các layout còn lại
-            ?: this.attr("title").trim().takeIf { it.isNotEmpty() } // Dự phòng
+        val title = this.selectFirst("div.text span.title a")?.text()?.trim()
+            ?: this.selectFirst("div.name")?.text()?.trim()
+            ?: this.attr("title").trim().takeIf { it.isNotEmpty() }
             ?: return null
 
         val posterUrl = this.selectFirst("img")?.attr("src")
@@ -210,7 +210,8 @@ class BluPhimProvider : MainAPI() {
             url = "${getBaseUrl(iframeEmbedSrc)}/geturl",
             data = mapOf(
                 "videoId" to videoId,
-                "id" to md5(token),
+                // Sửa lỗi: Gọi md5() như một phương thức mở rộng
+                "id" to token.md5(),
                 "domain" to domain
             ),
             referer = iframeEmbedSrc,
@@ -221,13 +222,12 @@ class BluPhimProvider : MainAPI() {
             val sourceUrl = "$cdn/${linkData.url}"
             callback.invoke(
                 ExtractorLink(
-                    source = this.name, // Sửa: đổi 'name' thành 'source'
+                    source = this.name,
                     name = this.name,
                     url = sourceUrl,
                     referer = getBaseUrl(iframeEmbedSrc) + "/",
                     quality = Qualities.P1080.value,
-                    // SỬA LỖI: Sử dụng ExtractorLinkType.M3U8 thay vì isM3u8
-                    type = ExtractorLinkType.M3U8 
+                    type = ExtractorLinkType.M3U8
                 )
             )
         }
@@ -251,7 +251,6 @@ class BluPhimProvider : MainAPI() {
         return url.substringBefore("/video/")
     }
 
-    // Lớp dữ liệu để phân tích JSON trả về
     data class VideoResponse(
         val status: String,
         val url: String
