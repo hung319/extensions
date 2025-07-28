@@ -39,7 +39,6 @@ class BluPhimProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        // request.data sẽ là "/the-loai/phim-moi-"
         val url = mainUrl + if (page == 1) request.data.dropLast(1) else (request.data + page)
         val document = app.get(url).document
 
@@ -47,18 +46,17 @@ class BluPhimProvider : MainAPI() {
             it.toSearchResult()
         }
         
-        val hasNextPage = movies.isNotEmpty()
-        return newHomePageResponse(request.name, movies, hasNextPage)
+        return newHomePageResponse(request.name, movies, movies.isNotEmpty())
     }
 
     // Hàm tiện ích được sửa lỗi để xử lý tất cả các layout
     private fun Element.toSearchResult(): MovieSearchResponse? {
         val href = this.selectFirst("a")?.attr("href") ?: return null
 
-        val title = this.selectFirst("div.text span.title a")?.text()?.trim()
-            ?: this.selectFirst("div.name a")?.text()?.trim()
-            ?: this.selectFirst("div.name span")?.text()?.trim()
-            ?: this.attr("title").trim().takeIf { it.isNotEmpty() }
+        val title = this.selectFirst("div.text span.title a")?.text()?.trim() // Cho layout "Phim Hot"
+            ?: this.selectFirst("div.name a")?.text()?.trim() // Cho layout "Phim mới"
+            ?: this.selectFirst("div.name span")?.text()?.trim() // Cho layout "Tìm kiếm"
+            ?: this.attr("title").trim().takeIf { it.isNotEmpty() } // Dự phòng
             ?: return null
 
         val posterUrl = this.selectFirst("img")?.attr("src")
@@ -94,8 +92,7 @@ class BluPhimProvider : MainAPI() {
             .text().toIntOrNull()
         val description = document.selectFirst("div.detail div.tab")?.text()?.trim()
         
-        // Lấy điểm IMDb và chuyển đổi sang hệ thống 1000 điểm
-        val rating = document.select("div.dinfo dl.col dt:contains(Điểm IMDb) + dd a")
+        val ratingInt = document.select("div.dinfo dl.col dt:contains(Điểm IMDb) + dd a")
             .text().toRatingInt()
 
         val genres = document.select("dd.theloaidd a").map { it.text() }
@@ -117,8 +114,8 @@ class BluPhimProvider : MainAPI() {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = description
-                // SỬA LỖI: Sử dụng 'score' thay vì 'rating'
-                this.score = rating
+                // SỬA LỖI: Tạo đối tượng Score một cách tường minh
+                this.score = ratingInt?.let { Score(it) }
                 this.tags = genres
                 this.recommendations = recommendations
             }
@@ -127,8 +124,8 @@ class BluPhimProvider : MainAPI() {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = description
-                // SỬA LỖI: Sử dụng 'score' thay vì 'rating'
-                this.score = rating
+                // SỬA LỖI: Tạo đối tượng Score một cách tường minh
+                this.score = ratingInt?.let { Score(it) }
                 this.tags = genres
                 this.recommendations = recommendations
             }
