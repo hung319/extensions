@@ -189,7 +189,7 @@ class BluPhimProvider : MainAPI() {
             url.startsWith("http") -> url
             url.startsWith("//") -> "https:${url}"
             url.startsWith("/") -> "$mainUrl$url"
-            else -> url // Giả sử nó là URL đầy đủ nếu không khớp
+            else -> url 
         }
     }
 
@@ -203,27 +203,30 @@ class BluPhimProvider : MainAPI() {
         
         val document = app.get(linkData.url).document
         
-        val iframeStreamSrcRaw = document.selectFirst("iframe#iframeStream")?.attr("src") 
+        val iframeStreamElement = document.selectFirst("iframe#iframeStream") 
             ?: throw Exception("Bước 2 Thất bại: Không tìm thấy iframe#iframeStream trên trang ${linkData.url}")
+        val iframeStreamSrcRaw = iframeStreamElement.attr("src")
+        if (iframeStreamSrcRaw.isBlank()) {
+            throw Exception("Bước 2.1 Thất bại: iframe#iframeStream có thuộc tính src rỗng.")
+        }
         val iframeStreamSrc = makeAbsoluteUrl(iframeStreamSrcRaw)
         
-        val iframeStreamDoc = app.get(iframeStreamSrc, referer = linkData.url).document
+        val iframeStreamDoc = try {
+            app.get(iframeStreamSrc, referer = linkData.url).document
+        } catch (e: Exception) {
+            throw Exception("Bước 3 Thất bại: Không thể tải iframeStreamDoc tại $iframeStreamSrc", e)
+        }
         
-        val iframeEmbedSrcRaw = iframeStreamDoc.selectFirst("iframe#embedIframe")?.attr("src") 
-            ?: throw Exception("Bước 4 Thất bại: Không tìm thấy iframe#embedIframe trên trang $iframeStreamSrc")
+        val iframeEmbedElement = iframeStreamDoc.selectFirst("iframe#embedIframe")
+            ?: throw Exception("Bước 4 Thất bại: Không tìm thấy iframe#embedIframe trên trang $iframeStreamSrc. HTML của trang iframe đầu tiên:\n\n${iframeStreamDoc.html()}")
+        val iframeEmbedSrcRaw = iframeEmbedElement.attr("src")
+        if (iframeEmbedSrcRaw.isBlank()) {
+            throw Exception("Bước 4.1 Thất bại: iframe#embedIframe có thuộc tính src rỗng.")
+        }
         val iframeEmbedSrc = makeAbsoluteUrl(iframeEmbedSrcRaw)
-
-        // Sửa đổi: Cố tình ném lỗi để lấy URL cho việc gỡ lỗi
-        throw Exception("Vui lòng lấy nội dung HTML của URL này và gửi lại: $iframeEmbedSrc")
-
-        // Phần code dưới đây sẽ được sử dụng sau khi có HTML
-        /*
-        val playerDoc = app.get(iframeEmbedSrc, referer = iframeStreamSrc).document
-
-        // ... logic xử lý player ...
         
-        return true
-        */
+        // Cố tình ném lỗi để lấy URL cho việc gỡ lỗi
+        throw Exception("Vui lòng lấy nội dung HTML của URL này và gửi lại: $iframeEmbedSrc")
     }
 
     private fun getBaseUrl(url: String): String {
