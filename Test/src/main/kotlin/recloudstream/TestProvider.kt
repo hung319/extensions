@@ -228,7 +228,11 @@ class BluPhimProvider : MainAPI() {
             }
 
             val script = playerDoc.select("script").find { it.data().contains("var videoId =") || it.data().contains("var url = '") }?.data()
-                ?: throw Exception("Bước 6 Thất bại: Không tìm thấy script của trình phát trên trang $iframeEmbedSrc")
+                
+            // Sửa đổi: Ném lỗi chứa HTML của trang nếu không tìm thấy script
+            if (script == null) {
+                throw Exception("Bước 6 Thất bại: Không tìm thấy script của trình phát. HTML của trang:\n\n${playerDoc.html()}")
+            }
 
             // Logic OPhim
             if (script.contains("var url = '")) {
