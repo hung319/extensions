@@ -17,7 +17,7 @@ class BluPhimProvider : MainAPI() {
         TvType.TvSeries
     )
 
-    // quickSearch tải các mục không phân trang trên trang chủ (vd: Phim Hot)
+    // quickSearch sẽ tải các mục trên trang chủ không cần phân trang (vd: Phim Hot)
     override suspend fun quickSearch(query: String): List<SearchResponse> {
         val document = app.get(mainUrl).document
         return document.select("div.list-films.film-hot ul#film_hot li.item").mapNotNull {
@@ -28,7 +28,10 @@ class BluPhimProvider : MainAPI() {
     // mainPage định nghĩa các mục có phân trang
     override val mainPage = mainPageOf(
         "/the-loai/phim-moi-" to "Phim Mới",
-        "/the-loai/phim-cap-nhat-" to "Phim Cập Nhật"
+        "/the-loai/phim-cap-nhat-" to "Phim Cập Nhật",
+        "/the-loai/phim-bo-" to "Phim Bộ",
+        "/the-loai/phim-le-" to "Phim Lẻ",
+        "/the-loai/phim-chieu-rap-" to "Phim Chiếu Rạp"
     )
 
     // getMainPage xử lý việc tải các trang cho các mục được định nghĩa trong mainPage
@@ -36,31 +39,30 @@ class BluPhimProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
+        // request.data sẽ là "/the-loai/phim-moi-"
         val url = mainUrl + if (page == 1) request.data.dropLast(1) else (request.data + page)
         val document = app.get(url).document
 
-        // Selector này đảm bảo lấy đúng danh sách phim trên cả trang chủ (page=1) và các trang phân loại
         val movies = document.select("div.list-films.film-new li.item").mapNotNull {
             it.toSearchResult()
         }
         
-        return newHomePageResponse(request.name, movies, movies.isNotEmpty())
+        val hasNextPage = movies.isNotEmpty()
+        return newHomePageResponse(request.name, movies, hasNextPage)
     }
 
     // Hàm tiện ích được sửa lỗi để xử lý tất cả các layout
     private fun Element.toSearchResult(): MovieSearchResponse? {
         val href = this.selectFirst("a")?.attr("href") ?: return null
 
-        // Selector linh hoạt để lấy tiêu đề từ nhiều cấu trúc HTML khác nhau
-        val title = this.selectFirst("div.text span.title a")?.text()?.trim() // Cho layout "Phim Hot"
-            ?: this.selectFirst("div.name a")?.text()?.trim() // Cho layout "Phim mới"
-            ?: this.selectFirst("div.name span")?.text()?.trim() // Cho layout "Tìm kiếm"
-            ?: this.attr("title").trim().takeIf { it.isNotEmpty() } // Dự phòng
+        val title = this.selectFirst("div.text span.title a")?.text()?.trim()
+            ?: this.selectFirst("div.name a")?.text()?.trim()
+            ?: this.selectFirst("div.name span")?.text()?.trim()
+            ?: this.attr("title").trim().takeIf { it.isNotEmpty() }
             ?: return null
 
         val posterUrl = this.selectFirst("img")?.attr("src")
-
-        // Xây dựng URL đầy đủ
+        
         val fullHref = if (href.startsWith("http")) href else "$mainUrl$href"
         val fullPosterUrl = posterUrl?.let { if (it.startsWith("http")) it else "$mainUrl$it" }
 
@@ -68,7 +70,6 @@ class BluPhimProvider : MainAPI() {
             this.posterUrl = fullPosterUrl
         }
     }
-
 
     // Hàm để xử lý các truy vấn tìm kiếm
     override suspend fun search(query: String): List<SearchResponse> {
@@ -92,8 +93,11 @@ class BluPhimProvider : MainAPI() {
         val year = document.select("div.dinfo dl.col dt:contains(Năm sản xuất) + dd")
             .text().toIntOrNull()
         val description = document.selectFirst("div.detail div.tab")?.text()?.trim()
+        
+        // Lấy điểm IMDb và chuyển đổi sang hệ thống 1000 điểm
         val rating = document.select("div.dinfo dl.col dt:contains(Điểm IMDb) + dd a")
             .text().toRatingInt()
+
         val genres = document.select("dd.theloaidd a").map { it.text() }
         val recommendations = document.select("div.list-films.film-hot ul#film_related li.item").mapNotNull {
             it.toSearchResult()
@@ -113,7 +117,8 @@ class BluPhimProvider : MainAPI() {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = description
-                this.rating = rating
+                // SỬA LỖI: Sử dụng 'score' thay vì 'rating'
+                this.score = rating
                 this.tags = genres
                 this.recommendations = recommendations
             }
@@ -122,7 +127,8 @@ class BluPhimProvider : MainAPI() {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = description
-                this.rating = rating
+                // SỬA LỖI: Sử dụng 'score' thay vì 'rating'
+                this.score = rating
                 this.tags = genres
                 this.recommendations = recommendations
             }
