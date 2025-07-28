@@ -22,17 +22,14 @@ class BluPhimProvider : MainAPI() {
         val document = app.get(mainUrl).document
         // Trích xuất các phần tử "Phim hot"
         val hotMoviesSection = document.select("div.list-films.film-hot ul#film_hot li.item")
-        if (hotMoviesSection.isNotEmpty()) {
-            return hotMoviesSection.mapNotNull { it.toSearchResult() }
-        }
-        return emptyList()
+        return hotMoviesSection.mapNotNull { it.toSearchResult() }
     }
 
 
     // mainPage định nghĩa các mục có phân trang
     override val mainPage = mainPageOf(
-        "$mainUrl/the-loai/phim-moi-" to "Phim Mới",
-        "$mainUrl/the-loai/phim-cap-nhat-" to "Phim Cập Nhật"
+        "/the-loai/phim-moi-" to "Phim Mới",
+        "/the-loai/phim-cap-nhat-" to "Phim Cập Nhật"
     )
 
     // getMainPage giờ chỉ xử lý các yêu cầu phân trang
@@ -40,25 +37,26 @@ class BluPhimProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        val url = if (page == 1) request.data.dropLast(1) else request.data + page.toString()
+        val url = "$mainUrl${request.data}$page"
         val document = app.get(url).document
 
-        val movies = document.select("div.list-films li.item").mapNotNull {
+        val movies = document.select("div.list-films.film-new li.item").mapNotNull {
             it.toSearchResult()
         }
         
         val hasNextPage = movies.isNotEmpty()
 
-        // Sử dụng hàm khởi tạo sạch hơn từ tài liệu
         return newHomePageResponse(request.name, movies, hasNextPage)
     }
 
     // Hàm tiện ích để chuyển đổi một phần tử HTML thành đối tượng MovieSearchResponse
     private fun Element.toSearchResult(): MovieSearchResponse? {
         val href = this.selectFirst("a")?.attr("href") ?: return null
-        // Lấy tiêu đề từ `div.name span` để có độ chính xác cao hơn
-        val title = this.selectFirst("div.name span")?.text()?.trim()
-            ?: this.selectFirst("a")?.attr("title")?.trim() ?: return null
+        
+        // Sửa lỗi: Tạo selector linh hoạt hơn để lấy tiêu đề từ các cấu trúc HTML khác nhau
+        val title = this.selectFirst("div.name span, div.name a, a.title")?.text()?.trim()
+            ?: this.attr("title").trim().takeIf { it.isNotEmpty() }
+            ?: return null
 
         val posterUrl = this.selectFirst("img")?.attr("src")
 
@@ -146,7 +144,7 @@ class BluPhimProvider : MainAPI() {
             val href = element.attr("href")
             val name = element.text().trim()
             // Loại bỏ các liên kết server không mong muốn
-            if (href.isNotEmpty() && !name.contains("Server")) {
+            if (href.isNotEmpty() && !name.contains("Server", ignoreCase = true)) {
                 episodeList.add(newEpisode(if (href.startsWith("http")) href else "$mainUrl$href") {
                     this.name = name
                 })
