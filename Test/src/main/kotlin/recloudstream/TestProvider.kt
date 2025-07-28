@@ -24,46 +24,47 @@ class BluPhimProvider : MainAPI() {
         "$mainUrl/the-loai/phim-cap-nhat-" to "Phim Cập Nhật"
     )
 
-    // Hàm để lấy dữ liệu cho trang chính và xử lý phân trang
+    // Hàm quickSearch để tải các mục không phân trang trên trang chủ
+    override suspend fun quickSearch(query: String): List<SearchResponse> {
+        // Quicksearch hiện tại không cần thiết, sẽ được xử lý trong `search`
+        return emptyList()
+    }
+
+
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
+        // Xử lý các yêu cầu phân trang
         val url = if (page == 1) request.data.dropLast(1) else request.data + page.toString()
         val document = app.get(url).document
 
-        val homePageList = ArrayList<HomePageList>()
-
-        // Xử lý các yêu cầu phân trang
-        if (page == 1 && request.name != "Phim Mới" && request.name != "Phim Cập Nhật") {
-             // Trích xuất các phần tử "Phim hot" chỉ cho trang đầu tiên
-            val hotMoviesSection = document.select("div.list-films.film-hot ul#film_hot li.item")
-            if (hotMoviesSection.isNotEmpty()) {
-                val hotMovies = hotMoviesSection.mapNotNull {
-                    it.toSearchResult()
-                }
-                homePageList.add(HomePageList("Phim Hot", hotMovies))
-            }
-        }
-
-        val movies = document.select("div.list-films.film-new li.item").mapNotNull {
+        val movies = document.select("div.list-films li.item").mapNotNull {
             it.toSearchResult()
         }
-        homePageList.add(HomePageList(request.name, movies))
 
+        // hasNextPage sẽ là true nếu danh sách phim trên trang hiện tại không rỗng
+        val hasNextPage = movies.isNotEmpty()
 
-        return HomePageResponse(homePageList)
+        // Trả về một danh sách duy nhất cho việc phân trang
+        // CloudStream sẽ tự động thêm các mục này vào cuối danh sách hiện có
+        return newHomePageResponse(
+            list = HomePageList(
+                name = request.name,
+                list = movies,
+                hasNext = hasNextPage
+            ),
+            hasNext = hasNextPage
+        )
     }
 
     // Hàm tiện ích để chuyển đổi một phần tử HTML thành đối tượng MovieSearchResponse
     private fun Element.toSearchResult(): MovieSearchResponse? {
-        val titleElement = this.selectFirst("div.name span a, a.blog-title, div.text span.title a")
-        val title = titleElement?.attr("title")?.trim()
-            ?: titleElement?.text()?.trim()
-            ?: this.attr("title").trim().takeIf { it.isNotEmpty() }
-            ?: return null
-
         val href = this.selectFirst("a")?.attr("href") ?: return null
+        // Sửa lỗi: Lấy tiêu đề từ `div.name span` để có độ chính xác cao hơn
+        val title = this.selectFirst("div.name span")?.text()?.trim()
+            ?: this.selectFirst("a")?.attr("title")?.trim() ?: return null
+
         val posterUrl = this.selectFirst("img")?.attr("src")
 
         // Xây dựng URL đầy đủ cho href và posterUrl nếu cần
@@ -149,8 +150,8 @@ class BluPhimProvider : MainAPI() {
         document.select("div.list-episode a").forEach { element ->
             val href = element.attr("href")
             val name = element.text().trim()
-            if (href.isNotEmpty()) {
-                // SỬA LỖI: Sử dụng newEpisode thay vì hàm khởi tạo Episode()
+            // Sửa lỗi: Loại bỏ các liên kết server không mong muốn
+            if (href.isNotEmpty() && !name.contains("Server")) {
                 episodeList.add(newEpisode(if (href.startsWith("http")) href else "$mainUrl$href") {
                     this.name = name
                 })
