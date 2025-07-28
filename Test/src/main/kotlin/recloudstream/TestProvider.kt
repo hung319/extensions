@@ -1,134 +1,139 @@
-package com.recloudstream.extractors
+package recloudstream
 
-import android.util.Log
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.getQualityFromName
+import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-import java.lang.System.currentTimeMillis
 
-class Fpo : MainAPI() {
-    override var mainUrl = "https://www.fpo.xxx"
-    override var name = "FPO.XXX"
+// Xác định lớp provider chính
+class BluPhimProvider : MainAPI() {
+    // Ghi đè các thuộc tính cơ bản của API
+    override var mainUrl = "https://bluphim.uk.com"
+    override var name = "BluPhim"
     override val hasMainPage = true
-    override var lang = "en"
-    override val hasDownloadSupport = true
+    override var lang = "vi"
+    override val hasDownloadSupport = false
     override val supportedTypes = setOf(
-        TvType.NSFW
+        TvType.Movie,
+        TvType.TvSeries
     )
 
-    override val mainPage = mainPageOf(
-        "/new-1/" to "Latest Videos",
-        "/top-2/" to "Top Rated",
-        "/popular-2/" to "Most Popular",
-        "/search/Brazzer/" to "Brazzer",
-        "/search/Milf/" to "Milf",
-        "/search/Step-siblings-caught/" to "Step Siblings Caught",
-    )
-
+    // Hàm để lấy dữ liệu cho trang chính
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        val url = if (request.data.contains("/search/")) {
-            "$mainUrl${request.data}$page/"
-        } else {
-            "$mainUrl${request.data}$page/"
+        // Phân tích cú pháp tài liệu HTML từ URL chính
+        val document = app.get(mainUrl).document
+        val homePageList = ArrayList<HomePageList>()
+
+        // Trích xuất các phần tử "Phim hot"
+        val hotMoviesSection = document.select("div.list-films.film-hot ul#film_hot li.item")
+        if (hotMoviesSection.isNotEmpty()) {
+            val hotMovies = hotMoviesSection.mapNotNull {
+                it.toSearchResult()
+            }
+            homePageList.add(HomePageList("Phim Hot", hotMovies))
         }
-        val document = app.get(url).document
-        val home = document.select("div.list-videos div.item").mapNotNull {
-            it.toSearchResult()
+
+        // Trích xuất các phần tử "Phim mới cập nhật"
+        val newMoviesSection = document.select("div.list-films.film-new ul.film-moi li.item")
+        if (newMoviesSection.isNotEmpty()) {
+            val newMovies = newMoviesSection.mapNotNull {
+                it.toSearchResult()
+            }
+            homePageList.add(HomePageList("Phim Mới Cập Nhật", newMovies))
         }
-        return newHomePageResponse(request.name, home)
+
+        // Trả về danh sách đã xây dựng
+        return HomePageResponse(homePageList)
     }
 
-    private fun Element.toSearchResult(): SearchResponse? {
-        val title = this.selectFirst("strong.title")?.text() ?: return null
+    // Hàm tiện ích để chuyển đổi một phần tử HTML thành đối tượng MovieSearchResponse
+    private fun Element.toSearchResult(): MovieSearchResponse? {
+        val titleElement = this.selectFirst("div.name span a, a.blog-title, div.text span.title a")
+        val title = titleElement?.attr("title")?.trim()
+            ?: titleElement?.text()?.trim()
+            ?: this.attr("title").trim().takeIf { it.isNotEmpty() }
+            ?: return null
+
         val href = this.selectFirst("a")?.attr("href") ?: return null
-        val posterUrl = this.selectFirst("img.thumb")?.attr("data-original")
-        
-        return newMovieSearchResponse(title, href, TvType.NSFW) {
-            this.posterUrl = posterUrl
+        val posterUrl = this.selectFirst("img")?.attr("src")
+
+        // Xây dựng URL đầy đủ cho href và posterUrl nếu cần
+        val fullHref = if (href.startsWith("http")) href else "$mainUrl$href"
+        val fullPosterUrl = if (posterUrl?.startsWith("http") == true) posterUrl else posterUrl?.let { "$mainUrl$it" }
+
+        return newMovieSearchResponse(title, fullHref) {
+            this.posterUrl = fullPosterUrl
         }
     }
 
+
+    // Hàm để xử lý các truy vấn tìm kiếm
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchResponse = app.get("$mainUrl/search/$query/").document
-        return searchResponse.select("div.list-videos div.item").mapNotNull {
+        val url = "$mainUrl/search?k=$query"
+        val document = app.get(url).document
+
+        // Phân tích cú pháp kết quả tìm kiếm và ánh xạ chúng
+        return document.select("div.list-films.film-new li.item").mapNotNull {
             it.toSearchResult()
         }
     }
 
+    // Hàm để tải thông tin chi tiết cho một bộ phim
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
-        val title = document.selectFirst("h1")?.text()?.trim() ?: return null
-        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
-        val description = document.selectFirst("meta[property=og:description]")?.attr("content")
-        val recommendations = document.select("div.related-videos div.item").mapNotNull {
-            it.toSearchResult()
+
+        // Trích xuất các chi tiết phim
+        val title = document.selectFirst("div.text h1 span.title")?.text()?.trim() ?: return null
+        val poster = document.selectFirst("div.poster img")?.let { 
+            val src = it.attr("src")
+            if (src.startsWith("http")) src else "$mainUrl$src"
         }
-        
-        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
-            this.posterUrl = poster
-            this.plot = description
-            this.recommendations = recommendations
+        val year = document.select("div.dinfo dl.col dt:contains(Năm sản xuất) + dd")
+            .text().toIntOrNull()
+        val description = document.selectFirst("div.detail div.tab")?.text()?.trim()
+        val rating = document.select("div.dinfo dl.col dt:contains(Điểm IMDb) + dd a")
+            .text().toRatingInt()
+        val genres = document.select("dd.theloaidd a").map { it.text() }
+
+        // Xác định loại TvType (phim lẻ hay phim bộ)
+        val tvType = if (document.select("dd.theloaidd a:contains(TV Series - Phim bộ)").isNotEmpty()) {
+            TvType.TvSeries
+        } else {
+            TvType.Movie
+        }
+
+        // Trả về đối tượng LoadResponse phù hợp
+        return if (tvType == TvType.TvSeries) {
+            newTvSeriesLoadResponse(title, url, tvType, emptyList()) {
+                this.posterUrl = poster
+                this.year = year
+                this.plot = description
+                this.rating = rating
+                this.tags = genres
+            }
+        } else {
+            newMovieLoadResponse(title, url, tvType, url) {
+                this.posterUrl = poster
+                this.year = year
+                this.plot = description
+                this.rating = rating
+                this.tags = genres
+            }
         }
     }
 
+    // Hàm giữ chỗ (placeholder) cho việc tải các liên kết
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        try {
-            val document = app.get(data).document
-            
-            val script = document.select("script").find { it.data().contains("var flashvars") }?.data()
-                ?: throw Exception("FPO Plugin: Flashvars script not found!")
-            
-            // Regex MỚI: Chấp nhận key CÓ hoặc KHÔNG CÓ dấu ngoặc đơn (')
-            val videoUrlRegex = Regex("""'?video_url'?\s*:\s*'function/0/([^']+)""")
-            val videoAltUrlRegex = Regex("""'?video_alt_url'?\s*:\s*'function/0/([^']+)""")
-
-            val lqUrl = videoUrlRegex.find(script)?.groups?.get(1)?.value
-            val hqUrl = videoAltUrlRegex.find(script)?.groups?.get(1)?.value
-
-            if (lqUrl == null && hqUrl == null) {
-                throw Exception("FPO Plugin: Could not extract any video URLs from flashvars! Content: \n$script")
-            }
-            
-            suspend fun extractAndCallback(url: String?, qualityName: String, qualityValue: String) {
-                if (url == null) return
-                val currentTimestamp = currentTimeMillis()
-                val urlWithFreshTimestamp = "$url&rnd=$currentTimestamp"
-                
-                val response = app.get(urlWithFreshTimestamp, allowRedirects = false)
-                
-                val finalUrl = response.headers["Location"]
-                    ?: throw Exception("FPO Plugin: 'Location' header not found for $qualityName URL: $urlWithFreshTimestamp")
-                
-                callback.invoke(
-                    ExtractorLink(
-                        source = name,
-                        name = "$name $qualityName",
-                        url = finalUrl,
-                        referer = mainUrl,
-                        quality = getQualityFromName(qualityValue),
-                        type = ExtractorLinkType.VIDEO
-                    )
-                )
-            }
-
-            extractAndCallback(lqUrl, "LQ", "480p")
-            extractAndCallback(hqUrl, "HQ", "720p")
-
-        } catch (e: Exception) {
-            Log.e(name, "Error in loadLinks", e)
-            throw e
-        }
-        
-        return true
+        // Hiện tại chưa triển khai
+        // Logic để trích xuất các liên kết video sẽ được thêm vào đây
+        throw NotImplementedError("Chức năng loadLinks chưa được triển khai.")
     }
 }
