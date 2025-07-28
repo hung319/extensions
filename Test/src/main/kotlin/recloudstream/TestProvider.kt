@@ -8,7 +8,6 @@ import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.AcraApplication
 import com.lagradost.cloudstream3.utils.DataStore
-//import com.lagradost.cloudstream3.utils.ExtractorApiKt.md5
 import okhttp3.Interceptor
 import okhttp3.Response
 import java.security.MessageDigest
@@ -195,11 +194,12 @@ class BluPhimProvider : MainAPI() {
         
         val document = app.get(linkData.url).document
         
-        // Sửa lỗi: Sử dụng fixUrl để đảm bảo URL luôn đầy đủ
-        val iframeStreamSrc = fixUrl(document.selectFirst("iframe#iframeStream")?.attr("src") ?: return false, linkData.url)
+        // Sửa lỗi: Gọi fixUrl chỉ với một tham số
+        val iframeStreamSrc = fixUrl(document.selectFirst("iframe#iframeStream")?.attr("src") ?: return false)
         val iframeStreamDoc = app.get(iframeStreamSrc, referer = linkData.url).document
         
-        val iframeEmbedSrc = fixUrl(iframeStreamDoc.selectFirst("iframe#embedIframe")?.attr("src") ?: return false, iframeStreamSrc)
+        // Sửa lỗi: Gọi fixUrl chỉ với một tham số
+        val iframeEmbedSrc = fixUrl(iframeStreamDoc.selectFirst("iframe#embedIframe")?.attr("src") ?: return false)
 
         val oPhimScript = app.get(iframeEmbedSrc, referer = iframeStreamSrc).document
             .select("script").find { it.data().contains("var url = '") }?.data()
