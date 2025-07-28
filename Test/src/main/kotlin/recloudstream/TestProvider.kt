@@ -1,14 +1,13 @@
 package recloudstream
 
+import android.content.Context
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
-// Sửa lỗi: Thêm các import cần thiết
-import com.lagradost.cloudstream3.utils.DataStore.getKey
-import com.lagradost.cloudstream3.utils.DataStore.setKey
-import com.lagradost.cloudstream3.utils.CryptoUtils.md5
+import com.lagradost.cloudstream3.AcraApplication // Thêm import
+import com.lagradost.cloudstream3.utils.DataStore // Thêm import
+import com.lagradost.cloudstream3.common.Crypto.md5 // Thêm import
 import okhttp3.Interceptor
 import okhttp3.Response
 
@@ -25,26 +24,29 @@ class BluPhimProvider : MainAPI() {
         TvType.TvSeries
     )
 
-    // Sửa lỗi: Ghi đè baseClient để thêm interceptor
-    override val baseClient = app.baseClient.newBuilder()
-        .addInterceptor { chain ->
-            val request = chain.request()
-            val response = chain.proceed(request)
-            if (response.code == 200 && response.body != null) {
-                val url = request.url.toString()
-                if (url.contains(".m3u8")) {
-                    val body = response.body!!.string()
-                    val newBody = body.replace("https://bluphim.uk.com", mainUrl)
-                    return@addInterceptor response.newBuilder().body(
-                        okhttp3.ResponseBody.create(
-                            response.body!!.contentType(),
-                            newBody
-                        )
-                    ).build()
+    // Sửa lỗi: Di chuyển interceptor vào hàm getVideoInterceptor
+    override fun getVideoInterceptor(extractorLink: ExtractorLink?): Interceptor? {
+        return object : Interceptor {
+            override fun intercept(chain: Interceptor.Chain): Response {
+                val request = chain.request()
+                val response = chain.proceed(request)
+                if (response.code == 200 && response.body != null) {
+                    val url = request.url.toString()
+                    if (url.contains(".m3u8")) {
+                        val body = response.body!!.string()
+                        val newBody = body.replace("https://bluphim.uk.com", mainUrl)
+                        return response.newBuilder().body(
+                            okhttp3.ResponseBody.create(
+                                response.body!!.contentType(),
+                                newBody
+                            )
+                        ).build()
+                    }
                 }
+                return response
             }
-            response
-        }.build()
+        }
+    }
 
     // mainPage định nghĩa tất cả các mục trên trang chủ
     override val mainPage = mainPageOf(
@@ -61,10 +63,8 @@ class BluPhimProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        // Xử lý mục "Phim Hot" (không phân trang)
         if (request.data == "phim-hot") {
             if (page > 1) return newHomePageResponse(request.name, emptyList(), false)
-
             val document = app.get(mainUrl).document
             val movies = document.select("div.list-films.film-hot ul#film_hot li.item").mapNotNull {
                 it.toSearchResult()
@@ -72,10 +72,8 @@ class BluPhimProvider : MainAPI() {
             return newHomePageResponse(request.name, movies, false)
         }
 
-        // Xử lý các mục có phân trang
         val url = mainUrl + request.data + page
         val document = app.get(url).document
-
         val movies = document.select("div.list-films.film-new div.item").mapNotNull {
             it.toSearchResult()
         }
@@ -83,15 +81,12 @@ class BluPhimProvider : MainAPI() {
         return newHomePageResponse(request.name, movies, movies.isNotEmpty())
     }
 
-    // Hàm tiện ích được tối ưu để xử lý tất cả các layout
     private fun Element.toSearchResult(): MovieSearchResponse? {
         val href = this.selectFirst("a")?.attr("href") ?: return null
-
         val title = this.selectFirst("div.text span.title a")?.text()?.trim()
             ?: this.selectFirst("div.name")?.text()?.trim()
             ?: this.attr("title").trim().takeIf { it.isNotEmpty() }
             ?: return null
-
         val posterUrl = this.selectFirst("img")?.attr("src")
         
         val fullHref = if (href.startsWith("http")) href else "$mainUrl$href"
@@ -102,20 +97,16 @@ class BluPhimProvider : MainAPI() {
         }
     }
 
-    // Hàm để xử lý các truy vấn tìm kiếm
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/search?k=$query"
         val document = app.get(url).document
-
         return document.select("div.list-films.film-new li.item").mapNotNull {
             it.toSearchResult()
         }
     }
 
-    // Hàm để tải thông tin chi tiết cho một bộ phim
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
-
         val title = document.selectFirst("div.text h1 span.title")?.text()?.trim() ?: return null
         val poster = document.selectFirst("div.poster img")?.let {
             val src = it.attr("src")
@@ -124,16 +115,13 @@ class BluPhimProvider : MainAPI() {
         val year = document.select("div.dinfo dl.col dt:contains(Năm sản xuất) + dd")
             .text().toIntOrNull()
         val description = document.selectFirst("div.detail div.tab")?.text()?.trim()
-        
         val ratingString = document.select("div.dinfo dl.col dt:contains(Điểm IMDb) + dd a")
             .text().trim()
         val score = runCatching { Score.from(ratingString, 10) }.getOrNull()
-
         val genres = document.select("dd.theloaidd a").map { it.text() }
         val recommendations = document.select("div.list-films.film-hot ul#film_related li.item").mapNotNull {
             it.toSearchResult()
         }
-
         val tvType = if (document.select("dd.theloaidd a:contains(TV Series - Phim bộ)").isNotEmpty()) {
             TvType.TvSeries
         } else {
@@ -143,7 +131,6 @@ class BluPhimProvider : MainAPI() {
         return if (tvType == TvType.TvSeries) {
             val watchUrl = document.selectFirst("a.btn-see.btn-stream-link")?.attr("href")
             val episodes = if (watchUrl != null) getEpisodes(watchUrl) else emptyList()
-
             newTvSeriesLoadResponse(title, url, tvType, episodes) {
                 this.posterUrl = poster
                 this.year = year
@@ -164,12 +151,10 @@ class BluPhimProvider : MainAPI() {
         }
     }
 
-    // Hàm để lấy danh sách các tập
     private suspend fun getEpisodes(watchUrl: String): List<Episode> {
         val fullWatchUrl = if (watchUrl.startsWith("http")) watchUrl else "$mainUrl$watchUrl"
         val document = app.get(fullWatchUrl).document
         val episodeList = ArrayList<Episode>()
-
         document.select("div.list-episode a").forEach { element ->
             val href = element.attr("href")
             val name = element.text().trim()
@@ -182,7 +167,6 @@ class BluPhimProvider : MainAPI() {
         return episodeList
     }
 
-    // Hàm để tải các liên kết
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -193,7 +177,6 @@ class BluPhimProvider : MainAPI() {
         val iframeStreamSrc = document.selectFirst("iframe#iframeStream")?.attr("src") ?: return false
         val iframeStreamDoc = app.get(iframeStreamSrc).document
         val iframeEmbedSrc = iframeStreamDoc.selectFirst("iframe#embedIframe")?.attr("src") ?: return false
-        
         val playerDoc = app.get(iframeEmbedSrc, referer = iframeStreamSrc).document
         val script = playerDoc.select("script").find { it.data().contains("var videoId =") }?.data() ?: return false
         
@@ -201,10 +184,13 @@ class BluPhimProvider : MainAPI() {
         val cdn = script.substringAfter("var cdn = '").substringBefore("'")
         val domain = script.substringAfter("var domain = '").substringBefore("'")
 
-        var token = getKey<String>("bluphim_token")
+        // Sửa lỗi: Dùng SharedPreferences thủ công để tương thích
+        val context = AcraApplication.context!!
+        val prefs = context.getSharedPreferences("bluphim_prefs", Context.MODE_PRIVATE)
+        var token = prefs.getString("bluphim_token", null)
         if (token == null) {
             token = "r" + System.currentTimeMillis()
-            setKey("bluphim_token", token)
+            prefs.edit().putString("bluphim_token", token).apply()
         }
         
         val linkData = app.post(
@@ -243,7 +229,6 @@ class BluPhimProvider : MainAPI() {
                 )
             }
         }
-
         return true
     }
 
