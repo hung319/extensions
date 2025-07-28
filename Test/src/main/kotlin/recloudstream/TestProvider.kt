@@ -1,111 +1,75 @@
-package recloudstream
+package com.recloudstream.extractors
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.lagradost.cloudstream3.utils.getQualityFromName
 import org.jsoup.nodes.Element
 
-class BluphimProvider : MainAPI() {
-    override var mainUrl = "https://bluphim.uk.com"
-    override var name = "Bluphim"
+class Fpo : MainAPI() {
+    override var mainUrl = "https://www.fpo.xxx"
+    override var name = "FPO.XXX"
     override val hasMainPage = true
-    override var lang = "vi"
+    override var lang = "en"
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(
-        TvType.Movie,
-        TvType.TvSeries
+        TvType.NSFW
+    )
+
+    override val mainPage = mainPageOf(
+        "/new-1/" to "Latest Videos",
+        "/top-2/" to "Top Rated",
+        "/popular-2/" to "Most Popular",
     )
 
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        val document = app.get(mainUrl).document
-        val homePageList = ArrayList<HomePageList>()
-
-        val sections = listOf(
-            Pair("Phim Hot", "div.list-films.film-hot ul#film_hot li.item"),
-            Pair("Phim Mới Cập Nhật", "div.list-films.film-new#film-new ul.film-moi li.item"),
-            Pair("Phim Hoạt Hình", "div.list-films.film-new:contains(Phim hoạt hình) ul li.item")
-        )
-
-        for ((title, selector) in sections) {
-            val movies = document.select(selector)
-            if (movies.isNotEmpty()) {
-                homePageList.add(
-                    HomePageList(
-                        title,
-                        movies.map { it.toSearchResult() }
-                    )
-                )
-            }
+        val document = app.get("$mainUrl${request.data}$page/").document
+        val home = document.select("div.list-videos div.item").mapNotNull {
+            it.toSearchResult()
         }
-        
-        return HomePageResponse(homePageList)
+        return newHomePageResponse(request.name, home)
     }
 
-    private fun Element.toSearchResult(): SearchResponse {
-        val link = this.selectFirst("a")
-        val title = link?.attr("title")?.replace("Xem phim ", "")?.replace(" online", "") ?: ""
-        val href = link?.attr("href") ?: ""
-        val posterUrl = this.selectFirst("img")?.attr("src")
-        val quality = this.selectFirst("span.label")?.text()
-
-        return newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
+    private fun Element.toSearchResult(): SearchResponse? {
+        val title = this.selectFirst("strong.title")?.text() ?: return null
+        val href = this.selectFirst("a")?.attr("href") ?: return null
+        val posterUrl = this.selectFirst("img.thumb")?.attr("data-original")
+        
+        return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
-            if (quality != null) {
-                addQuality(quality)
-            }
         }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/search?k=$query"
-        val document = app.get(searchUrl).document
-        
-        return document.select("div.list-films ul li.item").map {
-            val title = it.selectFirst("div.name span a")?.text() ?: ""
-            val href = it.selectFirst("a")?.attr("href") ?: ""
-            val posterUrl = it.selectFirst("img.img-film")?.attr("src")
-            newMovieSearchResponse(title, href, TvType.Movie) {
-                this.posterUrl = posterUrl
-            }
+        val searchResponse = app.get("$mainUrl/search/$query/").document
+        return searchResponse.select("div.list-videos div.item").mapNotNull {
+            it.toSearchResult()
         }
     }
 
-    override suspend fun load(url: String): LoadResponse {
+    override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
-        
-        val title = document.selectFirst("h1 span.title")?.text()?.trim() ?: ""
-        val poster = document.selectFirst("div.poster img")?.attr("src")
-        val plot = document.selectFirst("div.detail div.tab")?.text()?.trim()
-        val year = document.selectFirst("dl.col dd:matches(\\d{4})")?.text()?.toIntOrNull()
-        val tags = document.select("dd.theloaidd a").map { it.text() }
-        
-        val watchUrl = document.selectFirst("a.btn-stream-link")?.attr("href") ?: url.replace("/phim/", "/xem-phim/")
-        val episodeDocument = app.get(watchUrl).document
 
-        val episodes = episodeDocument.select("div.control-box div.list-episode a").map {
-            newEpisode(it.attr("href")) {
-                this.name = it.attr("title").ifEmpty { it.text() }
-            }
-        }
+        val title = document.selectFirst("h1")?.text()?.trim() ?: return null
+        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
+        val description = document.selectFirst("meta[property=og:description]")?.attr("content")
         
-        return if (episodes.any { it.name?.contains("Tập") == true } && episodes.size > 1) {
-            newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes.reversed()) {
-                this.posterUrl = poster
-                this.year = year
-                this.plot = plot
-                this.tags = tags
-            }
-        } else {
-            newMovieLoadResponse(title, url, TvType.Movie, watchUrl) {
-                this.posterUrl = poster
-                this.year = year
-                this.plot = plot
-                this.tags = tags
-            }
+        val script = document.select("script").find { it.data().contains("var flashvars") }?.data() ?: return null
+        
+        // Extract video URLs from the flashvars object
+        val videoUrlRegex = Regex("""'video_url': 'function/0/(.*?)'""")
+        val videoAltUrlRegex = Regex("""'video_alt_url': 'function/0/(.*?)'""")
+        
+        val videoUrl = videoUrlRegex.find(script)?.groups?.get(1)?.value
+        val videoAltUrl = videoAltUrlRegex.find(script)?.groups?.get(1)?.value
+
+        // Use loadLinks to fetch the extractor links
+        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
+            this.posterUrl = poster
+            this.plot = description
         }
     }
 
@@ -115,53 +79,38 @@ class BluphimProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val episodePageDoc = app.get(data, referer = "$mainUrl/").document
-        val initialIframeUrl = episodePageDoc.selectFirst("iframe#iframeStream")?.attr("src") ?: return false
-
-        val embedDoc = app.get(initialIframeUrl, referer = "$mainUrl/").document
-        val videoId = embedDoc.selectFirst("input[name=videoId]")?.attr("value") ?: return false
-        val dynamicId = embedDoc.selectFirst("input[name=id]")?.attr("value") ?: return false
-
-        val getUrlEndpoint = "https://moviking.childish2x2.fun/geturl"
-        val postData = mapOf(
-            "renderer" to "ANGLE (ARM, Mali-G78, OpenGL ES 3.2)",
-            "id" to dynamicId,
-            "videoId" to videoId,
-            "domain" to "$mainUrl/"
-        )
-
-        val tokenResponse = app.post(
-            getUrlEndpoint,
-            data = postData,
-            referer = initialIframeUrl,
-            headers = mapOf(
-                "X-Requested-With" to "XMLHttpRequest",
-                "Origin" to "https://moviking.childish2x2.fun"
+        val document = app.get(data).document
+        val script = document.select("script").find { it.data().contains("var flashvars") }?.data() ?: return false
+        
+        val videoUrlRegex = Regex("""'video_url': 'function/0/(.*?)'""")
+        val videoAltUrlRegex = Regex("""'video_alt_url': 'function/0/(.*?)'""")
+        
+        videoUrlRegex.find(script)?.groups?.get(1)?.value?.let {
+            callback.invoke(
+                ExtractorLink(
+                    source = name,
+                    name = "$name LQ",
+                    url = it,
+                    referer = mainUrl,
+                    quality = getQualityFromName("360p"), // Assuming LQ is 360p
+                    type = ExtractorLinkType.MP4
+                )
             )
-        ).text
-
-        val tokens = tokenResponse.split("&").associate {
-            val parts = it.split("=")
-            if (parts.size == 2) parts[0] to parts[1] else parts[0] to ""
         }
-        val token1 = tokens["token1"] ?: return false
-        val token3 = tokens["token3"] ?: return false
 
-        val finalReferer = "https://cdn3.xosokienthiet.fun/"
-        val finalUrl = "https://cdn.xosokienthiet.fun/segment/$videoId/?token1=$token1&token3=$token3"
-
-        // ÁP DỤNG CẤU TRÚC MỚI
-        callback(
-            newExtractorLink(
-                source = this.name,
-                name = "Server Gốc",
-                url = finalUrl,
-                type = ExtractorLinkType.M3U8
-            ) { // Khối lệnh initializer
-                this.headers = mapOf("Referer" to finalReferer)
-            }
-        )
-
+        videoAltUrlRegex.find(script)?.groups?.get(1)?.value?.let {
+            callback.invoke(
+                ExtractorLink(
+                    source = name,
+                    name = "$name HQ",
+                    url = it,
+                    referer = mainUrl,
+                    quality = getQualityFromName("720p"), // Assuming HQ is 720p
+                    type = ExtractorLinkType.MP4
+                )
+            )
+        }
+        
         return true
     }
 }
