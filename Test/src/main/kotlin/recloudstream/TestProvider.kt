@@ -8,6 +8,7 @@ import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.AcraApplication
 import com.lagradost.cloudstream3.utils.DataStore
+//import com.lagradost.cloudstream3.utils.ExtractorApiKt.md5
 import okhttp3.Interceptor
 import okhttp3.Response
 import java.security.MessageDigest
@@ -149,7 +150,6 @@ class BluPhimProvider : MainAPI() {
                 this.recommendations = recommendations
             }
         } else {
-            // Sửa lỗi: Lấy đúng watchUrl cho phim lẻ
             val linkData = LinkData(url = watchUrl, title = title, year = year).toJson()
             newMovieLoadResponse(title, url, tvType, linkData) {
                 this.posterUrl = poster
@@ -194,9 +194,12 @@ class BluPhimProvider : MainAPI() {
         val linkData = parseJson<LinkData>(data)
         
         val document = app.get(linkData.url).document
-        val iframeStreamSrc = document.selectFirst("iframe#iframeStream")?.attr("src") ?: return false
+        
+        // Sửa lỗi: Sử dụng fixUrl để đảm bảo URL luôn đầy đủ
+        val iframeStreamSrc = fixUrl(document.selectFirst("iframe#iframeStream")?.attr("src") ?: return false, linkData.url)
         val iframeStreamDoc = app.get(iframeStreamSrc, referer = linkData.url).document
-        val iframeEmbedSrc = iframeStreamDoc.selectFirst("iframe#embedIframe")?.attr("src") ?: return false
+        
+        val iframeEmbedSrc = fixUrl(iframeStreamDoc.selectFirst("iframe#embedIframe")?.attr("src") ?: return false, iframeStreamSrc)
 
         val oPhimScript = app.get(iframeEmbedSrc, referer = iframeStreamSrc).document
             .select("script").find { it.data().contains("var url = '") }?.data()
