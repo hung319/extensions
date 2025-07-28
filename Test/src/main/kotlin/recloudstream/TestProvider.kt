@@ -17,12 +17,12 @@ class BluPhimProvider : MainAPI() {
         TvType.TvSeries
     )
 
-    // quickSearch sẽ tải các mục trên trang chủ không cần phân trang
+    // quickSearch tải các mục không phân trang trên trang chủ (vd: Phim Hot)
     override suspend fun quickSearch(query: String): List<SearchResponse> {
         val document = app.get(mainUrl).document
-        // Trích xuất các phần tử "Phim hot"
-        val hotMoviesSection = document.select("div.list-films.film-hot ul#film_hot li.item")
-        return hotMoviesSection.mapNotNull { it.toSearchResult() }
+        return document.select("div.list-films.film-hot ul#film_hot li.item").mapNotNull {
+            it.toSearchResult()
+        }
     }
 
     // mainPage định nghĩa các mục có phân trang
@@ -31,40 +31,38 @@ class BluPhimProvider : MainAPI() {
         "/the-loai/phim-cap-nhat-" to "Phim Cập Nhật"
     )
 
-    // getMainPage giờ chỉ xử lý các yêu cầu phân trang
+    // getMainPage xử lý việc tải các trang cho các mục được định nghĩa trong mainPage
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        // request.data sẽ là "/the-loai/phim-moi-"
-        val url = "$mainUrl${request.data}$page"
+        val url = mainUrl + if (page == 1) request.data.dropLast(1) else (request.data + page)
         val document = app.get(url).document
 
-        // Selector này đúng cho các trang phân loại
+        // Selector này đảm bảo lấy đúng danh sách phim trên cả trang chủ (page=1) và các trang phân loại
         val movies = document.select("div.list-films.film-new li.item").mapNotNull {
             it.toSearchResult()
         }
         
-        val hasNextPage = movies.isNotEmpty()
-
-        return newHomePageResponse(request.name, movies, hasNextPage)
+        return newHomePageResponse(request.name, movies, movies.isNotEmpty())
     }
 
-    // Hàm tiện ích để chuyển đổi một phần tử HTML thành đối tượng MovieSearchResponse
+    // Hàm tiện ích được sửa lỗi để xử lý tất cả các layout
     private fun Element.toSearchResult(): MovieSearchResponse? {
         val href = this.selectFirst("a")?.attr("href") ?: return null
-        
-        // Sửa lỗi: Tạo selector linh hoạt hơn để xử lý nhiều layout HTML
-        val title = this.selectFirst("div.name span")?.text()?.trim() // Dành cho list phim thường
-            ?: this.selectFirst("div.text span.title a")?.text()?.trim() // Dành cho list "Phim Hot"
-            ?: this.attr("title").trim().takeIf { it.isNotEmpty() } // Fallback
+
+        // Selector linh hoạt để lấy tiêu đề từ nhiều cấu trúc HTML khác nhau
+        val title = this.selectFirst("div.text span.title a")?.text()?.trim() // Cho layout "Phim Hot"
+            ?: this.selectFirst("div.name a")?.text()?.trim() // Cho layout "Phim mới"
+            ?: this.selectFirst("div.name span")?.text()?.trim() // Cho layout "Tìm kiếm"
+            ?: this.attr("title").trim().takeIf { it.isNotEmpty() } // Dự phòng
             ?: return null
 
         val posterUrl = this.selectFirst("img")?.attr("src")
 
-        // Xây dựng URL đầy đủ cho href và posterUrl nếu cần
+        // Xây dựng URL đầy đủ
         val fullHref = if (href.startsWith("http")) href else "$mainUrl$href"
-        val fullPosterUrl = if (posterUrl?.startsWith("http") == true) posterUrl else posterUrl?.let { "$mainUrl$it" }
+        val fullPosterUrl = posterUrl?.let { if (it.startsWith("http")) it else "$mainUrl$it" }
 
         return newMovieSearchResponse(title, fullHref) {
             this.posterUrl = fullPosterUrl
