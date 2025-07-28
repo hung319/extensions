@@ -1,6 +1,5 @@
 package com.recloudstream.extractors
 
-// Thêm import cho Log
 import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -82,24 +81,25 @@ class Fpo : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Bọc toàn bộ logic trong try-catch để bắt và báo lỗi
         try {
             Log.d(name, "loadLinks started for: $data")
             val document = app.get(data).document
             
             val script = document.select("script").find { it.data().contains("var flashvars") }?.data()
-                ?: throw Exception("FPO Plugin: Flashvars script not found!") // Báo lỗi nếu không thấy script
+                ?: throw Exception("FPO Plugin: Flashvars script not found!")
             
-            Log.d(name, "Flashvars script found.")
+            // LOG QUAN TRỌNG: In toàn bộ script ra để kiểm tra
+            Log.d(name, "Flashvars content: $script")
 
-            val videoUrlRegex = Regex("""'video_url': 'function/0/(.*?)'""")
-            val videoAltUrlRegex = Regex("""'video_alt_url': 'function/0/(.*?)'""")
+            // Regex linh hoạt hơn, bỏ qua khoảng trắng
+            val videoUrlRegex = Regex("""'video_url'\s*:\s*'function/0/([^']+)""")
+            val videoAltUrlRegex = Regex("""'video_alt_url'\s*:\s*'function/0/([^']+)""")
 
             val lqUrl = videoUrlRegex.find(script)?.groups?.get(1)?.value
             val hqUrl = videoAltUrlRegex.find(script)?.groups?.get(1)?.value
 
             if (lqUrl == null && hqUrl == null) {
-                throw Exception("FPO Plugin: Could not extract any video URLs from flashvars!") // Báo lỗi nếu không có URL nào
+                throw Exception("FPO Plugin: Could not extract any video URLs from flashvars!")
             }
             
             suspend fun extractAndCallback(url: String?, qualityName: String, qualityValue: String) {
@@ -110,7 +110,7 @@ class Fpo : MainAPI() {
                 Log.d(name, "Response code for $qualityName: ${response.code}")
 
                 val finalUrl = response.headers["Location"]
-                    ?: throw Exception("FPO Plugin: 'Location' header not found for $qualityName URL: $url") // Báo lỗi nếu không có header Location
+                    ?: throw Exception("FPO Plugin: 'Location' header not found for $qualityName URL: $url")
                 
                 Log.d(name, "Final URL ($qualityName): $finalUrl")
                 
@@ -131,7 +131,7 @@ class Fpo : MainAPI() {
 
         } catch (e: Exception) {
             Log.e(name, "Error in loadLinks", e)
-            throw e // Ném lại lỗi để CloudStream hiển thị trong log
+            throw e
         }
         
         return true
