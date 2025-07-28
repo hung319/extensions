@@ -5,7 +5,10 @@ import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
-import com.lagradost.cloudstream3.utils.DataStore
+// Sửa lỗi: Thêm các import cần thiết
+import com.lagradost.cloudstream3.utils.DataStore.getKey
+import com.lagradost.cloudstream3.utils.DataStore.setKey
+import com.lagradost.cloudstream3.utils.CryptoUtils.md5
 import okhttp3.Interceptor
 import okhttp3.Response
 
@@ -22,28 +25,26 @@ class BluPhimProvider : MainAPI() {
         TvType.TvSeries
     )
 
-    // Sửa lỗi: Thêm interceptor bằng cách ghi đè http client
-    init {
-        this.overriddenClient = app.baseClient.newBuilder()
-            .addInterceptor { chain ->
-                val request = chain.request()
-                val response = chain.proceed(request)
-                if (response.code == 200 && response.body != null) {
-                    val url = request.url.toString()
-                    if (url.contains(".m3u8")) {
-                        val body = response.body!!.string()
-                        val newBody = body.replace("https://bluphim.uk.com", mainUrl)
-                        return@addInterceptor response.newBuilder().body(
-                            okhttp3.ResponseBody.create(
-                                response.body!!.contentType(),
-                                newBody
-                            )
-                        ).build()
-                    }
+    // Sửa lỗi: Ghi đè baseClient để thêm interceptor
+    override val baseClient = app.baseClient.newBuilder()
+        .addInterceptor { chain ->
+            val request = chain.request()
+            val response = chain.proceed(request)
+            if (response.code == 200 && response.body != null) {
+                val url = request.url.toString()
+                if (url.contains(".m3u8")) {
+                    val body = response.body!!.string()
+                    val newBody = body.replace("https://bluphim.uk.com", mainUrl)
+                    return@addInterceptor response.newBuilder().body(
+                        okhttp3.ResponseBody.create(
+                            response.body!!.contentType(),
+                            newBody
+                        )
+                    ).build()
                 }
-                response
-            }.build()
-    }
+            }
+            response
+        }.build()
 
     // mainPage định nghĩa tất cả các mục trên trang chủ
     override val mainPage = mainPageOf(
@@ -200,17 +201,16 @@ class BluPhimProvider : MainAPI() {
         val cdn = script.substringAfter("var cdn = '").substringBefore("'")
         val domain = script.substringAfter("var domain = '").substringBefore("'")
 
-        var token = DataStore.getKey<String>("bluphim_token")
+        var token = getKey<String>("bluphim_token")
         if (token == null) {
             token = "r" + System.currentTimeMillis()
-            DataStore.setKey("bluphim_token", token)
+            setKey("bluphim_token", token)
         }
         
         val linkData = app.post(
             url = "${getBaseUrl(iframeEmbedSrc)}/geturl",
             data = mapOf(
                 "videoId" to videoId,
-                // Sửa lỗi: Gọi md5() như một phương thức mở rộng
                 "id" to token.md5(),
                 "domain" to domain
             ),
