@@ -1,5 +1,7 @@
 package com.recloudstream.extractors
 
+// Thêm import cho Log
+import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
@@ -29,7 +31,6 @@ class Fpo : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        // Appending page number. For search results, the format is /search/query/page/
         val url = if (request.data.contains("/search/")) {
             "$mainUrl${request.data}$page/"
         } else {
@@ -61,12 +62,9 @@ class Fpo : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
-
         val title = document.selectFirst("h1")?.text()?.trim() ?: return null
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         val description = document.selectFirst("meta[property=og:description]")?.attr("content")
-
-        // Scrape related videos for recommendations
         val recommendations = document.select("div.related-videos div.item").mapNotNull {
             it.toSearchResult()
         }
@@ -84,38 +82,57 @@ class Fpo : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data).document
-        val script = document.select("script").find { it.data().contains("var flashvars") }?.data() ?: return false
-        
-        val videoUrlRegex = Regex("""'video_url': 'function/0/(.*?)'""")
-        val videoAltUrlRegex = Regex("""'video_alt_url': 'function/0/(.*?)'""")
-        
-        suspend fun extractAndCallback(url: String?, qualityName: String, qualityValue: String) {
-            if (url == null) return
+        // Bọc toàn bộ logic trong try-catch để bắt và báo lỗi
+        try {
+            Log.d(name, "loadLinks started for: $data")
+            val document = app.get(data).document
             
-            // Make a request but don't follow the redirect
-            val response = app.get(url, allowRedirects = false)
+            val script = document.select("script").find { it.data().contains("var flashvars") }?.data()
+                ?: throw Exception("FPO Plugin: Flashvars script not found!") // Báo lỗi nếu không thấy script
             
-            // The actual video URL is in the 'Location' header of the 302 response
-            val finalUrl = response.headers["Location"] ?: return
+            Log.d(name, "Flashvars script found.")
+
+            val videoUrlRegex = Regex("""'video_url': 'function/0/(.*?)'""")
+            val videoAltUrlRegex = Regex("""'video_alt_url': 'function/0/(.*?)'""")
+
+            val lqUrl = videoUrlRegex.find(script)?.groups?.get(1)?.value
+            val hqUrl = videoAltUrlRegex.find(script)?.groups?.get(1)?.value
+
+            if (lqUrl == null && hqUrl == null) {
+                throw Exception("FPO Plugin: Could not extract any video URLs from flashvars!") // Báo lỗi nếu không có URL nào
+            }
             
-            callback.invoke(
-                ExtractorLink(
-                    source = name,
-                    name = "$name $qualityName",
-                    url = finalUrl,
-                    referer = mainUrl,
-                    quality = getQualityFromName(qualityValue),
-                    type = ExtractorLinkType.VIDEO
+            suspend fun extractAndCallback(url: String?, qualityName: String, qualityValue: String) {
+                if (url == null) return
+                Log.d(name, "Initial URL ($qualityName): $url")
+                
+                val response = app.get(url, allowRedirects = false)
+                Log.d(name, "Response code for $qualityName: ${response.code}")
+
+                val finalUrl = response.headers["Location"]
+                    ?: throw Exception("FPO Plugin: 'Location' header not found for $qualityName URL: $url") // Báo lỗi nếu không có header Location
+                
+                Log.d(name, "Final URL ($qualityName): $finalUrl")
+                
+                callback.invoke(
+                    ExtractorLink(
+                        source = name,
+                        name = "$name $qualityName",
+                        url = finalUrl,
+                        referer = mainUrl,
+                        quality = getQualityFromName(qualityValue),
+                        type = ExtractorLinkType.VIDEO
+                    )
                 )
-            )
+            }
+
+            extractAndCallback(lqUrl, "LQ", "360p")
+            extractAndCallback(hqUrl, "HQ", "720p")
+
+        } catch (e: Exception) {
+            Log.e(name, "Error in loadLinks", e)
+            throw e // Ném lại lỗi để CloudStream hiển thị trong log
         }
-
-        val lqUrl = videoUrlRegex.find(script)?.groups?.get(1)?.value
-        val hqUrl = videoAltUrlRegex.find(script)?.groups?.get(1)?.value
-
-        extractAndCallback(lqUrl, "LQ", "360p")
-        extractAndCallback(hqUrl, "HQ", "720p")
         
         return true
     }
