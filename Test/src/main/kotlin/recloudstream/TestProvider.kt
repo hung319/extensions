@@ -218,15 +218,18 @@ class BluPhimProvider : MainAPI() {
         }
         
         val iframeEmbedElement = iframeStreamDoc.selectFirst("iframe#embedIframe")
-            ?: throw Exception("Bước 4 Thất bại: Không tìm thấy iframe#embedIframe trên trang $iframeStreamSrc. HTML của trang iframe đầu tiên:\n\n${iframeStreamDoc.html()}")
+            ?: throw Exception("Bước 4 Thất bại: Không tìm thấy iframe#embedIframe trên trang $iframeStreamSrc.")
         val iframeEmbedSrcRaw = iframeEmbedElement.attr("src")
+        
+        // Sửa đổi: Ném ra lỗi chứa URL của trang trước đó nếu src rỗng
         if (iframeEmbedSrcRaw.isBlank()) {
-            throw Exception("Bước 4.1 Thất bại: iframe#embedIframe có thuộc tính src rỗng.")
+            throw Exception("Bước 4.1 Thất bại: iframe#embedIframe có src rỗng. Vui lòng kiểm tra và gửi HTML của URL này: $iframeStreamSrc")
         }
+        
         val iframeEmbedSrc = makeAbsoluteUrl(iframeEmbedSrcRaw)
         
-        // Cố tình ném lỗi để lấy URL cho việc gỡ lỗi
-        throw Exception("Vui lòng lấy nội dung HTML của URL này và gửi lại: $iframeEmbedSrc")
+        // Ném lỗi để lấy URL cuối cùng
+        throw Exception("Vui lòng lấy nội dung HTML của URL cuối cùng này và gửi lại: $iframeEmbedSrc")
     }
 
     private fun getBaseUrl(url: String): String {
