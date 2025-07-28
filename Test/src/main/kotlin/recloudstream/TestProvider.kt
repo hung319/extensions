@@ -77,58 +77,58 @@ class Fpo : MainAPI() {
     }
 
     override suspend fun loadLinks(
-    data: String,
-    isCasting: Boolean,
-    subtitleCallback: (SubtitleFile) -> Unit,
-    callback: (ExtractorLink) -> Unit
-): Boolean {
-    try {
-        val document = app.get(data).document
-        
-        val script = document.select("script").find { it.data().contains("var flashvars") }?.data()
-            ?: throw Exception("FPO Plugin: Lỗi - Không tìm thấy script chứa flashvars!")
-        
-        val videoUrlRegex = Regex("""'video_url'\s*:\s*'function/0/([^']+)""")
-        val videoAltUrlRegex = Regex("""'video_alt_url'\s*:\s*'function/0/([^']+)""")
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        try {
+            val document = app.get(data).document
+            
+            val script = document.select("script").find { it.data().contains("var flashvars") }?.data()
+                ?: throw Exception("FPO Plugin: Flashvars script not found!")
+            
+            // Regex MỚI: Chấp nhận key CÓ hoặc KHÔNG CÓ dấu ngoặc đơn (')
+            val videoUrlRegex = Regex("""'?video_url'?\s*:\s*'function/0/([^']+)""")
+            val videoAltUrlRegex = Regex("""'?video_alt_url'?\s*:\s*'function/0/([^']+)""")
 
-        val lqUrl = videoUrlRegex.find(script)?.groups?.get(1)?.value
-        val hqUrl = videoAltUrlRegex.find(script)?.groups?.get(1)?.value
+            val lqUrl = videoUrlRegex.find(script)?.groups?.get(1)?.value
+            val hqUrl = videoAltUrlRegex.find(script)?.groups?.get(1)?.value
 
-        // NẾU KHÔNG TÌM THẤY URL, NÉM LỖI CHỨA TOÀN BỘ SCRIPT
-        if (lqUrl == null && hqUrl == null) {
-            throw Exception("FPO Plugin: Không thể trích xuất URL! Nội dung flashvars là: \n\n$script")
-        }
-        
-        suspend fun extractAndCallback(url: String?, qualityName: String, qualityValue: String) {
-            if (url == null) return
-            val currentTimestamp = System.currentTimeMillis()
-            val urlWithFreshTimestamp = "$url&rnd=$currentTimestamp"
+            if (lqUrl == null && hqUrl == null) {
+                throw Exception("FPO Plugin: Could not extract any video URLs from flashvars! Content: \n$script")
+            }
             
-            val response = app.get(urlWithFreshTimestamp, allowRedirects = false)
-            
-            val finalUrl = response.headers["Location"]
-                ?: throw Exception("FPO Plugin: Lỗi - Không tìm thấy header 'Location' cho URL: $urlWithFreshTimestamp")
-            
-            callback.invoke(
-                ExtractorLink(
-                    source = name,
-                    name = "$name $qualityName",
-                    url = finalUrl,
-                    referer = mainUrl,
-                    quality = getQualityFromName(qualityValue),
-                    type = ExtractorLinkType.VIDEO
+            suspend fun extractAndCallback(url: String?, qualityName: String, qualityValue: String) {
+                if (url == null) return
+                val currentTimestamp = currentTimeMillis()
+                val urlWithFreshTimestamp = "$url&rnd=$currentTimestamp"
+                
+                val response = app.get(urlWithFreshTimestamp, allowRedirects = false)
+                
+                val finalUrl = response.headers["Location"]
+                    ?: throw Exception("FPO Plugin: 'Location' header not found for $qualityName URL: $urlWithFreshTimestamp")
+                
+                callback.invoke(
+                    ExtractorLink(
+                        source = name,
+                        name = "$name $qualityName",
+                        url = finalUrl,
+                        referer = mainUrl,
+                        quality = getQualityFromName(qualityValue),
+                        type = ExtractorLinkType.VIDEO
+                    )
                 )
-            )
+            }
+
+            extractAndCallback(lqUrl, "LQ", "480p")
+            extractAndCallback(hqUrl, "HQ", "720p")
+
+        } catch (e: Exception) {
+            Log.e(name, "Error in loadLinks", e)
+            throw e
         }
-
-        extractAndCallback(lqUrl, "LQ", "360p")
-        extractAndCallback(hqUrl, "HQ", "720p")
-
-    } catch (e: Exception) {
-        // Ném lại lỗi để bạn có thể thấy
-        throw e
+        
+        return true
     }
-    
-    return true
-  }
 }
