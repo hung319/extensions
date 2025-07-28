@@ -3,6 +3,10 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
+import com.lagradost.cloudstream3.network.CloudflareKiller
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
+import okhttp3.Interceptor
+import okhttp3.Response
 
 // Xác định lớp provider chính
 class BluPhimProvider : MainAPI() {
@@ -16,6 +20,30 @@ class BluPhimProvider : MainAPI() {
         TvType.Movie,
         TvType.TvSeries
     )
+
+    // Thêm interceptor để xử lý link video và phụ đề
+    override val interceptor = object : Interceptor {
+        override fun intercept(chain: Interceptor.Chain): Response {
+            val request = chain.request()
+            val response = chain.proceed(request)
+            // Logic làm sạch M3U8 từ các nguồn khác nhau
+            if (response.code == 200 && response.body != null) {
+                val url = request.url.toString()
+                if (url.contains(".m3u8")) {
+                    val body = response.body!!.string()
+                    val newBody = body.replace("https://bluphim.uk.com", mainUrl)
+                    return response.newBuilder().body(
+                        okhttp3.ResponseBody.create(
+                            response.body!!.contentType(),
+                            newBody
+                        )
+                    ).build()
+                }
+            }
+            return response
+        }
+    }
+
 
     // mainPage định nghĩa tất cả các mục trên trang chủ
     override val mainPage = mainPageOf(
@@ -43,7 +71,7 @@ class BluPhimProvider : MainAPI() {
             return newHomePageResponse(request.name, movies, false)
         }
 
-        // Sửa lỗi: Luôn luôn nối số trang vào URL, không có trường hợp đặc biệt cho trang 1
+        // Xử lý các mục có phân trang
         val url = mainUrl + request.data + page
         val document = app.get(url).document
 
@@ -58,7 +86,6 @@ class BluPhimProvider : MainAPI() {
     private fun Element.toSearchResult(): MovieSearchResponse? {
         val href = this.selectFirst("a")?.attr("href") ?: return null
 
-        // Selector được đơn giản hóa và hiệu quả hơn
         val title = this.selectFirst("div.text span.title a")?.text()?.trim() // Dành riêng cho layout "Phim Hot"
             ?: this.selectFirst("div.name")?.text()?.trim() // Dành cho TẤT CẢ các layout còn lại
             ?: this.attr("title").trim().takeIf { it.isNotEmpty() } // Dự phòng
@@ -154,13 +181,79 @@ class BluPhimProvider : MainAPI() {
         return episodeList
     }
 
-    // Hàm giữ chỗ (placeholder) cho việc tải các liên kết
+    // Hàm để tải các liên kết
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        throw NotImplementedError("Chức năng loadLinks chưa được triển khai.")
+        val document = app.get(data).document
+        val iframeStreamSrc = document.selectFirst("iframe#iframeStream")?.attr("src") ?: return false
+        val iframeStreamDoc = app.get(iframeStreamSrc).document
+        val iframeEmbedSrc = iframeStreamDoc.selectFirst("iframe#embedIframe")?.attr("src") ?: return false
+        
+        val playerDoc = app.get(iframeEmbedSrc, referer = iframeStreamSrc).document
+        val script = playerDoc.select("script").find { it.data().contains("var videoId =") }?.data() ?: return false
+        
+        val videoId = script.substringAfter("var videoId = '").substringBefore("'")
+        val cdn = script.substringAfter("var cdn = '").substringBefore("'")
+        val domain = script.substringAfter("var domain = '").substringBefore("'")
+
+        var token = DataStore.getKey<String>("bluphim_token")
+        if (token == null) {
+            token = "r" + System.currentTimeMillis()
+            DataStore.setKey("bluphim_token", token)
+        }
+        
+        val linkData = app.post(
+            url = "${getBaseUrl(iframeEmbedSrc)}/geturl",
+            data = mapOf(
+                "videoId" to videoId,
+                "id" to md5(token),
+                "domain" to domain
+            ),
+            referer = iframeEmbedSrc,
+            headers = mapOf("X-Requested-With" to "XMLHttpRequest")
+        ).parsed<VideoResponse>()
+
+        if (linkData.status == "success") {
+            val sourceUrl = "$cdn/${linkData.url}"
+            callback.invoke(
+                ExtractorLink(
+                    source = this.name, // Sửa: đổi 'name' thành 'source'
+                    name = this.name,
+                    url = sourceUrl,
+                    referer = getBaseUrl(iframeEmbedSrc) + "/",
+                    quality = Qualities.P1080.value,
+                    // SỬA LỖI: Sử dụng ExtractorLinkType.M3U8 thay vì isM3u8
+                    type = ExtractorLinkType.M3U8 
+                )
+            )
+        }
+
+        val tracks = script.substringAfter("tracks: [", "").substringBefore("]", "")
+        if (tracks.isNotEmpty()) {
+            val subs = Regex("""\{"file":"([^"]+)","label":"([^"]+)"}""").findAll(tracks)
+            subs.forEach { sub ->
+                val subUrl = sub.groupValues[1].replace("\\", "")
+                val subLabel = sub.groupValues[2]
+                subtitleCallback.invoke(
+                    SubtitleFile(subLabel, subUrl)
+                )
+            }
+        }
+
+        return true
     }
+
+    private fun getBaseUrl(url: String): String {
+        return url.substringBefore("/video/")
+    }
+
+    // Lớp dữ liệu để phân tích JSON trả về
+    data class VideoResponse(
+        val status: String,
+        val url: String
+    )
 }
