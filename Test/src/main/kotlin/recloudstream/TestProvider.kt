@@ -1,8 +1,8 @@
-package recloudstream // Đã đổi package name
+package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType // Import mới
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.nodes.Element
 
@@ -87,10 +87,9 @@ class BluphimProvider : MainAPI() {
         val episodeDocument = app.get(watchUrl).document
 
         val episodes = episodeDocument.select("div.control-box div.list-episode a").map {
-            Episode(
-                data = it.attr("href"),
-                name = it.attr("title").ifEmpty { it.text() },
-            )
+            newEpisode(it.attr("href")) {
+                this.name = it.attr("title").ifEmpty { it.text() }
+            }
         }
         
         return if (episodes.any { it.name?.contains("Tập") == true } && episodes.size > 1) {
@@ -151,15 +150,17 @@ class BluphimProvider : MainAPI() {
         val finalReferer = "https://cdn3.xosokienthiet.fun/"
         val finalUrl = "https://cdn.xosokienthiet.fun/segment/$videoId/?token1=$token1&token3=$token3"
 
-        newExtractorLink(
-            source = this.name,
-            name = "Server Gốc",
-            url = finalUrl,
-            referer = finalReferer,
-            type = ExtractorLinkType.M3U8 // Đã thay đổi từ isM3u8 = true
-        ).let {
-            callback(it)
-        }
+        // ÁP DỤNG CẤU TRÚC MỚI
+        callback(
+            newExtractorLink(
+                source = this.name,
+                name = "Server Gốc",
+                url = finalUrl,
+                type = ExtractorLinkType.M3U8
+            ) { // Khối lệnh initializer
+                this.headers = mapOf("Referer" to finalReferer)
+            }
+        )
 
         return true
     }
