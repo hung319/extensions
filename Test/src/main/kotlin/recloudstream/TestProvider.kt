@@ -184,15 +184,6 @@ class BluPhimProvider : MainAPI() {
         return bytes.joinToString("") { "%02x".format(it) }
     }
 
-    private fun makeAbsoluteUrl(url: String): String {
-        return when {
-            url.startsWith("http") -> url
-            url.startsWith("//") -> "https:${url}"
-            url.startsWith("/") -> "$mainUrl$url"
-            else -> url 
-        }
-    }
-
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -203,33 +194,54 @@ class BluPhimProvider : MainAPI() {
         
         val document = app.get(linkData.url).document
         
-        val iframeStreamElement = document.selectFirst("iframe#iframeStream") 
-            ?: throw Exception("Bước 2 Thất bại: Không tìm thấy iframe#iframeStream trên trang ${linkData.url}")
-        val iframeStreamSrcRaw = iframeStreamElement.attr("src")
-        if (iframeStreamSrcRaw.isBlank()) {
-            throw Exception("Bước 2.1 Thất bại: iframe#iframeStream có thuộc tính src rỗng.")
+        val iframeStreamSrc = mainUrl + (document.selectFirst("iframe#iframeStream")?.attr("src") ?: return false)
+        
+        val iframeStreamDoc = app.get(iframeStreamSrc, referer = linkData.url).document
+        
+        // Sửa lỗi: Logic mới dựa trên HTML bạn cung cấp
+        val script = iframeStreamDoc.select("script").find { it.data().contains("var videoId =") }?.data()
+
+        if (script != null) {
+            // Đây là trình phát BluPhim
+            val videoId = script.substringAfter("var videoId = '").substringBefore("'")
+            val cdn = script.substringAfter("var cdn = '").substringBefore("'")
+            val domain = script.substringAfter("var domain = '").substringBefore("'").ifEmpty { "" }
+
+            val context = AcraApplication.context!!
+            val prefs = context.getSharedPreferences("bluphim_prefs", Context.MODE_PRIVATE)
+            var token = prefs.getString("bluphim_token", null)
+            if (token == null) {
+                token = "r" + System.currentTimeMillis()
+                prefs.edit().putString("bluphim_token", token).apply()
+            }
+            
+            val videoResponse = app.post(
+                url = "${getBaseUrl(iframeStreamSrc)}/geturl",
+                data = mapOf("videoId" to videoId, "id" to token.md5(), "domain" to domain),
+                referer = iframeStreamSrc,
+                headers = mapOf("X-Requested-With" to "XMLHttpRequest")
+            ).parsed<VideoResponse>()
+
+            if (videoResponse.status == "success") {
+                val sourceUrl = "$cdn/${videoResponse.url}"
+                callback.invoke(
+                    ExtractorLink(this.name, "BluPhim", sourceUrl, getBaseUrl(iframeStreamSrc) + "/", Qualities.P1080.value, type = ExtractorLinkType.M3U8)
+                )
+            }
+        } else {
+            // Đây có thể là trình phát OPhim
+            val iframeEmbedSrc = mainUrl + (iframeStreamDoc.selectFirst("iframe#embedIframe")?.attr("src") ?: return false)
+            val oPhimScript = app.get(iframeEmbedSrc, referer = iframeStreamSrc).document
+                .select("script").find { it.data().contains("var url = '") }?.data()
+            
+            if (oPhimScript != null) {
+                val url = oPhimScript.substringAfter("var url = '").substringBefore("'")
+                val sourceName = if (url.contains("opstream")) "Ổ Phim" else "KKPhim"
+                callback.invoke(ExtractorLink(this.name, sourceName, url, iframeEmbedSrc, Qualities.Unknown.value, type = ExtractorLinkType.M3U8))
+            }
         }
-        val iframeStreamSrc = makeAbsoluteUrl(iframeStreamSrcRaw)
         
-        val iframeStreamDoc = try {
-            app.get(iframeStreamSrc, referer = linkData.url).document
-        } catch (e: Exception) {
-            throw Exception("Bước 3 Thất bại: Không thể tải iframeStreamDoc tại $iframeStreamSrc", e)
-        }
-        
-        val iframeEmbedElement = iframeStreamDoc.selectFirst("iframe#embedIframe")
-            ?: throw Exception("Bước 4 Thất bại: Không tìm thấy iframe#embedIframe trên trang $iframeStreamSrc.")
-        val iframeEmbedSrcRaw = iframeEmbedElement.attr("src")
-        
-        // Sửa đổi: Ném ra lỗi chứa URL của trang trước đó nếu src rỗng
-        if (iframeEmbedSrcRaw.isBlank()) {
-            throw Exception("Bước 4.1 Thất bại: iframe#embedIframe có src rỗng. Vui lòng kiểm tra và gửi HTML của URL này: $iframeStreamSrc")
-        }
-        
-        val iframeEmbedSrc = makeAbsoluteUrl(iframeEmbedSrcRaw)
-        
-        // Ném lỗi để lấy URL cuối cùng
-        throw Exception("Vui lòng lấy nội dung HTML của URL cuối cùng này và gửi lại: $iframeEmbedSrc")
+        return true
     }
 
     private fun getBaseUrl(url: String): String {
