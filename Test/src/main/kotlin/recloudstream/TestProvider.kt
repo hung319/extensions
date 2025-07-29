@@ -272,7 +272,7 @@ class BluPhimProvider : MainAPI() {
                     }
                 }
             } catch (e: Exception) {
-                e.printStackTrace()
+                Log.e(name, "Server Gốc Error: ${e.message}")
             }
         }
 
@@ -293,9 +293,7 @@ class BluPhimProvider : MainAPI() {
                         invokeOphimExtractor(m3u8Url, "Server bên thứ 3", iframeEmbedSrc, callback)
                     }
                 } catch (e: Exception) {
-                    // Sửa đổi: Ghi log lỗi và ném ra lỗi
-                    Log.e(name, "Lỗi Server bên thứ 3: ${e.message}")
-                    throw e
+                    Log.e(name, "Server bên thứ 3 Error: ${e.message}")
                 }
             }
         }
