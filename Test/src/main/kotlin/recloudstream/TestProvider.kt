@@ -16,8 +16,10 @@ import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.CommonActivity.showToast
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import okhttp3.Interceptor
 import okhttp3.ResponseBody
+import okhttp3.ResponseBody.Companion.toResponseBody
 
 // --- DATA CLASS mới để lưu trữ nhiều nguồn cho một tập ---
 data class EpisodeSource(
@@ -67,8 +69,6 @@ class AnimetProvider : MainAPI() {
         } else {
             "$currentBaseUrl$path"
         }
-
-        Log.d(name, "getMainPage loading URL: $url")
 
         return try {
             val document = app.get(url, referer = currentBaseUrl).document
@@ -252,7 +252,6 @@ class AnimetProvider : MainAPI() {
                 try {
                     val episodeListPageDocument = app.get(watchPageUrl, referer = url).document
                     
-                    // --- LOGIC MỚI: GỘP TẬP TỪ NHIỀU SERVER ---
                     val episodeMap = mutableMapOf<String, MutableList<EpisodeSource>>()
 
                     episodeListPageDocument.select("div.server.clearfix.server-group").forEach { serverBlock ->
@@ -276,14 +275,12 @@ class AnimetProvider : MainAPI() {
                             "Tập $epIdentifier"
                         }
                         
-                        // Chuyển danh sách source thành chuỗi JSON để lưu vào Episode.data
-                        val data = app.mapper.writeValueAsString(sources)
+                        val data = sources.toJson() // Sửa lại cách chuyển đổi JSON
                         
                         newEpisode(data) {
                             this.name = epName
                         }
                     }.sortedBy { ep ->
-                        // Sắp xếp các tập theo số
                         ep.name?.replace(Regex("[^0-9]"), "")?.toIntOrNull() ?: Int.MAX_VALUE
                     }
                     
@@ -321,54 +318,54 @@ class AnimetProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // --- LOGIC MỚI: XỬ LÝ NHIỀU NGUỒN SONG SONG ---
         try {
-            val sources = app.parseJson<List<EpisodeSource>>(data)
-            val currentBaseUrl = getBaseUrl()
+            // Sửa lại cách phân tích JSON
+            val sources = AppUtils.parseJson<List<EpisodeSource>>(data)
             
-            sources.map { source ->
-                async {
-                    try {
-                        val episodeUrl = source.url
-                        val idRegex = Regex("-(\\d+)\\.(\\d+)\\.html$")
-                        val idMatch = idRegex.find(episodeUrl)
-                        val filmId = idMatch?.groupValues?.getOrNull(1)
-                        val epId = idMatch?.groupValues?.getOrNull(2)
+            coroutineScope {
+                sources.map { source ->
+                    async {
+                        try {
+                            val currentBaseUrl = getBaseUrl()
+                            val episodeUrl = source.url
+                            val idRegex = Regex("-(\\d+)\\.(\\d+)\\.html$")
+                            val idMatch = idRegex.find(episodeUrl)
+                            val filmId = idMatch?.groupValues?.getOrNull(1)
+                            val epId = idMatch?.groupValues?.getOrNull(2)
 
-                        if (filmId == null || epId == null) {
-                            Log.e(name, "Không thể trích xuất filmId/epId từ URL: $episodeUrl")
+                            if (filmId == null || epId == null) {
+                                Log.e(name, "Không thể trích xuất filmId/epId từ URL: $episodeUrl")
+                                return@async null
+                            }
+
+                            val ajaxUrl = "$currentBaseUrl/ajax/player"
+                            val postData = mapOf("id" to filmId, "ep" to epId, "sv" to "0")
+                            val headers = mapOf("Referer" to currentBaseUrl, "Origin" to currentBaseUrl)
+
+                            val responseText = app.post(ajaxUrl, data = postData, headers = headers).text
+                            val m3u8Regex = Regex(""""file":"(https?://[^"]+\.m3u8)"""")
+                            val m3u8Link = m3u8Regex.find(responseText)?.groupValues?.getOrNull(1)?.replace("\\/", "/")
+
+                            if (m3u8Link.isNullOrBlank()) {
+                                Log.e(name, "Không thể trích xuất link m3u8 từ AJAX cho server ${source.server}")
+                                return@async null
+                            }
+
+                            return@async newExtractorLink(
+                                source = this@AnimetProvider.name,
+                                name = source.server,
+                                url = m3u8Link,
+                                type = ExtractorLinkType.M3U8
+                            ) {
+                                this.referer = currentBaseUrl
+                                this.quality = Qualities.Unknown.value
+                            }
+                        } catch (e: Exception) {
+                            Log.e(name, "loadLinks thất bại cho server ${source.server}: ${e.message}", e)
                             return@async null
                         }
-
-                        val ajaxUrl = "$currentBaseUrl/ajax/player"
-                        val postData = mapOf("id" to filmId, "ep" to epId, "sv" to "0")
-                        val headers = mapOf("Referer" to currentBaseUrl, "Origin" to currentBaseUrl)
-
-                        val responseText = app.post(ajaxUrl, data = postData, headers = headers).text
-                        val m3u8Regex = Regex(""""file":"(https?://[^"]+\.m3u8)"""")
-                        val m3u8Link = m3u8Regex.find(responseText)?.groupValues?.getOrNull(1)?.replace("\\/", "/")
-
-                        if (m3u8Link.isNullOrBlank()) {
-                            Log.e(name, "Không thể trích xuất link m3u8 từ AJAX cho server ${source.server}")
-                            return@async null
-                        }
-
-                        return@async newExtractorLink(
-                            source = this.name,
-                            name = source.server, // Đặt tên server cho link
-                            url = m3u8Link,
-                            type = ExtractorLinkType.M3U8
-                        ) {
-                            this.referer = currentBaseUrl
-                            this.quality = Qualities.Unknown.value
-                        }
-                    } catch (e: Exception) {
-                        Log.e(name, "loadLinks thất bại cho server ${source.server}: ${e.message}", e)
-                        return@async null
                     }
-                }
-            }.awaitAll().forEach { link ->
-                if (link != null) {
+                }.awaitAll().filterNotNull().forEach { link ->
                     callback.invoke(link)
                 }
             }
@@ -380,7 +377,6 @@ class AnimetProvider : MainAPI() {
         }
     }
 
-    // === PHẦN BẮT LỖI VIDEO (GIỮ NGUYÊN) ===
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
         return object : Interceptor {
             override fun intercept(chain: Interceptor.Chain): okhttp3.Response {
@@ -403,9 +399,8 @@ class AnimetProvider : MainAPI() {
             }
         }
     }
-} // Kết thúc class AnimetProvider
+}
 
-// === HÀM TRỢ GIÚP: BỎ QUA BYTE LỖI (GIỮ NGUYÊN) ===
 private fun skipByteError(responseBody: ResponseBody): ByteArray {
     val source = responseBody.source()
     source.request(Long.MAX_VALUE)
