@@ -153,8 +153,12 @@ class BluPhimProvider : MainAPI() {
                 this.recommendations = recommendations
             }
         } else {
-            val linkData = LinkData(url = watchUrl, title = title, year = year).toJson()
-            newMovieLoadResponse(title, url, tvType, linkData) {
+            // Đối với phim lẻ, chúng ta cũng tạo hai phiên bản server
+            val episodes = listOf(
+                newEpisode(LinkData(url = watchUrl, title = title, year = year).toJson()) { name = "Server Gốc" },
+                newEpisode(LinkData(url = "$watchUrl?sv2=true", title = title, year = year).toJson()) { name = "Server bên thứ 3" }
+            )
+            newMovieLoadResponse(title, url, tvType, episodes) {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = description
@@ -173,9 +177,19 @@ class BluPhimProvider : MainAPI() {
             val name = element.text().trim()
             val epNum = name.filter { it.isDigit() }.toIntOrNull()
             if (href.isNotEmpty() && !name.contains("Server", ignoreCase = true)) {
-                val linkData = LinkData(url = if (href.startsWith("http")) href else "$mainUrl$href", title = title, year = year, episode = epNum).toJson()
-                episodeList.add(newEpisode(linkData) {
-                    this.name = name
+                val baseUrl = if (href.startsWith("http")) href else "$mainUrl$href"
+                
+                // Tạo link cho server gốc
+                val server1Data = LinkData(url = baseUrl, title = title, year = year, episode = epNum).toJson()
+                episodeList.add(newEpisode(server1Data) {
+                    this.name = "$name (Gốc)"
+                    this.episode = epNum
+                })
+                
+                // Tạo link cho server thứ 3
+                val server2Data = LinkData(url = "$baseUrl?sv2=true", title = title, year = year, episode = epNum).toJson()
+                episodeList.add(newEpisode(server2Data) {
+                    this.name = "$name (Bên thứ 3)"
                     this.episode = epNum
                 })
             }
@@ -246,23 +260,15 @@ class BluPhimProvider : MainAPI() {
                 key to value
             }
             
-            // Sửa lỗi: Thay thế "cdn3" bằng "cdn" để có link M3U8 chính xác
             val finalCdn = cdn.replace("cdn3.", "cdn.")
             val finalUrl = "$finalCdn/segment/$videoId/?token1=${tokens["token1"]}&token3=${tokens["token3"]}"
 
             callback.invoke(
-                ExtractorLink(
-                    this.name, 
-                    "BluPhim", 
-                    finalUrl, 
-                    "$cdn/", // Referer vẫn là CDN gốc (cdn3)
-                    Qualities.P1080.value, 
-                    type = ExtractorLinkType.M3U8
-                )
+                ExtractorLink(this.name, "BluPhim", finalUrl, "$cdn/", Qualities.P1080.value, type = ExtractorLinkType.M3U8)
             )
 
         } else {
-            // Logic dự phòng cho OPhim
+            // Logic dự phòng cho OPhim (thường là server thứ 3)
             val iframeEmbedSrc = fixUrl(iframeStreamDoc.selectFirst("iframe#embedIframe")?.attr("src") ?: return false, iframeStreamSrc)
             val oPhimScript = app.get(iframeEmbedSrc, referer = iframeStreamSrc).document
                 .select("script").find { it.data().contains("var url = '") }?.data()
