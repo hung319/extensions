@@ -18,7 +18,7 @@ import java.net.URI
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 
-// Sửa đổi: Đổi tên thuộc tính để rõ ràng hơn
+// Lớp dữ liệu để truyền thông tin giữa `load` và `loadLinks`
 data class LinkData(
     val server1Url: String,
     val server2Url: String?,
@@ -136,6 +136,7 @@ class BluPhimProvider : MainAPI() {
         val recommendations = document.select("div.list-films.film-hot ul#film_related li.item").mapNotNull {
             it.toSearchResult()
         }
+        
         val tvType = if (genres.any { it.equals("Hoạt hình", ignoreCase = true) }) {
             TvType.Anime
         } else if (genres.any { it.equals("TV Series - Phim bộ", ignoreCase = true) }) {
@@ -189,9 +190,8 @@ class BluPhimProvider : MainAPI() {
                         if (next.attr("href").startsWith("http")) next.attr("href") else mainUrl + next.attr("href")
                     } else null
                 }
-
-                // Sửa lỗi: Sử dụng đúng tên thuộc tính khi tạo LinkData
-                val linkData = LinkData(server1Url = server1Url, server2Url = server2Url, title = title, year = year, episode = epNum).toJson()
+                
+                val linkData = LinkData(server1Url, server2Url, title, null, epNum).toJson()
                 episodeList.add(newEpisode(linkData) {
                     this.name = name
                     this.episode = epNum
@@ -216,6 +216,16 @@ class BluPhimProvider : MainAPI() {
         }
     }
 
+    private suspend fun invokeOphimExtractor(m3u8Url: String, serverName: String, referer: String, callback: (ExtractorLink) -> Unit) {
+        val masterM3u8Content = app.get(m3u8Url, referer = referer).text
+        val variantPath = masterM3u8Content.lines().lastOrNull { it.isNotBlank() && !it.startsWith("#") } ?: return
+        val masterPathBase = m3u8Url.substringBeforeLast("/")
+        val variantM3u8Url = if (variantPath.startsWith("http")) variantPath else "$masterPathBase/$variantPath"
+        callback.invoke(
+            ExtractorLink(this.name, serverName, variantM3u8Url, referer, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
+        )
+    }
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -224,7 +234,6 @@ class BluPhimProvider : MainAPI() {
     ): Boolean = coroutineScope {
         val linkData = parseJson<LinkData>(data)
 
-        // Chạy song song cả hai server
         async {
             try {
                 // SERVER GỐC (BLUPHIM)
@@ -290,7 +299,7 @@ class BluPhimProvider : MainAPI() {
                         ?.data()?.substringAfter("var url = '")?.substringBefore("'")
 
                     if (m3u8Url != null) {
-                        invokeOphimExtractor(m3u8Url, "Server bên thứ 3", subtitleCallback, callback)
+                        invokeOphimExtractor(m3u8Url, "Server bên thứ 3", iframeEmbedSrc, callback)
                     }
                 } catch (e: Exception) {
                     e.printStackTrace()
@@ -299,61 +308,6 @@ class BluPhimProvider : MainAPI() {
         }
         
         return@coroutineScope true
-    }
-
-    // Hàm trích xuất cho server Ophim/KKPhim
-    private suspend fun invokeOphimExtractor(m3u8Url: String, serverName: String, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
-        val headers = mapOf("Referer" to mainUrl)
-        val masterM3u8Content = app.get(m3u8Url, headers = headers).text
-        val variantPath = masterM3u8Content.lines().lastOrNull { it.isNotBlank() && !it.startsWith("#") } ?: return
-        val masterPathBase = m3u8Url.substringBeforeLast("/")
-        val variantM3u8Url = if (variantPath.startsWith("http")) variantPath else "$masterPathBase/$variantPath"
-
-        val finalPlaylistContent = app.get(variantM3u8Url, headers = headers).text
-        val variantPathBase = variantM3u8Url.substringBeforeLast("/")
-
-        val cleanedLines = mutableListOf<String>()
-        val lines = finalPlaylistContent.lines()
-        var i = 0
-        while (i < lines.size) {
-            val line = lines[i].trim()
-            if (line == "#EXT-X-DISCONTINUITY") {
-                val nextInfoLine = lines.getOrNull(i + 1)?.trim()
-                val isAdPattern = nextInfoLine != null && (nextInfoLine.startsWith("#EXTINF:3.92") || nextInfoLine.startsWith("#EXTINF:0.76"))
-                if (isAdPattern) {
-                    var adBlockEndIndex = i
-                    for (j in (i + 1) until lines.size) {
-                        if (lines[j].trim() == "#EXT-X-DISCONTINUITY") {
-                            adBlockEndIndex = j
-                            break
-                        }
-                        adBlockEndIndex = j
-                    }
-                    i = adBlockEndIndex + 1
-                    continue
-                }
-            }
-            if (line.isNotEmpty()) {
-                if (!line.startsWith("#")) {
-                    cleanedLines.add("$variantPathBase/$line")
-                } else {
-                    cleanedLines.add(line)
-                }
-            }
-            i++
-        }
-
-        val cleanedM3u8 = cleanedLines.joinToString("\n")
-        if (cleanedM3u8.isBlank()) return
-
-        val requestBody = cleanedM3u8.toRequestBody("application/vnd.apple.mpegurl".toMediaTypeOrNull())
-        val finalUrl = app.post("https://paste.swurl.xyz/ophim.m3u8", requestBody = requestBody).text.trim()
-
-        if (finalUrl.startsWith("http")) {
-            callback.invoke(
-                ExtractorLink(this.name, serverName, finalUrl, mainUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8, headers = headers)
-            )
-        }
     }
 
     private fun getBaseUrl(url: String): String {
