@@ -231,137 +231,205 @@ class BluPhimProvider : MainAPI() {
     }
 
     override suspend fun loadLinks(
-    data: String,
-    isCasting: Boolean,
-    subtitleCallback: (SubtitleFile) -> Unit,
-    callback: (ExtractorLink) -> Unit
-): Boolean = coroutineScope {
-    val linkData = parseJson<LinkData>(data)
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean = coroutineScope {
+        val linkData = parseJson<LinkData>(data)
 
-    // Chạy song song cả hai server
-    async {
-        try {
-            // SERVER GỐC
-            // Bước 1: Lấy thông tin từ iframe đầu tiên để tạo link video
-            val document = app.get(linkData.server1Url).document
-            val iframeStreamSrc = fixUrl(document.selectFirst("iframe#iframeStream")?.attr("src") ?: return@async, linkData.server1Url)
-            val iframeStreamDoc = app.get(iframeStreamSrc, referer = linkData.server1Url).document
-            val script = iframeStreamDoc.select("script").find { it.data().contains("var videoId =") }?.data()
+        // SERVER GỐC (Đã hoàn thiện ở lần trước, giữ nguyên)
+        async {
+            try {
+                // ... (Toàn bộ logic cho Server Gốc giữ nguyên như cũ)
+                val document = app.get(linkData.server1Url).document
+                val iframeStreamSrc = fixUrl(document.selectFirst("iframe#iframeStream")?.attr("src") ?: return@async, linkData.server1Url)
+                val iframeStreamDoc = app.get(iframeStreamSrc, referer = linkData.server1Url).document
+                val script = iframeStreamDoc.select("script").find { it.data().contains("var videoId =") }?.data()
 
-            if (script != null) {
-                val videoId = script.substringAfter("var videoId = '").substringBefore("'")
-                val cdn = script.substringAfter("var cdn = '").substringBefore("'")
-                val domain = script.substringAfter("var domain = '").substringBefore("'")
+                if (script != null) {
+                    val videoId = script.substringAfter("var videoId = '").substringBefore("'")
+                    val cdn = script.substringAfter("var cdn = '").substringBefore("'")
+                    val domain = script.substringAfter("var domain = '").substringBefore("'")
 
-                val context = AcraApplication.context!!
-                val prefs = context.getSharedPreferences("bluphim_prefs", Context.MODE_PRIVATE)
-                var token = prefs.getString("bluphim_token", null)
-                if (token == null) {
-                    token = "r" + System.currentTimeMillis()
-                    prefs.edit().putString("bluphim_token", token).apply()
-                }
-                
-                val requestBody = MultipartBody.Builder()
-                    .setType(MultipartBody.FORM)
-                    .addFormDataPart("renderer", "ANGLE (ARM, Mali-G78, OpenGL ES 3.2)")
-                    .addFormDataPart("id", token.md5())
-                    .addFormDataPart("videoId", videoId)
-                    .addFormDataPart("domain", domain)
-                    .build()
+                    val context = AcraApplication.context!!
+                    val prefs = context.getSharedPreferences("bluphim_prefs", Context.MODE_PRIVATE)
+                    var token = prefs.getString("bluphim_token", null)
+                    if (token == null) {
+                        token = "r" + System.currentTimeMillis()
+                        prefs.edit().putString("bluphim_token", token).apply()
+                    }
+                    
+                    val requestBody = MultipartBody.Builder()
+                        .setType(MultipartBody.FORM)
+                        .addFormDataPart("renderer", "ANGLE (ARM, Mali-G78, OpenGL ES 3.2)")
+                        .addFormDataPart("id", token.md5())
+                        .addFormDataPart("videoId", videoId)
+                        .addFormDataPart("domain", domain)
+                        .build()
 
-                val tokenString = app.post(url = "${getBaseUrl(iframeStreamSrc)}/geturl", requestBody = requestBody, referer = iframeStreamSrc, headers = mapOf("X-Requested-With" to "XMLHttpRequest")).text
-                val tokens = tokenString.split("&").associate { val (key, value) = it.split("="); key to value }
-                
-                val finalCdn = cdn.replace("cdn3.", "cdn.")
-                val finalUrl = "$finalCdn/segment/$videoId/?token1=${tokens["token1"]}&token3=${tokens["token3"]}"
-                callback.invoke(ExtractorLink(name, "Server Gốc", finalUrl, "$cdn/", Qualities.P1080.value, type = ExtractorLinkType.M3U8))
+                    val tokenString = app.post(url = "${getBaseUrl(iframeStreamSrc)}/geturl", requestBody = requestBody, referer = iframeStreamSrc, headers = mapOf("X-Requested-With" to "XMLHttpRequest")).text
+                    val tokens = tokenString.split("&").associate { val (key, value) = it.split("="); key to value }
+                    
+                    val finalCdn = cdn.replace("cdn3.", "cdn.")
+                    val finalUrl = "$finalCdn/segment/$videoId/?token1=${tokens["token1"]}&token3=${tokens["token3"]}"
+                    callback.invoke(ExtractorLink(name, "Server Gốc", finalUrl, "$cdn/", Qualities.P1080.value, type = ExtractorLinkType.M3U8))
+                    
+                    try {
+                        val token2 = tokens["token2"] ?: ""
+                        val iframe2Url = "$cdn/streaming?id=$videoId&web=$mainUrl&token1=${tokens["token1"]}&token2=$token2&token3=${tokens["token3"]}&cdn=$cdn&lang=vi"
+                        val iframe2Doc = app.get(iframe2Url, referer = iframeStreamSrc).document
+                        val setupScript = iframe2Doc.selectFirst("script:containsData(myvideo.setup)")?.data()
 
-                // =========================================================================
-                // PHIÊN BẢN HOÀN CHỈNH: Dùng JSON Parser để lấy phụ đề
-                // =========================================================================
-                try {
-                    val token2 = tokens["token2"] ?: ""
-                    val iframe2Url = "$cdn/streaming?id=$videoId&web=$mainUrl&token1=${tokens["token1"]}&token2=$token2&token3=${tokens["token3"]}&cdn=$cdn&lang=vi"
-                    val iframe2Doc = app.get(iframe2Url, referer = iframeStreamSrc).document
-                    val setupScript = iframe2Doc.selectFirst("script:containsData(myvideo.setup)")?.data()
+                        if (setupScript != null) {
+                            val tracksIdentifier = "tracks:"
+                            val tracksStartIndex = setupScript.indexOf(tracksIdentifier)
 
-                    if (setupScript != null) {
-                        // --- Bước 1: Trích xuất chuỗi JSON của mảng 'tracks' một cách chính xác ---
-                        val tracksIdentifier = "tracks:"
-                        val tracksStartIndex = setupScript.indexOf(tracksIdentifier)
-
-                        if (tracksStartIndex != -1) {
-                            val arrayStartIndex = setupScript.indexOf('[', tracksStartIndex)
-                            if (arrayStartIndex != -1) {
-                                // Tìm dấu ngoặc ']' kết thúc tương ứng để đảm bảo lấy đúng toàn bộ mảng JSON
-                                var balance = 0
-                                var arrayEndIndex = -1
-                                for (i in arrayStartIndex until setupScript.length) {
-                                    when (setupScript[i]) {
-                                        '[' -> balance++
-                                        ']' -> balance--
-                                    }
-                                    if (balance == 0) {
-                                        arrayEndIndex = i
-                                        break
-                                    }
-                                }
-                                
-                                if (arrayEndIndex != -1) {
-                                    val tracksJson = setupScript.substring(arrayStartIndex, arrayEndIndex + 1)
-                                    
-                                    // --- Bước 2: Dùng bộ phân tích JSON có sẵn của Cloudstream ---
-                                    try {
-                                        // Parse chuỗi JSON thành một danh sách các đối tượng Map
-                                        val tracks = parseJson<List<Map<String, Any>>>(tracksJson)
-                                        tracks.forEach { track ->
-                                            // Lấy `file` và `label` từ Map một cách an toàn
-                                            val file = track["file"] as? String
-                                            val label = track["label"] as? String
-                                            if (file != null && label != null) {
-                                                subtitleCallback.invoke(SubtitleFile(label, file))
-                                            }
+                            if (tracksStartIndex != -1) {
+                                val arrayStartIndex = setupScript.indexOf('[', tracksStartIndex)
+                                if (arrayStartIndex != -1) {
+                                    var balance = 0
+                                    var arrayEndIndex = -1
+                                    for (i in arrayStartIndex until setupScript.length) {
+                                        when (setupScript[i]) {
+                                            '[' -> balance++
+                                            ']' -> balance--
                                         }
-                                    } catch (e: Exception) {
-                                        // Lỗi khi parse JSON (ví dụ: chuỗi JSON không hợp lệ)
-                                        e.printStackTrace()
+                                        if (balance == 0) {
+                                            arrayEndIndex = i
+                                            break
+                                        }
+                                    }
+                                    
+                                    if (arrayEndIndex != -1) {
+                                        val tracksJson = setupScript.substring(arrayStartIndex, arrayEndIndex + 1)
+                                        try {
+                                            val tracks = parseJson<List<Map<String, Any>>>(tracksJson)
+                                            tracks.forEach { track ->
+                                                val file = track["file"] as? String
+                                                val label = track["label"] as? String
+                                                if (file != null && label != null) {
+                                                    subtitleCallback.invoke(SubtitleFile(label, file))
+                                                }
+                                            }
+                                        } catch (e: Exception) {
+                                            e.printStackTrace()
+                                        }
                                     }
                                 }
                             }
                         }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
                     }
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    async {
-        // SERVER BÊN THỨ 3 (giữ nguyên)
-        if (linkData.server2Url != null) {
-            try {
-                val document = app.get(linkData.server2Url).document
-                val iframeStreamSrc = fixUrl(document.selectFirst("iframe#iframeStream")?.attr("src") ?: return@async, linkData.server2Url)
-                val iframeStreamDoc = app.get(iframeStreamSrc, referer = linkData.server2Url).document
-                val iframeEmbedSrc = fixUrl(iframeStreamDoc.selectFirst("iframe#embedIframe")?.attr("src") ?: return@async, iframeStreamSrc)
-                val oPhimScript = app.get(iframeEmbedSrc, referer = iframeStreamSrc).document.select("script").find { it.data().contains("var url = '") }?.data()
-                
-                if (oPhimScript != null) {
-                    val url = oPhimScript.substringAfter("var url = '").substringBefore("'")
-                    val sourceName = if (url.contains("opstream")) "Ổ Phim" else "KKPhim"
-                    callback.invoke(ExtractorLink(name, "Server bên thứ 3 - $sourceName", url, iframeEmbedSrc, Qualities.Unknown.value, type = ExtractorLinkType.M3U8))
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
             }
         }
+
+        // =========================================================================
+        // SỬA ĐỔI: TÍCH HỢP BỘ LỌC QUẢNG CÁO CHO SERVER BÊN THỨ 3
+        // =========================================================================
+        async {
+            if (linkData.server2Url != null) {
+                try {
+                    // Lấy link M3U8 gốc từ server thứ 3
+                    val document = app.get(linkData.server2Url).document
+                    val iframeStreamSrc = fixUrl(document.selectFirst("iframe#iframeStream")?.attr("src") ?: return@async, linkData.server2Url)
+                    val iframeStreamDoc = app.get(iframeStreamSrc, referer = linkData.server2Url).document
+                    val iframeEmbedSrc = fixUrl(iframeStreamDoc.selectFirst("iframe#embedIframe")?.attr("src") ?: return@async, iframeStreamSrc)
+                    val oPhimScript = app.get(iframeEmbedSrc, referer = iframeStreamSrc).document.select("script").find { it.data().contains("var url = '") }?.data()
+                    
+                    if (oPhimScript != null) {
+                        val masterM3u8Url = oPhimScript.substringAfter("var url = '").substringBefore("'")
+                        val sourceName = if (masterM3u8Url.contains("opstream")) "Ổ Phim" else "KKPhim"
+                        val headers = mapOf("Referer" to iframeEmbedSrc)
+
+                        // BƯỚC 1: LẤY URL FILE CON TỪ FILE MASTER
+                        val masterM3u8Content = app.get(masterM3u8Url, headers = headers).text
+                        val variantPath = masterM3u8Content.lines().lastOrNull { it.isNotBlank() && !it.startsWith("#") }
+                            ?: throw Exception("Không tìm thấy luồng M3U8 con")
+                        val masterPathBase = masterM3u8Url.substringBeforeLast("/")
+                        val variantM3u8Url = if (variantPath.startsWith("http")) variantPath else "$masterPathBase/$variantPath"
+                        
+                        // BƯỚC 2: TẢI FILE CON VÀ LỌC QUẢNG CÁO
+                        val finalPlaylistContent = app.get(variantM3u8Url, headers = headers).text
+                        val variantPathBase = variantM3u8Url.substringBeforeLast("/")
+                        val cleanedLines = mutableListOf<String>()
+                        val lines = finalPlaylistContent.lines()
+                        var i = 0
+                        while (i < lines.size) {
+                            val line = lines[i].trim()
+                            
+                            // Xác định khối quảng cáo bằng thẻ #EXT-X-DISCONTINUITY và thời lượng (#EXTINF) đáng ngờ
+                            if (line == "#EXT-X-DISCONTINUITY") {
+                                val nextInfoLine = lines.getOrNull(i + 1)?.trim()
+                                // Các mẫu thời lượng quảng cáo phổ biến của Ophim/KKPhim
+                                val isAdPattern = nextInfoLine != null && (
+                                    nextInfoLine.startsWith("#EXTINF:3.92") || 
+                                    nextInfoLine.startsWith("#EXTINF:0.76") ||
+                                    // Thêm các mẫu khác nếu cần
+                                    lines.getOrNull(i + 2)?.contains("/v7/") == true 
+                                )
+                                
+                                if (isAdPattern) {
+                                    // Bỏ qua toàn bộ khối quảng cáo này
+                                    // Tìm thẻ #EXT-X-DISCONTINUITY tiếp theo để biết điểm kết thúc
+                                    var adBlockEndIndex = i
+                                    for (j in (i + 1) until lines.size) {
+                                        if (lines[j].trim() == "#EXT-X-DISCONTINUITY") {
+                                            adBlockEndIndex = j
+                                            break
+                                        }
+                                        adBlockEndIndex = j 
+                                    }
+                                    i = adBlockEndIndex + 1
+                                    continue // Bỏ qua và bắt đầu vòng lặp từ sau khối quảng cáo
+                                }
+                            }
+                            
+                            // Nếu không phải quảng cáo, giữ lại dòng và xử lý
+                            if (line.isNotEmpty()) {
+                                if (!line.startsWith("#")) {
+                                    // Nếu là link segment, chuyển thành link tuyệt đối
+                                    cleanedLines.add(if(line.startsWith("http")) line else "$variantPathBase/$line")
+                                } else {
+                                    // Nếu là thẻ meta, giữ lại nguyên vẹn
+                                    cleanedLines.add(line)
+                                }
+                            }
+                            i++
+                        }
+                        val cleanedM3u8 = cleanedLines.joinToString("\n")
+
+                        // BƯỚC 3: UPLOAD NỘI DUNG SẠCH VÀ TRẢ VỀ LINK
+                        val requestBody = cleanedM3u8.toRequestBody("application/vnd.apple.mpegurl".toMediaType())
+                        val finalUrl = app.post(
+                            "https://paste.swurl.xyz/server3.m3u8",
+                            requestBody = requestBody
+                        ).text.trim()
+
+                        if (!finalUrl.startsWith("http")) throw Exception("Tải M3U8 lên dịch vụ paste thất bại")
+
+                        callback.invoke(
+                            ExtractorLink(
+                                name, 
+                                "Server bên thứ 3 - $sourceName (No-Ads)", 
+                                finalUrl, 
+                                iframeEmbedSrc, 
+                                Qualities.Unknown.value, 
+                                type = ExtractorLinkType.M3U8
+                            )
+                        )
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
+        return@coroutineScope true
     }
-    
-    return@coroutineScope true
-}
 
 
     private fun getBaseUrl(url: String): String {
