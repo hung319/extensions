@@ -153,7 +153,6 @@ class BluPhimProvider : MainAPI() {
                 this.recommendations = recommendations
             }
         } else {
-            // Đối với phim lẻ, chúng ta cũng tạo hai phiên bản server
             val episodes = listOf(
                 newEpisode(LinkData(url = watchUrl, title = title, year = year).toJson()) { name = "Server Gốc" },
                 newEpisode(LinkData(url = "$watchUrl?sv2=true", title = title, year = year).toJson()) { name = "Server bên thứ 3" }
@@ -179,14 +178,12 @@ class BluPhimProvider : MainAPI() {
             if (href.isNotEmpty() && !name.contains("Server", ignoreCase = true)) {
                 val baseUrl = if (href.startsWith("http")) href else "$mainUrl$href"
                 
-                // Tạo link cho server gốc
                 val server1Data = LinkData(url = baseUrl, title = title, year = year, episode = epNum).toJson()
                 episodeList.add(newEpisode(server1Data) {
                     this.name = "$name (Gốc)"
                     this.episode = epNum
                 })
                 
-                // Tạo link cho server thứ 3
                 val server2Data = LinkData(url = "$baseUrl?sv2=true", title = title, year = year, episode = epNum).toJson()
                 episodeList.add(newEpisode(server2Data) {
                     this.name = "$name (Bên thứ 3)"
@@ -219,15 +216,29 @@ class BluPhimProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val linkData = parseJson<LinkData>(data)
-        
         val document = app.get(linkData.url).document
-        
+
+        // Logic mới: Lấy phụ đề mềm từ trang xem phim
+        document.select(".subtitle-list .media").forEach { subElement ->
+            val label = subElement.selectFirst(".release-names")?.text()?.trim()
+            val onclick = subElement.selectFirst("button[onclick^=ChooseSub]")?.attr("onclick")
+            if (label != null && onclick != null) {
+                val subId = Regex("""ChooseSub\(event, '(.+?)',""").find(onclick)?.groupValues?.get(1)
+                if (subId != null) {
+                    subtitleCallback.invoke(
+                        SubtitleFile(label, "https://sub.moviking.com/sub/${subId}.vtt")
+                    )
+                }
+            }
+        }
+
         val iframeStreamSrc = fixUrl(document.selectFirst("iframe#iframeStream")?.attr("src") ?: return false, linkData.url)
         val iframeStreamDoc = app.get(iframeStreamSrc, referer = linkData.url).document
 
         val script = iframeStreamDoc.select("script").find { it.data().contains("var videoId =") }?.data()
 
         if (script != null) {
+            // Logic cho trình phát BluPhim (Server Gốc)
             val videoId = script.substringAfter("var videoId = '").substringBefore("'")
             val cdn = script.substringAfter("var cdn = '").substringBefore("'")
             val domain = script.substringAfter("var domain = '").substringBefore("'")
@@ -268,7 +279,7 @@ class BluPhimProvider : MainAPI() {
             )
 
         } else {
-            // Logic dự phòng cho OPhim (thường là server thứ 3)
+            // Logic dự phòng cho OPhim (Server bên thứ 3)
             val iframeEmbedSrc = fixUrl(iframeStreamDoc.selectFirst("iframe#embedIframe")?.attr("src") ?: return false, iframeStreamSrc)
             val oPhimScript = app.get(iframeEmbedSrc, referer = iframeStreamSrc).document
                 .select("script").find { it.data().contains("var url = '") }?.data()
@@ -290,4 +301,9 @@ class BluPhimProvider : MainAPI() {
             url.substringBefore("/video/")
         }
     }
+
+    data class VideoResponse(
+        val status: String,
+        val url: String
+    )
 }
