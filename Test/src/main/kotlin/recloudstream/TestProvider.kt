@@ -15,10 +15,13 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import java.security.MessageDigest
 import java.net.URI
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 
-// Lớp dữ liệu để truyền thông tin giữa `load` và `loadLinks`
+// Sửa đổi: LinkData chứa cả 2 server
 data class LinkData(
-    val url: String,
+    val server1Url: String,
+    val server2Url: String?, // Có thể null nếu chỉ có 1 server
     val title: String,
     val year: Int?,
     val season: Int? = null,
@@ -153,11 +156,11 @@ class BluPhimProvider : MainAPI() {
                 this.recommendations = recommendations
             }
         } else {
-            val episodes = listOf(
-                newEpisode(LinkData(url = watchUrl, title = title, year = year).toJson()) { name = "Server Gốc" },
-                newEpisode(LinkData(url = "$watchUrl?sv2=true", title = title, year = year).toJson()) { name = "Server bên thứ 3" }
-            )
-            newMovieLoadResponse(title, url, tvType, episodes) {
+            val server2Url = app.get(watchUrl).document.selectFirst("a[href*=?sv2=true]")?.attr("href")?.let {
+                if (it.startsWith("http")) it else mainUrl + it
+            }
+            val linkData = LinkData(server1Url = watchUrl, server2Url = server2Url, title = title, year = year).toJson()
+            newMovieLoadResponse(title, url, tvType, linkData) {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = description
@@ -171,22 +174,22 @@ class BluPhimProvider : MainAPI() {
     private suspend fun getEpisodes(watchUrl: String, title: String, year: Int?): List<Episode> {
         val document = app.get(watchUrl).document
         val episodeList = ArrayList<Episode>()
-        document.select("div.list-episode a").forEach { element ->
+        document.select("div.list-episode a:not([href*=?sv2=true])").forEach { element ->
             val href = element.attr("href")
             val name = element.text().trim()
             val epNum = name.filter { it.isDigit() }.toIntOrNull()
+
             if (href.isNotEmpty() && !name.contains("Server", ignoreCase = true)) {
-                val baseUrl = if (href.startsWith("http")) href else "$mainUrl$href"
-                
-                val server1Data = LinkData(url = baseUrl, title = title, year = year, episode = epNum).toJson()
-                episodeList.add(newEpisode(server1Data) {
-                    this.name = "$name (Gốc)"
-                    this.episode = epNum
-                })
-                
-                val server2Data = LinkData(url = "$baseUrl?sv2=true", title = title, year = year, episode = epNum).toJson()
-                episodeList.add(newEpisode(server2Data) {
-                    this.name = "$name (Bên thứ 3)"
+                val server1Url = if (href.startsWith("http")) href else "$mainUrl$href"
+                val server2Url = element.nextElementSibling()?.let { next ->
+                    if (next.attr("href").contains("?sv2=true")) {
+                        if (next.attr("href").startsWith("http")) next.attr("href") else mainUrl + next.attr("href")
+                    } else null
+                } ?: "$server1Url?sv2=true" // Dự phòng
+
+                val linkData = LinkData(server1Url, server2Url, title, null, epNum).toJson()
+                episodeList.add(newEpisode(linkData) {
+                    this.name = name
                     this.episode = epNum
                 })
             }
@@ -214,85 +217,86 @@ class BluPhimProvider : MainAPI() {
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
-    ): Boolean {
+    ): Boolean = coroutineScope {
         val linkData = parseJson<LinkData>(data)
-        val document = app.get(linkData.url).document
 
-        // Logic mới: Lấy phụ đề mềm từ trang xem phim
-        document.select(".subtitle-list .media").forEach { subElement ->
-            val label = subElement.selectFirst(".release-names")?.text()?.trim()
-            val onclick = subElement.selectFirst("button[onclick^=ChooseSub]")?.attr("onclick")
-            if (label != null && onclick != null) {
-                val subId = Regex("""ChooseSub\(event, '(.+?)',""").find(onclick)?.groupValues?.get(1)
-                if (subId != null) {
-                    subtitleCallback.invoke(
-                        SubtitleFile(label, "https://sub.moviking.com/sub/${subId}.vtt")
-                    )
+        // Chạy song song cả hai server
+        async {
+            try {
+                // SERVER GỐC
+                val document = app.get(linkData.server1Url).document
+                val iframeStreamSrc = fixUrl(document.selectFirst("iframe#iframeStream")?.attr("src") ?: return@async, linkData.server1Url)
+                val iframeStreamDoc = app.get(iframeStreamSrc, referer = linkData.server1Url).document
+                val script = iframeStreamDoc.select("script").find { it.data().contains("var videoId =") }?.data()
+
+                if (script != null) {
+                    val videoId = script.substringAfter("var videoId = '").substringBefore("'")
+                    val cdn = script.substringAfter("var cdn = '").substringBefore("'")
+                    val domain = script.substringAfter("var domain = '").substringBefore("'")
+
+                    val context = AcraApplication.context!!
+                    val prefs = context.getSharedPreferences("bluphim_prefs", Context.MODE_PRIVATE)
+                    var token = prefs.getString("bluphim_token", null)
+                    if (token == null) {
+                        token = "r" + System.currentTimeMillis()
+                        prefs.edit().putString("bluphim_token", token).apply()
+                    }
+                    
+                    val requestBody = MultipartBody.Builder()
+                        .setType(MultipartBody.FORM)
+                        .addFormDataPart("renderer", "ANGLE (ARM, Mali-G78, OpenGL ES 3.2)")
+                        .addFormDataPart("id", token.md5())
+                        .addFormDataPart("videoId", videoId)
+                        .addFormDataPart("domain", domain)
+                        .build()
+
+                    val tokenString = app.post(url = "${getBaseUrl(iframeStreamSrc)}/geturl", requestBody = requestBody, referer = iframeStreamSrc, headers = mapOf("X-Requested-With" to "XMLHttpRequest")).text
+                    val tokens = tokenString.split("&").associate { val (key, value) = it.split("="); key to value }
+                    
+                    val finalCdn = cdn.replace("cdn3.", "cdn.")
+                    val finalUrl = "$finalCdn/segment/$videoId/?token1=${tokens["token1"]}&token3=${tokens["token3"]}"
+
+                    callback.invoke(ExtractorLink(name, "Server Gốc", finalUrl, "$cdn/", Qualities.P1080.value, type = ExtractorLinkType.M3U8))
+
+                    val tracks = script.substringAfter("tracks: [", "").substringBefore("]", "")
+                    if (tracks.isNotEmpty()) {
+                        val subs = Regex("""\{\s*"file"\s*:\s*"([^"]+)"\s*,\s*"label"\s*:\s*"([^"]+)"\s*}""").findAll(tracks)
+                        subs.forEach { sub ->
+                            val subUrl = sub.groupValues[1].replace("\\/", "/")
+                            val subLabel = sub.groupValues[2]
+                            subtitleCallback.invoke(SubtitleFile(subLabel, subUrl))
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+
+        async {
+            // SERVER BÊN THỨ 3
+            if (linkData.server2Url != null) {
+                try {
+                    val document = app.get(linkData.server2Url).document
+                    val iframeStreamSrc = fixUrl(document.selectFirst("iframe#iframeStream")?.attr("src") ?: return@async, linkData.server2Url)
+                    val iframeStreamDoc = app.get(iframeStreamSrc, referer = linkData.server2Url).document
+                    val iframeEmbedSrc = fixUrl(iframeStreamDoc.selectFirst("iframe#embedIframe")?.attr("src") ?: return@async, iframeStreamSrc)
+                    val oPhimScript = app.get(iframeEmbedSrc, referer = iframeStreamSrc).document.select("script").find { it.data().contains("var url = '") }?.data()
+                    
+                    if (oPhimScript != null) {
+                        val url = oPhimScript.substringAfter("var url = '").substringBefore("'")
+                        val sourceName = if (url.contains("opstream")) "Ổ Phim" else "KKPhim"
+                        callback.invoke(ExtractorLink(name, "Server bên thứ 3 - $sourceName", url, iframeEmbedSrc, Qualities.Unknown.value, type = ExtractorLinkType.M3U8))
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
                 }
             }
         }
-
-        val iframeStreamSrc = fixUrl(document.selectFirst("iframe#iframeStream")?.attr("src") ?: return false, linkData.url)
-        val iframeStreamDoc = app.get(iframeStreamSrc, referer = linkData.url).document
-
-        val script = iframeStreamDoc.select("script").find { it.data().contains("var videoId =") }?.data()
-
-        if (script != null) {
-            // Logic cho trình phát BluPhim (Server Gốc)
-            val videoId = script.substringAfter("var videoId = '").substringBefore("'")
-            val cdn = script.substringAfter("var cdn = '").substringBefore("'")
-            val domain = script.substringAfter("var domain = '").substringBefore("'")
-
-            val context = AcraApplication.context!!
-            val prefs = context.getSharedPreferences("bluphim_prefs", Context.MODE_PRIVATE)
-            var token = prefs.getString("bluphim_token", null)
-            if (token == null) {
-                token = "r" + System.currentTimeMillis()
-                prefs.edit().putString("bluphim_token", token).apply()
-            }
-            
-            val requestBody = MultipartBody.Builder()
-                .setType(MultipartBody.FORM)
-                .addFormDataPart("renderer", "ANGLE (ARM, Mali-G78, OpenGL ES 3.2)")
-                .addFormDataPart("id", token.md5())
-                .addFormDataPart("videoId", videoId)
-                .addFormDataPart("domain", domain)
-                .build()
-
-            val tokenString = app.post(
-                url = "${getBaseUrl(iframeStreamSrc)}/geturl",
-                requestBody = requestBody,
-                referer = iframeStreamSrc,
-                headers = mapOf("X-Requested-With" to "XMLHttpRequest")
-            ).text
-            
-            val tokens = tokenString.split("&").associate {
-                val (key, value) = it.split("=")
-                key to value
-            }
-            
-            val finalCdn = cdn.replace("cdn3.", "cdn.")
-            val finalUrl = "$finalCdn/segment/$videoId/?token1=${tokens["token1"]}&token3=${tokens["token3"]}"
-
-            callback.invoke(
-                ExtractorLink(this.name, "BluPhim", finalUrl, "$cdn/", Qualities.P1080.value, type = ExtractorLinkType.M3U8)
-            )
-
-        } else {
-            // Logic dự phòng cho OPhim (Server bên thứ 3)
-            val iframeEmbedSrc = fixUrl(iframeStreamDoc.selectFirst("iframe#embedIframe")?.attr("src") ?: return false, iframeStreamSrc)
-            val oPhimScript = app.get(iframeEmbedSrc, referer = iframeStreamSrc).document
-                .select("script").find { it.data().contains("var url = '") }?.data()
-            
-            if (oPhimScript != null) {
-                val url = oPhimScript.substringAfter("var url = '").substringBefore("'")
-                val sourceName = if (url.contains("opstream")) "Ổ Phim" else "KKPhim"
-                callback.invoke(ExtractorLink(this.name, sourceName, url, iframeEmbedSrc, Qualities.Unknown.value, type = ExtractorLinkType.M3U8))
-            }
-        }
         
-        return true
+        return@coroutineScope true
     }
+
 
     private fun getBaseUrl(url: String): String {
         return try {
