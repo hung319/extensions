@@ -18,10 +18,9 @@ import java.net.URI
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 
-// Sửa đổi: LinkData chứa cả 2 server
+// Lớp dữ liệu để truyền thông tin giữa `load` và `loadLinks`
 data class LinkData(
-    val server1Url: String,
-    val server2Url: String?, // Có thể null nếu chỉ có 1 server
+    val url: String,
     val title: String,
     val year: Int?,
     val season: Int? = null,
@@ -37,7 +36,8 @@ class BluPhimProvider : MainAPI() {
     override val hasDownloadSupport = false
     override val supportedTypes = setOf(
         TvType.Movie,
-        TvType.TvSeries
+        TvType.TvSeries,
+        TvType.Anime // Thêm Anime
     )
 
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
@@ -135,7 +135,11 @@ class BluPhimProvider : MainAPI() {
         val recommendations = document.select("div.list-films.film-hot ul#film_related li.item").mapNotNull {
             it.toSearchResult()
         }
-        val tvType = if (document.select("dd.theloaidd a:contains(TV Series - Phim bộ)").isNotEmpty()) {
+        
+        // Sửa đổi: Gán TvType.Anime cho thể loại Hoạt hình
+        val tvType = if (genres.any { it.equals("Hoạt hình", ignoreCase = true) }) {
+            TvType.Anime
+        } else if (genres.any { it.equals("TV Series - Phim bộ", ignoreCase = true) }) {
             TvType.TvSeries
         } else {
             TvType.Movie
@@ -145,7 +149,7 @@ class BluPhimProvider : MainAPI() {
             if (it.startsWith("http")) it else "$mainUrl$it"
         } ?: url
 
-        return if (tvType == TvType.TvSeries) {
+        return if (tvType == TvType.TvSeries || tvType == TvType.Anime) {
             val episodes = getEpisodes(watchUrl, title, year)
             newTvSeriesLoadResponse(title, url, tvType, episodes) {
                 this.posterUrl = poster
@@ -156,6 +160,7 @@ class BluPhimProvider : MainAPI() {
                 this.recommendations = recommendations
             }
         } else {
+            // Đối với phim lẻ, tạo hai server
             val server2Url = app.get(watchUrl).document.selectFirst("a[href*=?sv2=true]")?.attr("href")?.let {
                 if (it.startsWith("http")) it else mainUrl + it
             }
@@ -185,8 +190,8 @@ class BluPhimProvider : MainAPI() {
                     if (next.attr("href").contains("?sv2=true")) {
                         if (next.attr("href").startsWith("http")) next.attr("href") else mainUrl + next.attr("href")
                     } else null
-                } ?: "$server1Url?sv2=true" // Dự phòng
-
+                }
+                
                 val linkData = LinkData(server1Url, server2Url, title, null, epNum).toJson()
                 episodeList.add(newEpisode(linkData) {
                     this.name = name
@@ -223,7 +228,7 @@ class BluPhimProvider : MainAPI() {
         // Chạy song song cả hai server
         async {
             try {
-                // SERVER GỐC
+                // SERVER GỐC (BLUPHIM)
                 val document = app.get(linkData.server1Url).document
                 val iframeStreamSrc = fixUrl(document.selectFirst("iframe#iframeStream")?.attr("src") ?: return@async, linkData.server1Url)
                 val iframeStreamDoc = app.get(iframeStreamSrc, referer = linkData.server1Url).document
@@ -242,8 +247,7 @@ class BluPhimProvider : MainAPI() {
                         prefs.edit().putString("bluphim_token", token).apply()
                     }
                     
-                    val requestBody = MultipartBody.Builder()
-                        .setType(MultipartBody.FORM)
+                    val requestBody = MultipartBody.Builder().setType(MultipartBody.FORM)
                         .addFormDataPart("renderer", "ANGLE (ARM, Mali-G78, OpenGL ES 3.2)")
                         .addFormDataPart("id", token.md5())
                         .addFormDataPart("videoId", videoId)
@@ -274,19 +278,20 @@ class BluPhimProvider : MainAPI() {
         }
 
         async {
-            // SERVER BÊN THỨ 3
-            if (linkData.server2Url != null) {
+            // SERVER BÊN THỨ 3 (OPHIM/KKPHIM)
+            linkData.server2Url?.let { serverUrl ->
                 try {
-                    val document = app.get(linkData.server2Url).document
-                    val iframeStreamSrc = fixUrl(document.selectFirst("iframe#iframeStream")?.attr("src") ?: return@async, linkData.server2Url)
-                    val iframeStreamDoc = app.get(iframeStreamSrc, referer = linkData.server2Url).document
+                    val document = app.get(serverUrl).document
+                    val iframeStreamSrc = fixUrl(document.selectFirst("iframe#iframeStream")?.attr("src") ?: return@async, serverUrl)
+                    val iframeStreamDoc = app.get(iframeStreamSrc, referer = serverUrl).document
                     val iframeEmbedSrc = fixUrl(iframeStreamDoc.selectFirst("iframe#embedIframe")?.attr("src") ?: return@async, iframeStreamSrc)
-                    val oPhimScript = app.get(iframeEmbedSrc, referer = iframeStreamSrc).document.select("script").find { it.data().contains("var url = '") }?.data()
                     
-                    if (oPhimScript != null) {
-                        val url = oPhimScript.substringAfter("var url = '").substringBefore("'")
-                        val sourceName = if (url.contains("opstream")) "Ổ Phim" else "KKPhim"
-                        callback.invoke(ExtractorLink(name, "Server bên thứ 3 - $sourceName", url, iframeEmbedSrc, Qualities.Unknown.value, type = ExtractorLinkType.M3U8))
+                    val m3u8Url = app.get(iframeEmbedSrc, referer = iframeStreamSrc).document
+                        .select("script").find { it.data().contains("var url = '") }
+                        ?.data()?.substringAfter("var url = '")?.substringBefore("'")
+
+                    if (m3u8Url != null) {
+                        invokeOphimExtractor(m3u8Url, "Server bên thứ 3", subtitleCallback, callback)
                     }
                 } catch (e: Exception) {
                     e.printStackTrace()
@@ -295,6 +300,61 @@ class BluPhimProvider : MainAPI() {
         }
         
         return@coroutineScope true
+    }
+
+    // Hàm trích xuất cho server Ophim/KKPhim
+    private suspend fun invokeOphimExtractor(m3u8Url: String, serverName: String, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
+        val headers = mapOf("Referer" to mainUrl)
+        val masterM3u8Content = app.get(m3u8Url, headers = headers).text
+        val variantPath = masterM3u8Content.lines().lastOrNull { it.isNotBlank() && !it.startsWith("#") } ?: return
+        val masterPathBase = m3u8Url.substringBeforeLast("/")
+        val variantM3u8Url = if (variantPath.startsWith("http")) variantPath else "$masterPathBase/$variantPath"
+
+        val finalPlaylistContent = app.get(variantM3u8Url, headers = headers).text
+        val variantPathBase = variantM3u8Url.substringBeforeLast("/")
+
+        val cleanedLines = mutableListOf<String>()
+        val lines = finalPlaylistContent.lines()
+        var i = 0
+        while (i < lines.size) {
+            val line = lines[i].trim()
+            if (line == "#EXT-X-DISCONTINUITY") {
+                val nextInfoLine = lines.getOrNull(i + 1)?.trim()
+                val isAdPattern = nextInfoLine != null && (nextInfoLine.startsWith("#EXTINF:3.92") || nextInfoLine.startsWith("#EXTINF:0.76"))
+                if (isAdPattern) {
+                    var adBlockEndIndex = i
+                    for (j in (i + 1) until lines.size) {
+                        if (lines[j].trim() == "#EXT-X-DISCONTINUITY") {
+                            adBlockEndIndex = j
+                            break
+                        }
+                        adBlockEndIndex = j
+                    }
+                    i = adBlockEndIndex + 1
+                    continue
+                }
+            }
+            if (line.isNotEmpty()) {
+                if (!line.startsWith("#")) {
+                    cleanedLines.add("$variantPathBase/$line")
+                } else {
+                    cleanedLines.add(line)
+                }
+            }
+            i++
+        }
+
+        val cleanedM3u8 = cleanedLines.joinToString("\n")
+        if (cleanedM3u8.isBlank()) return
+
+        val requestBody = cleanedM3u8.toRequestBody("application/vnd.apple.mpegurl".toMediaType())
+        val finalUrl = app.post("https://paste.swurl.xyz/ophim.m3u8", requestBody = requestBody).text.trim()
+
+        if (finalUrl.startsWith("http")) {
+            callback.invoke(
+                ExtractorLink(this.name, serverName, finalUrl, mainUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8, headers = headers)
+            )
+        }
     }
 
 
