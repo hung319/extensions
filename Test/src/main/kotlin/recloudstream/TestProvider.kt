@@ -10,10 +10,6 @@ import com.lagradost.cloudstream3.AcraApplication
 import com.lagradost.cloudstream3.utils.DataStore
 import okhttp3.Interceptor
 import okhttp3.Response
-import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.MediaType.Companion.toMediaTypeOrNull
-import okhttp3.MultipartBody
-import java.security.MessageDigest
 import java.net.URI
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -35,17 +31,14 @@ class BluPhimProvider : MainAPI() {
     override val hasMainPage = true
     override var lang = "vi"
     override val hasDownloadSupport = false
-    
-    // =========================================================================
-    // THAY ĐỔI 1: Thêm TvType.Anime để hỗ trợ phim hoạt hình
-    // =========================================================================
     override val supportedTypes = setOf(
         TvType.Movie,
         TvType.TvSeries,
-        TvType.Anime 
+        TvType.Anime
     )
 
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
+        // Interceptor giữ nguyên để sửa lỗi domain trong file m3u8 nếu có
         return object : Interceptor {
             override fun intercept(chain: Interceptor.Chain): Response {
                 val request = chain.request()
@@ -141,15 +134,7 @@ class BluPhimProvider : MainAPI() {
             it.toSearchResult()
         }
 
-        // =========================================================================
-        // THAY ĐỔI 2: Cập nhật logic để xác định loại phim (Anime/TVSeries/Movie)
-        // và cấu trúc (phim lẻ hay phim bộ) một cách chính xác.
-        // =========================================================================
-
-        // Xác định xem có phải là phim bộ hay không
         val isSeries = document.select("dd.theloaidd a:contains(TV Series - Phim bộ)").isNotEmpty()
-
-        // Xác định loại nội dung: Ưu tiên Anime nếu có thể loại "Hoạt hình"
         val tvType = if (genres.any { it.equals("Hoạt hình", ignoreCase = true) }) {
             TvType.Anime
         } else if (isSeries) {
@@ -162,7 +147,6 @@ class BluPhimProvider : MainAPI() {
             if (it.startsWith("http")) it else "$mainUrl$it"
         } ?: url
 
-        // Dùng `isSeries` để quyết định tạo response cho phim bộ hay phim lẻ
         return if (isSeries) {
             val episodes = getEpisodes(watchUrl, title, year)
             newTvSeriesLoadResponse(title, url, tvType, episodes) {
@@ -203,7 +187,7 @@ class BluPhimProvider : MainAPI() {
                     if (next.attr("href").contains("?sv2=true")) {
                         if (next.attr("href").startsWith("http")) next.attr("href") else mainUrl + next.attr("href")
                     } else null
-                } ?: "$server1Url?sv2=true" // Dự phòng
+                } ?: "$server1Url?sv2=true" 
 
                 val linkData = LinkData(server1Url, server2Url, title, null, epNum).toJson()
                 episodeList.add(newEpisode(linkData) {
@@ -215,11 +199,6 @@ class BluPhimProvider : MainAPI() {
         return episodeList
     }
 
-    private fun String.md5(): String {
-        val bytes = MessageDigest.getInstance("MD5").digest(this.toByteArray())
-        return bytes.joinToString("") { "%02x".format(it) }
-    }
-    
     private fun fixUrl(url: String, baseUrl: String): String {
         if (url.startsWith("http")) return url
         if (url.startsWith("//")) return "https:$url"
@@ -230,6 +209,9 @@ class BluPhimProvider : MainAPI() {
         }
     }
 
+    // =========================================================================
+    // THAY ĐỔI LỚN: Viết lại hoàn toàn hàm loadLinks để phù hợp cấu trúc mới
+    // =========================================================================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -237,52 +219,44 @@ class BluPhimProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean = coroutineScope {
         val linkData = parseJson<LinkData>(data)
+        val host = URI(mainUrl).host
 
         // Chạy song song cả hai server
         async {
             try {
-                // SERVER GỐC
+                // SERVER GỐC - LOGIC MỚI
                 val document = app.get(linkData.server1Url).document
                 val iframeStreamSrc = fixUrl(document.selectFirst("iframe#iframeStream")?.attr("src") ?: return@async, linkData.server1Url)
-                val iframeStreamDoc = app.get(iframeStreamSrc, referer = linkData.server1Url).document
-                val script = iframeStreamDoc.select("script").find { it.data().contains("var videoId =") }?.data()
 
-                if (script != null) {
-                    val videoId = script.substringAfter("var videoId = '").substringBefore("'")
-                    val cdn = script.substringAfter("var cdn = '").substringBefore("'")
-                    val domain = script.substringAfter("var domain = '").substringBefore("'")
-
-                    val context = AcraApplication.context!!
-                    val prefs = context.getSharedPreferences("bluphim_prefs", Context.MODE_PRIVATE)
-                    var token = prefs.getString("bluphim_token", null)
-                    if (token == null) {
-                        token = "r" + System.currentTimeMillis()
-                        prefs.edit().putString("bluphim_token", token).apply()
-                    }
+                // Chỉ thực thi nếu là iframe streaming mới
+                if (iframeStreamSrc.contains("/streaming")) {
+                    // Lấy các token và id trực tiếp từ URL của iframe
+                    val cdn = iframeStreamSrc.substringAfter("cdn=").substringBefore("&")
+                    val videoId = iframeStreamSrc.substringAfter("id=").substringBefore("&")
+                    val token1 = iframeStreamSrc.substringAfter("token1=").substringBefore("&")
+                    val token2 = iframeStreamSrc.substringAfter("token2=").substringBefore("&")
+                    val token3 = iframeStreamSrc.substringAfter("token3=").substringBefore("&")
                     
-                    val requestBody = MultipartBody.Builder()
-                        .setType(MultipartBody.FORM)
-                        .addFormDataPart("renderer", "ANGLE (ARM, Mali-G78, OpenGL ES 3.2)")
-                        .addFormDataPart("id", token.md5())
-                        .addFormDataPart("videoId", videoId)
-                        .addFormDataPart("domain", domain)
-                        .build()
+                    // 1. Tải link video
+                    val finalUrl = "$cdn/segment/$videoId/?token1=$token1&token3=$token3"
+                    callback.invoke(ExtractorLink(name, "Server Gốc", finalUrl, referer = "$cdn/", quality = Qualities.P1080.value, type = ExtractorLinkType.M3U8))
 
-                    val tokenString = app.post(url = "${getBaseUrl(iframeStreamSrc)}/geturl", requestBody = requestBody, referer = iframeStreamSrc, headers = mapOf("X-Requested-With" to "XMLHttpRequest")).text
-                    val tokens = tokenString.split("&").associate { val (key, value) = it.split("="); key to value }
-                    
-                    val finalCdn = cdn.replace("cdn3.", "cdn.")
-                    val finalUrl = "$finalCdn/segment/$videoId/?token1=${tokens["token1"]}&token3=${tokens["token3"]}"
+                    // 2. Tải link phụ đề
+                    val iframeStreamDoc = app.get(iframeStreamSrc, referer = linkData.server1Url).document
+                    // Tìm script chứa thông tin phụ đề
+                    val script = iframeStreamDoc.selectFirst("script:containsData(subtitles)")?.data()
 
-                    callback.invoke(ExtractorLink(name, "Server Gốc", finalUrl, "$cdn/", Qualities.P1080.value, type = ExtractorLinkType.M3U8))
+                    if (script != null) {
+                        // Trích xuất chuỗi array phụ đề
+                        val tracks = script.substringAfter("subtitles: [", "").substringBefore("]", "")
+                        // Regex mới để lấy id và label của phụ đề
+                        val subRegex = Regex("""\{\s*id:\s*'([^']*)',\s*label:\s*'([^']*)'[^}]*\}""")
 
-                    // LOGIC LẤY SUBTITLE - GIỮ NGUYÊN VÌ ĐÂY LÀ CÁCH LẤY TỐT NHẤT
-                    val tracks = script.substringAfter("tracks: [", "").substringBefore("]", "")
-                    if (tracks.isNotEmpty()) {
-                        val subs = Regex("""\{\s*"file"\s*:\s*"([^"]+)"\s*,\s*"label"\s*:\s*"([^"]+)"\s*}""").findAll(tracks)
-                        subs.forEach { sub ->
-                            val subUrl = sub.groupValues[1].replace("\\/", "/")
-                            val subLabel = sub.groupValues[2]
+                        subRegex.findAll(tracks).forEach { match ->
+                            val subId = match.groupValues[1]
+                            val subLabel = match.groupValues[2]
+                            // Dựng lại URL phụ đề theo cấu trúc mới
+                            val subUrl = "$cdn/subtitle/$subId?web=$host&token2=$token2"
                             subtitleCallback.invoke(SubtitleFile(subLabel, subUrl))
                         }
                     }
@@ -293,7 +267,7 @@ class BluPhimProvider : MainAPI() {
         }
 
         async {
-            // SERVER BÊN THỨ 3
+            // SERVER BÊN THỨ 3 (giữ nguyên, không thay đổi)
             if (linkData.server2Url != null) {
                 try {
                     val document = app.get(linkData.server2Url).document
@@ -315,18 +289,4 @@ class BluPhimProvider : MainAPI() {
         
         return@coroutineScope true
     }
-
-
-    private fun getBaseUrl(url: String): String {
-        return try {
-            URI(url).let { "${it.scheme}://${it.host}" }
-        } catch (e: Exception) {
-            url.substringBefore("/video/")
-        }
-    }
-
-    data class VideoResponse(
-        val status: String,
-        val url: String
-    )
 }
