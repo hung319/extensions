@@ -5,6 +5,7 @@ import android.util.Log
 import android.widget.Toast
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.mapper // Thêm import này
 import com.lagradost.cloudstream3.utils.*
 import java.net.URLEncoder
 import kotlinx.coroutines.Dispatchers
@@ -275,7 +276,7 @@ class AnimetProvider : MainAPI() {
                             "Tập $epIdentifier"
                         }
                         
-                        val data = sources.toJson() // Sửa lại cách chuyển đổi JSON
+                        val data = mapper.writeValueAsString(sources) // SỬA LỖI TẠI ĐÂY
                         
                         newEpisode(data) {
                             this.name = epName
@@ -319,8 +320,7 @@ class AnimetProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         try {
-            // Sửa lại cách phân tích JSON
-            val sources = AppUtils.parseJson<List<EpisodeSource>>(data)
+            val sources = mapper.readValue<List<EpisodeSource>>(data) // Dùng mapper để an toàn hơn
             
             coroutineScope {
                 sources.map { source ->
