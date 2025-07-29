@@ -10,6 +10,10 @@ import com.lagradost.cloudstream3.AcraApplication
 import com.lagradost.cloudstream3.utils.DataStore
 import okhttp3.Interceptor
 import okhttp3.Response
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.MultipartBody
+import java.security.MessageDigest
 import java.net.URI
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -31,14 +35,17 @@ class BluPhimProvider : MainAPI() {
     override val hasMainPage = true
     override var lang = "vi"
     override val hasDownloadSupport = false
+    
+    // =========================================================================
+    // THAY ĐỔI 1: Thêm TvType.Anime để hỗ trợ phim hoạt hình
+    // =========================================================================
     override val supportedTypes = setOf(
         TvType.Movie,
         TvType.TvSeries,
-        TvType.Anime
+        TvType.Anime 
     )
 
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
-        // Interceptor giữ nguyên để sửa lỗi domain trong file m3u8 nếu có
         return object : Interceptor {
             override fun intercept(chain: Interceptor.Chain): Response {
                 val request = chain.request()
@@ -134,7 +141,15 @@ class BluPhimProvider : MainAPI() {
             it.toSearchResult()
         }
 
+        // =========================================================================
+        // THAY ĐỔI 2: Cập nhật logic để xác định loại phim (Anime/TVSeries/Movie)
+        // và cấu trúc (phim lẻ hay phim bộ) một cách chính xác.
+        // =========================================================================
+
+        // Xác định xem có phải là phim bộ hay không
         val isSeries = document.select("dd.theloaidd a:contains(TV Series - Phim bộ)").isNotEmpty()
+
+        // Xác định loại nội dung: Ưu tiên Anime nếu có thể loại "Hoạt hình"
         val tvType = if (genres.any { it.equals("Hoạt hình", ignoreCase = true) }) {
             TvType.Anime
         } else if (isSeries) {
@@ -147,6 +162,7 @@ class BluPhimProvider : MainAPI() {
             if (it.startsWith("http")) it else "$mainUrl$it"
         } ?: url
 
+        // Dùng `isSeries` để quyết định tạo response cho phim bộ hay phim lẻ
         return if (isSeries) {
             val episodes = getEpisodes(watchUrl, title, year)
             newTvSeriesLoadResponse(title, url, tvType, episodes) {
@@ -187,7 +203,7 @@ class BluPhimProvider : MainAPI() {
                     if (next.attr("href").contains("?sv2=true")) {
                         if (next.attr("href").startsWith("http")) next.attr("href") else mainUrl + next.attr("href")
                     } else null
-                } ?: "$server1Url?sv2=true" 
+                } ?: "$server1Url?sv2=true" // Dự phòng
 
                 val linkData = LinkData(server1Url, server2Url, title, null, epNum).toJson()
                 episodeList.add(newEpisode(linkData) {
@@ -199,6 +215,11 @@ class BluPhimProvider : MainAPI() {
         return episodeList
     }
 
+    private fun String.md5(): String {
+        val bytes = MessageDigest.getInstance("MD5").digest(this.toByteArray())
+        return bytes.joinToString("") { "%02x".format(it) }
+    }
+    
     private fun fixUrl(url: String, baseUrl: String): String {
         if (url.startsWith("http")) return url
         if (url.startsWith("//")) return "https:$url"
@@ -316,4 +337,18 @@ class BluPhimProvider : MainAPI() {
         
         return@coroutineScope true
     }
+
+
+    private fun getBaseUrl(url: String): String {
+        return try {
+            URI(url).let { "${it.scheme}://${it.host}" }
+        } catch (e: Exception) {
+            url.substringBefore("/video/")
+        }
+    }
+
+    data class VideoResponse(
+        val status: String,
+        val url: String
+    )
 }
