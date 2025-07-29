@@ -5,8 +5,8 @@ import android.util.Log
 import android.widget.Toast
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.mapper // Thêm import này
 import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.AppUtils.toJson // Import tuyệt đối từ AppUtils
 import java.net.URLEncoder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -264,7 +264,7 @@ class AnimetProvider : MainAPI() {
                                 if (epIdentifier.isNotBlank()) {
                                     val source = EpisodeSource(server = serverName, url = epHref)
                                     episodeMap.getOrPut(epIdentifier) { mutableListOf() }.add(source)
-                                }
+                                 }
                             }
                         }
                     }
@@ -276,7 +276,7 @@ class AnimetProvider : MainAPI() {
                             "Tập $epIdentifier"
                         }
                         
-                        val data = mapper.writeValueAsString(sources) // SỬA LỖI TẠI ĐÂY
+                        val data = sources.toJson()
                         
                         newEpisode(data) {
                             this.name = epName
@@ -320,7 +320,7 @@ class AnimetProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         try {
-            val sources = mapper.readValue<List<EpisodeSource>>(data) // Dùng mapper để an toàn hơn
+            val sources = AppUtils.parseJson<List<EpisodeSource>>(data)
             
             coroutineScope {
                 sources.map { source ->
