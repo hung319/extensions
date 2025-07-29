@@ -234,7 +234,6 @@ class BluPhimProvider : MainAPI() {
                 .addFormDataPart("domain", domain)
                 .build()
 
-            // Sửa lỗi: Lấy phản hồi dưới dạng văn bản
             val tokenString = app.post(
                 url = "${getBaseUrl(iframeStreamSrc)}/geturl",
                 requestBody = requestBody,
@@ -242,14 +241,22 @@ class BluPhimProvider : MainAPI() {
                 headers = mapOf("X-Requested-With" to "XMLHttpRequest")
             ).text
             
-            // Logic mới: Xây dựng URL từ chuỗi token
-            val web = "bluphim.uk.com"
-            val lang = "vi"
-            val subId = ""
-            val finalUrl = "$cdn/streaming?id=$videoId&subId=$subId&web=$web&$tokenString&cdn=$cdn&lang=$lang"
+            // Sửa lỗi: Xây dựng URL M3U8 cuối cùng theo đúng định dạng
+            val tokens = tokenString.split("&").associate {
+                val (key, value) = it.split("=")
+                key to value
+            }
+            val finalUrl = "$cdn/segment/$videoId/?token1=${tokens["token1"]}&token3=${tokens["token3"]}"
 
             callback.invoke(
-                ExtractorLink(this.name, "BluPhim-Final", finalUrl, getBaseUrl(iframeStreamSrc) + "/", Qualities.P1080.value, type = ExtractorLinkType.M3U8)
+                ExtractorLink(
+                    this.name, 
+                    "BluPhim", 
+                    finalUrl, 
+                    "$cdn/", // Referer là CDN gốc
+                    Qualities.P1080.value, 
+                    type = ExtractorLinkType.M3U8
+                )
             )
 
         } else {
