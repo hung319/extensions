@@ -209,9 +209,6 @@ class BluPhimProvider : MainAPI() {
         }
     }
 
-    // =========================================================================
-    // THAY ĐỔI LỚN: Viết lại hoàn toàn hàm loadLinks để phù hợp cấu trúc mới
-    // =========================================================================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -219,46 +216,76 @@ class BluPhimProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean = coroutineScope {
         val linkData = parseJson<LinkData>(data)
-        val host = URI(mainUrl).host
 
         // Chạy song song cả hai server
         async {
             try {
-                // SERVER GỐC - LOGIC MỚI
+                // SERVER GỐC
+                // Bước 1: Lấy thông tin từ iframe đầu tiên (giữ nguyên như cũ)
                 val document = app.get(linkData.server1Url).document
                 val iframeStreamSrc = fixUrl(document.selectFirst("iframe#iframeStream")?.attr("src") ?: return@async, linkData.server1Url)
+                val iframeStreamDoc = app.get(iframeStreamSrc, referer = linkData.server1Url).document
+                val script = iframeStreamDoc.select("script").find { it.data().contains("var videoId =") }?.data()
 
-                // Chỉ thực thi nếu là iframe streaming mới
-                if (iframeStreamSrc.contains("/streaming")) {
-                    // Lấy các token và id trực tiếp từ URL của iframe
-                    val cdn = iframeStreamSrc.substringAfter("cdn=").substringBefore("&")
-                    val videoId = iframeStreamSrc.substringAfter("id=").substringBefore("&")
-                    val token1 = iframeStreamSrc.substringAfter("token1=").substringBefore("&")
-                    val token2 = iframeStreamSrc.substringAfter("token2=").substringBefore("&")
-                    val token3 = iframeStreamSrc.substringAfter("token3=").substringBefore("&")
+                if (script != null) {
+                    val videoId = script.substringAfter("var videoId = '").substringBefore("'")
+                    val cdn = script.substringAfter("var cdn = '").substringBefore("'")
+                    val domain = script.substringAfter("var domain = '").substringBefore("'")
+
+                    val context = AcraApplication.context!!
+                    val prefs = context.getSharedPreferences("bluphim_prefs", Context.MODE_PRIVATE)
+                    var token = prefs.getString("bluphim_token", null)
+                    if (token == null) {
+                        token = "r" + System.currentTimeMillis()
+                        prefs.edit().putString("bluphim_token", token).apply()
+                    }
                     
-                    // 1. Tải link video
-                    val finalUrl = "$cdn/segment/$videoId/?token1=$token1&token3=$token3"
-                    callback.invoke(ExtractorLink(name, "Server Gốc", finalUrl, referer = "$cdn/", quality = Qualities.P1080.value, type = ExtractorLinkType.M3U8))
+                    val requestBody = MultipartBody.Builder()
+                        .setType(MultipartBody.FORM)
+                        .addFormDataPart("renderer", "ANGLE (ARM, Mali-G78, OpenGL ES 3.2)")
+                        .addFormDataPart("id", token.md5())
+                        .addFormDataPart("videoId", videoId)
+                        .addFormDataPart("domain", domain)
+                        .build()
 
-                    // 2. Tải link phụ đề
-                    val iframeStreamDoc = app.get(iframeStreamSrc, referer = linkData.server1Url).document
-                    // Tìm script chứa thông tin phụ đề
-                    val script = iframeStreamDoc.selectFirst("script:containsData(subtitles)")?.data()
+                    // Lấy tất cả các token từ server
+                    val tokenString = app.post(url = "${getBaseUrl(iframeStreamSrc)}/geturl", requestBody = requestBody, referer = iframeStreamSrc, headers = mapOf("X-Requested-With" to "XMLHttpRequest")).text
+                    val tokens = tokenString.split("&").associate { val (key, value) = it.split("="); key to value }
+                    
+                    // Tạo và gửi link video (giữ nguyên như cũ)
+                    val finalCdn = cdn.replace("cdn3.", "cdn.")
+                    val finalUrl = "$finalCdn/segment/$videoId/?token1=${tokens["token1"]}&token3=${tokens["token3"]}"
+                    callback.invoke(ExtractorLink(name, "Server Gốc", finalUrl, "$cdn/", Qualities.P1080.value, type = ExtractorLinkType.M3U8))
 
-                    if (script != null) {
-                        // Trích xuất chuỗi array phụ đề
-                        val tracks = script.substringAfter("subtitles: [", "").substringBefore("]", "")
-                        // Regex mới để lấy id và label của phụ đề
-                        val subRegex = Regex("""\{\s*id:\s*'([^']*)',\s*label:\s*'([^']*)'[^}]*\}""")
+                    // =========================================================================
+                    // SỬA ĐỔI: Logic mới để lấy phụ đề từ iframe thứ hai
+                    // =========================================================================
+                    try {
+                        // Xây dựng URL cho iframe thứ 2 (trang chứa JWPlayer và tracks)
+                        val token2 = tokens["token2"] ?: "" // Lấy token2 nếu có
+                        val iframe2Url = "$cdn/streaming?id=$videoId&web=$mainUrl&token1=${tokens["token1"]}&token2=$token2&token3=${tokens["token3"]}&cdn=$cdn&lang=vi"
+                        
+                        // Tải nội dung iframe thứ hai
+                        val iframe2Doc = app.get(iframe2Url, referer = iframeStreamSrc).document
+                        val setupScript = iframe2Doc.select("script").find { it.data().contains("myvideo.setup") }?.data()
 
-                        subRegex.findAll(tracks).forEach { match ->
-                            val subId = match.groupValues[1]
-                            val subLabel = match.groupValues[2]
-                            // Dựng lại URL phụ đề theo cấu trúc mới
-                            val subUrl = "$cdn/subtitle/$subId?web=$host&token2=$token2"
-                            subtitleCallback.invoke(SubtitleFile(subLabel, subUrl))
+                        if (setupScript != null) {
+                            // Trích xuất chuỗi JSON của mảng 'tracks'
+                            val tracksJson = setupScript.substringAfter("tracks:", "null").substringBefore("],") + "]"
+                            
+                            if (tracksJson != "null" && tracksJson.startsWith("[")) {
+                                // Dùng Regex để tìm tất cả các file phụ đề
+                                val subs = Regex(""""file"\s*:\s*"([^"]+)"[^{]*?"label"\s*:\s*"([^"]+)"_""").findAll(tracksJson)
+                                subs.forEach { match ->
+                                    val subUrl = match.groupValues[1].replace("\\/", "/")
+                                    val subLabel = match.groupValues[2]
+                                    subtitleCallback.invoke(SubtitleFile(subLabel, subUrl))
+                                }
+                            }
                         }
+                    } catch (e: Exception) {
+                        // Lỗi ở bước lấy sub không làm ảnh hưởng đến việc phát video
+                        e.printStackTrace()
                     }
                 }
             } catch (e: Exception) {
@@ -267,7 +294,7 @@ class BluPhimProvider : MainAPI() {
         }
 
         async {
-            // SERVER BÊN THỨ 3 (giữ nguyên, không thay đổi)
+            // SERVER BÊN THỨ 3 (giữ nguyên)
             if (linkData.server2Url != null) {
                 try {
                     val document = app.get(linkData.server2Url).document
