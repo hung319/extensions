@@ -241,19 +241,21 @@ class BluPhimProvider : MainAPI() {
                 headers = mapOf("X-Requested-With" to "XMLHttpRequest")
             ).text
             
-            // Sửa lỗi: Xây dựng URL M3U8 cuối cùng theo đúng định dạng
             val tokens = tokenString.split("&").associate {
                 val (key, value) = it.split("=")
                 key to value
             }
-            val finalUrl = "$cdn/segment/$videoId/?token1=${tokens["token1"]}&token3=${tokens["token3"]}"
+            
+            // Sửa lỗi: Thay thế "cdn3" bằng "cdn" để có link M3U8 chính xác
+            val finalCdn = cdn.replace("cdn3.", "cdn.")
+            val finalUrl = "$finalCdn/segment/$videoId/?token1=${tokens["token1"]}&token3=${tokens["token3"]}"
 
             callback.invoke(
                 ExtractorLink(
                     this.name, 
                     "BluPhim", 
                     finalUrl, 
-                    "$cdn/", // Referer là CDN gốc
+                    "$cdn/", // Referer vẫn là CDN gốc (cdn3)
                     Qualities.P1080.value, 
                     type = ExtractorLinkType.M3U8
                 )
