@@ -226,7 +226,6 @@ class BluPhimProvider : MainAPI() {
                 prefs.edit().putString("bluphim_token", token).apply()
             }
             
-            // Sửa lỗi: Sử dụng multipart/form-data
             val requestBody = MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
                 .addFormDataPart("renderer", "ANGLE (ARM, Mali-G78, OpenGL ES 3.2)")
@@ -235,24 +234,24 @@ class BluPhimProvider : MainAPI() {
                 .addFormDataPart("domain", domain)
                 .build()
 
-            val videoResponseText = app.post(
+            // Sửa lỗi: Lấy phản hồi dưới dạng văn bản
+            val tokenString = app.post(
                 url = "${getBaseUrl(iframeStreamSrc)}/geturl",
                 requestBody = requestBody,
                 referer = iframeStreamSrc,
                 headers = mapOf("X-Requested-With" to "XMLHttpRequest")
             ).text
+            
+            // Logic mới: Xây dựng URL từ chuỗi token
+            val web = "bluphim.uk.com"
+            val lang = "vi"
+            val subId = ""
+            val finalUrl = "$cdn/streaming?id=$videoId&subId=$subId&web=$web&$tokenString&cdn=$cdn&lang=$lang"
 
-            if (!videoResponseText.startsWith("{")) {
-                throw Exception("Yêu cầu đến /geturl thất bại. Server đã trả về: $videoResponseText")
-            }
-            val videoResponse = parseJson<VideoResponse>(videoResponseText)
+            callback.invoke(
+                ExtractorLink(this.name, "BluPhim-Final", finalUrl, getBaseUrl(iframeStreamSrc) + "/", Qualities.P1080.value, type = ExtractorLinkType.M3U8)
+            )
 
-            if (videoResponse.status == "success") {
-                val sourceUrl = "$cdn/${videoResponse.url}"
-                callback.invoke(
-                    ExtractorLink(this.name, "BluPhim", sourceUrl, getBaseUrl(iframeStreamSrc) + "/", Qualities.P1080.value, type = ExtractorLinkType.M3U8)
-                )
-            }
         } else {
             // Logic dự phòng cho OPhim
             val iframeEmbedSrc = fixUrl(iframeStreamDoc.selectFirst("iframe#embedIframe")?.attr("src") ?: return false, iframeStreamSrc)
@@ -276,9 +275,4 @@ class BluPhimProvider : MainAPI() {
             url.substringBefore("/video/")
         }
     }
-
-    data class VideoResponse(
-        val status: String,
-        val url: String
-    )
 }
