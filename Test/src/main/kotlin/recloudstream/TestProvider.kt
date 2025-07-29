@@ -294,7 +294,7 @@ class BluPhimProvider : MainAPI() {
                     }
                 } catch (e: Exception) {
                     // Sửa đổi: Ghi log lỗi và ném ra lỗi
-                    Log.e(name, "Server bên thứ 3 Error: ${e.message}")
+                    Log.e(name, "Lỗi Server bên thứ 3: ${e.message}")
                     throw e
                 }
             }
@@ -304,61 +304,69 @@ class BluPhimProvider : MainAPI() {
     }
 
     private suspend fun invokeOphimExtractor(m3u8Url: String, serverName: String, referer: String, callback: (ExtractorLink) -> Unit) {
-        Log.d(name, "[$serverName] Fetching master M3U8: $m3u8Url")
-        val masterM3u8Content = app.get(m3u8Url, referer = referer).text
-        val variantPath = masterM3u8Content.lines().lastOrNull { it.isNotBlank() && !it.startsWith("#") } ?: return
-        val masterPathBase = m3u8Url.substringBeforeLast("/")
-        val variantM3u8Url = if (variantPath.startsWith("http")) variantPath else "$masterPathBase/$variantPath"
-        Log.d(name, "[$serverName] Found variant M3U8: $variantM3u8Url")
+        try {
+            Log.d(name, "[$serverName] Fetching master M3U8: $m3u8Url")
+            val masterM3u8Content = app.get(m3u8Url, referer = referer).text
+            val variantPath = masterM3u8Content.lines().lastOrNull { it.isNotBlank() && !it.startsWith("#") } 
+                ?: throw Exception("Không tìm thấy luồng M3U8 con")
+            val masterPathBase = m3u8Url.substringBeforeLast("/")
+            val variantM3u8Url = if (variantPath.startsWith("http")) variantPath else "$masterPathBase/$variantPath"
+            Log.d(name, "[$serverName] Found variant M3U8: $variantM3u8Url")
 
-        val finalPlaylistContent = app.get(variantM3u8Url, referer = referer).text
-        Log.d(name, "[$serverName] Original M3U8 size: ${finalPlaylistContent.length} chars")
-        val variantPathBase = variantM3u8Url.substringBeforeLast("/")
+            val finalPlaylistContent = app.get(variantM3u8Url, referer = referer).text
+            Log.d(name, "[$serverName] Original M3U8 size: ${finalPlaylistContent.length} chars")
+            val variantPathBase = variantM3u8Url.substringBeforeLast("/")
 
-        val cleanedLines = mutableListOf<String>()
-        val lines = finalPlaylistContent.lines()
-        var i = 0
-        while (i < lines.size) {
-            val line = lines[i].trim()
-            if (line == "#EXT-X-DISCONTINUITY") {
-                val nextInfoLine = lines.getOrNull(i + 1)?.trim()
-                val isAdPattern = nextInfoLine != null && (nextInfoLine.startsWith("#EXTINF:3.92") || nextInfoLine.startsWith("#EXTINF:0.76"))
-                if (isAdPattern) {
-                    var adBlockEndIndex = i
-                    for (j in (i + 1) until lines.size) {
-                        if (lines[j].trim() == "#EXT-X-DISCONTINUITY") {
-                            adBlockEndIndex = j; break
+            val cleanedLines = mutableListOf<String>()
+            val lines = finalPlaylistContent.lines()
+            var i = 0
+            while (i < lines.size) {
+                val line = lines[i].trim()
+                if (line == "#EXT-X-DISCONTINUITY") {
+                    val nextInfoLine = lines.getOrNull(i + 1)?.trim()
+                    val isAdPattern = nextInfoLine != null && (nextInfoLine.startsWith("#EXTINF:3.92") || nextInfoLine.startsWith("#EXTINF:0.76"))
+                    if (isAdPattern) {
+                        var adBlockEndIndex = i
+                        for (j in (i + 1) until lines.size) {
+                            if (lines[j].trim() == "#EXT-X-DISCONTINUITY") {
+                                adBlockEndIndex = j; break
+                            }
+                            adBlockEndIndex = j
                         }
-                        adBlockEndIndex = j
+                        Log.d(name, "[$serverName] Ad block found from line $i to $adBlockEndIndex, skipping.")
+                        i = adBlockEndIndex + 1
+                        continue
                     }
-                    Log.d(name, "[$serverName] Ad block found from line $i to $adBlockEndIndex, skipping.")
-                    i = adBlockEndIndex + 1
-                    continue
                 }
-            }
-            if (line.isNotEmpty()) {
-                if (!line.startsWith("#")) {
-                    cleanedLines.add("$variantPathBase/$line")
-                } else {
-                    cleanedLines.add(line)
+                if (line.isNotEmpty()) {
+                    if (!line.startsWith("#")) {
+                        cleanedLines.add("$variantPathBase/$line")
+                    } else {
+                        cleanedLines.add(line)
+                    }
                 }
+                i++
             }
-            i++
-        }
 
-        val cleanedM3u8 = cleanedLines.joinToString("\n")
-        Log.d(name, "[$serverName] Cleaned M3U8 size: ${cleanedM3u8.length} chars")
-        if (cleanedM3u8.isBlank()) return
+            val cleanedM3u8 = cleanedLines.joinToString("\n")
+            Log.d(name, "[$serverName] Cleaned M3U8 size: ${cleanedM3u8.length} chars")
+            if (cleanedM3u8.isBlank()) throw Exception("M3U8 rỗng sau khi lọc quảng cáo")
 
-        val requestBody = cleanedM3u8.toRequestBody("application/vnd.apple.mpegurl".toMediaTypeOrNull())
-        Log.d(name, "[$serverName] Posting cleaned M3U8 to paste service...")
-        val finalUrl = app.post("https://paste.swurl.xyz/ophim.m3u8", requestBody = requestBody).text.trim()
-        Log.d(name, "[$serverName] Received final URL from paste service: $finalUrl")
+            val requestBody = cleanedM3u8.toRequestBody("application/vnd.apple.mpegurl".toMediaTypeOrNull())
+            Log.d(name, "[$serverName] Posting cleaned M3U8 to paste service...")
+            val finalUrl = app.post("https://paste.swurl.xyz/ophim.m3u8", requestBody = requestBody).text.trim()
+            Log.d(name, "[$serverName] Received final URL from paste service: $finalUrl")
 
-        if (finalUrl.startsWith("http")) {
-            callback.invoke(
-                ExtractorLink(this.name, serverName, finalUrl, mainUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
-            )
+            if (finalUrl.startsWith("http")) {
+                callback.invoke(
+                    ExtractorLink(this.name, serverName, finalUrl, mainUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
+                )
+            } else {
+                throw Exception("Lỗi khi tải M3U8 lên dịch vụ paste. Phản hồi: $finalUrl")
+            }
+        } catch(e: Exception) {
+            Log.e(name, "invokeOphimExtractor Error: ${e.message}")
+            throw e
         }
     }
 
