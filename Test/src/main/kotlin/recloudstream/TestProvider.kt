@@ -11,7 +11,7 @@ import com.lagradost.cloudstream3.utils.DataStore
 import okhttp3.Interceptor
 import okhttp3.Response
 import java.security.MessageDigest
-import java.net.URI // Thêm import cần thiết
+import java.net.URI
 
 // Lớp dữ liệu để truyền thông tin giữa `load` và `loadLinks`
 data class LinkData(
@@ -185,7 +185,6 @@ class BluPhimProvider : MainAPI() {
         return bytes.joinToString("") { "%02x".format(it) }
     }
     
-    // Sửa lỗi: Thay thế hàm makeAbsoluteUrl bằng hàm mới đáng tin cậy hơn
     private fun fixUrl(url: String, baseUrl: String): String {
         if (url.startsWith("http")) return url
         if (url.startsWith("//")) return "https:$url"
@@ -195,7 +194,6 @@ class BluPhimProvider : MainAPI() {
             return "$mainUrl$url"
         }
     }
-
 
     override suspend fun loadLinks(
         data: String,
@@ -207,13 +205,9 @@ class BluPhimProvider : MainAPI() {
         
         val document = app.get(linkData.url).document
         
-        val iframeStreamSrcRaw = document.selectFirst("iframe#iframeStream")?.attr("src") ?: return false
-        val iframeStreamSrc = fixUrl(iframeStreamSrcRaw, linkData.url)
-        
+        val iframeStreamSrc = fixUrl(document.selectFirst("iframe#iframeStream")?.attr("src") ?: return false, linkData.url)
         val iframeStreamDoc = app.get(iframeStreamSrc, referer = linkData.url).document
-        
-        val iframeEmbedSrcRaw = iframeStreamDoc.selectFirst("iframe#embedIframe")?.attr("src") ?: return false
-        val iframeEmbedSrc = fixUrl(iframeEmbedSrcRaw, iframeStreamSrc)
+        val iframeEmbedSrc = fixUrl(iframeStreamDoc.selectFirst("iframe#embedIframe")?.attr("src") ?: return false, iframeStreamSrc)
 
         val oPhimScript = app.get(iframeEmbedSrc, referer = iframeStreamSrc).document
             .select("script").find { it.data().contains("var url = '") }?.data()
@@ -247,7 +241,8 @@ class BluPhimProvider : MainAPI() {
             prefs.edit().putString("bluphim_token", token).apply()
         }
         
-        val videoResponse = app.post(
+        // Sửa lỗi: Kiểm tra phản hồi trước khi phân tích JSON
+        val postResponse = app.post(
             url = "${getBaseUrl(iframeEmbedSrc)}/geturl",
             data = mapOf(
                 "videoId" to videoId,
@@ -256,7 +251,14 @@ class BluPhimProvider : MainAPI() {
             ),
             referer = iframeEmbedSrc,
             headers = mapOf("X-Requested-With" to "XMLHttpRequest")
-        ).parsed<VideoResponse>()
+        )
+
+        val responseText = postResponse.text
+        if (!responseText.startsWith("{")) {
+            throw Exception("Yêu cầu đến /geturl thất bại. Server đã trả về: $responseText")
+        }
+
+        val videoResponse = parseJson<VideoResponse>(responseText)
 
         if (videoResponse.status == "success") {
             val sourceUrl = "$cdn/${videoResponse.url}"
