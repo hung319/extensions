@@ -269,51 +269,68 @@ class BluPhimProvider : MainAPI() {
                     .addFormDataPart("domain", domain)
                     .build()
 
-                // Lấy tất cả các token từ server
                 val tokenString = app.post(url = "${getBaseUrl(iframeStreamSrc)}/geturl", requestBody = requestBody, referer = iframeStreamSrc, headers = mapOf("X-Requested-With" to "XMLHttpRequest")).text
                 val tokens = tokenString.split("&").associate { val (key, value) = it.split("="); key to value }
                 
-                // Tạo và gửi link video (M3U8)
                 val finalCdn = cdn.replace("cdn3.", "cdn.")
                 val finalUrl = "$finalCdn/segment/$videoId/?token1=${tokens["token1"]}&token3=${tokens["token3"]}"
                 callback.invoke(ExtractorLink(name, "Server Gốc", finalUrl, "$cdn/", Qualities.P1080.value, type = ExtractorLinkType.M3U8))
 
                 // =========================================================================
-                // PHẦN SỬA LỖI: Lấy phụ đề từ iframe thứ hai với Regex chính xác
+                // PHIÊN BẢN HOÀN CHỈNH: Dùng JSON Parser để lấy phụ đề
                 // =========================================================================
                 try {
-                    // Xây dựng URL cho iframe thứ 2 (trang chứa JWPlayer và tracks)
-                    val token2 = tokens["token2"] ?: "" // Lấy token2 nếu có
+                    val token2 = tokens["token2"] ?: ""
                     val iframe2Url = "$cdn/streaming?id=$videoId&web=$mainUrl&token1=${tokens["token1"]}&token2=$token2&token3=${tokens["token3"]}&cdn=$cdn&lang=vi"
-                    
-                    // Tải nội dung iframe thứ hai
                     val iframe2Doc = app.get(iframe2Url, referer = iframeStreamSrc).document
-                    // Chọn thẻ script chứa trình phát video
                     val setupScript = iframe2Doc.selectFirst("script:containsData(myvideo.setup)")?.data()
 
                     if (setupScript != null) {
-                        // Trích xuất chuỗi JSON của mảng 'tracks' một cách an toàn
-                        val tracksJson = setupScript.substringAfter("tracks: ", "null")
-                                                    .substringBefore("],")
-                                                    .trim()
-                        
-                        if (tracksJson.startsWith("[")) {
-                            val fullTracksJson = "$tracksJson]" // Gắn lại dấu ngoặc vuông bị mất
+                        // --- Bước 1: Trích xuất chuỗi JSON của mảng 'tracks' một cách chính xác ---
+                        val tracksIdentifier = "tracks:"
+                        val tracksStartIndex = setupScript.indexOf(tracksIdentifier)
 
-                            // Dùng Regex đã sửa lỗi để tìm tất cả các file phụ đề
-                            // Regex này tìm chính xác các cặp key:value "file" và "label"
-                            val subsRegex = Regex("""\{"file":"([^"]+)",[^}]+"label":"([^"]+)"[^}]+}""")
-                            val matches = subsRegex.findAll(fullTracksJson)
-                            
-                            matches.forEach { match ->
-                                // Dùng `destructured` để lấy kết quả từ group của Regex một cách an toàn
-                                val (subUrl, subLabel) = match.destructured
-                                subtitleCallback.invoke(SubtitleFile(subLabel, subUrl.replace("\\/", "/")))
+                        if (tracksStartIndex != -1) {
+                            val arrayStartIndex = setupScript.indexOf('[', tracksStartIndex)
+                            if (arrayStartIndex != -1) {
+                                // Tìm dấu ngoặc ']' kết thúc tương ứng để đảm bảo lấy đúng toàn bộ mảng JSON
+                                var balance = 0
+                                var arrayEndIndex = -1
+                                for (i in arrayStartIndex until setupScript.length) {
+                                    when (setupScript[i]) {
+                                        '[' -> balance++
+                                        ']' -> balance--
+                                    }
+                                    if (balance == 0) {
+                                        arrayEndIndex = i
+                                        break
+                                    }
+                                }
+                                
+                                if (arrayEndIndex != -1) {
+                                    val tracksJson = setupScript.substring(arrayStartIndex, arrayEndIndex + 1)
+                                    
+                                    // --- Bước 2: Dùng bộ phân tích JSON có sẵn của Cloudstream ---
+                                    try {
+                                        // Parse chuỗi JSON thành một danh sách các đối tượng Map
+                                        val tracks = parseJson<List<Map<String, Any>>>(tracksJson)
+                                        tracks.forEach { track ->
+                                            // Lấy `file` và `label` từ Map một cách an toàn
+                                            val file = track["file"] as? String
+                                            val label = track["label"] as? String
+                                            if (file != null && label != null) {
+                                                subtitleCallback.invoke(SubtitleFile(label, file))
+                                            }
+                                        }
+                                    } catch (e: Exception) {
+                                        // Lỗi khi parse JSON (ví dụ: chuỗi JSON không hợp lệ)
+                                        e.printStackTrace()
+                                    }
+                                }
                             }
                         }
                     }
                 } catch (e: Exception) {
-                    // Lỗi ở bước lấy sub sẽ không làm ảnh hưởng đến việc phát video
                     e.printStackTrace()
                 }
             }
