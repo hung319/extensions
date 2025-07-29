@@ -18,9 +18,10 @@ import java.net.URI
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 
-// Lớp dữ liệu để truyền thông tin giữa `load` và `loadLinks`
+// Sửa đổi: Đổi tên thuộc tính để rõ ràng hơn
 data class LinkData(
-    val url: String,
+    val server1Url: String,
+    val server2Url: String?,
     val title: String,
     val year: Int?,
     val season: Int? = null,
@@ -37,7 +38,7 @@ class BluPhimProvider : MainAPI() {
     override val supportedTypes = setOf(
         TvType.Movie,
         TvType.TvSeries,
-        TvType.Anime // Thêm Anime
+        TvType.Anime
     )
 
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
@@ -135,8 +136,6 @@ class BluPhimProvider : MainAPI() {
         val recommendations = document.select("div.list-films.film-hot ul#film_related li.item").mapNotNull {
             it.toSearchResult()
         }
-        
-        // Sửa đổi: Gán TvType.Anime cho thể loại Hoạt hình
         val tvType = if (genres.any { it.equals("Hoạt hình", ignoreCase = true) }) {
             TvType.Anime
         } else if (genres.any { it.equals("TV Series - Phim bộ", ignoreCase = true) }) {
@@ -160,7 +159,6 @@ class BluPhimProvider : MainAPI() {
                 this.recommendations = recommendations
             }
         } else {
-            // Đối với phim lẻ, tạo hai server
             val server2Url = app.get(watchUrl).document.selectFirst("a[href*=?sv2=true]")?.attr("href")?.let {
                 if (it.startsWith("http")) it else mainUrl + it
             }
@@ -191,8 +189,9 @@ class BluPhimProvider : MainAPI() {
                         if (next.attr("href").startsWith("http")) next.attr("href") else mainUrl + next.attr("href")
                     } else null
                 }
-                
-                val linkData = LinkData(server1Url, server2Url, title, null, epNum).toJson()
+
+                // Sửa lỗi: Sử dụng đúng tên thuộc tính khi tạo LinkData
+                val linkData = LinkData(server1Url = server1Url, server2Url = server2Url, title = title, year = year, episode = epNum).toJson()
                 episodeList.add(newEpisode(linkData) {
                     this.name = name
                     this.episode = epNum
@@ -282,9 +281,9 @@ class BluPhimProvider : MainAPI() {
             linkData.server2Url?.let { serverUrl ->
                 try {
                     val document = app.get(serverUrl).document
-                    val iframeStreamSrc = fixUrl(document.selectFirst("iframe#iframeStream")?.attr("src") ?: return@async, serverUrl)
+                    val iframeStreamSrc = fixUrl(document.selectFirst("iframe#iframeStream")?.attr("src") ?: return@let, serverUrl)
                     val iframeStreamDoc = app.get(iframeStreamSrc, referer = serverUrl).document
-                    val iframeEmbedSrc = fixUrl(iframeStreamDoc.selectFirst("iframe#embedIframe")?.attr("src") ?: return@async, iframeStreamSrc)
+                    val iframeEmbedSrc = fixUrl(iframeStreamDoc.selectFirst("iframe#embedIframe")?.attr("src") ?: return@let, iframeStreamSrc)
                     
                     val m3u8Url = app.get(iframeEmbedSrc, referer = iframeStreamSrc).document
                         .select("script").find { it.data().contains("var url = '") }
@@ -347,7 +346,7 @@ class BluPhimProvider : MainAPI() {
         val cleanedM3u8 = cleanedLines.joinToString("\n")
         if (cleanedM3u8.isBlank()) return
 
-        val requestBody = cleanedM3u8.toRequestBody("application/vnd.apple.mpegurl".toMediaType())
+        val requestBody = cleanedM3u8.toRequestBody("application/vnd.apple.mpegurl".toMediaTypeOrNull())
         val finalUrl = app.post("https://paste.swurl.xyz/ophim.m3u8", requestBody = requestBody).text.trim()
 
         if (finalUrl.startsWith("http")) {
@@ -356,7 +355,6 @@ class BluPhimProvider : MainAPI() {
             )
         }
     }
-
 
     private fun getBaseUrl(url: String): String {
         return try {
