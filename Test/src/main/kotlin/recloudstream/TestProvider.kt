@@ -21,20 +21,19 @@ import javax.crypto.spec.SecretKeySpec
 import kotlin.text.Charsets
 import kotlin.text.Regex
 
-//region: Data classes (ĐÃ SỬA LẠI ĐỂ KHỚP VỚI FILE JAVA)
+//region: Data classes (Đã sửa lại để khớp với file JAVA)
 private data class Payload(
     @SerializedName("idfile") val idfile: String,
     @SerializedName("iduser") val iduser: String,
     @SerializedName("domain_play") val domain_play: String,
-    @SerializedName("platform") val platform: String = "noplf",
+    @SerializedName("platform") val platform: String,
     @SerializedName("ip_clien") val ip_clien: String,
     @SerializedName("time_request") val time_request: String,
-    @SerializedName("hlsSupport") val hlsSupport: Boolean = true,
+    @SerializedName("hlsSupport") val hlsSupport: Boolean,
     @SerializedName("jwplayer") val jwplayer: JWPlayer
 )
 
 private data class JWPlayer(
-    // FIXED: Uppercase field names to match Java source
     @SerializedName("Browser") val Browser: JWPlayerBrowser,
     @SerializedName("OS") val OS: JWPlayerOS,
     @SerializedName("Features") val Features: JWPlayerFeatures
@@ -60,7 +59,6 @@ private data class JWPlayerBrowserVersion(
 
 private data class JWPlayerOS(
     @SerializedName("android") val android: Boolean,
-    // FIXED: Case-sensitive field name
     @SerializedName("iOS") val iOS: Boolean,
     @SerializedName("mobile") val mobile: Boolean,
     @SerializedName("mac") val mac: Boolean,
@@ -243,6 +241,12 @@ private fun getBaseUrl(url: String): String {
     val uri = URI(url)
     return "${uri.scheme}://${uri.host}"
 }
+
+// ADDED: Function to convert Base64 to Hex, based on UtilKt.java
+private fun base64ToHex(base64: String): String {
+    val decodedBytes = Base64.getDecoder().decode(base64)
+    return decodedBytes.joinToString("") { "%02x".format(it) }
+}
 //endregion
 
 class TvPhimProvider : MainAPI() {
@@ -377,49 +381,34 @@ class TvPhimProvider : MainAPI() {
             Log.e(TAG, "Step 4: Decrypted IDs successfully.")
 
             Log.e(TAG, "Step 5: Building and sending payload...")
-            // Create the payload object with the corrected structure and default values from Java files
             val payload = Payload(
-                idfile = idfile,
-                iduser = iduser,
-                domain_play = baseUrl,
-                ip_clien = publicIp,
-                time_request = Instant.now().toEpochMilli().toString(),
+                idfile = idfile, iduser = iduser, domain_play = baseUrl, platform = "noplf", ip_clien = publicIp, time_request = Instant.now().toEpochMilli().toString(), hlsSupport = true,
                 jwplayer = JWPlayer(
                     Browser = JWPlayerBrowser(
-                        androidNative = true,
-                        chrome = true,
-                        edge = false,
-                        facebook = false,
-                        firefox = false,
-                        ie = false,
-                        msie = false,
-                        safari = false,
-                        version = JWPlayerBrowserVersion(version = "129.0", major = 129, minor = 0)
+                        androidNative = false, chrome = true, edge = false, facebook = false, firefox = false, ie = false, msie = false, safari = false,
+                        version = JWPlayerBrowserVersion("129.0", 129, 0)
                     ),
                     OS = JWPlayerOS(
-                        android = true,
-                        iOS = false,
-                        mobile = true,
-                        mac = false,
-                        iPad = false,
-                        iPhone = false,
-                        windows = false,
-                        tizen = false,
-                        tizenApp = false,
-                        version = JWPlayerOSVersion(version = "10.0", major = 10, minor = 0)
+                        android = true, iOS = false, mobile = true, mac = false, iPad = false, iPhone = false, windows = true, tizen = false, tizenApp = false,
+                        version = JWPlayerOSVersion("10.0", 10, 0)
                     ),
                     Features = JWPlayerFeatures(
-                        iframe = true,
-                        passiveEvents = true,
-                        backgroundLoading = true
+                        iframe = true, passiveEvents = true, backgroundLoading = true
                     )
                 )
             )
 
+            // FIXED: Corrected the entire encryption and formatting flow to match Java logic
             val payloadJson = com.google.gson.Gson().toJson(payload)
-            val encryptedPayloadHex = Crypto.encrypt(payloadJson, ENCRYPTION_KEY)
-            val encryptedData = String(Base64.getDecoder().decode(encryptedPayloadHex), Charsets.UTF_8)
-            val hash = md5Hash(encryptedData + MD5_SALT)
+            // 1. Encrypt to Base64
+            val encryptedPayloadB64 = Crypto.encrypt(payloadJson, ENCRYPTION_KEY)
+            // 2. The hash is calculated on the raw encrypted bytes (converted to string)
+            val rawEncryptedString = String(Base64.getDecoder().decode(encryptedPayloadB64), Charsets.UTF_8)
+            val hash = md5Hash(rawEncryptedString + MD5_SALT)
+            // 3. Convert the Base64 from step 1 to Hex to be sent to the server
+            val encryptedPayloadHex = base64ToHex(encryptedPayloadB64)
+            // 4. Combine Hex payload and hash
+            val apiData = "$encryptedPayloadHex|$hash"
 
             val headers = mapOf(
                 "Origin" to "https://play.plhqtvhay.xyz",
@@ -429,7 +418,7 @@ class TvPhimProvider : MainAPI() {
             val response = app.post(
                 url = "$domainApi/playiframe",
                 headers = headers,
-                data = mapOf("data" to "$encryptedData|$hash")
+                data = mapOf("data" to apiData)
             )
             val responseText = response.text
             Log.e(TAG, "RAW API Response Text: $responseText")
