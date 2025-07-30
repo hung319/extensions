@@ -14,25 +14,12 @@ import javax.crypto.spec.SecretKeySpec
 import java.util.Base64
 import java.math.BigInteger
 import java.security.MessageDigest
-import java.security.SecureRandom
 import android.util.Log
 
 // Helper function to calculate MD5 hash
 private fun String.md5(): String {
     val md = MessageDigest.getInstance("MD5")
     return BigInteger(1, md.digest(toByteArray())).toString(16).padStart(32, '0')
-}
-
-// Helper function to convert Hex String to Byte Array
-private fun String.hexStringToByteArray(): ByteArray {
-    val len = this.length
-    val data = ByteArray(len / 2)
-    var i = 0
-    while (i < len) {
-        data[i / 2] = ((Character.digit(this[i], 16) shl 4) + Character.digit(this[i + 1], 16)).toByte()
-        i += 2
-    }
-    return data
 }
 
 class TvPhimProvider : MainAPI() {
@@ -177,8 +164,14 @@ class TvPhimProvider : MainAPI() {
     
     // Data classes based on decompiled Java files
     private data class ApiResponse(val status: Int?, val type: String?, val data: String)
-    private data class Payload(val idfile: String, val iduser: String, val domain_play: String, val ip_clien: String, val time_request: String)
-    
+    private data class Payload(
+        val idfile: String,
+        val iduser: String,
+        val domain_play: String,
+        val ip_clien: String,
+        val time_request: String
+    )
+
     // Accurate CryptoJS implementation based on provided files
     private object CryptoJS {
         private fun evpkdf(password: ByteArray, keySize: Int, ivSize: Int, salt: ByteArray): Pair<ByteArray, ByteArray> {
@@ -216,7 +209,7 @@ class TvPhimProvider : MainAPI() {
             }
         }
     }
-    
+
     // Deobfuscator for the site's specific JS packer
     private fun deobfuscateScript(w: String, i: String, s: String): String? {
         try {
@@ -319,8 +312,11 @@ class TvPhimProvider : MainAPI() {
                     ?: throw Exception("Không tìm thấy script của trình phát video.")
                 
                 val deobfuscated = unwiseProcess(scriptContent)
+                // **ADDED**: Log the deobfuscated content
+                Log.d("TvPhimProvider", "Deobfuscated Script Content: $deobfuscated")
+                
                 iframeUrl = Regex("""src\s*=\s*['"]([^'"]+)""").find(deobfuscated)?.groupValues?.get(1)
-                    ?: throw Exception("Không tìm thấy iframe URL sau khi giải mã.")
+                    ?: throw Exception("Không tìm thấy iframe URL sau khi giải mã. Nội dung đã giải mã: $deobfuscated")
             }
 
             if ("plhqtvhay" in iframeUrl) {
@@ -346,7 +342,6 @@ class TvPhimProvider : MainAPI() {
                 val payload = Payload(idFile, idUser, serverUrl, ip, timestamp)
                 val payloadJson = payload.toJson()
                 
-                // This payload encryption is NOT the same as CryptoJS. It's a simpler AES.
                 val keyBytes = "vlVbUQhkOhoSfyteyzGeeDzU0BHoeTyZ".toByteArray(Charsets.UTF_8)
                 val skey = SecretKeySpec(keyBytes, "AES")
                 val iv = IvParameterSpec(keyBytes)
