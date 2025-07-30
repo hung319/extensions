@@ -14,8 +14,6 @@ import javax.crypto.spec.SecretKeySpec
 import java.util.Base64
 import java.math.BigInteger
 import java.security.MessageDigest
-import java.util.Collections
-import java.util.concurrent.atomic.AtomicBoolean
 import android.util.Log
 
 // Helper function to calculate MD5 hash
@@ -238,94 +236,72 @@ class TvPhimProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data, interceptor = cfInterceptor).document
-        val servers = document.select("ul.episodelistsv a")
-        if (servers.isEmpty()) throw Exception("Không tìm thấy server nào.")
+        try {
+            val document = app.get(data, interceptor = cfInterceptor).document
 
-        val isSuccessful = AtomicBoolean(false)
-        val errorLogs = Collections.synchronizedList(mutableListOf<String>())
+            // **NEW LOGIC**: Find and deobfuscate the main script on the watch page
+            val packedScript = document.selectFirst("script:containsData(eval(function(w,i,s,e))")?.data()
+                ?: throw Exception("Không tìm thấy script của trình phát video.")
+            val deobfuscated = deobfuscateScript(packedScript)
+                ?: throw Exception("Giải mã script thất bại.")
+            val iframeUrl = Regex("""src\s*=\s*['"]([^'"]+)""").find(deobfuscated)?.groupValues?.get(1)
+                ?: throw Exception("Không tìm thấy iframe URL sau khi giải mã.")
 
-        servers.apmap { server ->
-            if (isSuccessful.get()) return@apmap
-            val serverName = server.attr("title")
-            try {
-                val serverUrl = server.attr("href")
-                val serverDoc = app.get(serverUrl, referer = data).document
+            if ("plhqtvhay" in iframeUrl) {
+                val iframeDoc = app.get(iframeUrl, referer = data).document
+                val script = iframeDoc.selectFirst("script:containsData(const idfile_enc)")?.data()
+                    ?: throw Exception("Không tìm thấy script chứa dữ liệu mã hóa.")
 
-                val packedScript = serverDoc.selectFirst("script:containsData(eval(function(w,i,s,e))")?.data()
-                    ?: throw Exception("Không tìm thấy script của trình phát video.")
-                val deobfuscated = deobfuscateScript(packedScript)
-                    ?: throw Exception("Giải mã script thất bại.")
-                val iframeUrl = Regex("""src\s*=\s*['"]([^'"]+)""").find(deobfuscated)?.groupValues?.get(1)
-                    ?: throw Exception("Không tìm thấy iframe URL sau khi giải mã.")
-
-                if ("plhqtvhay" in iframeUrl) {
-                    val iframeDoc = app.get(iframeUrl, referer = serverUrl).document
-                    val script = iframeDoc.selectFirst("script:containsData(const idfile_enc)")?.data()
-                        ?: throw Exception("Không tìm thấy script chứa dữ liệu mã hóa.")
-
-                    val idFileEnc = Regex("""const idfile_enc = "([^"]+)";""").find(script)?.groupValues?.get(1)
-                    val idUserEnc = Regex("""const idUser_enc = "([^"]+)";""").find(script)?.groupValues?.get(1)
-                    val domainApi = Regex("""const DOMAIN_API = '([^']+)';""").find(script)?.groupValues?.get(1)
-                    if (idFileEnc == null || idUserEnc == null || domainApi == null) {
-                        throw Exception("Không thể trích xuất dữ liệu mã hóa.")
-                    }
-
-                    val idFile = cryptoHandler(idFileEnc, "jcLycoRJT6OWjoWspgLMOZwS3aSS0lEn", true)
-                        ?: throw Exception("Giải mã idfile thất bại.")
-                    val idUser = cryptoHandler(idUserEnc, "PZZ3J3LDbLT0GY7qSA5wW5vchqgpO36O", true)
-                        ?: throw Exception("Giải mã iduser thất bại.")
-                    
-                    val ip = app.get("https://api.ipify.org/").text
-                    val timestamp = System.currentTimeMillis().toString()
-                    val payload = Payload(idFile, idUser, serverUrl, "noplf", ip, timestamp)
-                    val encryptedPayload = cryptoHandler(payload.toJson(), "vlVbUQhkOhoSfyteyzGeeDzU0BHoeTyZ")
-                        ?: throw Exception("Mã hóa payload thất bại.")
-                    val hash = (encryptedPayload + "KRWN3AdgmxEMcd2vLN1ju9qKe8Feco5h").md5()
-
-                    val apiResponse = app.post(
-                        "$domainApi/playiframe",
-                        data = mapOf("data" to "$encryptedPayload|$hash"),
-                        referer = iframeUrl
-                    ).parsedSafe<ApiResponse>()
-                        ?: throw Exception("Phản hồi API không hợp lệ.")
-
-                    if (apiResponse.status == 1 && apiResponse.type == "url-m3u8-encv1") {
-                        val finalUrl = cryptoHandler(apiResponse.data.replace("\"", ""), "oJwmvmVBajMaRCTklxbfjavpQO7SZpsL", true)
-                            ?: throw Exception("Giải mã link M3U8 cuối cùng thất bại.")
-                        
-                        callback.invoke(
-                            ExtractorLink(
-                                source = this.name,
-                                name = serverName,
-                                url = finalUrl,
-                                referer = iframeUrl,
-                                quality = Qualities.Unknown.value,
-                                type = ExtractorLinkType.M3U8
-                            )
-                        )
-                        isSuccessful.set(true)
-                    } else {
-                        errorLogs.add("Server '$serverName': API trả về lỗi hoặc trạng thái không thành công: ${apiResponse.toJson()}")
-                    }
-                } else {
-                     if (loadExtractor(iframeUrl, data, subtitleCallback, callback)) {
-                        isSuccessful.set(true)
-                    } else {
-                        errorLogs.add("Server '$serverName': Trình phát video từ '$iframeUrl' không được hỗ trợ.")
-                    }
+                val idFileEnc = Regex("""const idfile_enc = "([^"]+)";""").find(script)?.groupValues?.get(1)
+                val idUserEnc = Regex("""const idUser_enc = "([^"]+)";""").find(script)?.groupValues?.get(1)
+                val domainApi = Regex("""const DOMAIN_API = '([^']+)';""").find(script)?.groupValues?.get(1)
+                if (idFileEnc == null || idUserEnc == null || domainApi == null) {
+                    throw Exception("Không thể trích xuất dữ liệu mã hóa.")
                 }
-            } catch (e: Exception) {
-                Log.e("TvPhimProvider", "Lỗi xử lý server '$serverName'", e)
-                errorLogs.add("Server '$serverName': ${e.message}")
+
+                val idFile = cryptoHandler(idFileEnc, "jcLycoRJT6OWjoWspgLMOZwS3aSS0lEn", true)
+                    ?: throw Exception("Giải mã idfile thất bại.")
+                val idUser = cryptoHandler(idUserEnc, "PZZ3J3LDbLT0GY7qSA5wW5vchqgpO36O", true)
+                    ?: throw Exception("Giải mã iduser thất bại.")
+                
+                val ip = app.get("https://api.ipify.org/").text
+                val timestamp = System.currentTimeMillis().toString()
+                val payload = Payload(idFile, idUser, data, "noplf", ip, timestamp)
+                val encryptedPayload = cryptoHandler(payload.toJson(), "vlVbUQhkOhoSfyteyzGeeDzU0BHoeTyZ")
+                    ?: throw Exception("Mã hóa payload thất bại.")
+                val hash = (encryptedPayload + "KRWN3AdgmxEMcd2vLN1ju9qKe8Feco5h").md5()
+
+                val apiResponse = app.post(
+                    "$domainApi/playiframe",
+                    data = mapOf("data" to "$encryptedPayload|$hash"),
+                    referer = iframeUrl
+                ).parsedSafe<ApiResponse>()
+                    ?: throw Exception("Phản hồi API không hợp lệ.")
+
+                if (apiResponse.status == 1 && apiResponse.type == "url-m3u8-encv1") {
+                    val finalUrl = cryptoHandler(apiResponse.data.replace("\"", ""), "oJwmvmVBajMaRCTklxbfjavpQO7SZpsL", true)
+                        ?: throw Exception("Giải mã link M3U8 cuối cùng thất bại.")
+                    
+                    callback.invoke(
+                        ExtractorLink(
+                            source = this.name,
+                            name = "S.PRO", // Default server name
+                            url = finalUrl,
+                            referer = iframeUrl,
+                            quality = Qualities.Unknown.value,
+                            type = ExtractorLinkType.M3U8
+                        )
+                    )
+                    return true
+                } else {
+                    throw Exception("API trả về lỗi hoặc trạng thái không thành công: ${apiResponse.toJson()}")
+                }
+            } else {
+                throw Exception("Trình phát video từ '$iframeUrl' không được hỗ trợ.")
             }
+        } catch (e: Exception) {
+            Log.e("TvPhimProvider", "Lỗi loadLinks", e)
+            throw e
         }
-        
-        if (!isSuccessful.get()) {
-            val errorDetails = errorLogs.joinToString("\n")
-            throw Exception("Đã thử tất cả các server nhưng không thể lấy được link video.\n\n--- Chi tiết lỗi ---\n$errorDetails")
-        }
-        
-        return true
     }
 }
