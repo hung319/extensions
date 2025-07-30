@@ -114,25 +114,34 @@ class TvPhimProvider : MainAPI() {
                 }
             } else null
         }
+        
+        // **FIXED**: Check for valid watch URL to determine if it's "coming soon"
+        val watchUrl = document.selectFirst("a:contains(Xem Phim)")?.attr("href")
+        if (watchUrl == null || !watchUrl.startsWith("http")) {
+            // No valid link found, mark as "Coming Soon"
+            return newMovieLoadResponse(title, url, TvType.Movie, url) {
+                this.posterUrl = poster
+                this.year = year
+                this.plot = plot
+                this.tags = tags
+                this.actors = actors.map { ActorData(Actor(it)) }
+                this.recommendations = recommendations
+                this.comingSoon = true
+            }
+        }
 
         val status = document.selectFirst("span:contains(Tình Trạng:) + span")?.text()?.lowercase() ?: ""
         val isTvSeries = status.contains("/") || status.contains("tập")
 
         if (isTvSeries) {
-            val watchUrl = document.selectFirst("a:contains(Xem Phim)")?.attr("href")
-            
-            val episodes = if (watchUrl != null) {
-                val watchDocument = app.get(watchUrl, interceptor = cfInterceptor).document
-                watchDocument.select("div.episodelist a").mapNotNull { ep ->
-                    val epName = ep.attr("title").ifBlank { ep.text() }
-                    val epUrl = ep.attr("href")
-                    if (epUrl.isBlank()) return@mapNotNull null
-                    newEpisode(epUrl) {
-                        name = epName
-                    }
+            val watchDocument = app.get(watchUrl, interceptor = cfInterceptor).document
+            val episodes = watchDocument.select("div.episodelist a").mapNotNull { ep ->
+                val epName = ep.attr("title").ifBlank { ep.text() }
+                val epUrl = ep.attr("href")
+                if (epUrl.isBlank()) return@mapNotNull null
+                newEpisode(epUrl) {
+                    name = epName
                 }
-            } else {
-                emptyList()
             }
             
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
@@ -144,8 +153,7 @@ class TvPhimProvider : MainAPI() {
                 this.recommendations = recommendations
             }
         } else {
-            val dataUrl = document.selectFirst("a:contains(Xem Phim)")?.attr("href") ?: url
-            return newMovieLoadResponse(title, url, TvType.Movie, dataUrl) {
+            return newMovieLoadResponse(title, url, TvType.Movie, watchUrl) {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = plot
