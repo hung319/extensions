@@ -1,11 +1,12 @@
 package recloudstream
 
+import android.util.Log
 import com.google.gson.annotations.SerializedName
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.ExtractorLinkType // <-- ĐÃ SỬA ĐƯỜNG DẪN IMPORT
+import com.lagadost.cloudstream3.utils.ExtractorLinkType
 import okhttp3.Interceptor
 import okhttp3.Response
 import org.jsoup.nodes.Element
@@ -241,6 +242,9 @@ private fun getBaseUrl(url: String): String {
 //endregion
 
 class TvPhimProvider : MainAPI() {
+    // ADDED: Tag for logging
+    private val TAG = "TvPhimProvider"
+
     override var mainUrl = "https://tvphim.bid"
     override var name = "TVPhim"
     override val hasMainPage = true
@@ -288,97 +292,130 @@ class TvPhimProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url, interceptor = cfInterceptor).document
-        val title = document.selectFirst("h1[itemprop=name]")?.text()?.trim()
-            ?: document.selectFirst("h1.entry-title")?.text()?.trim() ?: "Không tìm thấy tiêu đề"
-        val poster = document.selectFirst("img[itemprop=image]")?.attr("src")
-        val year = document.selectFirst("span.text-gray-400:contains(Năm Sản Xuất) + span")?.text()?.toIntOrNull()
-        var plot = document.selectFirst("div[itemprop=description] p")?.text()
-            ?: document.selectFirst("div.entry-content p")?.text()
-        document.selectFirst("span.liked")?.text()?.trim()?.toIntOrNull()?.let { plot += "\n\n❤️ Yêu thích: $it" }
-        val tags = document.select("span.text-gray-400:contains(Thể loại) a").map { it.text() }
-        val actors = document.select("span.text-gray-400:contains(Diễn viên) a").map { ActorData(Actor(it.text())) }
-        val recommendations = document.select("div.mt-2:has(span:contains(Cùng Series)) a").mapNotNull {
-            val recTitle = it.selectFirst("span")?.text()
-            val recHref = it.attr("href")
-            if (recTitle != null && recHref.isNotBlank()) {
-                newMovieSearchResponse(recTitle, recHref) { this.posterUrl = it.selectFirst("img")?.attr("src") }
-            } else null
-        }
-        val status = document.selectFirst("span:contains(Tình Trạng:) + span")?.text()?.lowercase() ?: ""
-        val isTvSeries = status.contains("/") || status.contains("tập")
+        // ADDED: try-catch block for safer scraping
+        try {
+            val document = app.get(url, interceptor = cfInterceptor).document
+            val title = document.selectFirst("h1[itemprop=name]")?.text()?.trim()
+                ?: document.selectFirst("h1.entry-title")?.text()?.trim() ?: "Không tìm thấy tiêu đề"
+            val poster = document.selectFirst("img[itemprop=image]")?.attr("src")
+            val year = document.selectFirst("span.text-gray-400:contains(Năm Sản Xuất) + span")?.text()?.toIntOrNull()
+            var plot = document.selectFirst("div[itemprop=description] p")?.text()
+                ?: document.selectFirst("div.entry-content p")?.text()
+            document.selectFirst("span.liked")?.text()?.trim()?.toIntOrNull()?.let { plot += "\n\n❤️ Yêu thích: $it" }
+            val tags = document.select("span.text-gray-400:contains(Thể loại) a").map { it.text() }
+            val actors = document.select("span.text-gray-400:contains(Diễn viên) a").map { ActorData(Actor(it.text())) }
+            val recommendations = document.select("div.mt-2:has(span:contains(Cùng Series)) a").mapNotNull {
+                val recTitle = it.selectFirst("span")?.text()
+                val recHref = it.attr("href")
+                if (recTitle != null && recHref.isNotBlank()) {
+                    newMovieSearchResponse(recTitle, recHref) { this.posterUrl = it.selectFirst("img")?.attr("src") }
+                } else null
+            }
+            val status = document.selectFirst("span:contains(Tình Trạng:) + span")?.text()?.lowercase() ?: ""
+            val isTvSeries = status.contains("/") || status.contains("tập")
 
-        return if (isTvSeries) {
-            val watchUrl = document.selectFirst("a:contains(Xem Phim)")?.attr("href")
-            val episodes = if (watchUrl != null) {
-                val watchDocument = app.get(watchUrl, interceptor = cfInterceptor).document
-                watchDocument.select("div.episodelist a").mapNotNull { ep ->
-                    val epName = ep.attr("title").ifBlank { ep.text() }; val epUrl = ep.attr("href")
-                    if (epUrl.isBlank()) return@mapNotNull null
-                    newEpisode(epUrl) { name = epName }
-                }.reversed()
-            } else emptyList()
-            newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
-                this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = tags; this.actors = actors; this.recommendations = recommendations
+            return if (isTvSeries) {
+                val watchUrl = document.selectFirst("a:contains(Xem Phim)")?.attr("href")
+                val episodes = if (watchUrl != null) {
+                    val watchDocument = app.get(watchUrl, interceptor = cfInterceptor).document
+                    watchDocument.select("div.episodelist a").mapNotNull { ep ->
+                        val epName = ep.attr("title").ifBlank { ep.text() }; val epUrl = ep.attr("href")
+                        if (epUrl.isBlank()) return@mapNotNull null
+                        newEpisode(epUrl) { name = epName }
+                    }.reversed()
+                } else emptyList()
+                newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+                    this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = tags; this.actors = actors; this.recommendations = recommendations
+                }
+            } else {
+                val dataUrl = document.selectFirst("a:contains(Xem Phim)")?.attr("href") ?: url
+                newMovieLoadResponse(title, url, TvType.Movie, dataUrl) {
+                    this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = tags; this.actors = actors; this.recommendations = recommendations
+                }
             }
-        } else {
-            val dataUrl = document.selectFirst("a:contains(Xem Phim)")?.attr("href") ?: url
-            newMovieLoadResponse(title, url, TvType.Movie, dataUrl) {
-                this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = tags; this.actors = actors; this.recommendations = recommendations
-            }
+        } catch (e: Exception) {
+            Log.e(TAG, "load error: ${e.localizedMessage}", e)
+            throw ErrorLoadingException("Không thể tải thông tin phim. Vui lòng thử lại.")
         }
     }
 
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
-        val watchPageDoc = app.get(data, interceptor = cfInterceptor).document
-        val packedScript = watchPageDoc.select("script").lastOrNull { it.data().contains("eval(function(w,i,s,e)") }?.data() ?: return false
-        val unpackedScript = UnwiseHelper.unwiseProcess(packedScript)
-        val iframeSrc = unpackedScript.substringAfter("?link=").substringBefore("\"")
+        // ADDED: try-catch block for safer link extraction
+        try {
+            Log.d(TAG, "loadLinks started for url: $data")
+            val watchPageDoc = app.get(data, interceptor = cfInterceptor).document
+            
+            Log.d(TAG, "Step 1: Finding packed script...")
+            val packedScript = watchPageDoc.select("script").lastOrNull { it.data().contains("eval(function(w,i,s,e)") }?.data()
+                ?: throw ErrorLoadingException("Không tìm thấy script video.")
+            Log.d(TAG, "Step 1: Found packed script.")
 
-        if (!iframeSrc.startsWith("https://play.plhqtvhay.xyz/")) return false
+            Log.d(TAG, "Step 2: Unpacking script...")
+            val unpackedScript = UnwiseHelper.unwiseProcess(packedScript)
+            val iframeSrc = unpackedScript.substringAfter("?link=").substringBefore("\"")
+            if (!iframeSrc.startsWith("https://play.plhqtvhay.xyz/")) throw ErrorLoadingException("Link video không được hỗ trợ.")
+            Log.d(TAG, "Step 2: Got iframeSrc: $iframeSrc")
 
-        val baseUrl = getBaseUrl(data)
-        val iframeDoc = app.get(iframeSrc, interceptor = cfInterceptor, referer = "$baseUrl/").document
-        val iframeScript = iframeDoc.select("script").firstOrNull { it.data().contains("const idfile_enc = \"") }?.data() ?: return false
+            val baseUrl = getBaseUrl(data)
+            val iframeDoc = app.get(iframeSrc, interceptor = cfInterceptor, referer = "$baseUrl/").document
+            
+            Log.d(TAG, "Step 3: Finding encrypted data script...")
+            val iframeScript = iframeDoc.select("script").firstOrNull { it.data().contains("const idfile_enc = \"") }?.data()
+                ?: throw ErrorLoadingException("Không tìm thấy script chứa dữ liệu mã hoá.")
 
-        val idfileEnc = iframeScript.substringAfter("const idfile_enc = \"").substringBefore("\";")
-        val idUserEnc = iframeScript.substringAfter("const idUser_enc = \"").substringBefore("\";")
-        val domainApi = iframeScript.substringAfter("const DOMAIN_API = '").substringBefore("';")
-        val publicIp = app.get("https://api.ipify.org/").text
+            val idfileEnc = iframeScript.substringAfter("const idfile_enc = \"").substringBefore("\";")
+            val idUserEnc = iframeScript.substringAfter("const idUser_enc = \"").substringBefore("\";")
+            val domainApi = iframeScript.substringAfter("const DOMAIN_API = '").substringBefore("';")
+            Log.d(TAG, "Step 3: Found encrypted data. API domain: $domainApi")
 
-        val idfile = Crypto.decrypt(Base64.getEncoder().encodeToString(hexStringToByteArray(idfileEnc)), DECRYPTION_KEY_1)
-        val iduser = Crypto.decrypt(Base64.getEncoder().encodeToString(hexStringToByteArray(idUserEnc)), DECRYPTION_KEY_2)
+            val publicIp = app.get("https://api.ipify.org/").text
 
-        val payload = Payload(
-            idfile = idfile, iduser = iduser, domain_play = baseUrl, ip_clien = publicIp, time_request = Instant.now().toEpochMilli().toString(),
-            jwplayer = JWPlayer(
-                browser = JWPlayerBrowser(v = JWPlayerBrowserVersion()),
-                os = JWPlayerOS(v = JWPlayerOSVersion()),
-                features = JWPlayerFeatures()
-            )
-        )
-        val payloadJson = com.google.gson.Gson().toJson(payload)
-        val encryptedPayloadHex = Crypto.encrypt(payloadJson, ENCRYPTION_KEY)
-        val encryptedData = String(Base64.getDecoder().decode(encryptedPayloadHex), Charsets.UTF_8)
-        val hash = md5Hash(encryptedData + MD5_SALT)
+            Log.d(TAG, "Step 4: Decrypting IDs...")
+            val idfile = Crypto.decrypt(Base64.getEncoder().encodeToString(hexStringToByteArray(idfileEnc)), DECRYPTION_KEY_1)
+            val iduser = Crypto.decrypt(Base64.getEncoder().encodeToString(hexStringToByteArray(idUserEnc)), DECRYPTION_KEY_2)
+            Log.d(TAG, "Step 4: Decrypted IDs successfully.")
 
-        val apiResponse = app.post(
-            url = "$domainApi/playiframe",
-            data = mapOf("data" to "$encryptedData|$hash")
-        ).parsed<ApiResponse>()
-
-        if (apiResponse.status == 1 && apiResponse.type == "url-m3u8-encv1" && apiResponse.data != null) {
-            val encryptedM3u8Hex = Crypto.encrypt(apiResponse.data.replace("\"", ""), FINAL_M3U8_DECRYPTION_KEY)
-            val m3u8Url = String(Base64.getDecoder().decode(encryptedM3u8Hex), Charsets.UTF_8)
-            callback(
-                ExtractorLink(
-                    source = this.name, name = "S.PRO", url = m3u8Url, referer = "$baseUrl/", quality = Qualities.P720.value,
-                    type = ExtractorLinkType.M3U8
+            Log.d(TAG, "Step 5: Building and sending payload...")
+            val payload = Payload(
+                idfile = idfile, iduser = iduser, domain_play = baseUrl, ip_clien = publicIp, time_request = Instant.now().toEpochMilli().toString(),
+                jwplayer = JWPlayer(
+                    browser = JWPlayerBrowser(v = JWPlayerBrowserVersion()),
+                    os = JWPlayerOS(v = JWPlayerOSVersion()),
+                    features = JWPlayerFeatures()
                 )
             )
-            return true
+            val payloadJson = com.google.gson.Gson().toJson(payload)
+            val encryptedPayloadHex = Crypto.encrypt(payloadJson, ENCRYPTION_KEY)
+            val encryptedData = String(Base64.getDecoder().decode(encryptedPayloadHex), Charsets.UTF_8)
+            val hash = md5Hash(encryptedData + MD5_SALT)
+            
+            val apiResponse = app.post(
+                url = "$domainApi/playiframe",
+                data = mapOf("data" to "$encryptedData|$hash")
+            ).parsed<ApiResponse>()
+            Log.d(TAG, "Step 5: Got API response: $apiResponse")
+
+            if (apiResponse.status == 1 && apiResponse.type == "url-m3u8-encv1" && apiResponse.data != null) {
+                Log.d(TAG, "Step 6: Decrypting M3U8 URL...")
+                // FIXED: Changed from encrypt to decrypt
+                val m3u8Url = Crypto.decrypt(apiResponse.data.replace("\"", ""), FINAL_M3U8_DECRYPTION_KEY)
+                Log.d(TAG, "Step 6: Got M3U8 URL: $m3u8Url")
+
+                callback(
+                    ExtractorLink(
+                        source = this.name, name = "S.PRO", url = m3u8Url, referer = "$baseUrl/", quality = Qualities.P720.value,
+                        type = ExtractorLinkType.M3U8
+                    )
+                )
+                return true
+            } else {
+                throw ErrorLoadingException("API không trả về link video hợp lệ.")
+            }
+        } catch (e: Exception) {
+            // ADDED: Catch block to log errors and throw a user-friendly exception
+            Log.e(TAG, "loadLinks error for url $data", e)
+            throw ErrorLoadingException("Không thể tải link phim. Chi tiết: ${e.message}")
         }
-        return false
     }
 
     override fun getVideoInterceptor(link: ExtractorLink): Interceptor? {
