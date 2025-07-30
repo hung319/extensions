@@ -6,8 +6,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.network.CloudflareKiller
-import com.lagradost.cloudstream3.movieproviders.Vote
-import com.lagradost.cloudstream3.movieproviders.VoteAverage
+import com.lagradost.cloudstream3.ActorData
 
 class TvPhimProvider : MainAPI() {
     override var mainUrl = "https://tvphim.bid"
@@ -34,12 +33,12 @@ class TvPhimProvider : MainAPI() {
         val isTvSeries = "/" in statusText || "tập" in statusText.lowercase()
 
         return if (isTvSeries) {
-            newTvSeries(title, href) {
+            newTvSeriesSearchResponse(title, href) {
                 this.posterUrl = posterUrl
                 this.year = year
             }
         } else {
-            newMovie(title, href) {
+            newMovieSearchResponse(title, href) {
                 this.posterUrl = posterUrl
                 this.year = year
             }
@@ -86,8 +85,7 @@ class TvPhimProvider : MainAPI() {
         val tags = document.select("span.text-gray-400:contains(Thể loại) a").map { it.text() }
         val actors = document.select("span.text-gray-400:contains(Diễn viên) a").map { it.text() }
         
-        val ratingText = document.selectFirst("span.liked")?.text()?.trim()?.toIntOrNull()
-        val rating = if (ratingText != null) VoteAverage(ratingText, 1000) else null
+        val votes = document.selectFirst("span.liked")?.text()?.trim()?.toIntOrNull()
 
         // Recommendations
         val recommendations = document.select("div.mt-2:has(span:contains(Cùng Series)) a").mapNotNull {
@@ -116,9 +114,9 @@ class TvPhimProvider : MainAPI() {
                 this.year = year
                 this.plot = plot
                 this.tags = tags
-                this.actors = actors.map { Actor(it) }
+                this.actors = actors.map { ActorData(Actor(it)) }
                 this.recommendations = recommendations
-                this.rating = rating
+                this.votes = votes
             }
         } else {
             newMovieLoadResponse(title, url, TvType.Movie, url) {
@@ -126,9 +124,9 @@ class TvPhimProvider : MainAPI() {
                 this.year = year
                 this.plot = plot
                 this.tags = tags
-                this.actors = actors.map { Actor(it) }
+                this.actors = actors.map { ActorData(Actor(it)) }
                 this.recommendations = recommendations
-                this.rating = rating
+                this.votes = votes
             }
         }
     }
