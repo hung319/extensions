@@ -16,6 +16,7 @@ import java.math.BigInteger
 import java.security.MessageDigest
 import java.security.SecureRandom
 import android.util.Log
+import kotlin.text.Charsets
 
 // Helper function to calculate MD5 hash
 private fun String.md5(): String {
@@ -25,16 +26,11 @@ private fun String.md5(): String {
 
 // Helper function to convert Hex String to Byte Array
 private fun String.hexStringToByteArray(): ByteArray {
-    val len = this.length
-    val data = ByteArray(len / 2)
-    for (i in 0 until len step 2) {
-        data[i / 2] = ((Character.digit(this[i], 16) shl 4) + Character.digit(this[i + 1], 16)).toByte()
-    }
-    return data
+    check(length % 2 == 0) { "Must have an even length" }
+    return chunked(2)
+        .map { it.toInt(16).toByte() }
+        .toByteArray()
 }
-
-// Helper function to convert Byte Array to Hex String
-private fun ByteArray.toHexString(): String = joinToString("") { "%02x".format(it) }
 
 class TvPhimProvider : MainAPI() {
     override var mainUrl = "https://tvphim.bid"
@@ -46,10 +42,8 @@ class TvPhimProvider : MainAPI() {
         TvType.TvSeries
     )
 
-    // Interceptor to handle Cloudflare
     private val cfInterceptor = CloudflareKiller()
 
-    // Helper function to parse search results from HTML elements
     private fun Element.toSearchResponse(): SearchResponse? {
         val title = this.selectFirst("div.h-14 span")?.text()?.trim() ?: return null
         val href = this.selectFirst("a")?.attr("href") ?: return null
@@ -123,22 +117,15 @@ class TvPhimProvider : MainAPI() {
             val recHref = it.attr("href")
             val recPoster = it.selectFirst("img")?.attr("src")
             if (recTitle != null && recHref.isNotBlank()) {
-                newMovieSearchResponse(recTitle, recHref) {
-                    this.posterUrl = recPoster
-                }
+                newMovieSearchResponse(recTitle, recHref) { this.posterUrl = recPoster }
             } else null
         }
 
         val watchUrl = document.selectFirst("a:contains(Xem Phim)")?.attr("href")
         if (watchUrl == null || !watchUrl.startsWith("http")) {
             return newMovieLoadResponse(title, url, TvType.Movie, url) {
-                this.posterUrl = poster
-                this.year = year
-                this.plot = plot
-                this.tags = tags
-                this.actors = actors.map { ActorData(Actor(it)) }
-                this.recommendations = recommendations
-                this.comingSoon = true
+                this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = tags
+                this.actors = actors.map { ActorData(Actor(it)) }; this.recommendations = recommendations; this.comingSoon = true
             }
         }
 
@@ -151,27 +138,17 @@ class TvPhimProvider : MainAPI() {
                 val epName = ep.attr("title").ifBlank { ep.text() }
                 val epUrl = ep.attr("href")
                 if (epUrl.isBlank()) return@mapNotNull null
-                newEpisode(epUrl) {
-                    name = epName
-                }
+                newEpisode(epUrl) { name = epName }
             }
             
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
-                this.posterUrl = poster
-                this.year = year
-                this.plot = plot
-                this.tags = tags
-                this.actors = actors.map { ActorData(Actor(it)) }
-                this.recommendations = recommendations
+                this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = tags
+                this.actors = actors.map { ActorData(Actor(it)) }; this.recommendations = recommendations
             }
         } else {
             return newMovieLoadResponse(title, url, TvType.Movie, watchUrl) {
-                this.posterUrl = poster
-                this.year = year
-                this.plot = plot
-                this.tags = tags
-                this.actors = actors.map { ActorData(Actor(it)) }
-                this.recommendations = recommendations
+                this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = tags
+                this.actors = actors.map { ActorData(Actor(it)) }; this.recommendations = recommendations
             }
         }
     }
@@ -182,9 +159,18 @@ class TvPhimProvider : MainAPI() {
         val idfile: String,
         val iduser: String,
         val domain_play: String,
+        val platform: String = "noplf",
         val ip_clien: String,
-        val time_request: String
+        val time_request: String,
+        val hlsSupport: Boolean = true,
+        val jwplayer: JWPlayer
     )
+    private data class JWPlayer(val browser: JWPlayerBrowser, val os: JWPlayerOS, val features: JWPlayerFeatures)
+    private data class JWPlayerBrowser(val is_chrome: Boolean, val is_edge: Boolean, val is_firefox: Boolean, val is_ie: Boolean, val is_opera: Boolean, val is_safari: Boolean, val is_mobile: Boolean, val is_tablet: Boolean, val version: JWPlayerBrowserVersion)
+    private data class JWPlayerBrowserVersion(val string: String, val major: Int, val minor: Int)
+    private data class JWPlayerOS(val is_android: Boolean, val is_ios: Boolean, val is_windows: Boolean, val is_mac: Boolean, val is_linux: Boolean, val is_chromeos: Boolean, val is_windowsphone: Boolean, val is_tizen: Boolean, val is_ps4: Boolean, val version: JWPlayerOSVersion)
+    private data class JWPlayerOSVersion(val string: String, val major: Int, val minor: Int)
+    private data class JWPlayerFeatures(val flash: Boolean, val html5: Boolean, val background_playback: Boolean)
 
     // Accurate CryptoJS implementation based on provided files
     private object CryptoJS {
@@ -223,17 +209,16 @@ class TvPhimProvider : MainAPI() {
             }
         }
     }
-    
+
     private fun unwiseProcess(script: String): String {
         var processedScript = script
-        val evalRegex = Regex("""eval\(function\(w,i,s,e\)\s*\{.*?\}\s*\((.*?)\)\)""")
+        val evalRegex = Regex("eval\\(function\\(w,i,s,e\\).*?\\}\\((['\"].*?['\"]),(['\"].*?['\"]),(['\"].*?['\"]),(['\"].*?['\"])\\)\\)")
 
         while (true) {
             val match = evalRegex.find(processedScript) ?: break
             val fullMatch = match.value
-            val argsBlock = match.groupValues[1]
             
-            val args = Regex("['\"](.*?)['\"]").findAll(argsBlock).map { it.groupValues[1] }.toList()
+            val args = match.groupValues.drop(1).map { it.removeSurrounding("'").removeSurrounding("\"") }
             if (args.size < 3) {
                 processedScript = processedScript.replace(fullMatch, "")
                 continue
@@ -302,17 +287,24 @@ class TvPhimProvider : MainAPI() {
             val serverUrl = server.attr("href")
             val serverDoc = app.get(serverUrl, referer = data).document
 
-            var iframeUrl = serverDoc.selectFirst("iframe")?.attr("src")
+            var iframeUrl: String?
 
-            if (iframeUrl.isNullOrBlank() || !iframeUrl.startsWith("http")) {
-                val scriptContent = serverDoc.select("script").find { it.data().contains("eval(function(w,i,s,e)") }?.data()
-                    ?: throw Exception("Không tìm thấy script của trình phát video.")
-                
-                val deobfuscated = unwiseProcess(scriptContent)
-                Log.d("TvPhimProvider", "Deobfuscated Script Content: $deobfuscated")
-                
+            val scriptContent = serverDoc.select("script").find { it.data().contains("eval(function(w,i,s,e)") || it.data().contains("setAttribute(\"src\"") }?.data()
+                ?: throw Exception("Không tìm thấy script của trình phát video.")
+            
+            val deobfuscated = unwiseProcess(scriptContent)
+            Log.d("TvPhimProvider", "Deobfuscated Script Content: $deobfuscated")
+            
+            val setAttrMatch = Regex("""setAttribute\(\s*["']src["']\s*,\s*["'](.*?)["']\)""").find(deobfuscated)
+            if (setAttrMatch != null) {
+                val rawUrl = setAttrMatch.groupValues[1].replace(" ", "")
+                iframeUrl = Regex("""link=([^'"]+)""").find(rawUrl)?.groupValues?.get(1)
+            } else {
                 iframeUrl = Regex("""src\s*=\s*['"]([^'"]+)""").find(deobfuscated)?.groupValues?.get(1)
-                    ?: throw Exception("Không tìm thấy iframe URL sau khi giải mã. Nội dung đã giải mã: $deobfuscated")
+            }
+
+            if (iframeUrl.isNullOrBlank()) {
+                throw Exception("Không tìm thấy iframe URL sau khi giải mã. Nội dung đã giải mã: $deobfuscated")
             }
 
             if ("plhqtvhay" in iframeUrl) {
@@ -335,16 +327,19 @@ class TvPhimProvider : MainAPI() {
                 val ip = app.get("https://api.ipify.org/").text
                 val timestamp = System.currentTimeMillis().toString()
                 
-                val payload = Payload(idFile, idUser, serverUrl, ip, timestamp)
-                val payloadJson = payload.toJson()
+                val jwplayer = JWPlayer(
+                    browser = JWPlayerBrowser(true, false, false, false, false, false, true, false, JWPlayerBrowserVersion("129.0", 129, 0)),
+                    os = JWPlayerOS(true, false, true, false, false, false, false, false, false, JWPlayerOSVersion("10.0", 10, 0)),
+                    features = JWPlayerFeatures(true, true, true)
+                )
+                val payload = Payload(idFile, idUser, serverUrl, "noplf", ip, timestamp, true, jwplayer)
                 
                 val keyBytes = "vlVbUQhkOhoSfyteyzGeeDzU0BHoeTyZ".toByteArray(Charsets.UTF_8)
                 val skey = SecretKeySpec(keyBytes, "AES")
                 val iv = IvParameterSpec(keyBytes)
                 val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
                 cipher.init(Cipher.ENCRYPT_MODE, skey, iv)
-                val encryptedPayload = Base64.getEncoder().encodeToString(cipher.doFinal(payloadJson.toByteArray(Charsets.UTF_8)))
-                    ?: throw Exception("Mã hóa payload thất bại.")
+                val encryptedPayload = Base64.getEncoder().encodeToString(cipher.doFinal(payload.toJson().toByteArray(Charsets.UTF_8)))
                 
                 val hash = (encryptedPayload + "KRWN3AdgmxEMcd2vLN1ju9qKe8Feco5h").md5()
 
