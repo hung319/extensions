@@ -222,7 +222,7 @@ class TvPhimProvider : MainAPI() {
                 val charCode = lI1l.substring(lIllIdx, lIllIdx + 2).toLong(36).toInt() - ll11
                 l1ll.add(charCode.toChar())
                 ll1IIdx++
-                if (ll1IIdx >= l1lI.length) ll1IIdx = 0
+                if (ll1IIdx >= l1lI.size) ll1IIdx = 0 // **FIXED**: Changed .length to .size
                 lIllIdx += 2
             }
             return l1ll.joinToString("")
@@ -237,21 +237,17 @@ class TvPhimProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val logs = mutableListOf("--- TVPhim Debug Log ---")
-        val isSuccessful = AtomicBoolean(false)
         val document = app.get(data, interceptor = cfInterceptor).document
         val servers = document.select("ul.episodelistsv a")
-        logs.add("Found ${servers.size} servers.")
-        if (servers.isEmpty()) {
-            throw Exception("Không tìm thấy server nào.")
-        }
+        if (servers.isEmpty()) throw Exception("Không tìm thấy server nào.")
 
-        servers.apmap { server ->
-            if (isSuccessful.get()) return@apmap
+        val isSuccessful = AtomicBoolean(false)
+        for (server in servers) {
+            if (isSuccessful.get()) break
+
             val serverName = server.attr("title")
             try {
                 val serverUrl = server.attr("href")
-                logs.add("Processing Server: '$serverName' ($serverUrl)")
                 val serverDoc = app.get(serverUrl, referer = data).document
 
                 val packedScript = serverDoc.selectFirst("script:containsData(eval(function(w,i,s,e))")?.data()
@@ -260,18 +256,15 @@ class TvPhimProvider : MainAPI() {
                     ?: throw Exception("Giải mã script thất bại.")
                 val iframeUrl = Regex("""src\s*=\s*['"]([^'"]+)""").find(deobfuscated)?.groupValues?.get(1)
                     ?: throw Exception("Không tìm thấy iframe URL sau khi giải mã.")
-                logs.add("-> Found iframe URL: $iframeUrl")
 
                 if ("plhqtvhay" in iframeUrl) {
                     val iframeDoc = app.get(iframeUrl, referer = serverUrl).document
                     val script = iframeDoc.selectFirst("script:containsData(const idfile_enc)")?.data()
                         ?: throw Exception("Không tìm thấy script chứa dữ liệu mã hóa.")
-                    logs.add("-> Found script with encrypted data.")
-                    
+
                     val idFileEnc = Regex("""const idfile_enc = "([^"]+)";""").find(script)?.groupValues?.get(1)
                     val idUserEnc = Regex("""const idUser_enc = "([^"]+)";""").find(script)?.groupValues?.get(1)
                     val domainApi = Regex("""const DOMAIN_API = '([^']+)';""").find(script)?.groupValues?.get(1)
-                    logs.add("-> Extracted Encrypted Data -> idfile: $idFileEnc, iduser: $idUserEnc, domain: $domainApi")
                     if (idFileEnc == null || idUserEnc == null || domainApi == null) {
                         throw Exception("Không thể trích xuất dữ liệu mã hóa.")
                     }
@@ -280,7 +273,6 @@ class TvPhimProvider : MainAPI() {
                         ?: throw Exception("Giải mã idfile thất bại.")
                     val idUser = cryptoHandler(idUserEnc, "PZZ3J3LDbLT0GY7qSA5wW5vchqgpO36O", true)
                         ?: throw Exception("Giải mã iduser thất bại.")
-                    logs.add("-> Decrypted Data -> idfile: $idFile, iduser: $idUser")
                     
                     val ip = app.get("https://api.ipify.org/").text
                     val timestamp = System.currentTimeMillis().toString()
@@ -289,19 +281,16 @@ class TvPhimProvider : MainAPI() {
                         ?: throw Exception("Mã hóa payload thất bại.")
                     val hash = (encryptedPayload + "KRWN3AdgmxEMcd2vLN1ju9qKe8Feco5h").md5()
 
-                    logs.add("-> POSTing to: $domainApi/playiframe")
                     val apiResponse = app.post(
                         "$domainApi/playiframe",
                         data = mapOf("data" to "$encryptedPayload|$hash"),
                         referer = iframeUrl
                     ).parsedSafe<ApiResponse>()
                         ?: throw Exception("Phản hồi API không hợp lệ.")
-                    logs.add("-> API Response: ${apiResponse.toJson()}")
 
                     if (apiResponse.status == 1 && apiResponse.type == "url-m3u8-encv1") {
                         val finalUrl = cryptoHandler(apiResponse.data.replace("\"", ""), "oJwmvmVBajMaRCTklxbfjavpQO7SZpsL", true)
                             ?: throw Exception("Giải mã link M3U8 cuối cùng thất bại.")
-                        logs.add("-> Final Decrypted URL: $finalUrl")
                         
                         callback.invoke(
                             ExtractorLink(
@@ -315,20 +304,19 @@ class TvPhimProvider : MainAPI() {
                         )
                         isSuccessful.set(true)
                     } else {
-                        throw Exception("API trả về lỗi hoặc trạng thái không thành công.")
+                        throw Exception("API trả về lỗi hoặc trạng thái không thành công: ${apiResponse.toJson()}")
                     }
                 } else {
-                    logs.add("-> Error: Trình phát video từ '$iframeUrl' không được hỗ trợ.")
+                    throw Exception("Trình phát video từ '$iframeUrl' không được hỗ trợ.")
                 }
             } catch (e: Exception) {
-                // Ghi lại lỗi chi tiết vào log của ứng dụng và log thu thập
                 Log.e("TvPhimProvider", "Lỗi xử lý server '$serverName'", e)
-                logs.add("-> Lỗi xử lý server '$serverName': ${e.message}")
+                throw Exception("Lỗi xử lý server '$serverName': ${e.message}")
             }
         }
         
         if (!isSuccessful.get()) {
-            throw Exception("Đã thử tất cả các server nhưng không thể lấy được link video.\n\n--- Log Chi Tiết ---\n${logs.joinToString("\n")}")
+            throw Exception("Đã thử tất cả các server nhưng không thể lấy được link video.")
         }
         
         return true
