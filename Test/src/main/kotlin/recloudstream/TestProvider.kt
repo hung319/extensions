@@ -7,6 +7,11 @@ import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.ActorData
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
+import java.util.Base64
 
 class TvPhimProvider : MainAPI() {
     override var mainUrl = "https://tvphim.bid"
@@ -106,12 +111,10 @@ class TvPhimProvider : MainAPI() {
         val isTvSeries = status.contains("/") || status.contains("tập")
 
         if (isTvSeries) {
-            // For TV Series, navigate to the watch page to get the full episode list
             val watchUrl = document.selectFirst("a:contains(Xem Phim)")?.attr("href")
             
             val episodes = if (watchUrl != null) {
                 val watchDocument = app.get(watchUrl, interceptor = cfInterceptor).document
-                // **FIXED:** Get episodes from the watch page's episode list
                 watchDocument.select("div.episodelist a").mapNotNull { ep ->
                     val epName = ep.attr("title").ifBlank { ep.text() }
                     val epUrl = ep.attr("href")
@@ -119,7 +122,7 @@ class TvPhimProvider : MainAPI() {
                     newEpisode(epUrl) {
                         name = epName
                     }
-                }.reversed()
+                }
             } else {
                 emptyList()
             }
@@ -133,7 +136,6 @@ class TvPhimProvider : MainAPI() {
                 this.recommendations = recommendations
             }
         } else {
-            // It's a movie
             val dataUrl = document.selectFirst("a:contains(Xem Phim)")?.attr("href") ?: url
             return newMovieLoadResponse(title, url, TvType.Movie, dataUrl) {
                 this.posterUrl = poster
@@ -146,14 +148,105 @@ class TvPhimProvider : MainAPI() {
         }
     }
     
+    // Helper classes for JSON parsing
+    private data class ApiResponse(val status: Int?, val type: String?, val data: String)
+    private data class Payload(val idfile: String, val iduser: String, val refer: String, val type: String, val user_ip: String, val time: String)
+
+    // Crypto functions
+    private fun cryptoHandler(data: String, key: String, decrypt: Boolean = false): String? {
+        return try {
+            val keyBytes = key.toByteArray(Charsets.UTF_8)
+            val skey = SecretKeySpec(keyBytes, "AES")
+            val iv = IvParameterSpec(keyBytes)
+            val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+            if (decrypt) {
+                cipher.init(Cipher.DECRYPT_MODE, skey, iv)
+                String(cipher.doFinal(Base64.getDecoder().decode(data)))
+            } else {
+                cipher.init(Cipher.ENCRYPT_MODE, skey, iv)
+                Base64.getEncoder().encodeToString(cipher.doFinal(data.toByteArray(Charsets.UTF_8)))
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+    
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Placeholder: This function will be implemented later.
-        throw NotImplementedError("Hàm loadLinks chưa được hoàn thiện.")
-        // return true
+        val document = app.get(data, interceptor = cfInterceptor).document
+
+        // Find server links on the watch page
+        val servers = document.select("ul.episodelistsv a")
+        if (servers.isEmpty()) return false
+
+        servers.apmap { server ->
+            try {
+                val serverUrl = server.attr("href")
+                val serverName = server.attr("title")
+                val serverDoc = app.get(serverUrl, referer = data).document
+
+                // Find the iframe and its source
+                val iframe = serverDoc.selectFirst("iframe") ?: return@apmap
+                val iframeUrl = iframe.attr("src")
+
+                // Handle the main server logic
+                if ("plhqtvhay" in iframeUrl) {
+                    val iframeDoc = app.get(iframeUrl, referer = serverUrl).document
+                    val script = iframeDoc.selectFirst("script:containsData(const idfile_enc)")?.data() ?: return@apmap
+
+                    // Extract encrypted data
+                    val idFileEnc = Regex("""const idfile_enc = "([^"]+)";""").find(script)?.groupValues?.get(1)
+                    val idUserEnc = Regex("""const idUser_enc = "([^"]+)";""").find(script)?.groupValues?.get(1)
+                    val domainApi = Regex("""const DOMAIN_API = '([^']+)';""").find(script)?.groupValues?.get(1)
+
+                    if (idFileEnc == null || idUserEnc == null || domainApi == null) return@apmap
+
+                    // Decrypt necessary data
+                    val idFile = cryptoHandler(idFileEnc, "jcLycoRJT6OWjoWspgLMOZwS3aSS0lEn", true) ?: return@apmap
+                    val idUser = cryptoHandler(idUserEnc, "PZZ3J3LDbLT0GY7qSA5wW5vchqgpO36O", true) ?: return@apmap
+                    
+                    // Build and encrypt payload
+                    val ip = app.get("https://api.ipify.org/").text
+                    val timestamp = System.currentTimeMillis().toString()
+                    val payload = Payload(idFile, idUser, serverUrl, "noplf", ip, timestamp)
+                    val encryptedPayload = cryptoHandler(payload.toJson(), "vlVbUQhkOhoSfyteyzGeeDzU0BHoeTyZ") ?: return@apmap
+                    val hash = (encryptedPayload + "KRWN3AdgmxEMcd2vLN1ju9qKe8Feco5h").md5()
+
+                    // Make the final API call
+                    val apiResponse = app.post(
+                        "$domainApi/playiframe",
+                        data = mapOf("data" to "$encryptedPayload|$hash"),
+                        referer = iframeUrl
+                    ).parsedSafe<ApiResponse>()
+
+                    if (apiResponse?.status == 1 && apiResponse.type == "url-m3u8-encv1") {
+                        val finalUrl = cryptoHandler(apiResponse.data.replace("\"", ""), "oJwmvmVBajMaRCTklxbfjavpQO7SZpsL", true)
+                        if (finalUrl != null) {
+                            callback.invoke(
+                                ExtractorLink(
+                                    source = this.name,
+                                    name = serverName,
+                                    url = finalUrl,
+                                    referer = iframeUrl,
+                                    quality = Qualities.Unknown.value,
+                                    type = ExtractorLinkType.M3U8 // **FIXED**: Changed to ExtractorLinkType.M3U8
+                                )
+                            )
+                        }
+                    }
+                } else {
+                    // Handle other potential extractors like ok.ru, etc.
+                    loadExtractor(iframeUrl, data, subtitleCallback, callback)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        return true
     }
 }
