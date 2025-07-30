@@ -43,7 +43,6 @@ class TvPhimProvider : MainAPI() {
         val posterUrl = this.selectFirst("img")?.attr("src")
         val year = this.selectFirst("div.year")?.text()?.toIntOrNull()
 
-        // Determine if it's a TV Series or a Movie based on the episode status text
         val statusText = this.selectFirst("span.bg-red-800")?.text() ?: ""
         val isTvSeries = "/" in statusText || "tập" in statusText.lowercase()
 
@@ -188,6 +187,50 @@ class TvPhimProvider : MainAPI() {
         }
     }
     
+    // Deobfuscator for the site's specific JS packer
+    private fun deobfuscateScript(packedScript: String): String? {
+        try {
+            val regex = Regex("""eval\(function\(w,i,s,e\)\{.*\}\('(.+)',\s*'(.+)',\s*'(.+)',\s*'(.+)'\)\)""")
+            val (w, i, s, _) = regex.find(packedScript)?.destructured ?: return null
+
+            val ll1l = mutableListOf<Char>()
+            val l1lI = mutableListOf<Char>()
+
+            var wIdx = 0
+            var iIdx = 0
+            var sIdx = 0
+
+            while (true) {
+                if (wIdx < 5) l1lI.add(w[wIdx]) else if (wIdx < w.length) ll1l.add(w[wIdx])
+                wIdx++
+                if (iIdx < 5) l1lI.add(i[iIdx]) else if (iIdx < i.length) ll1l.add(i[iIdx])
+                iIdx++
+                if (sIdx < 5) l1lI.add(s[sIdx]) else if (sIdx < s.length) ll1l.add(s[sIdx])
+                sIdx++
+                if (w.length + i.length + s.length == ll1l.size + l1lI.size) break
+            }
+
+            val lI1l = ll1l.joinToString("")
+            val I1lI = l1lI.joinToString("")
+            var ll1IIdx = 0
+            val l1ll = mutableListOf<Char>()
+
+            var lIllIdx = 0
+            while (lIllIdx < ll1l.size) {
+                var ll11 = -1
+                if (I1lI[ll1IIdx].code % 2 != 0) ll11 = 1
+                val charCode = lI1l.substring(lIllIdx, lIllIdx + 2).toLong(36).toInt() - ll11
+                l1ll.add(charCode.toChar())
+                ll1IIdx++
+                if (ll1IIdx >= l1lI.length) ll1IIdx = 0
+                lIllIdx += 2
+            }
+            return l1ll.joinToString("")
+        } catch (e: Exception) {
+            return null
+        }
+    }
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -196,7 +239,6 @@ class TvPhimProvider : MainAPI() {
     ): Boolean {
         val logs = mutableListOf("--- TVPhim Debug Log ---")
         val isSuccessful = AtomicBoolean(false)
-
         val document = app.get(data, interceptor = cfInterceptor).document
         val servers = document.select("ul.episodelistsv a")
         logs.add("Found ${servers.size} servers.")
@@ -212,8 +254,12 @@ class TvPhimProvider : MainAPI() {
                 logs.add("Processing Server: '$serverName' ($serverUrl)")
                 val serverDoc = app.get(serverUrl, referer = data).document
 
-                val iframe = serverDoc.selectFirst("iframe") ?: throw Exception("Không tìm thấy iframe.")
-                val iframeUrl = iframe.attr("src")
+                val packedScript = serverDoc.selectFirst("script:containsData(eval(function(w,i,s,e))")?.data()
+                    ?: throw Exception("Không tìm thấy script của trình phát video.")
+                val deobfuscated = deobfuscateScript(packedScript)
+                    ?: throw Exception("Giải mã script thất bại.")
+                val iframeUrl = Regex("""src\s*=\s*['"]([^'"]+)""").find(deobfuscated)?.groupValues?.get(1)
+                    ?: throw Exception("Không tìm thấy iframe URL sau khi giải mã.")
                 logs.add("-> Found iframe URL: $iframeUrl")
 
                 if ("plhqtvhay" in iframeUrl) {
@@ -272,18 +318,12 @@ class TvPhimProvider : MainAPI() {
                         throw Exception("API trả về lỗi hoặc trạng thái không thành công.")
                     }
                 } else {
-                    logs.add("-> Non-plhqtvhay server found. Passing to loadExtractor.")
-                    if (loadExtractor(iframeUrl, data, subtitleCallback, callback)) {
-                        isSuccessful.set(true)
-                        logs.add("-> Success: loadExtractor found a link.")
-                    } else {
-                        logs.add("-> Error: loadExtractor failed for URL '$iframeUrl'.")
-                    }
+                    logs.add("-> Error: Trình phát video từ '$iframeUrl' không được hỗ trợ.")
                 }
             } catch (e: Exception) {
+                // Ghi lại lỗi chi tiết vào log của ứng dụng và log thu thập
                 Log.e("TvPhimProvider", "Lỗi xử lý server '$serverName'", e)
-                // Cho phép các server khác tiếp tục thử
-                logs.add("-> Error processing server '$serverName': ${e.message}")
+                logs.add("-> Lỗi xử lý server '$serverName': ${e.message}")
             }
         }
         
