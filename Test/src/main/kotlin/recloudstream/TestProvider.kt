@@ -236,19 +236,31 @@ class TvPhimProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        try {
-            val document = app.get(data, interceptor = cfInterceptor).document
+        val document = app.get(data, interceptor = cfInterceptor).document
+        
+        val server = document.select("ul.episodelistsv a").find { 
+            it.attr("title").equals("Server S.PRO", ignoreCase = true) 
+        } ?: throw Exception("Không tìm thấy Server S.PRO.")
 
-            // **NEW LOGIC**: Find and deobfuscate the main script on the watch page
-            val packedScript = document.selectFirst("script:containsData(eval(function(w,i,s,e))")?.data()
-                ?: throw Exception("Không tìm thấy script của trình phát video.")
-            val deobfuscated = deobfuscateScript(packedScript)
-                ?: throw Exception("Giải mã script thất bại.")
-            val iframeUrl = Regex("""src\s*=\s*['"]([^'"]+)""").find(deobfuscated)?.groupValues?.get(1)
-                ?: throw Exception("Không tìm thấy iframe URL sau khi giải mã.")
+        val serverName = server.attr("title")
+        try {
+            val serverUrl = server.attr("href")
+            val serverDoc = app.get(serverUrl, referer = data).document
+
+            // **NEW LOGIC**: First, try to get iframe src directly. If it fails, then try to find and deobfuscate the script.
+            var iframeUrl = serverDoc.selectFirst("iframe")?.attr("src")
+
+            if (iframeUrl.isNullOrBlank() || !iframeUrl.startsWith("http")) {
+                val packedScript = serverDoc.selectFirst("script:containsData(eval(function(w,i,s,e))")?.data()
+                    ?: throw Exception("Không tìm thấy script của trình phát video hoặc iframe src trực tiếp.")
+                val deobfuscated = deobfuscateScript(packedScript)
+                    ?: throw Exception("Giải mã script thất bại.")
+                iframeUrl = Regex("""src\s*=\s*['"]([^'"]+)""").find(deobfuscated)?.groupValues?.get(1)
+                    ?: throw Exception("Không tìm thấy iframe URL sau khi giải mã.")
+            }
 
             if ("plhqtvhay" in iframeUrl) {
-                val iframeDoc = app.get(iframeUrl, referer = data).document
+                val iframeDoc = app.get(iframeUrl, referer = serverUrl).document
                 val script = iframeDoc.selectFirst("script:containsData(const idfile_enc)")?.data()
                     ?: throw Exception("Không tìm thấy script chứa dữ liệu mã hóa.")
 
@@ -266,7 +278,7 @@ class TvPhimProvider : MainAPI() {
                 
                 val ip = app.get("https://api.ipify.org/").text
                 val timestamp = System.currentTimeMillis().toString()
-                val payload = Payload(idFile, idUser, data, "noplf", ip, timestamp)
+                val payload = Payload(idFile, idUser, serverUrl, "noplf", ip, timestamp)
                 val encryptedPayload = cryptoHandler(payload.toJson(), "vlVbUQhkOhoSfyteyzGeeDzU0BHoeTyZ")
                     ?: throw Exception("Mã hóa payload thất bại.")
                 val hash = (encryptedPayload + "KRWN3AdgmxEMcd2vLN1ju9qKe8Feco5h").md5()
@@ -285,7 +297,7 @@ class TvPhimProvider : MainAPI() {
                     callback.invoke(
                         ExtractorLink(
                             source = this.name,
-                            name = "S.PRO", // Default server name
+                            name = serverName,
                             url = finalUrl,
                             referer = iframeUrl,
                             quality = Qualities.Unknown.value,
@@ -300,7 +312,7 @@ class TvPhimProvider : MainAPI() {
                 throw Exception("Trình phát video từ '$iframeUrl' không được hỗ trợ.")
             }
         } catch (e: Exception) {
-            Log.e("TvPhimProvider", "Lỗi loadLinks", e)
+            Log.e("TvPhimProvider", "Lỗi xử lý server '$serverName'", e)
             throw e
         }
     }
