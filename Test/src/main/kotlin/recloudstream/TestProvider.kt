@@ -206,51 +206,37 @@ class TvPhimProvider : MainAPI() {
 
     private fun unwiseProcess(script: String): String {
         var processedScript = script
+        // **FIXED**: Using a more robust regex to find the entire eval block
+        val evalRegex = Regex("eval\\(function\\(w,i,s,e\\).*?\\}\\((['\"].*?['\"]),(['\"].*?['\"]),(['\"].*?['\"]),(['\"].*?['\"])\\)\\)")
+
         while (true) {
-            // **FIXED**: Regex now allows an optional leading semicolon
-            val match = Regex(";?\\s*eval\\s*\\(\\s*function\\s*\\(\\s*w\\s*,\\s*i\\s*,\\s*s\\s*,\\s*e\\s*\\)").find(processedScript) ?: break
-            val scriptBlock = findBalancedBrackets(processedScript, match.range.last + 1) ?: break
-            val fullMatch = processedScript.substring(match.range.first, match.range.first + "eval(function(w,i,s,e)".length + scriptBlock.length) + Regex("\\((.*)\\)").find(processedScript.substring(match.range.first + "eval(function(w,i,s,e)".length + scriptBlock.length))?.value ?: ""
-            val argMatch = Regex("\\}\\s*\\((.+)\\)\\s*\\)").find(fullMatch)
-            if (argMatch == null || argMatch.groupValues.isEmpty()) break
+            val match = evalRegex.find(processedScript) ?: break
+            val fullMatch = match.value
+            
+            // Extract args directly from the main regex match
+            val args = match.groupValues.drop(1).map { it.removeSurrounding("'").removeSurrounding("\"") }
 
-            val args = Regex("['\"](.*?)['\"]").findAll(argMatch.groupValues[1]).map { it.groupValues[1] }.toList()
-            if (args.size < 3) break
-
-            val deobfuscated = deobfuscateScript(args[0], args[1], args[2]) ?: break
+            if (args.size < 3) {
+                processedScript = processedScript.replace(fullMatch, "")
+                continue
+            }
+            
+            val deobfuscated = deobfuscateScript(args[0], args[1], args[2])
+            if (deobfuscated.isNullOrBlank()) {
+                processedScript = processedScript.replace(fullMatch, "")
+                continue
+            }
+            
             processedScript = processedScript.replace(fullMatch, deobfuscated)
         }
         return processedScript
     }
 
-    private fun findBalancedBrackets(text: String, startIndex: Int): String? {
-        var openBrackets = 0
-        var currentIndex = startIndex
-        if (text.getOrNull(currentIndex) != '{') return null
-        openBrackets++
-        currentIndex++
-        while (currentIndex < text.length) {
-            when (text[currentIndex]) {
-                '{' -> openBrackets++
-                '}' -> openBrackets--
-            }
-            if (openBrackets == 0) {
-                return text.substring(startIndex, currentIndex + 1)
-            }
-            currentIndex++
-        }
-        return null // Unbalanced
-    }
-    
     private fun deobfuscateScript(w: String, i: String, s: String): String? {
         try {
             val ll1l = mutableListOf<Char>()
             val l1lI = mutableListOf<Char>()
-
-            var wIdx = 0
-            var iIdx = 0
-            var sIdx = 0
-
+            var wIdx = 0; var iIdx = 0; var sIdx = 0
             while (true) {
                 if (wIdx < 5) l1lI.add(w[wIdx]) else if (wIdx < w.length) ll1l.add(w[wIdx])
                 wIdx++
@@ -265,7 +251,6 @@ class TvPhimProvider : MainAPI() {
             val I1lI = l1lI.joinToString("")
             var ll1IIdx = 0
             val l1ll = mutableListOf<Char>()
-
             var lIllIdx = 0
             while (lIllIdx < ll1l.size) {
                 var ll11 = -1
