@@ -72,7 +72,10 @@ class TvPhimProvider : MainAPI() {
         "$mainUrl/phim-hay/" to "Phim Hay Đề Cử",
     )
 
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+    override suspend fun getMainPage(
+        page: Int,
+        request: MainPageRequest
+    ): HomePageResponse {
         val url = if (page == 1) request.data else "${request.data}page/$page/"
         val document = app.get(url, interceptor = cfInterceptor).document
         val home = document.select("div.grid div.relative").mapNotNull {
@@ -150,21 +153,28 @@ class TvPhimProvider : MainAPI() {
         fun decrypt(data: String, key: String): String? = CryptoJS.decrypt(key, Base64.getEncoder().encodeToString(data.hexStringToByteArray()))
     }
 
+    // **FIXED**: Rewritten CryptoJS object to ensure correct key/IV lengths
     private object CryptoJS {
         private fun evpkdf(password: ByteArray, keySize: Int, ivSize: Int, salt: ByteArray): Pair<ByteArray, ByteArray> {
-            val keySizeWords = keySize / 32; val ivSizeWords = ivSize / 32
-            val totalWords = keySizeWords + ivSizeWords
-            val resultBytes = ByteArray(totalWords * 4)
-            var currentPos = 0
+            val keySizeBytes = keySize / 8
+            val ivSizeBytes = ivSize / 8
+            val resultBytes = ByteArray(keySizeBytes + ivSizeBytes)
             var derivedBytes = ByteArray(0)
             val md5 = MessageDigest.getInstance("MD5")
-            while (currentPos < resultBytes.size) {
-                md5.update(derivedBytes); md5.update(password); md5.update(salt)
+            var writtenBytes = 0
+
+            while (writtenBytes < resultBytes.size) {
+                md5.update(derivedBytes)
+                md5.update(password)
+                md5.update(salt)
                 derivedBytes = md5.digest()
-                System.arraycopy(derivedBytes, 0, resultBytes, currentPos, minOf(derivedBytes.size, resultBytes.size - currentPos))
-                currentPos += derivedBytes.size
+                val bytesToCopy = minOf(derivedBytes.size, resultBytes.size - writtenBytes)
+                System.arraycopy(derivedBytes, 0, resultBytes, writtenBytes, bytesToCopy)
+                writtenBytes += bytesToCopy
             }
-            return Pair(resultBytes.copyOfRange(0, keySizeWords * 4), resultBytes.copyOfRange(keySizeWords * 4, totalWords * 4))
+            val key = resultBytes.copyOfRange(0, keySizeBytes)
+            val iv = resultBytes.copyOfRange(keySizeBytes, keySizeBytes + ivSizeBytes)
+            return Pair(key, iv)
         }
 
         fun decrypt(password: String, cipherTextB64: String): String? {
@@ -173,59 +183,15 @@ class TvPhimProvider : MainAPI() {
                 val salt = ctBytes.copyOfRange(8, 16)
                 val ciphertextBytes = ctBytes.copyOfRange(16, ctBytes.size)
                 val (key, iv) = evpkdf(password.toByteArray(Charsets.UTF_8), 256, 128, salt)
+                if (iv.size != 16) throw Exception("Invalid IV size: ${iv.size}")
                 val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
                 cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
                 String(cipher.doFinal(ciphertextBytes))
-            } catch (e: Exception) { null }
+            } catch (e: Exception) {
+                Log.e("CryptoJS.decrypt", e.toString())
+                null
+            }
         }
-    }
-
-    private fun unwiseProcess(script: String): String {
-        var processedScript = script
-        val evalRegex = Regex("eval\\(function\\(w,i,s,e\\).*?\\}\\((['\"].*?['\"]),(['\"].*?['\"]),(['\"].*?['\"]),(['\"].*?['\"])\\)\\)")
-        while (true) {
-            val match = evalRegex.find(processedScript) ?: break
-            val fullMatch = match.value
-            val args = match.groupValues.drop(1).map { it.removeSurrounding("'").removeSurrounding("\"") }
-            if (args.size < 3) {
-                processedScript = processedScript.replace(fullMatch, ""); continue
-            }
-            val deobfuscated = deobfuscateScript(args[0], args[1], args[2])
-            if (deobfuscated.isNullOrBlank()) {
-                processedScript = processedScript.replace(fullMatch, ""); continue
-            }
-            processedScript = processedScript.replace(fullMatch, deobfuscated)
-        }
-        return processedScript
-    }
-
-    private fun deobfuscateScript(w: String, i: String, s: String): String? {
-        try {
-            val ll1l = mutableListOf<Char>(); val l1lI = mutableListOf<Char>()
-            var wIdx = 0; var iIdx = 0; var sIdx = 0
-            while (true) {
-                if (wIdx < 5) l1lI.add(w[wIdx]) else if (wIdx < w.length) ll1l.add(w[wIdx])
-                wIdx++
-                if (iIdx < 5) l1lI.add(i[iIdx]) else if (iIdx < i.length) ll1l.add(i[iIdx])
-                iIdx++
-                if (sIdx < 5) l1lI.add(s[sIdx]) else if (sIdx < s.length) ll1l.add(s[sIdx])
-                sIdx++
-                if (w.length + i.length + s.length == ll1l.size + l1lI.size) break
-            }
-            val lI1l = ll1l.joinToString(""); val I1lI = l1lI.joinToString("")
-            var ll1IIdx = 0; val l1ll = mutableListOf<Char>()
-            var lIllIdx = 0
-            while (lIllIdx < ll1l.size) {
-                var ll11 = -1
-                if (I1lI[ll1IIdx].code % 2 != 0) ll11 = 1
-                val charCode = lI1l.substring(lIllIdx, lIllIdx + 2).toLong(36).toInt() - ll11
-                l1ll.add(charCode.toChar())
-                ll1IIdx++
-                if (ll1IIdx >= l1lI.size) ll1IIdx = 0
-                lIllIdx += 2
-            }
-            return l1ll.joinToString("")
-        } catch (e: Exception) { return null }
     }
 
     override suspend fun loadLinks(
@@ -234,30 +200,18 @@ class TvPhimProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val serverDoc = app.get(data, interceptor = cfInterceptor).document
-        val serverName = "S.PRO"
+        val document = app.get(data, interceptor = cfInterceptor).document
+        val server = document.select("ul.episodelistsv a").find { 
+            it.attr("title").equals("Server S.PRO", ignoreCase = true) 
+        } ?: throw Exception("Không tìm thấy Server S.PRO.")
+        val serverName = server.attr("title")
         try {
-            var iframeUrl: String?
-            val scriptContent = serverDoc.select("script").find { it.data().contains("eval(function(w,i,s,e)") || it.data().contains("setAttribute(\"src\"") }?.data()
-                ?: throw Exception("Không tìm thấy script của trình phát video.")
-            
-            val deobfuscated = unwiseProcess(scriptContent)
-            Log.d("TvPhimProvider", "Deobfuscated Script Content: $deobfuscated")
-            
-            val setAttrMatch = Regex("""setAttribute\(\s*["']src["']\s*,\s*["'](.*?)["']\)""").find(deobfuscated)
-            if (setAttrMatch != null) {
-                val rawUrl = setAttrMatch.groupValues[1].replace(" ", "")
-                iframeUrl = Regex("""link=([^'"]+)""").find(rawUrl)?.groupValues?.get(1)
-            } else {
-                iframeUrl = Regex("""src\s*=\s*['"]([^'"]+)""").find(deobfuscated)?.groupValues?.get(1)
-            }
-
-            if (iframeUrl.isNullOrBlank()) {
-                throw Exception("Không tìm thấy iframe URL sau khi giải mã. Nội dung đã giải mã: $deobfuscated")
-            }
+            val serverUrl = server.attr("href")
+            val serverDoc = app.get(serverUrl, referer = data).document
+            val iframeUrl = serverDoc.selectFirst("iframe")?.attr("src") ?: throw Exception("Không tìm thấy iframe.")
 
             if ("plhqtvhay" in iframeUrl) {
-                val iframeDoc = app.get(iframeUrl, referer = data).document
+                val iframeDoc = app.get(iframeUrl, referer = serverUrl).document
                 val script = iframeDoc.selectFirst("script:containsData(const idfile_enc)")?.data()
                     ?: throw Exception("Không tìm thấy script chứa dữ liệu mã hóa.")
 
@@ -273,11 +227,12 @@ class TvPhimProvider : MainAPI() {
                 
                 val ip = app.get("https://api.ipify.org/").text
                 val timestamp = System.currentTimeMillis().toString()
-                val payload = Payload(idFile, idUser, data, ip, timestamp)
+                val payload = Payload(idFile, idUser, serverUrl, ip, timestamp)
                 
+                // **FIXED**: Using correct 16-byte IV for payload encryption
                 val keyBytes = "vlVbUQhkOhoSfyteyzGeeDzU0BHoeTyZ".toByteArray(Charsets.UTF_8)
                 val skey = SecretKeySpec(keyBytes, "AES")
-                val iv = IvParameterSpec(keyBytes)
+                val iv = IvParameterSpec(keyBytes.copyOfRange(0, 16)) // Use first 16 bytes of the key
                 val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
                 cipher.init(Cipher.ENCRYPT_MODE, skey, iv)
                 val encryptedPayload = Base64.getEncoder().encodeToString(cipher.doFinal(payload.toJson().toByteArray(Charsets.UTF_8)))
