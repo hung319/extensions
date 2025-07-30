@@ -386,8 +386,14 @@ class TvPhimProvider : MainAPI() {
             val encryptedData = String(Base64.getDecoder().decode(encryptedPayloadHex), Charsets.UTF_8)
             val hash = md5Hash(encryptedData + MD5_SALT)
 
+            val headers = mapOf(
+                "Origin" to "https://play.plhqtvhay.xyz",
+                "Referer" to "https://play.plhqtvhay.xyz/"
+            )
+
             val response = app.post(
                 url = "$domainApi/playiframe",
+                headers = headers,
                 data = mapOf("data" to "$encryptedData|$hash")
             )
             val responseText = response.text
@@ -396,9 +402,10 @@ class TvPhimProvider : MainAPI() {
             val apiResponse = response.parsed<ApiResponse>()
             Log.e(TAG, "Parsed API response object: $apiResponse")
 
-            if (apiResponse.status == 1 && apiResponse.type == "url-m3u8-encv1" && apiResponse.data != null) {
+            if (apiResponse.status == 1 && apiResponse.type == "url-blob-tvhayv1" && apiResponse.data != null) {
                 Log.e(TAG, "Step 6: Decrypting M3U8 URL...")
-                val m3u8Url = Crypto.decrypt(apiResponse.data.replace("\"", ""), FINAL_M3U8_DECRYPTION_KEY)
+                val decryptedDataB64 = Base64.getEncoder().encodeToString(hexStringToByteArray(apiResponse.data))
+                val m3u8Url = Crypto.decrypt(decryptedDataB64, FINAL_M3U8_DECRYPTION_KEY)
                 Log.e(TAG, "Step 6: Got M3U8 URL: $m3u8Url")
 
                 callback(
@@ -409,12 +416,16 @@ class TvPhimProvider : MainAPI() {
                 )
                 return true
             } else {
-                // UPDATED: Include the raw API response in the exception message
                 throw ErrorLoadingException("API không trả về link video hợp lệ. Phản hồi từ server: $responseText")
             }
         } catch (e: Exception) {
             Log.e(TAG, "loadLinks error for url $data", e)
-            throw ErrorLoadingException("Không thể tải link phim. Chi tiết: ${e.message}")
+            // Ném lại lỗi gốc nếu nó đã là ErrorLoadingException, nếu không thì tạo lỗi mới
+            if (e is ErrorLoadingException) {
+                throw e
+            } else {
+                throw ErrorLoadingException("Không thể tải link phim. Chi tiết: ${e.message}")
+            }
         }
     }
 
