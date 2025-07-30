@@ -14,6 +14,7 @@ import javax.crypto.spec.SecretKeySpec
 import java.util.Base64
 import java.math.BigInteger
 import java.security.MessageDigest
+import java.util.Collections
 import java.util.concurrent.atomic.AtomicBoolean
 import android.util.Log
 
@@ -222,7 +223,7 @@ class TvPhimProvider : MainAPI() {
                 val charCode = lI1l.substring(lIllIdx, lIllIdx + 2).toLong(36).toInt() - ll11
                 l1ll.add(charCode.toChar())
                 ll1IIdx++
-                if (ll1IIdx >= l1lI.size) ll1IIdx = 0 // **FIXED**: Changed .length to .size
+                if (ll1IIdx >= l1lI.size) ll1IIdx = 0
                 lIllIdx += 2
             }
             return l1ll.joinToString("")
@@ -242,9 +243,10 @@ class TvPhimProvider : MainAPI() {
         if (servers.isEmpty()) throw Exception("Không tìm thấy server nào.")
 
         val isSuccessful = AtomicBoolean(false)
-        for (server in servers) {
-            if (isSuccessful.get()) break
+        val errorLogs = Collections.synchronizedList(mutableListOf<String>())
 
+        servers.apmap { server ->
+            if (isSuccessful.get()) return@apmap
             val serverName = server.attr("title")
             try {
                 val serverUrl = server.attr("href")
@@ -304,19 +306,24 @@ class TvPhimProvider : MainAPI() {
                         )
                         isSuccessful.set(true)
                     } else {
-                        throw Exception("API trả về lỗi hoặc trạng thái không thành công: ${apiResponse.toJson()}")
+                        errorLogs.add("Server '$serverName': API trả về lỗi hoặc trạng thái không thành công: ${apiResponse.toJson()}")
                     }
                 } else {
-                    throw Exception("Trình phát video từ '$iframeUrl' không được hỗ trợ.")
+                     if (loadExtractor(iframeUrl, data, subtitleCallback, callback)) {
+                        isSuccessful.set(true)
+                    } else {
+                        errorLogs.add("Server '$serverName': Trình phát video từ '$iframeUrl' không được hỗ trợ.")
+                    }
                 }
             } catch (e: Exception) {
                 Log.e("TvPhimProvider", "Lỗi xử lý server '$serverName'", e)
-                throw Exception("Lỗi xử lý server '$serverName': ${e.message}")
+                errorLogs.add("Server '$serverName': ${e.message}")
             }
         }
         
         if (!isSuccessful.get()) {
-            throw Exception("Đã thử tất cả các server nhưng không thể lấy được link video.")
+            val errorDetails = errorLogs.joinToString("\n")
+            throw Exception("Đã thử tất cả các server nhưng không thể lấy được link video.\n\n--- Chi tiết lỗi ---\n$errorDetails")
         }
         
         return true
