@@ -114,11 +114,9 @@ class TvPhimProvider : MainAPI() {
                 }
             } else null
         }
-        
-        // **FIXED**: Check for valid watch URL to determine if it's "coming soon"
+
         val watchUrl = document.selectFirst("a:contains(Xem Phim)")?.attr("href")
         if (watchUrl == null || !watchUrl.startsWith("http")) {
-            // No valid link found, mark as "Coming Soon"
             return newMovieLoadResponse(title, url, TvType.Movie, url) {
                 this.posterUrl = poster
                 this.year = year
@@ -194,75 +192,112 @@ class TvPhimProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data, interceptor = cfInterceptor).document
+        val logs = mutableListOf("--- TVPhim Debug Log ---")
+        var isSuccessful = false
 
-        // Find server links on the watch page
-        val servers = document.select("ul.episodelistsv a")
-        if (servers.isEmpty()) return false
+        try {
+            logs.add("Data URL: $data")
+            val document = app.get(data, interceptor = cfInterceptor).document
 
-        servers.apmap { server ->
-            try {
-                val serverUrl = server.attr("href")
-                val serverName = server.attr("title")
-                val serverDoc = app.get(serverUrl, referer = data).document
-
-                // Find the iframe and its source
-                val iframe = serverDoc.selectFirst("iframe") ?: return@apmap
-                val iframeUrl = iframe.attr("src")
-
-                // Handle the main server logic
-                if ("plhqtvhay" in iframeUrl) {
-                    val iframeDoc = app.get(iframeUrl, referer = serverUrl).document
-                    val script = iframeDoc.selectFirst("script:containsData(const idfile_enc)")?.data() ?: return@apmap
-
-                    // Extract encrypted data
-                    val idFileEnc = Regex("""const idfile_enc = "([^"]+)";""").find(script)?.groupValues?.get(1)
-                    val idUserEnc = Regex("""const idUser_enc = "([^"]+)";""").find(script)?.groupValues?.get(1)
-                    val domainApi = Regex("""const DOMAIN_API = '([^']+)';""").find(script)?.groupValues?.get(1)
-
-                    if (idFileEnc == null || idUserEnc == null || domainApi == null) return@apmap
-
-                    // Decrypt necessary data
-                    val idFile = cryptoHandler(idFileEnc, "jcLycoRJT6OWjoWspgLMOZwS3aSS0lEn", true) ?: return@apmap
-                    val idUser = cryptoHandler(idUserEnc, "PZZ3J3LDbLT0GY7qSA5wW5vchqgpO36O", true) ?: return@apmap
-                    
-                    // Build and encrypt payload
-                    val ip = app.get("https://api.ipify.org/").text
-                    val timestamp = System.currentTimeMillis().toString()
-                    val payload = Payload(idFile, idUser, serverUrl, "noplf", ip, timestamp)
-                    val encryptedPayload = cryptoHandler(payload.toJson(), "vlVbUQhkOhoSfyteyzGeeDzU0BHoeTyZ") ?: return@apmap
-                    val hash = (encryptedPayload + "KRWN3AdgmxEMcd2vLN1ju9qKe8Feco5h").md5()
-
-                    // Make the final API call
-                    val apiResponse = app.post(
-                        "$domainApi/playiframe",
-                        data = mapOf("data" to "$encryptedPayload|$hash"),
-                        referer = iframeUrl
-                    ).parsedSafe<ApiResponse>()
-
-                    if (apiResponse?.status == 1 && apiResponse.type == "url-m3u8-encv1") {
-                        val finalUrl = cryptoHandler(apiResponse.data.replace("\"", ""), "oJwmvmVBajMaRCTklxbfjavpQO7SZpsL", true)
-                        if (finalUrl != null) {
-                            callback.invoke(
-                                ExtractorLink(
-                                    source = this.name,
-                                    name = serverName,
-                                    url = finalUrl,
-                                    referer = iframeUrl,
-                                    quality = Qualities.Unknown.value,
-                                    type = ExtractorLinkType.M3U8
-                                )
-                            )
-                        }
-                    }
-                } else {
-                    // Handle other potential extractors like ok.ru, etc.
-                    loadExtractor(iframeUrl, data, subtitleCallback, callback)
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
+            val servers = document.select("ul.episodelistsv a")
+            logs.add("Found ${servers.size} servers.")
+            if (servers.isEmpty()) {
+                logs.add("Error: No servers found on page.")
             }
+
+            servers.apmap { server ->
+                val serverName = server.attr("title")
+                try {
+                    val serverUrl = server.attr("href")
+                    logs.add("Processing Server: '$serverName' ($serverUrl)")
+                    val serverDoc = app.get(serverUrl, referer = data).document
+
+                    val iframe = serverDoc.selectFirst("iframe")
+                    if (iframe == null) {
+                        logs.add("Error: No iframe found for server '$serverName'.")
+                        return@apmap
+                    }
+                    
+                    val iframeUrl = iframe.attr("src")
+                    logs.add("Found iframe URL: $iframeUrl")
+
+                    if ("plhqtvhay" in iframeUrl) {
+                        val iframeDoc = app.get(iframeUrl, referer = serverUrl).document
+                        val script = iframeDoc.selectFirst("script:containsData(const idfile_enc)")?.data()
+                        if (script == null) {
+                            logs.add("Error: Could not find script with encrypted data in iframe.")
+                            return@apmap
+                        }
+                        logs.add("Found script with encrypted data.")
+                        
+                        val idFileEnc = Regex("""const idfile_enc = "([^"]+)";""").find(script)?.groupValues?.get(1)
+                        val idUserEnc = Regex("""const idUser_enc = "([^"]+)";""").find(script)?.groupValues?.get(1)
+                        val domainApi = Regex("""const DOMAIN_API = '([^']+)';""").find(script)?.groupValues?.get(1)
+                        logs.add("Extracted Encrypted Data -> idfile: $idFileEnc, iduser: $idUserEnc, domain: $domainApi")
+
+                        if (idFileEnc == null || idUserEnc == null || domainApi == null) {
+                            logs.add("Error: Failed to extract one or more encrypted values.")
+                            return@apmap
+                        }
+
+                        val idFile = cryptoHandler(idFileEnc, "jcLycoRJT6OWjoWspgLMOZwS3aSS0lEn", true)
+                        val idUser = cryptoHandler(idUserEnc, "PZZ3J3LDbLT0GY7qSA5wW5vchqgpO36O", true)
+                        logs.add("Decrypted Data -> idfile: $idFile, iduser: $idUser")
+                        if (idFile == null || idUser == null) {
+                             logs.add("Error: Failed to decrypt IDs.")
+                            return@apmap
+                        }
+                        
+                        val ip = app.get("https://api.ipify.org/").text
+                        val timestamp = System.currentTimeMillis().toString()
+                        val payload = Payload(idFile, idUser, serverUrl, "noplf", ip, timestamp)
+                        val encryptedPayload = cryptoHandler(payload.toJson(), "vlVbUQhkOhoSfyteyzGeeDzU0BHoeTyZ") ?: return@apmap
+                        val hash = (encryptedPayload + "KRWN3AdgmxEMcd2vLN1ju9qKe8Feco5h").md5()
+
+                        logs.add("POSTing to: $domainApi/playiframe")
+                        val apiResponse = app.post(
+                            "$domainApi/playiframe",
+                            data = mapOf("data" to "$encryptedPayload|$hash"),
+                            referer = iframeUrl
+                        ).parsedSafe<ApiResponse>()
+                        logs.add("API Response: ${apiResponse?.toJson()}")
+
+                        if (apiResponse?.status == 1 && apiResponse.type == "url-m3u8-encv1") {
+                            val finalUrl = cryptoHandler(apiResponse.data.replace("\"", ""), "oJwmvmVBajMaRCTklxbfjavpQO7SZpsL", true)
+                            logs.add("Final Decrypted URL: $finalUrl")
+                            if (finalUrl != null) {
+                                callback.invoke(
+                                    ExtractorLink(
+                                        source = this.name,
+                                        name = serverName,
+                                        url = finalUrl,
+                                        referer = iframeUrl,
+                                        quality = Qualities.Unknown.value,
+                                        type = ExtractorLinkType.M3U8
+                                    )
+                                )
+                                isSuccessful = true
+                            }
+                        }
+                    } else {
+                        logs.add("Found non-plhqtvhay server: $iframeUrl. Attempting to use generic extractor.")
+                        loadExtractor(iframeUrl, data, subtitleCallback, callback)
+                        isSuccessful = true 
+                    }
+                } catch (e: Exception) {
+                    logs.add("Error processing server '$serverName': ${e.message}")
+                    e.printStackTrace()
+                }
+            }
+        } catch (e: Exception) {
+             logs.add("Main loadLinks Error: ${e.message}")
+             throw Exception("Lỗi khi tải link: ${e.message}\n\n--- Log ---\n${logs.joinToString("\n")}")
         }
+
+        if (!isSuccessful) {
+            throw Exception("Không thể lấy link video từ bất kỳ server nào.\n\n--- Log ---\n${logs.joinToString("\n")}")
+        }
+        
         return true
     }
 }
