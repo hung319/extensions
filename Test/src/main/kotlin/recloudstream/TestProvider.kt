@@ -105,17 +105,22 @@ class TvPhimProvider : MainAPI() {
             } else null
         }
 
-        // Episodes for TV Series
-        val episodes = document.select("div:contains(Tập Mới Nhất) a").map {
-            val episodeName = it.attr("title")
-            val episodeUrl = it.attr("href")
-            newEpisode(episodeUrl) {
-                name = episodeName
-            }
-        }.reversed()
+        // Check if the content is a TV Series based on status text
+        val status = document.selectFirst("span:contains(Tình Trạng:) + span")?.text()?.lowercase() ?: ""
+        val isTvSeries = status.contains("/") || status.contains("tập")
 
-        return if (episodes.isNotEmpty()) {
-            newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+        if (isTvSeries) {
+            // **FIXED:** Use a more specific selector for episodes
+            val episodes = document.select("span:contains(Tập Mới Nhất) + div a").mapNotNull { ep ->
+                val epName = ep.attr("title").ifBlank { ep.text() }
+                val epUrl = ep.attr("href")
+                if (epUrl.isBlank()) return@mapNotNull null
+                newEpisode(epUrl) {
+                    name = epName
+                }
+            }.reversed()
+            
+            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = plot
@@ -124,7 +129,9 @@ class TvPhimProvider : MainAPI() {
                 this.recommendations = recommendations
             }
         } else {
-            newMovieLoadResponse(title, url, TvType.Movie, url) {
+            // It's a movie, get the watch URL from "Xem Phim" button
+            val dataUrl = document.selectFirst("a:contains(Xem Phim)")?.attr("href") ?: url
+            return newMovieLoadResponse(title, url, TvType.Movie, dataUrl) {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = plot
