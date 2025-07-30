@@ -3,6 +3,9 @@ package recloudstream
 import com.google.gson.annotations.SerializedName
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.ExtractorLinkType // <-- ĐÃ SỬA ĐƯỜNG DẪN IMPORT
 import okhttp3.Interceptor
 import okhttp3.Response
 import org.jsoup.nodes.Element
@@ -10,7 +13,6 @@ import java.net.URI
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.time.Instant
-import java.util.Arrays
 import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
@@ -87,7 +89,7 @@ private data class ApiResponse(
 //region: Logic mã hoá
 private object Crypto {
     private const val AES = "AES"
-    private const val HASH_CIPHER = "AES/CBC/PKCS5Padding" // PKCS5Padding is compatible with PKCS7Padding for AES
+    private const val HASH_CIPHER = "AES/CBC/PKCS5Padding"
     private const val KDF_DIGEST = "MD5"
     private const val KEY_SIZE_BITS = 256
     private const val IV_SIZE_BITS = 128
@@ -98,21 +100,16 @@ private object Crypto {
         val salt = generateSalt(SALT_SIZE_BYTES)
         val key = ByteArray(KEY_SIZE_BITS / 8)
         val iv = ByteArray(IV_SIZE_BITS / 8)
-
         evpkdf(password.toByteArray(Charsets.UTF_8), salt, key, iv)
-
         val secretKeySpec = SecretKeySpec(key, AES)
         val cipher = Cipher.getInstance(HASH_CIPHER)
         cipher.init(Cipher.ENCRYPT_MODE, secretKeySpec, IvParameterSpec(iv))
-
         val encryptedBytes = cipher.doFinal(plainText.toByteArray(Charsets.UTF_8))
         val saltedPrefixBytes = APPEND_TEXT.toByteArray(Charsets.UTF_8)
-
         val result = ByteArray(saltedPrefixBytes.size + salt.size + encryptedBytes.size)
         System.arraycopy(saltedPrefixBytes, 0, result, 0, saltedPrefixBytes.size)
         System.arraycopy(salt, 0, result, saltedPrefixBytes.size, salt.size)
         System.arraycopy(encryptedBytes, 0, result, saltedPrefixBytes.size + salt.size, encryptedBytes.size)
-
         return Base64.getEncoder().encodeToString(result)
     }
 
@@ -120,16 +117,12 @@ private object Crypto {
         val decodedBytes = Base64.getDecoder().decode(cipherTextB64)
         val salt = decodedBytes.copyOfRange(8, 16)
         val cipherBytes = decodedBytes.copyOfRange(16, decodedBytes.size)
-
         val key = ByteArray(KEY_SIZE_BITS / 8)
         val iv = ByteArray(IV_SIZE_BITS / 8)
-
         evpkdf(password.toByteArray(Charsets.UTF_8), salt, key, iv)
-
         val secretKeySpec = SecretKeySpec(key, AES)
         val cipher = Cipher.getInstance(HASH_CIPHER)
         cipher.init(Cipher.DECRYPT_MODE, secretKeySpec, IvParameterSpec(iv))
-
         val decryptedBytes = cipher.doFinal(cipherBytes)
         return String(decryptedBytes, Charsets.UTF_8)
     }
@@ -142,19 +135,14 @@ private object Crypto {
         val md = MessageDigest.getInstance(KDF_DIGEST)
         var block: ByteArray? = null
         var i = 0
-
         while (i < totalWords) {
-            if (block != null) {
-                md.update(block)
-            }
+            if (block != null) md.update(block)
             md.update(password)
             block = md.digest(salt)
             md.reset()
-
             System.arraycopy(block, 0, derivedBytes, i * 4, minOf(block.size, (totalWords - i) * 4))
             i += block.size / 4
         }
-
         System.arraycopy(derivedBytes, 0, resultKey, 0, keySizeWords * 4)
         System.arraycopy(derivedBytes, keySizeWords * 4, resultIv, 0, ivSizeWords * 4)
     }
@@ -195,7 +183,7 @@ private object UnwiseHelper {
         val result = StringBuilder()
         var j = 0; var k = 0
         while (j < sb.length) {
-            val charCode = sb.substring(j, j + 2).toInt(36) - if (sb2[k] % 2 != 0) 1 else -1
+            val charCode = sb.substring(j, j + 2).toInt(36) - if (sb2[k].code % 2 != 0) 1 else -1
             require(charCode in 0..65535) { "Invalid Char code: $charCode" }
             result.append(charCode.toChar())
             k = (k + 1) % sb2.length
@@ -309,7 +297,7 @@ class TvPhimProvider : MainAPI() {
             ?: document.selectFirst("div.entry-content p")?.text()
         document.selectFirst("span.liked")?.text()?.trim()?.toIntOrNull()?.let { plot += "\n\n❤️ Yêu thích: $it" }
         val tags = document.select("span.text-gray-400:contains(Thể loại) a").map { it.text() }
-        val actors = document.select("span.text-gray-400:contains(Diễn viên) a").map { Actor(it.text()) }
+        val actors = document.select("span.text-gray-400:contains(Diễn viên) a").map { ActorData(Actor(it.text())) }
         val recommendations = document.select("div.mt-2:has(span:contains(Cùng Series)) a").mapNotNull {
             val recTitle = it.selectFirst("span")?.text()
             val recHref = it.attr("href")
@@ -348,7 +336,7 @@ class TvPhimProvider : MainAPI() {
         val iframeSrc = unpackedScript.substringAfter("?link=").substringBefore("\"")
 
         if (!iframeSrc.startsWith("https://play.plhqtvhay.xyz/")) return false
-        
+
         val baseUrl = getBaseUrl(data)
         val iframeDoc = app.get(iframeSrc, interceptor = cfInterceptor, referer = "$baseUrl/").document
         val iframeScript = iframeDoc.select("script").firstOrNull { it.data().contains("const idfile_enc = \"") }?.data() ?: return false
@@ -385,7 +373,7 @@ class TvPhimProvider : MainAPI() {
             callback(
                 ExtractorLink(
                     source = this.name, name = "S.PRO", url = m3u8Url, referer = "$baseUrl/", quality = Qualities.P720.value,
-                    type = ExtractorLinkType.M3U8 // <-- Đã cập nhật từ isM3u8
+                    type = ExtractorLinkType.M3U8
                 )
             )
             return true
@@ -393,11 +381,11 @@ class TvPhimProvider : MainAPI() {
         return false
     }
 
-    override fun getVideoInterceptor(link: ExtractorLink): Interceptor {
+    override fun getVideoInterceptor(link: ExtractorLink): Interceptor? {
         return object : Interceptor {
             override fun intercept(chain: Interceptor.Chain): Response {
                 val request = chain.request()
-                if ("plhqtvhay" in request.url.toString() && !"/m3u8" in request.url.toString()) {
+                if (request.url.toString().contains("plhqtvhay") && !request.url.toString().contains("/m3u8")) {
                     return chain.proceed(
                         request.newBuilder()
                             .removeHeader("Host")
