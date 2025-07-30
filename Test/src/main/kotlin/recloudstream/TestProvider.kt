@@ -206,16 +206,13 @@ class TvPhimProvider : MainAPI() {
 
     private fun unwiseProcess(script: String): String {
         var processedScript = script
-        // **FIXED**: Using a more robust regex to find the entire eval block
         val evalRegex = Regex("eval\\(function\\(w,i,s,e\\).*?\\}\\((['\"].*?['\"]),(['\"].*?['\"]),(['\"].*?['\"]),(['\"].*?['\"])\\)\\)")
 
         while (true) {
             val match = evalRegex.find(processedScript) ?: break
             val fullMatch = match.value
             
-            // Extract args directly from the main regex match
             val args = match.groupValues.drop(1).map { it.removeSurrounding("'").removeSurrounding("\"") }
-
             if (args.size < 3) {
                 processedScript = processedScript.replace(fullMatch, "")
                 continue
@@ -231,7 +228,7 @@ class TvPhimProvider : MainAPI() {
         }
         return processedScript
     }
-
+    
     private fun deobfuscateScript(w: String, i: String, s: String): String? {
         try {
             val ll1l = mutableListOf<Char>()
@@ -284,17 +281,25 @@ class TvPhimProvider : MainAPI() {
             val serverUrl = server.attr("href")
             val serverDoc = app.get(serverUrl, referer = data).document
 
-            var iframeUrl = serverDoc.selectFirst("iframe")?.attr("src")
-
-            if (iframeUrl.isNullOrBlank() || !iframeUrl.startsWith("http")) {
-                val scriptContent = serverDoc.select("script").find { it.data().contains("eval(function(w,i,s,e)") }?.data()
-                    ?: throw Exception("Không tìm thấy script của trình phát video.")
-                
-                val deobfuscated = unwiseProcess(scriptContent)
-                Log.d("TvPhimProvider", "Deobfuscated Script Content: $deobfuscated")
-                
+            var iframeUrl: String?
+            
+            val scriptContent = serverDoc.select("script").find { it.data().contains("eval(function(w,i,s,e)") || it.data().contains("setAttribute(\"src\"") }?.data()
+                ?: throw Exception("Không tìm thấy script của trình phát video.")
+            
+            val deobfuscated = unwiseProcess(scriptContent)
+            Log.d("TvPhimProvider", "Deobfuscated Script Content: $deobfuscated")
+            
+            // **FIXED**: New logic to find iframeUrl from either `setAttribute` or `src=`
+            val setAttrMatch = Regex("""setAttribute\(\s*["']src["']\s*,\s*["'](.*?)["']\)""").find(deobfuscated)
+            if (setAttrMatch != null) {
+                val rawUrl = setAttrMatch.groupValues[1].replace(" ", "")
+                iframeUrl = Regex("""link=([^'"]+)""").find(rawUrl)?.groupValues?.get(1)
+            } else {
                 iframeUrl = Regex("""src\s*=\s*['"]([^'"]+)""").find(deobfuscated)?.groupValues?.get(1)
-                    ?: throw Exception("Không tìm thấy iframe URL sau khi giải mã. Nội dung đã giải mã: $deobfuscated")
+            }
+
+            if (iframeUrl.isNullOrBlank()) {
+                throw Exception("Không tìm thấy iframe URL sau khi giải mã. Nội dung đã giải mã: $deobfuscated")
             }
 
             if ("plhqtvhay" in iframeUrl) {
