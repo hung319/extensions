@@ -6,7 +6,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.ExtractorLinkType // FIXED: Typo in package name lagradost
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import okhttp3.Interceptor
 import okhttp3.Response
 import org.jsoup.nodes.Element
@@ -339,10 +339,9 @@ class TvPhimProvider : MainAPI() {
 
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
         try {
-            // CHANGED: Log.d to Log.e
             Log.e(TAG, "loadLinks started for url: $data")
             val watchPageDoc = app.get(data, interceptor = cfInterceptor).document
-            
+
             Log.e(TAG, "Step 1: Finding packed script...")
             val packedScript = watchPageDoc.select("script").lastOrNull { it.data().contains("eval(function(w,i,s,e)") }?.data()
                 ?: throw ErrorLoadingException("Không tìm thấy script video.")
@@ -356,7 +355,7 @@ class TvPhimProvider : MainAPI() {
 
             val baseUrl = getBaseUrl(data)
             val iframeDoc = app.get(iframeSrc, interceptor = cfInterceptor, referer = "$baseUrl/").document
-            
+
             Log.e(TAG, "Step 3: Finding encrypted data script...")
             val iframeScript = iframeDoc.select("script").firstOrNull { it.data().contains("const idfile_enc = \"") }?.data()
                 ?: throw ErrorLoadingException("Không tìm thấy script chứa dữ liệu mã hoá.")
@@ -386,12 +385,18 @@ class TvPhimProvider : MainAPI() {
             val encryptedPayloadHex = Crypto.encrypt(payloadJson, ENCRYPTION_KEY)
             val encryptedData = String(Base64.getDecoder().decode(encryptedPayloadHex), Charsets.UTF_8)
             val hash = md5Hash(encryptedData + MD5_SALT)
-            
-            val apiResponse = app.post(
+
+            // UPDATED: Log the raw response text before parsing
+            val response = app.post(
                 url = "$domainApi/playiframe",
                 data = mapOf("data" to "$encryptedData|$hash")
-            ).parsed<ApiResponse>()
-            Log.e(TAG, "Step 5: Got API response: $apiResponse")
+            )
+            val responseText = response.text
+            Log.e(TAG, "RAW API Response Text: $responseText")
+
+            val apiResponse = response.parsed<ApiResponse>()
+            Log.e(TAG, "Parsed API response object: $apiResponse")
+
 
             if (apiResponse.status == 1 && apiResponse.type == "url-m3u8-encv1" && apiResponse.data != null) {
                 Log.e(TAG, "Step 6: Decrypting M3U8 URL...")
@@ -406,6 +411,8 @@ class TvPhimProvider : MainAPI() {
                 )
                 return true
             } else {
+                Log.e
+                throw e
                 throw ErrorLoadingException("API không trả về link video hợp lệ.")
             }
         } catch (e: Exception) {
