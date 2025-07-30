@@ -15,6 +15,7 @@ import java.util.Base64
 import java.math.BigInteger
 import java.security.MessageDigest
 import android.util.Log
+import kotlin.text.CharsKt
 
 // Helper function to calculate MD5 hash
 private fun String.md5(): String {
@@ -162,9 +163,25 @@ class TvPhimProvider : MainAPI() {
         }
     }
     
-    // Helper classes for JSON parsing
+    // Data classes based on decompiled Java files
     private data class ApiResponse(val status: Int?, val type: String?, val data: String)
-    private data class Payload(val idfile: String, val iduser: String, val refer: String, val type: String, val user_ip: String, val time: String)
+    private data class Payload(
+        val idfile: String,
+        val iduser: String,
+        val domain_play: String, // refer
+        val platform: String = "noplf",
+        val ip_clien: String, // user_ip
+        val time_request: String, // time
+        val hlsSupport: Boolean = true,
+        val jwplayer: JWPlayer
+    )
+    private data class JWPlayer(val browser: JWPlayerBrowser, val os: JWPlayerOS, val features: JWPlayerFeatures)
+    private data class JWPlayerBrowser(val is_chrome: Boolean, val is_edge: Boolean, val is_firefox: Boolean, val is_ie: Boolean, val is_opera: Boolean, val is_safari: Boolean, val is_mobile: Boolean, val is_tablet: Boolean, val version: JWPlayerBrowserVersion)
+    private data class JWPlayerBrowserVersion(val string: String, val major: Int, val minor: Int)
+    private data class JWPlayerOS(val is_android: Boolean, val is_ios: Boolean, val is_windows: Boolean, val is_mac: Boolean, val is_linux: Boolean, val is_chromeos: Boolean, val is_windowsphone: Boolean, val is_tizen: Boolean, val is_ps4: Boolean, val version: JWPlayerOSVersion)
+    private data class JWPlayerOSVersion(val string: String, val major: Int, val minor: Int)
+    private data class JWPlayerFeatures(val flash: Boolean, val html5: Boolean, val background_playback: Boolean)
+
 
     // Crypto functions
     private fun cryptoHandler(data: String, key: String, decrypt: Boolean = false): String? {
@@ -184,6 +201,43 @@ class TvPhimProvider : MainAPI() {
             e.printStackTrace()
             null
         }
+    }
+
+    private fun unwiseProcess(script: String): String {
+        var processedScript = script
+        while (true) {
+            val match = Regex("eval\\s*\\(\\s*function\\s*\\(\\s*w\\s*,\\s*i\\s*,\\s*s\\s*,\\s*e\\s*\\)").find(processedScript) ?: break
+            val scriptBlock = findBalancedBrackets(processedScript, match.range.last + 1) ?: break
+            val fullMatch = "eval(function(w,i,s,e)$scriptBlock"
+            val argMatch = Regex("\\}\\s*\\((.+)\\)\\s*\\)").find(fullMatch) ?: break
+            
+            // This regex is more robust for argument extraction
+            val args = Regex("['\"](.*?)['\"]").findAll(argMatch.groupValues[1]).map { it.groupValues[1] }.toList()
+            if (args.size < 4) break
+
+            val deobfuscated = deobfuscateScript(args[0], args[1], args[2]) ?: break
+            processedScript = processedScript.replace(fullMatch, deobfuscated)
+        }
+        return processedScript
+    }
+
+    private fun findBalancedBrackets(text: String, startIndex: Int): String? {
+        var openBrackets = 0
+        var currentIndex = startIndex
+        if (text.getOrNull(currentIndex) != '{') return null
+        openBrackets++
+        currentIndex++
+        while (currentIndex < text.length) {
+            when (text[currentIndex]) {
+                '{' -> openBrackets++
+                '}' -> openBrackets--
+            }
+            if (openBrackets == 0) {
+                return text.substring(startIndex, currentIndex + 1)
+            }
+            currentIndex++
+        }
+        return null // Unbalanced
     }
     
     // Deobfuscator for the site's specific JS packer
@@ -244,23 +298,13 @@ class TvPhimProvider : MainAPI() {
             val serverUrl = server.attr("href")
             val serverDoc = app.get(serverUrl, referer = data).document
 
-            // **FIXED**: More flexible logic to find iframeUrl
-            var iframeUrl = serverDoc.selectFirst("iframe")?.attr("src")
+            var iframeUrl: String? = serverDoc.selectFirst("iframe")?.attr("src")
 
             if (iframeUrl.isNullOrBlank() || !iframeUrl.startsWith("http")) {
-                val packedScript = serverDoc.selectFirst("script:containsData(eval(function(w,i,s,e))")?.data()
-                    ?: throw Exception("Không tìm thấy script của trình phát video hoặc iframe src trực tiếp.")
-
-                // Use a more flexible regex to capture only the arguments
-                val packedArgsRegex = Regex("""}\((['"])(.*?)\1,\s*(['"])(.*?)\3,\s*(['"])(.*?)\5,\s*(['"])(.*?)\7\)""")
-                val match = packedArgsRegex.find(packedScript) ?: throw Exception("Không tìm thấy các tham số được mã hóa trong script.")
+                val scriptContent = serverDoc.select("script").find { it.data().contains("eval(function(w,i,s,e)") }?.data()
+                    ?: throw Exception("Không tìm thấy script của trình phát video.")
                 
-                val w = match.groupValues[2]
-                val i = match.groupValues[4]
-                val s = match.groupValues[6]
-
-                val deobfuscated = deobfuscateScript(w, i, s)
-                    ?: throw Exception("Giải mã script thất bại.")
+                val deobfuscated = unwiseProcess(scriptContent)
                 iframeUrl = Regex("""src\s*=\s*['"]([^'"]+)""").find(deobfuscated)?.groupValues?.get(1)
                     ?: throw Exception("Không tìm thấy iframe URL sau khi giải mã.")
             }
@@ -284,7 +328,15 @@ class TvPhimProvider : MainAPI() {
                 
                 val ip = app.get("https://api.ipify.org/").text
                 val timestamp = System.currentTimeMillis().toString()
-                val payload = Payload(idFile, idUser, serverUrl, "noplf", ip, timestamp)
+                
+                // Build the full payload based on the decompiled Java file
+                val jwplayer = JWPlayer(
+                    browser = JWPlayerBrowser(true, false, false, false, false, false, true, false, JWPlayerBrowserVersion("129.0", 129, 0)),
+                    os = JWPlayerOS(true, false, true, false, false, false, false, false, false, JWPlayerOSVersion("10.0", 10, 0)),
+                    features = JWPlayerFeatures(true, true, true)
+                )
+                val payload = Payload(idFile, idUser, serverUrl, "noplf", ip, timestamp, true, jwplayer)
+                
                 val encryptedPayload = cryptoHandler(payload.toJson(), "vlVbUQhkOhoSfyteyzGeeDzU0BHoeTyZ")
                     ?: throw Exception("Mã hóa payload thất bại.")
                 val hash = (encryptedPayload + "KRWN3AdgmxEMcd2vLN1ju9qKe8Feco5h").md5()
