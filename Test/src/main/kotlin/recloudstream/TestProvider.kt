@@ -15,7 +15,6 @@ import java.util.Base64
 import java.math.BigInteger
 import java.security.MessageDigest
 import android.util.Log
-import kotlin.text.CharsKt
 
 // Helper function to calculate MD5 hash
 private fun String.md5(): String {
@@ -168,10 +167,10 @@ class TvPhimProvider : MainAPI() {
     private data class Payload(
         val idfile: String,
         val iduser: String,
-        val domain_play: String, // refer
+        val domain_play: String,
         val platform: String = "noplf",
-        val ip_clien: String, // user_ip
-        val time_request: String, // time
+        val ip_clien: String,
+        val time_request: String,
         val hlsSupport: Boolean = true,
         val jwplayer: JWPlayer
     )
@@ -202,45 +201,7 @@ class TvPhimProvider : MainAPI() {
             null
         }
     }
-
-    private fun unwiseProcess(script: String): String {
-        var processedScript = script
-        while (true) {
-            val match = Regex("eval\\s*\\(\\s*function\\s*\\(\\s*w\\s*,\\s*i\\s*,\\s*s\\s*,\\s*e\\s*\\)").find(processedScript) ?: break
-            val scriptBlock = findBalancedBrackets(processedScript, match.range.last + 1) ?: break
-            val fullMatch = "eval(function(w,i,s,e)$scriptBlock"
-            val argMatch = Regex("\\}\\s*\\((.+)\\)\\s*\\)").find(fullMatch) ?: break
-            
-            // This regex is more robust for argument extraction
-            val args = Regex("['\"](.*?)['\"]").findAll(argMatch.groupValues[1]).map { it.groupValues[1] }.toList()
-            if (args.size < 4) break
-
-            val deobfuscated = deobfuscateScript(args[0], args[1], args[2]) ?: break
-            processedScript = processedScript.replace(fullMatch, deobfuscated)
-        }
-        return processedScript
-    }
-
-    private fun findBalancedBrackets(text: String, startIndex: Int): String? {
-        var openBrackets = 0
-        var currentIndex = startIndex
-        if (text.getOrNull(currentIndex) != '{') return null
-        openBrackets++
-        currentIndex++
-        while (currentIndex < text.length) {
-            when (text[currentIndex]) {
-                '{' -> openBrackets++
-                '}' -> openBrackets--
-            }
-            if (openBrackets == 0) {
-                return text.substring(startIndex, currentIndex + 1)
-            }
-            currentIndex++
-        }
-        return null // Unbalanced
-    }
     
-    // Deobfuscator for the site's specific JS packer
     private fun deobfuscateScript(w: String, i: String, s: String): String? {
         try {
             val ll1l = mutableListOf<Char>()
@@ -269,6 +230,7 @@ class TvPhimProvider : MainAPI() {
             while (lIllIdx < ll1l.size) {
                 var ll11 = -1
                 if (I1lI[ll1IIdx].code % 2 != 0) ll11 = 1
+                // **FIXED**: Using .toLong(36) instead of the invalid CharsKt
                 val charCode = lI1l.substring(lIllIdx, lIllIdx + 2).toLong(36).toInt() - ll11
                 l1ll.add(charCode.toChar())
                 ll1IIdx++
@@ -279,6 +241,43 @@ class TvPhimProvider : MainAPI() {
         } catch (e: Exception) {
             return null
         }
+    }
+
+    private fun findBalancedBrackets(text: String, startIndex: Int): String? {
+        var openBrackets = 0
+        var currentIndex = startIndex
+        if (text.getOrNull(currentIndex) != '{') return null
+        openBrackets++
+        currentIndex++
+        while (currentIndex < text.length) {
+            when (text[currentIndex]) {
+                '{' -> openBrackets++
+                '}' -> openBrackets--
+            }
+            if (openBrackets == 0) {
+                return text.substring(startIndex, currentIndex + 1)
+            }
+            currentIndex++
+        }
+        return null // Unbalanced
+    }
+
+    private fun unwiseProcess(script: String): String {
+        var processedScript = script
+        while (true) {
+            val match = Regex("eval\\s*\\(\\s*function\\s*\\(\\s*w\\s*,\\s*i\\s*,\\s*s\\s*,\\s*e\\s*\\)").find(processedScript) ?: break
+            val scriptBlock = findBalancedBrackets(processedScript, match.range.last + 1) ?: break
+            val fullMatch = "eval(function(w,i,s,e)$scriptBlock"
+            val argMatch = Regex("\\}\\s*\\((.+)\\)\\s*\\)").find(fullMatch)
+            if (argMatch == null || argMatch.groupValues.isEmpty()) break
+
+            val args = Regex("['\"](.*?)['\"]").findAll(argMatch.groupValues[1]).map { it.groupValues[1] }.toList()
+            if (args.size < 3) break
+
+            val deobfuscated = deobfuscateScript(args[0], args[1], args[2]) ?: break
+            processedScript = processedScript.replace(fullMatch, deobfuscated)
+        }
+        return processedScript
     }
 
     override suspend fun loadLinks(
@@ -298,7 +297,7 @@ class TvPhimProvider : MainAPI() {
             val serverUrl = server.attr("href")
             val serverDoc = app.get(serverUrl, referer = data).document
 
-            var iframeUrl: String? = serverDoc.selectFirst("iframe")?.attr("src")
+            var iframeUrl = serverDoc.selectFirst("iframe")?.attr("src")
 
             if (iframeUrl.isNullOrBlank() || !iframeUrl.startsWith("http")) {
                 val scriptContent = serverDoc.select("script").find { it.data().contains("eval(function(w,i,s,e)") }?.data()
@@ -329,7 +328,6 @@ class TvPhimProvider : MainAPI() {
                 val ip = app.get("https://api.ipify.org/").text
                 val timestamp = System.currentTimeMillis().toString()
                 
-                // Build the full payload based on the decompiled Java file
                 val jwplayer = JWPlayer(
                     browser = JWPlayerBrowser(true, false, false, false, false, false, true, false, JWPlayerBrowserVersion("129.0", 129, 0)),
                     os = JWPlayerOS(true, false, true, false, false, false, false, false, false, JWPlayerOSVersion("10.0", 10, 0)),
