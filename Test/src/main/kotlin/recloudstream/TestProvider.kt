@@ -386,7 +386,6 @@ class TvPhimProvider : MainAPI() {
             val encryptedData = String(Base64.getDecoder().decode(encryptedPayloadHex), Charsets.UTF_8)
             val hash = md5Hash(encryptedData + MD5_SALT)
 
-            // UPDATED: Log the raw response text before parsing
             val response = app.post(
                 url = "$domainApi/playiframe",
                 data = mapOf("data" to "$encryptedData|$hash")
@@ -396,7 +395,6 @@ class TvPhimProvider : MainAPI() {
 
             val apiResponse = response.parsed<ApiResponse>()
             Log.e(TAG, "Parsed API response object: $apiResponse")
-
 
             if (apiResponse.status == 1 && apiResponse.type == "url-m3u8-encv1" && apiResponse.data != null) {
                 Log.e(TAG, "Step 6: Decrypting M3U8 URL...")
@@ -411,9 +409,8 @@ class TvPhimProvider : MainAPI() {
                 )
                 return true
             } else {
-                Log.e
-                throw e
-                throw ErrorLoadingException("API không trả về link video hợp lệ.")
+                // UPDATED: Include the raw API response in the exception message
+                throw ErrorLoadingException("API không trả về link video hợp lệ. Phản hồi từ server: $responseText")
             }
         } catch (e: Exception) {
             Log.e(TAG, "loadLinks error for url $data", e)
