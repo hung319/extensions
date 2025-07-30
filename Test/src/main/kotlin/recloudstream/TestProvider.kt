@@ -79,14 +79,20 @@ class TvPhimProvider : MainAPI() {
 
         val poster = document.selectFirst("img[itemprop=image]")?.attr("src")
         val year = document.selectFirst("span.text-gray-400:contains(Năm Sản Xuất) + span")?.text()?.toIntOrNull()
-        val plot = document.selectFirst("div[itemprop=description] p")?.text()
+        
+        // Get plot and votes
+        var plot = document.selectFirst("div[itemprop=description] p")?.text()
             ?: document.selectFirst("div.entry-content p")?.text()
+        val votes = document.selectFirst("span.liked")?.text()?.trim()?.toIntOrNull()
+
+        // Append votes to plot if available
+        if (votes != null) {
+            plot = "$plot\n\n❤️ Yêu thích: $votes"
+        }
 
         val tags = document.select("span.text-gray-400:contains(Thể loại) a").map { it.text() }
         val actors = document.select("span.text-gray-400:contains(Diễn viên) a").map { it.text() }
         
-        val votes = document.selectFirst("span.liked")?.text()?.trim()?.toIntOrNull()
-
         // Recommendations
         val recommendations = document.select("div.mt-2:has(span:contains(Cùng Series)) a").mapNotNull {
             val recTitle = it.selectFirst("span")?.text()
@@ -116,7 +122,6 @@ class TvPhimProvider : MainAPI() {
                 this.tags = tags
                 this.actors = actors.map { ActorData(Actor(it)) }
                 this.recommendations = recommendations
-                this.votes = votes
             }
         } else {
             newMovieLoadResponse(title, url, TvType.Movie, url) {
@@ -126,7 +131,6 @@ class TvPhimProvider : MainAPI() {
                 this.tags = tags
                 this.actors = actors.map { ActorData(Actor(it)) }
                 this.recommendations = recommendations
-                this.votes = votes
             }
         }
     }
