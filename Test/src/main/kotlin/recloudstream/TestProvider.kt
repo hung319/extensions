@@ -15,6 +15,7 @@ import java.util.Base64
 import java.math.BigInteger
 import java.security.MessageDigest
 import android.util.Log
+import kotlin.text.Charsets
 
 // Helper function to calculate MD5 hash
 private fun String.md5(): String {
@@ -164,120 +165,44 @@ class TvPhimProvider : MainAPI() {
     
     // Data classes based on decompiled Java files
     private data class ApiResponse(val status: Int?, val type: String?, val data: String)
-    private data class Payload(
-        val idfile: String,
-        val iduser: String,
-        val domain_play: String,
-        val platform: String = "noplf",
-        val ip_clien: String,
-        val time_request: String,
-        val hlsSupport: Boolean = true,
-        val jwplayer: JWPlayer
-    )
-    private data class JWPlayer(val browser: JWPlayerBrowser, val os: JWPlayerOS, val features: JWPlayerFeatures)
-    private data class JWPlayerBrowser(val is_chrome: Boolean, val is_edge: Boolean, val is_firefox: Boolean, val is_ie: Boolean, val is_opera: Boolean, val is_safari: Boolean, val is_mobile: Boolean, val is_tablet: Boolean, val version: JWPlayerBrowserVersion)
-    private data class JWPlayerBrowserVersion(val string: String, val major: Int, val minor: Int)
-    private data class JWPlayerOS(val is_android: Boolean, val is_ios: Boolean, val is_windows: Boolean, val is_mac: Boolean, val is_linux: Boolean, val is_chromeos: Boolean, val is_windowsphone: Boolean, val is_tizen: Boolean, val is_ps4: Boolean, val version: JWPlayerOSVersion)
-    private data class JWPlayerOSVersion(val string: String, val major: Int, val minor: Int)
-    private data class JWPlayerFeatures(val flash: Boolean, val html5: Boolean, val background_playback: Boolean)
-
-
-    // Crypto functions
-    private fun cryptoHandler(data: String, key: String, decrypt: Boolean = false): String? {
-        return try {
-            val keyBytes = key.toByteArray(Charsets.UTF_8)
-            val skey = SecretKeySpec(keyBytes, "AES")
-            val iv = IvParameterSpec(keyBytes)
-            val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-            if (decrypt) {
-                cipher.init(Cipher.DECRYPT_MODE, skey, iv)
-                String(cipher.doFinal(Base64.getDecoder().decode(data)))
-            } else {
-                cipher.init(Cipher.ENCRYPT_MODE, skey, iv)
-                Base64.getEncoder().encodeToString(cipher.doFinal(data.toByteArray(Charsets.UTF_8)))
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            null
-        }
-    }
+    private data class Payload(val idfile: String, val iduser: String, val domain_play: String, val ip_clien: String, val time_request: String)
     
-    private fun deobfuscateScript(w: String, i: String, s: String): String? {
-        try {
-            val ll1l = mutableListOf<Char>()
-            val l1lI = mutableListOf<Char>()
+    // **NEW**: Accurate CryptoJS implementation based on provided files
+    private object CryptoJS {
+        private fun evpkdf(password: ByteArray, keySize: Int, ivSize: Int, salt: ByteArray): Pair<ByteArray, ByteArray> {
+            val keySizeWords = keySize / 32
+            val ivSizeWords = ivSize / 32
+            val totalWords = keySizeWords + ivSizeWords
+            val resultBytes = ByteArray(totalWords * 4)
+            var currentPos = 0
+            var derivedBytes = ByteArray(0)
+            val md5 = MessageDigest.getInstance("MD5")
 
-            var wIdx = 0
-            var iIdx = 0
-            var sIdx = 0
-
-            while (true) {
-                if (wIdx < 5) l1lI.add(w[wIdx]) else if (wIdx < w.length) ll1l.add(w[wIdx])
-                wIdx++
-                if (iIdx < 5) l1lI.add(i[iIdx]) else if (iIdx < i.length) ll1l.add(i[iIdx])
-                iIdx++
-                if (sIdx < 5) l1lI.add(s[sIdx]) else if (sIdx < s.length) ll1l.add(s[sIdx])
-                sIdx++
-                if (w.length + i.length + s.length == ll1l.size + l1lI.size) break
+            while (currentPos < totalWords * 4) {
+                md5.update(derivedBytes)
+                md5.update(password)
+                md5.update(salt)
+                derivedBytes = md5.digest()
+                System.arraycopy(derivedBytes, 0, resultBytes, currentPos, minOf(derivedBytes.size, resultBytes.size - currentPos))
+                currentPos += derivedBytes.size
             }
-
-            val lI1l = ll1l.joinToString("")
-            val I1lI = l1lI.joinToString("")
-            var ll1IIdx = 0
-            val l1ll = mutableListOf<Char>()
-
-            var lIllIdx = 0
-            while (lIllIdx < ll1l.size) {
-                var ll11 = -1
-                if (I1lI[ll1IIdx].code % 2 != 0) ll11 = 1
-                // **FIXED**: Using .toLong(36) instead of the invalid CharsKt
-                val charCode = lI1l.substring(lIllIdx, lIllIdx + 2).toLong(36).toInt() - ll11
-                l1ll.add(charCode.toChar())
-                ll1IIdx++
-                if (ll1IIdx >= l1lI.size) ll1IIdx = 0
-                lIllIdx += 2
-            }
-            return l1ll.joinToString("")
-        } catch (e: Exception) {
-            return null
+            return Pair(resultBytes.copyOfRange(0, keySizeWords * 4), resultBytes.copyOfRange(keySizeWords * 4, totalWords * 4))
         }
-    }
 
-    private fun findBalancedBrackets(text: String, startIndex: Int): String? {
-        var openBrackets = 0
-        var currentIndex = startIndex
-        if (text.getOrNull(currentIndex) != '{') return null
-        openBrackets++
-        currentIndex++
-        while (currentIndex < text.length) {
-            when (text[currentIndex]) {
-                '{' -> openBrackets++
-                '}' -> openBrackets--
+        fun decrypt(password: String, cipherText: String): String? {
+            return try {
+                val ctBytes = Base64.getDecoder().decode(cipherText)
+                val salt = ctBytes.copyOfRange(8, 16)
+                val ciphertextBytes = ctBytes.copyOfRange(16, ctBytes.size)
+                val (key, iv) = evpkdf(password.toByteArray(Charsets.UTF_8), 256, 128, salt)
+                val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+                cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
+                String(cipher.doFinal(ciphertextBytes))
+            } catch (e: Exception) {
+                e.printStackTrace()
+                null
             }
-            if (openBrackets == 0) {
-                return text.substring(startIndex, currentIndex + 1)
-            }
-            currentIndex++
         }
-        return null // Unbalanced
-    }
-
-    private fun unwiseProcess(script: String): String {
-        var processedScript = script
-        while (true) {
-            val match = Regex("eval\\s*\\(\\s*function\\s*\\(\\s*w\\s*,\\s*i\\s*,\\s*s\\s*,\\s*e\\s*\\)").find(processedScript) ?: break
-            val scriptBlock = findBalancedBrackets(processedScript, match.range.last + 1) ?: break
-            val fullMatch = "eval(function(w,i,s,e)$scriptBlock"
-            val argMatch = Regex("\\}\\s*\\((.+)\\)\\s*\\)").find(fullMatch)
-            if (argMatch == null || argMatch.groupValues.isEmpty()) break
-
-            val args = Regex("['\"](.*?)['\"]").findAll(argMatch.groupValues[1]).map { it.groupValues[1] }.toList()
-            if (args.size < 3) break
-
-            val deobfuscated = deobfuscateScript(args[0], args[1], args[2]) ?: break
-            processedScript = processedScript.replace(fullMatch, deobfuscated)
-        }
-        return processedScript
     }
 
     override suspend fun loadLinks(
@@ -297,16 +222,8 @@ class TvPhimProvider : MainAPI() {
             val serverUrl = server.attr("href")
             val serverDoc = app.get(serverUrl, referer = data).document
 
-            var iframeUrl = serverDoc.selectFirst("iframe")?.attr("src")
-
-            if (iframeUrl.isNullOrBlank() || !iframeUrl.startsWith("http")) {
-                val scriptContent = serverDoc.select("script").find { it.data().contains("eval(function(w,i,s,e)") }?.data()
-                    ?: throw Exception("Không tìm thấy script của trình phát video.")
-                
-                val deobfuscated = unwiseProcess(scriptContent)
-                iframeUrl = Regex("""src\s*=\s*['"]([^'"]+)""").find(deobfuscated)?.groupValues?.get(1)
-                    ?: throw Exception("Không tìm thấy iframe URL sau khi giải mã.")
-            }
+            val iframeUrl = serverDoc.selectFirst("iframe")?.attr("src")
+                ?: throw Exception("Không tìm thấy iframe.")
 
             if ("plhqtvhay" in iframeUrl) {
                 val iframeDoc = app.get(iframeUrl, referer = serverUrl).document
@@ -320,22 +237,20 @@ class TvPhimProvider : MainAPI() {
                     throw Exception("Không thể trích xuất dữ liệu mã hóa.")
                 }
 
-                val idFile = cryptoHandler(idFileEnc, "jcLycoRJT6OWjoWspgLMOZwS3aSS0lEn", true)
+                // **FIXED**: Using the new accurate CryptoJS decrypt
+                val idFile = CryptoJS.decrypt("jcLycoRJT6OWjoWspgLMOZwS3aSS0lEn", idFileEnc)
                     ?: throw Exception("Giải mã idfile thất bại.")
-                val idUser = cryptoHandler(idUserEnc, "PZZ3J3LDbLT0GY7qSA5wW5vchqgpO36O", true)
+                val idUser = CryptoJS.decrypt("PZZ3J3LDbLT0GY7qSA5wW5vchqgpO36O", idUserEnc)
                     ?: throw Exception("Giải mã iduser thất bại.")
                 
                 val ip = app.get("https://api.ipify.org/").text
                 val timestamp = System.currentTimeMillis().toString()
                 
-                val jwplayer = JWPlayer(
-                    browser = JWPlayerBrowser(true, false, false, false, false, false, true, false, JWPlayerBrowserVersion("129.0", 129, 0)),
-                    os = JWPlayerOS(true, false, true, false, false, false, false, false, false, JWPlayerOSVersion("10.0", 10, 0)),
-                    features = JWPlayerFeatures(true, true, true)
-                )
-                val payload = Payload(idFile, idUser, serverUrl, "noplf", ip, timestamp, true, jwplayer)
-                
-                val encryptedPayload = cryptoHandler(payload.toJson(), "vlVbUQhkOhoSfyteyzGeeDzU0BHoeTyZ")
+                val payload = Payload(idFile, idUser, serverUrl, ip, timestamp)
+                val payloadJson = payload.toJson()
+
+                // The site's encryption for the payload is simpler than the one for the final link
+                val encryptedPayload = cryptoHandler(payloadJson, "vlVbUQhkOhoSfyteyzGeeDzU0BHoeTyZ")
                     ?: throw Exception("Mã hóa payload thất bại.")
                 val hash = (encryptedPayload + "KRWN3AdgmxEMcd2vLN1ju9qKe8Feco5h").md5()
 
@@ -347,7 +262,7 @@ class TvPhimProvider : MainAPI() {
                     ?: throw Exception("Phản hồi API không hợp lệ.")
 
                 if (apiResponse.status == 1 && apiResponse.type == "url-m3u8-encv1") {
-                    val finalUrl = cryptoHandler(apiResponse.data.replace("\"", ""), "oJwmvmVBajMaRCTklxbfjavpQO7SZpsL", true)
+                    val finalUrl = CryptoJS.decrypt("oJwmvmVBajMaRCTklxbfjavpQO7SZpsL", apiResponse.data.replace("\"", ""))
                         ?: throw Exception("Giải mã link M3U8 cuối cùng thất bại.")
                     
                     callback.invoke(
