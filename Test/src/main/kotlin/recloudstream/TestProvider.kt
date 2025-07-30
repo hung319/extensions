@@ -164,14 +164,8 @@ class TvPhimProvider : MainAPI() {
     
     // Data classes based on decompiled Java files
     private data class ApiResponse(val status: Int?, val type: String?, val data: String)
-    private data class Payload(
-        val idfile: String,
-        val iduser: String,
-        val domain_play: String,
-        val ip_clien: String,
-        val time_request: String
-    )
-
+    private data class Payload(val idfile: String, val iduser: String, val domain_play: String, val ip_clien: String, val time_request: String)
+    
     // Accurate CryptoJS implementation based on provided files
     private object CryptoJS {
         private fun evpkdf(password: ByteArray, keySize: Int, ivSize: Int, salt: ByteArray): Pair<ByteArray, ByteArray> {
@@ -210,7 +204,44 @@ class TvPhimProvider : MainAPI() {
         }
     }
 
-    // Deobfuscator for the site's specific JS packer
+    private fun unwiseProcess(script: String): String {
+        var processedScript = script
+        while (true) {
+            // **FIXED**: Regex now allows an optional leading semicolon
+            val match = Regex(";?\\s*eval\\s*\\(\\s*function\\s*\\(\\s*w\\s*,\\s*i\\s*,\\s*s\\s*,\\s*e\\s*\\)").find(processedScript) ?: break
+            val scriptBlock = findBalancedBrackets(processedScript, match.range.last + 1) ?: break
+            val fullMatch = processedScript.substring(match.range.first, match.range.first + "eval(function(w,i,s,e)".length + scriptBlock.length) + Regex("\\((.*)\\)").find(processedScript.substring(match.range.first + "eval(function(w,i,s,e)".length + scriptBlock.length))?.value ?: ""
+            val argMatch = Regex("\\}\\s*\\((.+)\\)\\s*\\)").find(fullMatch)
+            if (argMatch == null || argMatch.groupValues.isEmpty()) break
+
+            val args = Regex("['\"](.*?)['\"]").findAll(argMatch.groupValues[1]).map { it.groupValues[1] }.toList()
+            if (args.size < 3) break
+
+            val deobfuscated = deobfuscateScript(args[0], args[1], args[2]) ?: break
+            processedScript = processedScript.replace(fullMatch, deobfuscated)
+        }
+        return processedScript
+    }
+
+    private fun findBalancedBrackets(text: String, startIndex: Int): String? {
+        var openBrackets = 0
+        var currentIndex = startIndex
+        if (text.getOrNull(currentIndex) != '{') return null
+        openBrackets++
+        currentIndex++
+        while (currentIndex < text.length) {
+            when (text[currentIndex]) {
+                '{' -> openBrackets++
+                '}' -> openBrackets--
+            }
+            if (openBrackets == 0) {
+                return text.substring(startIndex, currentIndex + 1)
+            }
+            currentIndex++
+        }
+        return null // Unbalanced
+    }
+    
     private fun deobfuscateScript(w: String, i: String, s: String): String? {
         try {
             val ll1l = mutableListOf<Char>()
@@ -251,43 +282,6 @@ class TvPhimProvider : MainAPI() {
         }
     }
 
-    private fun findBalancedBrackets(text: String, startIndex: Int): String? {
-        var openBrackets = 0
-        var currentIndex = startIndex
-        if (text.getOrNull(currentIndex) != '{') return null
-        openBrackets++
-        currentIndex++
-        while (currentIndex < text.length) {
-            when (text[currentIndex]) {
-                '{' -> openBrackets++
-                '}' -> openBrackets--
-            }
-            if (openBrackets == 0) {
-                return text.substring(startIndex, currentIndex + 1)
-            }
-            currentIndex++
-        }
-        return null // Unbalanced
-    }
-
-    private fun unwiseProcess(script: String): String {
-        var processedScript = script
-        while (true) {
-            val match = Regex("eval\\s*\\(\\s*function\\s*\\(\\s*w\\s*,\\s*i\\s*,\\s*s\\s*,\\s*e\\s*\\)").find(processedScript) ?: break
-            val scriptBlock = findBalancedBrackets(processedScript, match.range.last + 1) ?: break
-            val fullMatch = "eval(function(w,i,s,e)$scriptBlock"
-            val argMatch = Regex("\\}\\s*\\((.+)\\)\\s*\\)").find(fullMatch)
-            if (argMatch == null || argMatch.groupValues.isEmpty()) break
-
-            val args = Regex("['\"](.*?)['\"]").findAll(argMatch.groupValues[1]).map { it.groupValues[1] }.toList()
-            if (args.size < 3) break
-
-            val deobfuscated = deobfuscateScript(args[0], args[1], args[2]) ?: break
-            processedScript = processedScript.replace(fullMatch, deobfuscated)
-        }
-        return processedScript
-    }
-
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -312,7 +306,6 @@ class TvPhimProvider : MainAPI() {
                     ?: throw Exception("Không tìm thấy script của trình phát video.")
                 
                 val deobfuscated = unwiseProcess(scriptContent)
-                // **ADDED**: Log the deobfuscated content
                 Log.d("TvPhimProvider", "Deobfuscated Script Content: $deobfuscated")
                 
                 iframeUrl = Regex("""src\s*=\s*['"]([^'"]+)""").find(deobfuscated)?.groupValues?.get(1)
