@@ -21,7 +21,7 @@ import javax.crypto.spec.SecretKeySpec
 import kotlin.text.Charsets
 import kotlin.text.Regex
 
-//region: Data classes cho API
+//region: Data classes (ĐÃ SỬA LẠI ĐỂ KHỚP VỚI FILE JAVA)
 private data class Payload(
     @SerializedName("idfile") val idfile: String,
     @SerializedName("iduser") val iduser: String,
@@ -34,50 +34,54 @@ private data class Payload(
 )
 
 private data class JWPlayer(
-    @SerializedName("browser") val browser: JWPlayerBrowser,
-    @SerializedName("os") val os: JWPlayerOS,
-    @SerializedName("features") val features: JWPlayerFeatures
+    // FIXED: Uppercase field names to match Java source
+    @SerializedName("Browser") val Browser: JWPlayerBrowser,
+    @SerializedName("OS") val OS: JWPlayerOS,
+    @SerializedName("Features") val Features: JWPlayerFeatures
 )
 
 private data class JWPlayerBrowser(
-    @SerializedName("chrome") val chrome: Boolean = true,
-    @SerializedName("webkit") val webkit: Boolean = true,
-    @SerializedName("v") val v: JWPlayerBrowserVersion,
-    @SerializedName("safari") val safari: Boolean = false,
-    @SerializedName("firefox") val firefox: Boolean = false,
-    @SerializedName("edge") val edge: Boolean = false,
-    @SerializedName("ie") val ie: Boolean = false,
-    @SerializedName("facebook") val facebook: Boolean = false
+    @SerializedName("androidNative") val androidNative: Boolean,
+    @SerializedName("chrome") val chrome: Boolean,
+    @SerializedName("edge") val edge: Boolean,
+    @SerializedName("facebook") val facebook: Boolean,
+    @SerializedName("firefox") val firefox: Boolean,
+    @SerializedName("ie") val ie: Boolean,
+    @SerializedName("msie") val msie: Boolean,
+    @SerializedName("safari") val safari: Boolean,
+    @SerializedName("version") val version: JWPlayerBrowserVersion
 )
 
 private data class JWPlayerBrowserVersion(
-    @SerializedName("v") val v: String = "129.0",
-    @SerializedName("m") val m: Int = 129,
-    @SerializedName("mi") val mi: Int = 0
+    @SerializedName("version") val version: String,
+    @SerializedName("major") val major: Int,
+    @SerializedName("minor") val minor: Int
 )
 
 private data class JWPlayerOS(
-    @SerializedName("windows") val windows: Boolean = true,
-    @SerializedName("os") val os: Boolean = true,
-    @SerializedName("v") val v: JWPlayerOSVersion,
-    @SerializedName("android") val android: Boolean = false,
-    @SerializedName("androidnative") val androidnative: Boolean = false,
-    @SerializedName("ios") val ios: Boolean = false,
-    @SerializedName("ipad") val ipad: Boolean = false,
-    @SerializedName("iphone") val iphone: Boolean = false,
-    @SerializedName("mac") val mac: Boolean = false
+    @SerializedName("android") val android: Boolean,
+    // FIXED: Case-sensitive field name
+    @SerializedName("iOS") val iOS: Boolean,
+    @SerializedName("mobile") val mobile: Boolean,
+    @SerializedName("mac") val mac: Boolean,
+    @SerializedName("iPad") val iPad: Boolean,
+    @SerializedName("iPhone") val iPhone: Boolean,
+    @SerializedName("windows") val windows: Boolean,
+    @SerializedName("tizen") val tizen: Boolean,
+    @SerializedName("tizenApp") val tizenApp: Boolean,
+    @SerializedName("version") val version: JWPlayerOSVersion
 )
 
 private data class JWPlayerOSVersion(
-    @SerializedName("v") val v: String = "10.0",
-    @SerializedName("m") val m: Int = 10,
-    @SerializedName("mi") val mi: Int = 0
+    @SerializedName("version") val version: String,
+    @SerializedName("major") val major: Int,
+    @SerializedName("minor") val minor: Int
 )
 
 private data class JWPlayerFeatures(
-    @SerializedName("html5") val html5: Boolean = true,
-    @SerializedName("flash") val flash: Boolean = true,
-    @SerializedName("casting") val casting: Boolean = true
+    @SerializedName("iframe") val iframe: Boolean,
+    @SerializedName("passiveEvents") val passiveEvents: Boolean,
+    @SerializedName("backgroundLoading") val backgroundLoading: Boolean
 )
 
 private data class ApiResponse(
@@ -373,14 +377,45 @@ class TvPhimProvider : MainAPI() {
             Log.e(TAG, "Step 4: Decrypted IDs successfully.")
 
             Log.e(TAG, "Step 5: Building and sending payload...")
+            // Create the payload object with the corrected structure and default values from Java files
             val payload = Payload(
-                idfile = idfile, iduser = iduser, domain_play = baseUrl, ip_clien = publicIp, time_request = Instant.now().toEpochMilli().toString(),
+                idfile = idfile,
+                iduser = iduser,
+                domain_play = baseUrl,
+                ip_clien = publicIp,
+                time_request = Instant.now().toEpochMilli().toString(),
                 jwplayer = JWPlayer(
-                    browser = JWPlayerBrowser(v = JWPlayerBrowserVersion()),
-                    os = JWPlayerOS(v = JWPlayerOSVersion()),
-                    features = JWPlayerFeatures()
+                    Browser = JWPlayerBrowser(
+                        androidNative = true,
+                        chrome = true,
+                        edge = false,
+                        facebook = false,
+                        firefox = false,
+                        ie = false,
+                        msie = false,
+                        safari = false,
+                        version = JWPlayerBrowserVersion(version = "129.0", major = 129, minor = 0)
+                    ),
+                    OS = JWPlayerOS(
+                        android = true,
+                        iOS = false,
+                        mobile = true,
+                        mac = false,
+                        iPad = false,
+                        iPhone = false,
+                        windows = false,
+                        tizen = false,
+                        tizenApp = false,
+                        version = JWPlayerOSVersion(version = "10.0", major = 10, minor = 0)
+                    ),
+                    Features = JWPlayerFeatures(
+                        iframe = true,
+                        passiveEvents = true,
+                        backgroundLoading = true
+                    )
                 )
             )
+
             val payloadJson = com.google.gson.Gson().toJson(payload)
             val encryptedPayloadHex = Crypto.encrypt(payloadJson, ENCRYPTION_KEY)
             val encryptedData = String(Base64.getDecoder().decode(encryptedPayloadHex), Charsets.UTF_8)
@@ -420,7 +455,6 @@ class TvPhimProvider : MainAPI() {
             }
         } catch (e: Exception) {
             Log.e(TAG, "loadLinks error for url $data", e)
-            // Ném lại lỗi gốc nếu nó đã là ErrorLoadingException, nếu không thì tạo lỗi mới
             if (e is ErrorLoadingException) {
                 throw e
             } else {
