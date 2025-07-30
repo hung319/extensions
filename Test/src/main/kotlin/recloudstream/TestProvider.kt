@@ -12,6 +12,14 @@ import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import java.util.Base64
+import java.math.BigInteger
+import java.security.MessageDigest
+
+// Helper function to calculate MD5 hash
+private fun String.md5(): String {
+    val md = MessageDigest.getInstance("MD5")
+    return BigInteger(1, md.digest(toByteArray())).toString(16).padStart(32, '0')
+}
 
 class TvPhimProvider : MainAPI() {
     override var mainUrl = "https://tvphim.bid"
@@ -234,7 +242,7 @@ class TvPhimProvider : MainAPI() {
                                     url = finalUrl,
                                     referer = iframeUrl,
                                     quality = Qualities.Unknown.value,
-                                    type = ExtractorLinkType.M3U8 // **FIXED**: Changed to ExtractorLinkType.M3U8
+                                    type = ExtractorLinkType.M3U8
                                 )
                             )
                         }
