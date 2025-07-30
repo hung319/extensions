@@ -187,11 +187,8 @@ class TvPhimProvider : MainAPI() {
     }
     
     // Deobfuscator for the site's specific JS packer
-    private fun deobfuscateScript(packedScript: String): String? {
+    private fun deobfuscateScript(w: String, i: String, s: String): String? {
         try {
-            val regex = Regex("""eval\(function\(w,i,s,e\)\{.*\}\('(.+)',\s*'(.+)',\s*'(.+)',\s*'(.+)'\)\)""")
-            val (w, i, s, _) = regex.find(packedScript)?.destructured ?: return null
-
             val ll1l = mutableListOf<Char>()
             val l1lI = mutableListOf<Char>()
 
@@ -247,13 +244,22 @@ class TvPhimProvider : MainAPI() {
             val serverUrl = server.attr("href")
             val serverDoc = app.get(serverUrl, referer = data).document
 
-            // **NEW LOGIC**: First, try to get iframe src directly. If it fails, then try to find and deobfuscate the script.
+            // **FIXED**: More flexible logic to find iframeUrl
             var iframeUrl = serverDoc.selectFirst("iframe")?.attr("src")
 
             if (iframeUrl.isNullOrBlank() || !iframeUrl.startsWith("http")) {
                 val packedScript = serverDoc.selectFirst("script:containsData(eval(function(w,i,s,e))")?.data()
                     ?: throw Exception("Không tìm thấy script của trình phát video hoặc iframe src trực tiếp.")
-                val deobfuscated = deobfuscateScript(packedScript)
+
+                // Use a more flexible regex to capture only the arguments
+                val packedArgsRegex = Regex("""}\((['"])(.*?)\1,\s*(['"])(.*?)\3,\s*(['"])(.*?)\5,\s*(['"])(.*?)\7\)""")
+                val match = packedArgsRegex.find(packedScript) ?: throw Exception("Không tìm thấy các tham số được mã hóa trong script.")
+                
+                val w = match.groupValues[2]
+                val i = match.groupValues[4]
+                val s = match.groupValues[6]
+
+                val deobfuscated = deobfuscateScript(w, i, s)
                     ?: throw Exception("Giải mã script thất bại.")
                 iframeUrl = Regex("""src\s*=\s*['"]([^'"]+)""").find(deobfuscated)?.groupValues?.get(1)
                     ?: throw Exception("Không tìm thấy iframe URL sau khi giải mã.")
