@@ -14,7 +14,6 @@ import javax.crypto.spec.SecretKeySpec
 import java.util.Base64
 import java.math.BigInteger
 import java.security.MessageDigest
-import java.security.SecureRandom
 import android.util.Log
 import kotlin.text.Charsets
 
@@ -72,10 +71,7 @@ class TvPhimProvider : MainAPI() {
         "$mainUrl/phim-hay/" to "Phim Hay Đề Cử",
     )
 
-    override suspend fun getMainPage(
-        page: Int,
-        request: MainPageRequest
-    ): HomePageResponse {
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page == 1) request.data else "${request.data}page/$page/"
         val document = app.get(url, interceptor = cfInterceptor).document
         val home = document.select("div.grid div.relative").mapNotNull {
@@ -184,53 +180,76 @@ class TvPhimProvider : MainAPI() {
         }
     }
 
-    private fun unwiseProcess(script: String): String {
-        var processedScript = script
-        val evalRegex = Regex("eval\\(function\\(w,i,s,e\\).*?\\}\\s*\\((.*?)\\)\\)")
-        while (true) {
-            val match = evalRegex.find(processedScript) ?: break
-            val fullMatch = match.value
-            val argsBlock = match.groupValues[1]
-            val args = Regex("['\"](.*?)['\"]").findAll(argsBlock).map { it.groupValues[1] }.toList()
-            if (args.size < 3) {
-                processedScript = processedScript.replace(fullMatch, ""); continue
+    private object UnwiseHelper {
+        private fun unwise1(w: String): String {
+            val sb = StringBuilder()
+            var i = 0
+            while (i < w.length) {
+                val i2 = i + 2
+                sb.append(w.substring(i, i2).toInt(36).toChar())
+                i = i2
             }
-            val deobfuscated = deobfuscateScript(args[0], args[1], args[2])
-            if (deobfuscated.isNullOrBlank()) {
-                processedScript = processedScript.replace(fullMatch, ""); continue
-            }
-            processedScript = processedScript.replace(fullMatch, deobfuscated)
+            return sb.toString()
         }
-        return processedScript
-    }
 
-    private fun deobfuscateScript(w: String, i: String, s: String): String? {
-        try {
-            val ll1l = mutableListOf<Char>(); val l1lI = mutableListOf<Char>()
-            var wIdx = 0; var iIdx = 0; var sIdx = 0
+        private fun unwise(w: String, i: String, s: String, e: String, wi: Int, ii: Int, si: Int, ei: Int): String {
+            val sb = StringBuilder(); val sb2 = StringBuilder()
+            var i5 = 0; var i6 = 0; var i7 = 0; var i8 = 0
+            do {
+                if (w.isNotEmpty()) {
+                    if (i5 < wi) sb2.append(w[i5]) else if (i5 < w.length) sb.append(w[i5])
+                    i5++
+                }
+                if (i.isNotEmpty()) {
+                    if (i6 < ii) sb2.append(i[i6]) else if (i6 < i.length) sb.append(i[i6])
+                    i6++
+                }
+                if (s.isNotEmpty()) {
+                    if (i7 < si) sb2.append(s[i7]) else if (i7 < s.length) sb.append(s[i7])
+                    i7++
+                }
+                if (e.isNotEmpty()) {
+                    if (i8 < ei) sb2.append(e[i8]) else if (i8 < e.length) sb.append(e[i8])
+                    i8++
+                }
+            } while (w.length + i.length + s.length + e.length != sb.length + sb2.length)
+            
+            val sb3 = StringBuilder()
+            var i13 = 0; var i14 = 0
+            while (i13 < sb.length) {
+                val i15 = i13 + 2
+                val parseInt = (sb.substring(i13, i15).toInt(36)) - (if (sb2[i14].code % 2 != 0) 1 else -1)
+                sb3.append(parseInt.toChar())
+                i14++
+                if (i14 >= sb2.length) i14 = 0
+                i13 = i15
+            }
+            return sb3.toString()
+        }
+
+        fun unwiseProcess(script: String): String {
+            var processedScript = script
             while (true) {
-                if (wIdx < 5) l1lI.add(w[wIdx]) else if (wIdx < w.length) ll1l.add(w[wIdx])
-                wIdx++
-                if (iIdx < 5) l1lI.add(i[iIdx]) else if (iIdx < i.length) ll1l.add(i[iIdx])
-                iIdx++
-                if (sIdx < 5) l1lI.add(s[sIdx]) else if (sIdx < s.length) ll1l.add(s[sIdx])
-                sIdx++
-                if (w.length + i.length + s.length == ll1l.size + l1lI.size) break
+                val match = Regex(";?eval\\s*\\(\\s*function\\s*\\(\\s*w\\s*,\\s*i\\s*,\\s*s\\s*,\\s*e\\s*\\).*?}\\s*\\((.*?)\\)\\s*\\)(?:;|)").find(processedScript) ?: return processedScript
+                val fullMatch = match.value
+                val argsBlock = match.groupValues.getOrNull(1) ?: ""
+                val args = Regex("['\"](.*?)['\"]").findAll(argsBlock).map { it.groupValues[1] }.toList()
+                if (args.size < 4) {
+                    processedScript = processedScript.replace(fullMatch, ""); continue
+                }
+
+                val deobfuscated = if (!fullMatch.contains("while")) {
+                    unwise1(args[0])
+                } else {
+                    val whileBlock = Regex("while\\((.*?)\\)").find(fullMatch)?.groupValues?.get(1) ?: ""
+                    val limits = Regex("if\\s*\\(\\s*\\w*\\s*<\\s*(\\d+)\\)").findAll(whileBlock).map { it.groupValues[1].toInt() }.toList()
+                    if (limits.size >= 4) {
+                        unwise(args[0], args[1], args[2], args[3], limits[0], limits[1], limits[2], limits[3])
+                    } else { "" }
+                }
+                processedScript = processedScript.replace(fullMatch, deobfuscated)
             }
-            val lI1l = ll1l.joinToString(""); val I1lI = l1lI.joinToString("")
-            var ll1IIdx = 0; val l1ll = mutableListOf<Char>()
-            var lIllIdx = 0
-            while (lIllIdx < ll1l.size) {
-                var ll11 = -1
-                if (I1lI[ll1IIdx].code % 2 != 0) ll11 = 1
-                val charCode = lI1l.substring(lIllIdx, lIllIdx + 2).toLong(36).toInt() - ll11
-                l1ll.add(charCode.toChar())
-                ll1IIdx++
-                if (ll1IIdx >= l1lI.size) ll1IIdx = 0
-                lIllIdx += 2
-            }
-            return l1ll.joinToString("")
-        } catch (e: Exception) { return null }
+        }
     }
 
     override suspend fun loadLinks(
@@ -239,19 +258,23 @@ class TvPhimProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data, interceptor = cfInterceptor).document
-        val server = document.select("ul.episodelistsv a").find { 
-            it.attr("title").equals("Server S.PRO", ignoreCase = true) 
-        } ?: throw Exception("Không tìm thấy Server S.PRO.")
-        val serverName = server.attr("title")
-
         try {
+            val document = app.get(data, interceptor = cfInterceptor).document
+            
+            val server = document.select("ul.episodelistsv a").find { 
+                it.attr("title").equals("Server S.PRO", ignoreCase = true) 
+            } ?: throw Exception("Không tìm thấy Server S.PRO.")
+
+            val serverName = server.attr("title")
             val serverUrl = server.attr("href")
             val serverDoc = app.get(serverUrl, referer = data).document
+
             var iframeUrl: String?
+
             val scriptContent = serverDoc.select("script").find { it.data().contains("eval(function(w,i,s,e)") || it.data().contains("setAttribute(\"src\"") }?.data()
                 ?: throw Exception("Không tìm thấy script của trình phát video.")
-            val deobfuscated = unwiseProcess(scriptContent)
+            
+            val deobfuscated = UnwiseHelper.unwiseProcess(scriptContent)
             Log.d("TvPhimProvider", "Deobfuscated Script Content: $deobfuscated")
             
             val setAttrMatch = Regex("""setAttribute\(\s*["']src["']\s*,\s*["'](.*?)["']\)""").find(deobfuscated)
@@ -270,13 +293,17 @@ class TvPhimProvider : MainAPI() {
                 val iframeDoc = app.get(iframeUrl, referer = serverUrl).document
                 val script = iframeDoc.selectFirst("script:containsData(const idfile_enc)")?.data()
                     ?: throw Exception("Không tìm thấy script chứa dữ liệu mã hóa.")
+
                 val idFileEnc = Regex("""const idfile_enc = "([^"]+)";""").find(script)?.groupValues?.get(1)
                 val idUserEnc = Regex("""const idUser_enc = "([^"]+)";""").find(script)?.groupValues?.get(1)
                 val domainApi = Regex("""const DOMAIN_API = '([^']+)';""").find(script)?.groupValues?.get(1)
                 if (idFileEnc == null || idUserEnc == null || domainApi == null) throw Exception("Không thể trích xuất dữ liệu mã hóa.")
 
-                val idFile = Util.decrypt(idFileEnc, "jcLycoRJT6OWjoWspgLMOZwS3aSS0lEn") ?: throw Exception("Giải mã idfile thất bại.")
-                val idUser = Util.decrypt(idUserEnc, "PZZ3J3LDbLT0GY7qSA5wW5vchqgpO36O") ?: throw Exception("Giải mã iduser thất bại.")
+                val idFile = Util.decrypt(idFileEnc, "jcLycoRJT6OWjoWspgLMOZwS3aSS0lEn")
+                    ?: throw Exception("Giải mã idfile thất bại. Dữ liệu mã hóa: $idFileEnc")
+                val idUser = Util.decrypt(idUserEnc, "PZZ3J3LDbLT0GY7qSA5wW5vchqgpO36O")
+                    ?: throw Exception("Giải mã iduser thất bại. Dữ liệu mã hóa: $idUserEnc")
+                
                 val ip = app.get("https://api.ipify.org/").text
                 val timestamp = System.currentTimeMillis().toString()
                 val payload = Payload(idFile, idUser, serverUrl, ip, timestamp)
@@ -294,7 +321,8 @@ class TvPhimProvider : MainAPI() {
                     "$domainApi/playiframe",
                     data = mapOf("data" to "$encryptedPayload|$hash"),
                     referer = iframeUrl
-                ).parsedSafe<ApiResponse>() ?: throw Exception("Phản hồi API không hợp lệ.")
+                ).parsedSafe<ApiResponse>()
+                    ?: throw Exception("Phản hồi API không hợp lệ.")
 
                 if (apiResponse.status == 1 && apiResponse.type == "url-m3u8-encv1") {
                     val finalUrl = Util.decrypt(apiResponse.data.replace("\"", ""), "oJwmvmVBajMaRCTklxbfjavpQO7SZpsL")
