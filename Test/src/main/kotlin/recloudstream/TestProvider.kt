@@ -21,7 +21,7 @@ import javax.crypto.spec.SecretKeySpec
 import kotlin.text.Charsets
 import kotlin.text.Regex
 
-//region: Data classes (Đã sửa lại để khớp với file JAVA)
+//region: Data classes
 private data class Payload(
     @SerializedName("idfile") val idfile: String,
     @SerializedName("iduser") val iduser: String,
@@ -242,7 +242,6 @@ private fun getBaseUrl(url: String): String {
     return "${uri.scheme}://${uri.host}"
 }
 
-// ADDED: Function to convert Base64 to Hex, based on UtilKt.java
 private fun base64ToHex(base64: String): String {
     val decodedBytes = Base64.getDecoder().decode(base64)
     return decodedBytes.joinToString("") { "%02x".format(it) }
@@ -385,29 +384,46 @@ class TvPhimProvider : MainAPI() {
                 idfile = idfile, iduser = iduser, domain_play = baseUrl, platform = "noplf", ip_clien = publicIp, time_request = Instant.now().toEpochMilli().toString(), hlsSupport = true,
                 jwplayer = JWPlayer(
                     Browser = JWPlayerBrowser(
-                        androidNative = false, chrome = true, edge = false, facebook = false, firefox = false, ie = false, msie = false, safari = false,
+                        // FIXED: Corrected default values to match working Java files
+                        androidNative = true, // was false
+                        chrome = true,
+                        edge = false,
+                        facebook = false,
+                        firefox = false,
+                        ie = false,
+                        msie = false,
+                        safari = false,
                         version = JWPlayerBrowserVersion("129.0", 129, 0)
                     ),
                     OS = JWPlayerOS(
-                        android = true, iOS = false, mobile = true, mac = false, iPad = false, iPhone = false, windows = true, tizen = false, tizenApp = false,
+                        android = true,
+                        iOS = false,
+                        mobile = true,
+                        mac = false,
+                        iPad = false,
+                        iPhone = false,
+                        windows = false, // was true
+                        tizen = false,
+                        tizenApp = false,
                         version = JWPlayerOSVersion("10.0", 10, 0)
                     ),
                     Features = JWPlayerFeatures(
-                        iframe = true, passiveEvents = true, backgroundLoading = true
+                        iframe = true,
+                        passiveEvents = true,
+                        backgroundLoading = true
                     )
                 )
             )
 
-            // FIXED: Corrected the entire encryption and formatting flow to match Java logic
             val payloadJson = com.google.gson.Gson().toJson(payload)
-            // 1. Encrypt to Base64
             val encryptedPayloadB64 = Crypto.encrypt(payloadJson, ENCRYPTION_KEY)
-            // 2. The hash is calculated on the raw encrypted bytes (converted to string)
-            val rawEncryptedString = String(Base64.getDecoder().decode(encryptedPayloadB64), Charsets.UTF_8)
-            val hash = md5Hash(rawEncryptedString + MD5_SALT)
-            // 3. Convert the Base64 from step 1 to Hex to be sent to the server
+
+            // This is the correct but weird way the original Java code calculates the hash
+            val rawEncryptedStringForHash = String(Base64.getDecoder().decode(encryptedPayloadB64), Charsets.UTF_8)
+            val hash = md5Hash(rawEncryptedStringForHash + MD5_SALT)
+
+            // The data sent to the server must be in HEX format
             val encryptedPayloadHex = base64ToHex(encryptedPayloadB64)
-            // 4. Combine Hex payload and hash
             val apiData = "$encryptedPayloadHex|$hash"
 
             val headers = mapOf(
