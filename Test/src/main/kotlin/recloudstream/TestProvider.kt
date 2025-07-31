@@ -384,8 +384,7 @@ class TvPhimProvider : MainAPI() {
                 idfile = idfile, iduser = iduser, domain_play = baseUrl, platform = "noplf", ip_clien = publicIp, time_request = Instant.now().toEpochMilli().toString(), hlsSupport = true,
                 jwplayer = JWPlayer(
                     Browser = JWPlayerBrowser(
-                        // FIXED: Corrected default values to match working Java files
-                        androidNative = true, // was false
+                        androidNative = true,
                         chrome = true,
                         edge = false,
                         facebook = false,
@@ -402,7 +401,7 @@ class TvPhimProvider : MainAPI() {
                         mac = false,
                         iPad = false,
                         iPhone = false,
-                        windows = false, // was true
+                        windows = false,
                         tizen = false,
                         tizenApp = false,
                         version = JWPlayerOSVersion("10.0", 10, 0)
@@ -417,18 +416,18 @@ class TvPhimProvider : MainAPI() {
 
             val payloadJson = com.google.gson.Gson().toJson(payload)
             val encryptedPayloadB64 = Crypto.encrypt(payloadJson, ENCRYPTION_KEY)
-
-            // This is the correct but weird way the original Java code calculates the hash
+            
             val rawEncryptedStringForHash = String(Base64.getDecoder().decode(encryptedPayloadB64), Charsets.UTF_8)
             val hash = md5Hash(rawEncryptedStringForHash + MD5_SALT)
-
-            // The data sent to the server must be in HEX format
+            
             val encryptedPayloadHex = base64ToHex(encryptedPayloadB64)
             val apiData = "$encryptedPayloadHex|$hash"
 
+            // ADDED: User-Agent to match successful curl request
             val headers = mapOf(
                 "Origin" to "https://play.plhqtvhay.xyz",
-                "Referer" to "https://play.plhqtvhay.xyz/"
+                "Referer" to "https://play.plhqtvhay.xyz/",
+                "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
             )
 
             val response = app.post(
