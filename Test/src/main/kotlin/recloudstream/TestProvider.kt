@@ -15,6 +15,9 @@ class PerfectGirlsProvider : MainAPI() {
         TvType.NSFW
     )
 
+    /**
+     * SỬA LỖI: Di chuyển tham số `hasNext` từ `HomePageList` sang `HomePageResponse`.
+     */
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page > 1) "$mainUrl/$page/" else mainUrl
         val document = app.get(url).document
@@ -24,10 +27,13 @@ class PerfectGirlsProvider : MainAPI() {
             .mapNotNull { it.toSearchResult() }
 
         if (mainVideos.isNotEmpty()) {
-            homePageList.add(HomePageList("New Videos", mainVideos, hasNext = true))
+            // Xóa `hasNext` khỏi đây
+            homePageList.add(HomePageList("New Videos", mainVideos))
         }
 
-        return HomePageResponse(homePageList)
+        // Thêm `hasNext` vào đúng vị trí trong `HomePageResponse`
+        // Logic: nếu danh sách video không rỗng thì luôn có trang tiếp theo
+        return HomePageResponse(homePageList, hasNext = mainVideos.isNotEmpty())
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
@@ -52,10 +58,6 @@ class PerfectGirlsProvider : MainAPI() {
         }
     }
 
-    /**
-     * THAY ĐỔI: Hàm load bây giờ chỉ lấy thông tin video, không lấy link.
-     * Nó sẽ truyền URL của trang cho hàm `loadLinks`.
-     */
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
@@ -70,7 +72,7 @@ class PerfectGirlsProvider : MainAPI() {
         val recommendations = document.select("#custom_list_videos_custom_related_videos div.thumb-bl-video")
             .mapNotNull { it.toSearchResult() }
 
-        // Thay vì truyền danh sách link, ta truyền chính `url` của trang này cho loadLinks.
+        // Truyền `url` của trang này cho `loadLinks` xử lý
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
             this.plot = plot
@@ -79,12 +81,8 @@ class PerfectGirlsProvider : MainAPI() {
         }
     }
 
-    /**
-     * THAY ĐỔI: Hàm loadLinks giờ sẽ là nơi duy nhất chịu trách nhiệm lấy link video.
-     * Tham số `data` chính là `url` được truyền từ hàm `load`.
-     */
     override suspend fun loadLinks(
-        data: String, // `data` bây giờ là URL của trang xem video, ví dụ: "https://www.perfectgirls.xxx/video/496343/"
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
@@ -100,7 +98,7 @@ class PerfectGirlsProvider : MainAPI() {
                         source = this.name,
                         name = "${this.name} - $quality",
                         url = videoUrl,
-                        referer = mainUrl, // Luôn dùng mainUrl làm referer
+                        referer = mainUrl,
                         quality = getQualityFromName(quality),
                         type = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                     )
