@@ -1,148 +1,181 @@
-// Tên file: WatchHentaiProvider.kt
+// File: PornDosProvider.kt
 package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.LoadResponse.Companion.addToggledLinks
 import org.jsoup.nodes.Element
-import com.lagradost.cloudstream3.network.CloudflareKiller
-//import com.lagradost.cloudstream3.extractors.helper.ExtractorLinkType // FIX 1: Added missing import
-import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.SubtitleFile
 
-class WatchHentaiProvider : MainAPI() {
-    override var mainUrl = "https://watchhentai.net"
-    override var name = "WatchHentai"
+/**
+ * CloudStream 3 provider for PornDos
+ * Target: recloudstream fork
+ */
+class PornDosProvider : MainAPI() {
+    override var mainUrl = "https://www.porndos.com"
+    override var name = "PornDos"
     override val hasMainPage = true
     override var lang = "en"
-    override val hasDownloadSupport = true
-    override val supportedTypes = setOf(
-        TvType.NSFW
-    )
+    override val supportedTypes = setOf(TvType.NSFW)
 
-    private val cfInterceptor = CloudflareKiller()
+    private fun fixUrl(url: String): String {
+        return if (url.startsWith("http")) {
+            url
+        } else {
+            "$mainUrl$url"
+        }
+    }
+
+    private fun parseVideoCard(element: Element): SearchResponse {
+        val link = element.selectFirst("a")!!
+        val href = fixUrl(link.attr("href"))
+        val title = element.selectFirst("p")?.text() ?: "No Title"
+        val posterUrl = fixUrl(element.selectFirst("img")?.attr("data-src") ?: "")
+        val durationText = element.selectFirst("span.right")?.text()?.trim()
+        
+        val durationInSeconds = durationText?.split(":")?.let {
+            if (it.size == 2) {
+                (it[0].toIntOrNull() ?: 0) * 60 + (it[1].toIntOrNull() ?: 0)
+            } else 0
+        } ?: 0
+
+        return newVideoSearchResponse(title, href, TvType.NSFW) {
+            this.posterUrl = posterUrl
+            this.duration = durationInSeconds
+        }
+    }
 
     override val mainPage = mainPageOf(
-        "$mainUrl/videos/" to "Recent Episodes",
-        "$mainUrl/series/" to "Hentai Series",
-        "$mainUrl/genre/uncensored/" to "Uncensored",
-        "$mainUrl/genre/harem/" to "Harem",
-        "$mainUrl/genre/school-girls/" to "School Girls",
+        "/videos/" to "New Exclusive Videos",
+        "/most-viewed/" to "Most Viewed Videos",
+        "/top-rated/" to "Top Rated Videos"
     )
 
-    override suspend fun getMainPage(
-        page: Int,
-        request: MainPageRequest
-    ): HomePageResponse {
-        val url = if (page == 1) request.data else "${request.data}page/$page/"
-        val document = app.get(url, interceptor = cfInterceptor).document
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val url = "$mainUrl${request.data}"
+        val document = app.get(url).document
         
-        val home = document.select("article.item").mapNotNull {
-            it.toSearchResult()
-        }
+        val home = document.select("div.thumbs-wrap div.thumb")
+            .mapNotNull {
+                try {
+                    parseVideoCard(it)
+                } catch (e: Exception) {
+                    null
+                }
+            }
+        
         return newHomePageResponse(request.name, home)
     }
 
-    private fun Element.toSearchResult(): SearchResponse? {
-        val href = this.selectFirst("a")?.attr("href") ?: return null
-        val posterUrl = this.selectFirst("img")?.let {
-            it.attr("data-src").ifBlank { it.attr("src") }
-        }
-
-        val seriesTitle = this.selectFirst("span.serie")?.text()?.trim()
-        val episodeTitle = this.selectFirst("h3")?.text()?.trim()
-        val defaultTitle = this.selectFirst("h3 a, .title")?.text()?.trim()
-
-        val title = if (seriesTitle != null && episodeTitle != null) {
-            "$seriesTitle - $episodeTitle"
-        } else {
-            episodeTitle ?: defaultTitle ?: return null
-        }
-
-        return if (href.contains("/series/")) {
-            newTvSeriesSearchResponse(title, href, TvType.NSFW) {
-                this.posterUrl = posterUrl
-            }
-        } else {
-            newMovieSearchResponse(title, href, TvType.NSFW) {
-                this.posterUrl = posterUrl
-            }
-        }
-    }
-
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/?s=$query"
-        val document = app.get(searchUrl, interceptor = cfInterceptor).document
-        return document.select("div.result-item article").mapNotNull {
-            it.toSearchResult()
-        }
-    }
-
-    override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url, interceptor = cfInterceptor).document
-        val isSeriesPage = url.contains("/series/")
-
-        return if (isSeriesPage) {
-            val title = document.selectFirst("div.data h1")?.text()?.trim() ?: "Unknown Series"
-            val posterUrl = document.selectFirst("div.poster img")?.attr("data-src")
-            val synopsis = document.selectFirst("div.wp-content p, div.synopsis p")?.text()?.trim()
-            val episodes = document.select("ul.episodios li").mapNotNull { el ->
-                val epHref = el.selectFirst("div.episodiotitle a")?.attr("href") ?: return@mapNotNull null
-                val epTitle = el.selectFirst("div.episodiotitle a")?.text()?.trim() ?: "Episode"
-                val epPoster = el.selectFirst("div.imagen img")?.attr("data-src")
-                val epNum = epTitle.substringAfter("Episode ").toIntOrNull()
-
-                // FIX 2: Corrected the call to newEpisode helper function
-                newEpisode(epHref) {
-                    this.name = epTitle
-                    this.posterUrl = epPoster
-                    this.episode = epNum
-                }
-            }.reversed()
-
-            val recommendations = document.select("div#single_relacionados article, div#dt-episodes article").mapNotNull {
-                it.toSearchResult()
-            }
-
-            newTvSeriesLoadResponse(title, url, TvType.NSFW, episodes) {
-                this.posterUrl = posterUrl
-                this.plot = synopsis
-                this.recommendations = recommendations
-            }
-        } else {
-            val title = document.selectFirst("div.data h1")?.text()?.trim() ?: "Unknown Episode"
-            val posterUrl = document.selectFirst("meta[property=og:image]")?.attr("content")
-            val synopsis = document.selectFirst("div.synopsis p")?.text()?.trim()
-            
-            newMovieLoadResponse(title, url, TvType.NSFW, dataUrl = url) {
-                 this.posterUrl = posterUrl
-                 this.plot = synopsis
+        val searchUrl = "$mainUrl/search/"
+        val response = app.post(
+            searchUrl,
+            data = mapOf("search_query" to query)
+        ).document
+        
+        return response.select("div.thumbs-wrap div.thumb").mapNotNull {
+            try {
+                parseVideoCard(it)
+            } catch (e: Exception) {
+                null
             }
         }
     }
 
+    // `load` now only fetches metadata and adds a toggle to trigger `loadLinks`
+    override suspend fun load(url: String): LoadResponse {
+        val document = app.get(url).document
+
+        val title = document.selectFirst("h1[itemprop=name]")?.text()?.trim() ?: "No Title"
+        val poster = document.selectFirst("meta[itemprop=thumbnailUrl]")?.attr("content")?.let { fixUrl(it) }
+        val synopsis = document.selectFirst("div.full-text p")?.text()?.trim()
+        
+        val tags = document.select("div.full-links-items a[href*=category]").map { it.text() }
+        val actors = document.select("div.full-links-items a[href*=pornstar]").map { Actor(it.text()) }
+        val recommendations = document.select("div.video-related div.thumb").mapNotNull { 
+            try {
+                parseVideoCard(it)
+            } catch (e: Exception) {
+                null
+            }
+        }
+
+        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
+            this.posterUrl = poster
+            this.plot = synopsis
+            this.tags = tags
+            this.actors = actors
+            this.recommendations = recommendations
+            // Add a toggle that will call loadLinks when clicked
+            // The data passed to loadLinks will be the page's URL
+            addToggledLinks(
+                name = "Video Links", // This is the name of the toggle button
+                data = url,           // This data is passed to loadLinks
+                callback = null,      // We let loadLinks handle the callback
+                source = this@PornDosProvider.name
+            )
+        }
+    }
+
+    // `loadLinks` is now responsible for extracting the video streams.
     override suspend fun loadLinks(
-        data: String,
+        data: String, // This is the page URL passed from `load`
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data, interceptor = cfInterceptor).document
-        val iframeSrc = document.selectFirst("iframe.metaframe")?.attr("src") ?: return false
+        val pageText = app.get(data).text
 
-        val sourceUrl =
-            Regex("""source=([^&]+)""").find(iframeSrc)?.groupValues?.get(1)?.let {
-                java.net.URLDecoder.decode(it, "UTF-8")
-            } ?: return false
+        val videoUrlRegex = Regex("""video_url: '(.*?)'""")
+        val videoAltUrlRegex = Regex("""video_alt_url: '(.*?)'""")
+        val videoAltUrl2Regex = Regex("""video_alt_url2: '(.*?)'""")
 
-        callback(
-            ExtractorLink(
-                source = this.name,
-                name = this.name,
-                url = sourceUrl,
-                referer = mainUrl,
-                quality = Qualities.Unknown.value,
-                type = if (sourceUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-            )
-        )
+        // Using a try-catch block for safety
+        try {
+            videoUrlRegex.find(pageText)?.groupValues?.get(1)?.let { streamUrl ->
+                callback(
+                    ExtractorLink(
+                        source = this.name,
+                        name = "PornDos - 360p",
+                        url = streamUrl,
+                        referer = mainUrl,
+                        quality = Qualities.P360.value,
+                        type = ExtractorLinkType.VIDEO // Use VIDEO for direct MP4 files
+                    )
+                )
+            }
+            videoAltUrlRegex.find(pageText)?.groupValues?.get(1)?.let { streamUrl ->
+                callback(
+                    ExtractorLink(
+                        source = this.name,
+                        name = "PornDos - 480p",
+                        url = streamUrl,
+                        referer = mainUrl,
+                        quality = Qualities.P480.value,
+                        type = ExtractorLinkType.VIDEO
+                    )
+                )
+            }
+            videoAltUrl2Regex.find(pageText)?.groupValues?.get(1)?.let { streamUrl ->
+                callback(
+                    ExtractorLink(
+                        source = this.name,
+                        name = "PornDos - 720p",
+                        url = streamUrl,
+                        referer = mainUrl,
+                        quality = Qualities.P720.value,
+                        type = ExtractorLinkType.VIDEO
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            // Log the error if something goes wrong during extraction
+            e.printStackTrace()
+            return false
+        }
 
         return true
     }
