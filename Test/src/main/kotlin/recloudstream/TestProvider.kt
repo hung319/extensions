@@ -20,43 +20,36 @@ class NikPornProvider : MainAPI() {
     override val hasDownloadSupport = true
     override val hasChromecastSupport = true
 
-    private val mainPageSections = listOf(
-        "Hot Videos" to "$mainUrl/",
-        "New Videos" to "$mainUrl/new/",
-        "Top Rated" to "$mainUrl/top-rated/",
-        "Most Popular" to "$mainUrl/most-popular/"
+    // Sử dụng `mainPageOf` để khai báo các mục trên trang chính.
+    // Đây là cách làm đúng chuẩn, đơn giản và hiệu quả nhất.
+    override val mainPage = mainPageOf(
+        "$mainUrl/" to "Hot Videos",
+        "$mainUrl/new/" to "New Videos",
+        "$mainUrl/top-rated/" to "Top Rated",
+        "$mainUrl/most-popular/" to "Most Popular"
     )
 
+    // Hàm `getMainPage` giờ chỉ có một nhiệm vụ: tải dữ liệu cho một mục tại một trang cụ thể.
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Phân trang cho một mục cụ thể
-        if (page > 1) {
-            val document = app.get(request.data + page).document
-            val items = document.select("div.list-videos .item").mapNotNull {
-                try {
-                    parseVideoCard(it)
-                } catch (e: Exception) {
-                    null
-                }
-            }
-            val hasNext = document.selectFirst("li.next > a") != null
-            // Sửa lỗi: Sử dụng hàm `newHomePageResponse` theo tài liệu bạn cung cấp
-            return newHomePageResponse(request.name, items, hasNext = hasNext)
-        }
+        // `request.data` sẽ chứa URL của mục được chọn từ `mainPageOf`.
+        val url = request.data
 
-        // Tải lần đầu cho tất cả các mục
-        val allSections = mainPageSections.apmap { (name, url) ->
-            val document = app.get(url).document
-            val items = document.select("div.list-videos .item").mapNotNull { item ->
-                try {
-                    parseVideoCard(item)
-                } catch (e: Exception) {
-                    null
-                }
+        // Thêm số trang vào URL nếu không phải trang đầu.
+        val fullUrl = if (page > 1) url + page else url
+        
+        val document = app.get(fullUrl).document
+        val items = document.select("div.list-videos .item").mapNotNull {
+            try {
+                parseVideoCard(it)
+            } catch (e: Exception) {
+                null
             }
-            HomePageList(name = name, list = items, data = url)
         }
-
-        return HomePageResponse(allSections.filter { it.list.isNotEmpty() })
+        
+        val hasNext = document.selectFirst("li.next > a") != null
+        
+        // Sử dụng hàm `newHomePageResponse` đúng với tài liệu đã được cung cấp.
+        return newHomePageResponse(request.name, items, hasNext = hasNext)
     }
 
     private fun parseVideoCard(element: Element): SearchResponse {
