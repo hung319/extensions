@@ -15,10 +15,8 @@ class NikPornProvider : MainAPI() {
     override var name = "NikPorn"
     override val hasMainPage = true
     override var lang = "en"
-    // Sử dụng duy nhất TvType.NSFW
     override val supportedTypes = setOf(TvType.NSFW)
     
-    // Bật chức năng loadLinks
     override val hasDownloadSupport = true
     override val hasChromecastSupport = true
 
@@ -52,7 +50,6 @@ class NikPornProvider : MainAPI() {
         val title = link.selectFirst("strong.title")?.text()?.trim() ?: "N/A"
         val image = link.selectFirst("img.thumb")?.attr("data-original")
 
-        // Dùng TvType.NSFW
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = image
         }
@@ -88,7 +85,6 @@ class NikPornProvider : MainAPI() {
             }
         }
 
-        // Dùng TvType.NSFW
         return newMovieLoadResponse(title, url, TvType.NSFW, data = url) {
             this.posterUrl = poster
             this.plot = description
@@ -109,11 +105,14 @@ class NikPornProvider : MainAPI() {
         val scriptContent = document.select("script").find { it.data().contains("kt_player") }?.data()
 
         if (scriptContent != null) {
-            val regex = Regex("""var\s+\w+\s*=\s*(\{.*});""", setOf(RegexOption.DOT_MATCHES_ALL))
-            val match = regex.find(scriptContent)
-            
+            // Sửa lỗi: Thay đổi hoàn toàn cách lấy khối JSON để tránh lỗi cú pháp regex.
+            // 1. Tìm toàn bộ chuỗi khớp với mẫu.
+            val match = Regex("""var\s+\w+\s*=\s*\{.*};""", setOf(RegexOption.DOT_MATCHES_ALL)).find(scriptContent)
             if (match != null) {
-                val playerData = match.groupValues[1]
+                // 2. Cắt chuỗi con từ dấu `{` đầu tiên đến dấu `}` cuối cùng.
+                val playerData = "{${match.value.substringAfter('{').substringBeforeLast('}')}}"
+                
+                // 3. Dùng regex đơn giản hơn trên khối JSON đã được làm sạch.
                 val lqRegex = Regex("""video_url:\s*'(.*?)'""")
                 val hdRegex = Regex("""video_alt_url:\s*'(.*?)'""")
 
