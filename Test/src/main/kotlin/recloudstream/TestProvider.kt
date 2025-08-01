@@ -9,7 +9,7 @@ import org.jsoup.nodes.Element
  * CloudStream 3 provider for PornDos
  * Version: 3.0 (Final)
  */
-class TestProvider : MainAPI() {
+class PornDosProvider : MainAPI() {
     // Provider metadata
     override var mainUrl = "https://www.porndos.com"
     override var name = "PornDos"
