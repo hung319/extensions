@@ -1,4 +1,4 @@
-// File: TestProvider.kt
+// File: PornDosProvider.kt
 package recloudstream
 
 import com.lagradost.cloudstream3.*
@@ -7,7 +7,7 @@ import org.jsoup.nodes.Element
 
 /**
  * CloudStream 3 provider for PornDos
- * Version: 3.0 (Final)
+ * Version: 4.0 (Pagination Added)
  */
 class PornDosProvider : MainAPI() {
     // Provider metadata
@@ -33,8 +33,8 @@ class PornDosProvider : MainAPI() {
         val title = element.selectFirst("p")?.text() ?: "No Title"
         val posterUrl = fixUrl(element.selectFirst("img")?.attr("data-src") ?: "")
 
-        // As requested, using newMovieSearchResponse.
-        // NOTE: This response type does not support the 'duration' field, so it has been removed.
+        // Using newMovieSearchResponse as requested.
+        // NOTE: This response type does not support the 'duration' field.
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
         }
@@ -49,7 +49,17 @@ class PornDosProvider : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get("$mainUrl${request.data}").document
+        // Updated URL construction to support pagination
+        val url = if (page > 1) {
+            // Appends the page number for pages 2 and beyond
+            // e.g., https://www.porndos.com/videos/2/
+            "$mainUrl${request.data}$page/"
+        } else {
+            // URL for the first page
+            "$mainUrl${request.data}"
+        }
+
+        val document = app.get(url).document
         val home = document.select("div.thumbs-wrap div.thumb").mapNotNull {
             try {
                 parseVideoCard(it)
@@ -57,7 +67,9 @@ class PornDosProvider : MainAPI() {
                 null
             }
         }
-        return newHomePageResponse(request.name, home)
+        
+        // hasNext is true if the current page returned any results, allowing infinite scrolling
+        return newHomePageResponse(request.name, home, hasNext = home.isNotEmpty())
     }
 
     // --- Search ---
@@ -112,12 +124,10 @@ class PornDosProvider : MainAPI() {
     ): Boolean {
         val pageText = app.get(data).text
 
-        // Regex to find stream URLs in the page's script
         val videoUrlRegex = Regex("""video_url: '(.*?)'""")
         val videoAltUrlRegex = Regex("""video_alt_url: '(.*?)'""")
         val videoAltUrl2Regex = Regex("""video_alt_url2: '(.*?)'""")
 
-        // Extract and callback for each quality
         videoUrlRegex.find(pageText)?.groupValues?.get(1)?.let { streamUrl ->
             callback(
                 ExtractorLink(this.name, "360p", streamUrl, mainUrl, Qualities.P360.value, type = ExtractorLinkType.VIDEO)
