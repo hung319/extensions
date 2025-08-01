@@ -6,7 +6,6 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
-import kotlin.text.RegexOption
 
 // Provider class
 class NikPornProvider : MainAPI() {
@@ -98,38 +97,55 @@ class NikPornProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val url = data
-        val document = app.get(url).document
+        val document = app.get(data).document
         var foundLinks = false
 
+        // Tìm thẻ script chứa thông tin player
         val scriptContent = document.select("script").find { it.data().contains("kt_player") }?.data()
 
         if (scriptContent != null) {
-            // Sửa lỗi: Thay đổi hoàn toàn cách lấy khối JSON để tránh lỗi cú pháp regex.
-            // 1. Tìm toàn bộ chuỗi khớp với mẫu.
-            val match = Regex("""var\s+\w+\s*=\s*\{.*};""", setOf(RegexOption.DOT_MATCHES_ALL)).find(scriptContent)
-            if (match != null) {
-                // 2. Cắt chuỗi con từ dấu `{` đầu tiên đến dấu `}` cuối cùng.
-                val playerData = "{${match.value.substringAfter('{').substringBeforeLast('}')}}"
-                
-                // 3. Dùng regex đơn giản hơn trên khối JSON đã được làm sạch.
-                val lqRegex = Regex("""video_url:\s*'(.*?)'""")
-                val hdRegex = Regex("""video_alt_url:\s*'(.*?)'""")
+            // --- Sửa lỗi: Loại bỏ hoàn toàn Regex ---
+            // 1. Tìm vị trí bắt đầu và kết thúc của khối object JavaScript
+            val startIndex = scriptContent.indexOf("{")
+            val endIndex = scriptContent.lastIndexOf("};")
+            
+            if (startIndex != -1 && endIndex > startIndex) {
+                // 2. Cắt chuỗi để lấy nội dung bên trong object
+                val objectContent = scriptContent.substring(startIndex + 1, endIndex)
 
-                lqRegex.find(playerData)?.let {
-                    val lqUrl = it.groupValues[1].replace("function/0/", "")
-                    callback(
-                        ExtractorLink(this.name, "${this.name} LQ", lqUrl, mainUrl, Qualities.P480.value, type = ExtractorLinkType.VIDEO)
-                    )
-                    foundLinks = true
-                }
-
-                hdRegex.find(playerData)?.let {
-                    val hdUrl = it.groupValues[1].replace("function/0/", "")
-                    callback(
-                        ExtractorLink(this.name, "${this.name} HD", hdUrl, mainUrl, Qualities.P720.value, type = ExtractorLinkType.VIDEO)
-                    )
-                    foundLinks = true
+                // 3. Tách các thuộc tính bằng dấu phẩy và xử lý từng phần
+                objectContent.split(',').forEach { part ->
+                    val trimmedPart = part.trim()
+                    // Tìm và trích xuất link chất lượng thấp (LQ)
+                    if (trimmedPart.startsWith("'video_url':") || trimmedPart.startsWith("video_url:")) {
+                        val videoUrl = trimmedPart.substringAfter(":'").substringBeforeLast("'")
+                        callback(
+                            ExtractorLink(
+                                this.name, 
+                                "${this.name} LQ", 
+                                videoUrl.replace("function/0/", ""), 
+                                mainUrl, 
+                                Qualities.P480.value, 
+                                type = ExtractorLinkType.VIDEO
+                            )
+                        )
+                        foundLinks = true
+                    }
+                    // Tìm và trích xuất link chất lượng cao (HD)
+                    if (trimmedPart.startsWith("'video_alt_url':") || trimmedPart.startsWith("video_alt_url:")) {
+                        val videoUrl = trimmedPart.substringAfter(":'").substringBeforeLast("'")
+                        callback(
+                            ExtractorLink(
+                                this.name, 
+                                "${this.name} HD", 
+                                videoUrl.replace("function/0/", ""), 
+                                mainUrl, 
+                                Qualities.P720.value, 
+                                type = ExtractorLinkType.VIDEO
+                            )
+                        )
+                        foundLinks = true
+                    }
                 }
             }
         }
