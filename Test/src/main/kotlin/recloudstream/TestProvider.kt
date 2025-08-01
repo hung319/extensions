@@ -30,7 +30,7 @@ class NikPornProvider : MainAPI() {
         val url = request.data
         val fullUrl = if (page > 1) url + page else url
         
-        val document = app.get(fullUrl).document
+        val document = app.get(fullUrl, referer = mainUrl).document
         val items = document.select("div.list-videos .item").mapNotNull {
             try {
                 parseVideoCard(it)
@@ -56,7 +56,7 @@ class NikPornProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/search/$query/"
-        val document = app.get(searchUrl).document
+        val document = app.get(searchUrl, referer = mainUrl).document
 
         return document.select("div.list-videos .item").mapNotNull {
             try {
@@ -68,7 +68,7 @@ class NikPornProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url).document
+        val document = app.get(url, referer = mainUrl).document
 
         val title = document.selectFirst("h1")?.text()?.trim()
             ?: document.selectFirst("meta[property=og:title]")?.attr("content") ?: "N/A"
@@ -91,35 +91,45 @@ class NikPornProvider : MainAPI() {
         }
     }
 
-    // Hàm gọi link và xử lý chuyển hướng 302
-    private suspend fun followRedirectAndCallback(url: String, referer: String, quality: Int, qualityName: String, callback: (ExtractorLink) -> Unit) {
-        // Sửa lỗi: Chỉ xử lý nếu URL không rỗng để tránh lỗi "Expected URL scheme"
-        if (url.isBlank()) return
+    // --- Thuật toán giải mã URL được tái tạo từ JavaScript ---
+    private fun decodeUrl(encodedUrl: String): String {
+        try {
+            val parts = encodedUrl.split('/')
+            if (parts.size < 7) return encodedUrl // Không đủ thành phần để giải mã
 
-        // Sửa lỗi 302 và Referer:
-        // 1. Thêm referer vào request
-        // 2. Không tự động theo dõi chuyển hướng (allowRedirects = false)
-        val response = app.get(url, referer = referer, allowRedirects = false)
-        
-        // Kiểm tra nếu có chuyển hướng (3xx)
-        val finalUrl = if (response.code in 300..399) {
-            // Lấy link cuối cùng từ header 'Location'
-            response.headers["Location"] ?: url
-        } else {
-            // Nếu không có chuyển hướng, dùng link gốc
-            url
+            val keyString = "16" // Giá trị này được suy ra từ phân tích JS
+            var hashPart = parts[6]
+            var h = hashPart.substring(0, 2 * keyString.toInt())
+
+            // Logic hoán đổi ký tự
+            for (k in h.length - 1 downTo 0) {
+                var l = k
+                for (m in k until keyString.length) {
+                    l += keyString[m].toString().toInt()
+                }
+                while (l >= h.length) {
+                    l -= h.length
+                }
+
+                val charArray = h.toCharArray()
+                val temp = charArray[k]
+                charArray[k] = charArray[l]
+                charArray[l] = temp
+                h = String(charArray)
+            }
+            
+            val originalHashSubstring = parts[6].substring(0, h.length)
+            val decodedHashPart = hashPart.replace(originalHashSubstring, h)
+            
+            // Nối lại URL đã giải mã
+            val finalParts = parts.toMutableList()
+            finalParts[6] = decodedHashPart
+            finalParts.removeAt(0) // Xóa số 0
+            return finalParts.joinToString("/")
+        } catch (e: Exception) {
+            // Nếu giải mã thất bại, trả về URL gốc
+            return encodedUrl.replace("function/0/", "")
         }
-        
-        callback(
-            ExtractorLink(
-                this.name, 
-                "${this.name} $qualityName", 
-                finalUrl, 
-                referer, // Sử dụng referer gốc cho yêu cầu cuối cùng
-                quality, 
-                type = ExtractorLinkType.VIDEO
-            )
-        )
     }
 
     override suspend fun loadLinks(
@@ -128,26 +138,39 @@ class NikPornProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data).document
+        val document = app.get(data, referer = mainUrl).document
         var foundLinks = false
 
         val scriptContent = document.select("script").find { it.data().contains("kt_player") }?.data()
 
         if (scriptContent != null) {
-            // Sử dụng regex đơn giản và an toàn để tìm các URL
-            val lqRegex = Regex("""video_url:\s*'(.*?)'""")
-            val hdRegex = Regex("""video_alt_url:\s*'(.*?)'""")
+            val startIndex = scriptContent.indexOf("{")
+            val endIndex = scriptContent.lastIndexOf("};")
+            
+            if (startIndex != -1 && endIndex > startIndex) {
+                val objectContent = scriptContent.substring(startIndex + 1, endIndex)
 
-            lqRegex.find(scriptContent)?.groupValues?.get(1)?.let {
-                val videoUrl = it.replace("function/0/", "")
-                followRedirectAndCallback(videoUrl, data, Qualities.P480.value, "LQ", callback)
-                foundLinks = true
-            }
-
-            hdRegex.find(scriptContent)?.groupValues?.get(1)?.let {
-                val videoUrl = it.replace("function/0/", "")
-                followRedirectAndCallback(videoUrl, data, Qualities.P720.value, "HD", callback)
-                foundLinks = true
+                objectContent.split(',').forEach { part ->
+                    val trimmedPart = part.trim()
+                    
+                    if (trimmedPart.startsWith("'video_url':") || trimmedPart.startsWith("video_url:")) {
+                        val encodedUrl = trimmedPart.substringAfter(":'").substringBeforeLast("'")
+                        if (encodedUrl.isNotBlank()) {
+                            val decodedUrl = decodeUrl(encodedUrl.substringAfter("function/"))
+                            callback(ExtractorLink(this.name, "${this.name} LQ", decodedUrl, mainUrl, Qualities.P480.value, type = ExtractorLinkType.VIDEO))
+                            foundLinks = true
+                        }
+                    }
+                    
+                    if (trimmedPart.startsWith("'video_alt_url':") || trimmedPart.startsWith("video_alt_url:")) {
+                        val encodedUrl = trimmedPart.substringAfter(":'").substringBeforeLast("'")
+                        if (encodedUrl.isNotBlank()) {
+                            val decodedUrl = decodeUrl(encodedUrl.substringAfter("function/"))
+                            callback(ExtractorLink(this.name, "${this.name} HD", decodedUrl, mainUrl, Qualities.P720.value, type = ExtractorLinkType.VIDEO))
+                            foundLinks = true
+                        }
+                    }
+                }
             }
         }
         
