@@ -91,17 +91,12 @@ class NikPornProvider : MainAPI() {
         }
     }
 
-    // Hàm gọi link và xử lý chuyển hướng 302
     private suspend fun followRedirect(url: String, quality: Int, qualityName: String, callback: (ExtractorLink) -> Unit) {
-        // Sửa lỗi 302: không tự động theo dõi chuyển hướng
         val response = app.get(url, allowRedirects = false)
         
-        // Kiểm tra nếu có chuyển hướng (3xx)
         val finalUrl = if (response.code in 300..399) {
-            // Lấy link cuối cùng từ header 'Location'
             response.headers["Location"] ?: url
         } else {
-            // Nếu không có chuyển hướng, dùng link gốc
             url
         }
         
@@ -140,14 +135,20 @@ class NikPornProvider : MainAPI() {
                     // Tìm và trích xuất link chất lượng thấp (LQ)
                     if (trimmedPart.startsWith("'video_url':") || trimmedPart.startsWith("video_url:")) {
                         val videoUrl = trimmedPart.substringAfter(":'").substringBeforeLast("'").replace("function/0/", "")
-                        followRedirect(videoUrl, Qualities.P480.value, "LQ", callback)
-                        foundLinks = true
+                        // Sửa lỗi: Chỉ xử lý nếu URL không rỗng
+                        if (videoUrl.isNotBlank()) {
+                            followRedirect(videoUrl, Qualities.P480.value, "LQ", callback)
+                            foundLinks = true
+                        }
                     }
                     // Tìm và trích xuất link chất lượng cao (HD)
                     if (trimmedPart.startsWith("'video_alt_url':") || trimmedPart.startsWith("video_alt_url:")) {
                         val videoUrl = trimmedPart.substringAfter(":'").substringBeforeLast("'").replace("function/0/", "")
-                        followRedirect(videoUrl, Qualities.P720.value, "HD", callback)
-                        foundLinks = true
+                        // Sửa lỗi: Chỉ xử lý nếu URL không rỗng
+                        if (videoUrl.isNotBlank()) {
+                            followRedirect(videoUrl, Qualities.P720.value, "HD", callback)
+                            foundLinks = true
+                        }
                     }
                 }
             }
