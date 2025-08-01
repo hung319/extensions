@@ -6,7 +6,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
-import kotlin.text.RegexOption // Import thêm RegexOption
+import kotlin.text.RegexOption
 
 // Provider class
 class NikPornProvider : MainAPI() {
@@ -15,7 +15,8 @@ class NikPornProvider : MainAPI() {
     override var name = "NikPorn"
     override val hasMainPage = true
     override var lang = "en"
-    override val supportedTypes = setOf(TvType.NSFW) // Chỉ hỗ trợ NSFW
+    // Sử dụng duy nhất TvType.NSFW
+    override val supportedTypes = setOf(TvType.NSFW)
     
     // Bật chức năng loadLinks
     override val hasDownloadSupport = true
@@ -51,8 +52,8 @@ class NikPornProvider : MainAPI() {
         val title = link.selectFirst("strong.title")?.text()?.trim() ?: "N/A"
         val image = link.selectFirst("img.thumb")?.attr("data-original")
 
-        // Sửa lỗi: Trả về đúng TvType.NSFW
-        return newTvShowSearchResponse(title, href, TvType.NSFW) {
+        // Dùng TvType.NSFW
+        return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = image
         }
     }
@@ -87,12 +88,11 @@ class NikPornProvider : MainAPI() {
             }
         }
 
-        // Sửa lỗi: Trả về đúng TvType.NSFW
-        return newTvShowLoadResponse(title, url, TvType.NSFW, listOf()) {
+        // Dùng TvType.NSFW
+        return newMovieLoadResponse(title, url, TvType.NSFW, data = url) {
             this.posterUrl = poster
             this.plot = description
             this.recommendations = recommendations
-            // loadLinks sẽ xử lý việc lấy link
         }
     }
 
@@ -109,7 +109,6 @@ class NikPornProvider : MainAPI() {
         val scriptContent = document.select("script").find { it.data().contains("kt_player") }?.data()
 
         if (scriptContent != null) {
-            // Sửa lỗi: Thay thế regex không tương thích
             val regex = Regex("""var\s+\w+\s*=\s*(\{.*});""", setOf(RegexOption.DOT_MATCHES_ALL))
             val match = regex.find(scriptContent)
             
