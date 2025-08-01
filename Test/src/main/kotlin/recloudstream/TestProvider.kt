@@ -29,7 +29,7 @@ class NikPornProvider : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         // Phân trang cho một mục cụ thể
-        if (page > 1 && request.data.isNotBlank()) {
+        if (page > 1) {
             val document = app.get(request.data + page).document
             val items = document.select("div.list-videos .item").mapNotNull {
                 try {
@@ -39,23 +39,21 @@ class NikPornProvider : MainAPI() {
                 }
             }
             val hasNext = document.selectFirst("li.next > a") != null
-            // Sửa lỗi: Tạo HomePageList không có `hasNext`, sau đó đưa `hasNext` vào HomePageResponse
-            val homePageList = HomePageList(request.name, items)
-            return HomePageResponse(listOf(homePageList), hasNextPage = hasNext)
+            // Sửa lỗi: Sử dụng hàm `newHomePageResponse` theo tài liệu bạn cung cấp
+            return newHomePageResponse(request.name, items, hasNext = hasNext)
         }
 
         // Tải lần đầu cho tất cả các mục
-        val allSections = mainPageSections.apmap<HomePageList> { (name, url) ->
+        val allSections = mainPageSections.apmap { (name, url) ->
             val document = app.get(url).document
-            val items = document.select("div.list-videos .item").mapNotNull {
+            val items = document.select("div.list-videos .item").mapNotNull { item ->
                 try {
-                    parseVideoCard(it)
+                    parseVideoCard(item)
                 } catch (e: Exception) {
                     null
                 }
             }
-            // Sửa lỗi: Loại bỏ `hasNext` khỏi constructor của HomePageList
-            HomePageList(name = name, list = items, dataUrl = url)
+            HomePageList(name = name, list = items, data = url)
         }
 
         return HomePageResponse(allSections.filter { it.list.isNotEmpty() })
