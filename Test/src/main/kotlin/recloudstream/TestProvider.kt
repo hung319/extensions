@@ -38,13 +38,14 @@ class NikPornProvider : MainAPI() {
                     null
                 }
             }
-            // --- Cập nhật: Kiểm tra xem có trang tiếp theo không ---
             val hasNext = document.selectFirst("li.next > a") != null
-            return newHomePageResponse(request.name, items, hasNextPage = hasNext)
+            // Sửa lỗi: Tạo HomePageList không có `hasNext`, sau đó đưa `hasNext` vào HomePageResponse
+            val homePageList = HomePageList(request.name, items)
+            return HomePageResponse(listOf(homePageList), hasNextPage = hasNext)
         }
 
         // Tải lần đầu cho tất cả các mục
-        val allSections = mainPageSections.apmap { (name, url) ->
+        val allSections = mainPageSections.apmap<HomePageList> { (name, url) ->
             val document = app.get(url).document
             val items = document.select("div.list-videos .item").mapNotNull {
                 try {
@@ -53,9 +54,8 @@ class NikPornProvider : MainAPI() {
                     null
                 }
             }
-            // --- Cập nhật: Kiểm tra và gán hasNextPage cho từng mục ---
-            val hasNext = document.selectFirst("li.next > a") != null
-            newHomePageList(name, items, data = url, hasNextPage = hasNext)
+            // Sửa lỗi: Loại bỏ `hasNext` khỏi constructor của HomePageList
+            HomePageList(name = name, list = items, dataUrl = url)
         }
 
         return HomePageResponse(allSections.filter { it.list.isNotEmpty() })
@@ -133,7 +133,7 @@ class NikPornProvider : MainAPI() {
                 lqRegex.find(playerData)?.let {
                     val lqUrl = it.groupValues[1].replace("function/0/", "")
                     callback(
-                        ExtractorLink(this.name, "${this.name} LQ", lqUrl, mainUrl, Qualities.SD.value, type = ExtractorLinkType.VIDEO)
+                        ExtractorLink(this.name, "${this.name} LQ", lqUrl, mainUrl, Qualities.P480.value, type = ExtractorLinkType.VIDEO)
                     )
                     foundLinks = true
                 }
@@ -141,7 +141,7 @@ class NikPornProvider : MainAPI() {
                 hdRegex.find(playerData)?.let {
                     val hdUrl = it.groupValues[1].replace("function/0/", "")
                     callback(
-                        ExtractorLink(this.name, "${this.name} HD", hdUrl, mainUrl, Qualities.HD.value, type = ExtractorLinkType.VIDEO)
+                        ExtractorLink(this.name, "${this.name} HD", hdUrl, mainUrl, Qualities.P720.value, type = ExtractorLinkType.VIDEO)
                     )
                     foundLinks = true
                 }
