@@ -6,6 +6,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
+import kotlin.text.RegexOption // Import thêm RegexOption
 
 // Provider class
 class NikPornProvider : MainAPI() {
@@ -14,14 +15,12 @@ class NikPornProvider : MainAPI() {
     override var name = "NikPorn"
     override val hasMainPage = true
     override var lang = "en"
-    override val supportedTypes = setOf(TvType.NSFW)
+    override val supportedTypes = setOf(TvType.NSFW) // Chỉ hỗ trợ NSFW
     
     // Bật chức năng loadLinks
     override val hasDownloadSupport = true
     override val hasChromecastSupport = true
 
-    // Sử dụng `mainPageOf` để khai báo các mục trên trang chính.
-    // Đây là cách làm đúng chuẩn, đơn giản và hiệu quả nhất.
     override val mainPage = mainPageOf(
         "$mainUrl/" to "Hot Videos",
         "$mainUrl/new/" to "New Videos",
@@ -29,12 +28,8 @@ class NikPornProvider : MainAPI() {
         "$mainUrl/most-popular/" to "Most Popular"
     )
 
-    // Hàm `getMainPage` giờ chỉ có một nhiệm vụ: tải dữ liệu cho một mục tại một trang cụ thể.
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // `request.data` sẽ chứa URL của mục được chọn từ `mainPageOf`.
         val url = request.data
-
-        // Thêm số trang vào URL nếu không phải trang đầu.
         val fullUrl = if (page > 1) url + page else url
         
         val document = app.get(fullUrl).document
@@ -47,8 +42,6 @@ class NikPornProvider : MainAPI() {
         }
         
         val hasNext = document.selectFirst("li.next > a") != null
-        
-        // Sử dụng hàm `newHomePageResponse` đúng với tài liệu đã được cung cấp.
         return newHomePageResponse(request.name, items, hasNext = hasNext)
     }
 
@@ -58,7 +51,8 @@ class NikPornProvider : MainAPI() {
         val title = link.selectFirst("strong.title")?.text()?.trim() ?: "N/A"
         val image = link.selectFirst("img.thumb")?.attr("data-original")
 
-        return newMovieSearchResponse(title, href, TvType.Movie) {
+        // Sửa lỗi: Trả về đúng TvType.NSFW
+        return newTvShowSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = image
         }
     }
@@ -93,10 +87,12 @@ class NikPornProvider : MainAPI() {
             }
         }
 
-        return newMovieLoadResponse(title, url, TvType.Movie, url) {
+        // Sửa lỗi: Trả về đúng TvType.NSFW
+        return newTvShowLoadResponse(title, url, TvType.NSFW, listOf()) {
             this.posterUrl = poster
             this.plot = description
             this.recommendations = recommendations
+            // loadLinks sẽ xử lý việc lấy link
         }
     }
 
@@ -113,7 +109,8 @@ class NikPornProvider : MainAPI() {
         val scriptContent = document.select("script").find { it.data().contains("kt_player") }?.data()
 
         if (scriptContent != null) {
-            val regex = Regex("""var\s+\w+\s*=\s*(\{[\s\S]*?});""")
+            // Sửa lỗi: Thay thế regex không tương thích
+            val regex = Regex("""var\s+\w+\s*=\s*(\{.*});""", setOf(RegexOption.DOT_MATCHES_ALL))
             val match = regex.find(scriptContent)
             
             if (match != null) {
