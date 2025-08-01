@@ -91,6 +91,32 @@ class NikPornProvider : MainAPI() {
         }
     }
 
+    // Hàm gọi link và xử lý chuyển hướng 302
+    private suspend fun followRedirect(url: String, quality: Int, qualityName: String, callback: (ExtractorLink) -> Unit) {
+        // Sửa lỗi 302: không tự động theo dõi chuyển hướng
+        val response = app.get(url, allowRedirects = false)
+        
+        // Kiểm tra nếu có chuyển hướng (3xx)
+        val finalUrl = if (response.code in 300..399) {
+            // Lấy link cuối cùng từ header 'Location'
+            response.headers["Location"] ?: url
+        } else {
+            // Nếu không có chuyển hướng, dùng link gốc
+            url
+        }
+        
+        callback(
+            ExtractorLink(
+                this.name, 
+                "${this.name} $qualityName", 
+                finalUrl, 
+                mainUrl, 
+                quality, 
+                type = ExtractorLinkType.VIDEO
+            )
+        )
+    }
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -100,50 +126,27 @@ class NikPornProvider : MainAPI() {
         val document = app.get(data).document
         var foundLinks = false
 
-        // Tìm thẻ script chứa thông tin player
         val scriptContent = document.select("script").find { it.data().contains("kt_player") }?.data()
 
         if (scriptContent != null) {
-            // --- Sửa lỗi: Loại bỏ hoàn toàn Regex ---
-            // 1. Tìm vị trí bắt đầu và kết thúc của khối object JavaScript
             val startIndex = scriptContent.indexOf("{")
             val endIndex = scriptContent.lastIndexOf("};")
             
             if (startIndex != -1 && endIndex > startIndex) {
-                // 2. Cắt chuỗi để lấy nội dung bên trong object
                 val objectContent = scriptContent.substring(startIndex + 1, endIndex)
 
-                // 3. Tách các thuộc tính bằng dấu phẩy và xử lý từng phần
                 objectContent.split(',').forEach { part ->
                     val trimmedPart = part.trim()
                     // Tìm và trích xuất link chất lượng thấp (LQ)
                     if (trimmedPart.startsWith("'video_url':") || trimmedPart.startsWith("video_url:")) {
-                        val videoUrl = trimmedPart.substringAfter(":'").substringBeforeLast("'")
-                        callback(
-                            ExtractorLink(
-                                this.name, 
-                                "${this.name} LQ", 
-                                videoUrl.replace("function/0/", ""), 
-                                mainUrl, 
-                                Qualities.P480.value, 
-                                type = ExtractorLinkType.VIDEO
-                            )
-                        )
+                        val videoUrl = trimmedPart.substringAfter(":'").substringBeforeLast("'").replace("function/0/", "")
+                        followRedirect(videoUrl, Qualities.P480.value, "LQ", callback)
                         foundLinks = true
                     }
                     // Tìm và trích xuất link chất lượng cao (HD)
                     if (trimmedPart.startsWith("'video_alt_url':") || trimmedPart.startsWith("video_alt_url:")) {
-                        val videoUrl = trimmedPart.substringAfter(":'").substringBeforeLast("'")
-                        callback(
-                            ExtractorLink(
-                                this.name, 
-                                "${this.name} HD", 
-                                videoUrl.replace("function/0/", ""), 
-                                mainUrl, 
-                                Qualities.P720.value, 
-                                type = ExtractorLinkType.VIDEO
-                            )
-                        )
+                        val videoUrl = trimmedPart.substringAfter(":'").substringBeforeLast("'").replace("function/0/", "")
+                        followRedirect(videoUrl, Qualities.P720.value, "HD", callback)
                         foundLinks = true
                     }
                 }
