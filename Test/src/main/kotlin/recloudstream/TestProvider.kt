@@ -36,32 +36,30 @@ class HHDRagonProvider : MainAPI() {
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36"
     private val headers = mapOf("User-Agent" to userAgent)
 
-    // ⭐ [FIX] Sử dụng lại slug URL đúng cho các mục trang chủ
     override val mainPage = mainPageOf(
         "/phim-moi-cap-nhap.html" to "Phim Mới Cập Nhật",
         "/the-loai/anime.html" to "Anime",
         "/the-loai/cn-animation.html" to "Hoạt Hình Trung Quốc",
     )
 
+    // ⭐ [FIX] Cập nhật lại helper để parse đúng cấu trúc item mới
     private fun Element.toSearchResponse(forceTvType: TvType? = null): SearchResponse {
+        // Selector mới trỏ trực tiếp vào thẻ 'a' chứa thông tin
         val linkTag = this.selectFirst("a")!!
         val href = fixUrl(linkTag.attr("href"))
+        // Tiêu đề phim thường nằm trong thuộc tính 'title' của thẻ 'a'
         val title = linkTag.attr("title")
-        val posterUrl = fixUrlNull(linkTag.selectFirst("img")?.let {
+
+        val posterUrl = fixUrlNull(this.selectFirst("img")?.let {
             it.attr("data-src").ifEmpty { it.attr("src") }
         })
         
         val type = forceTvType ?: if(href.contains("cn-animation")) TvType.Cartoon else TvType.Anime
 
-        return if(type == TvType.Cartoon) {
-             newTvSeriesSearchResponse(title, href, type) { this.posterUrl = posterUrl }
-        } else {
-             newAnimeSearchResponse(title, href, type) { this.posterUrl = posterUrl }
-        }
+        return newAnimeSearchResponse(title, href, type) { this.posterUrl = posterUrl }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // ⭐ [FIX] Sử dụng cấu trúc URL phân trang đúng (?p=)
         val url = "$mainUrl${request.data}?p=$page"
         val document = app.get(url, headers = headers, interceptor = killer).document
 
@@ -70,7 +68,8 @@ class HHDRagonProvider : MainAPI() {
             else -> TvType.Anime
         }
 
-        val home = document.select("ul.halim-row > li.halim-item").map { it.toSearchResponse(type) }
+        // ⭐ [FIX] Sử dụng selector mới, tổng quát hơn cho các item phim
+        val home = document.select("div.halim-item").map { it.toSearchResponse(type) }
         
         val hasNext = document.selectFirst("li.page-item.active + li:not(.disabled)") != null
 
@@ -81,10 +80,10 @@ class HHDRagonProvider : MainAPI() {
     }
     
     override suspend fun search(query: String): List<SearchResponse> {
-        // ⭐ [FIX] Sử dụng URL tìm kiếm đúng theo file bạn cung cấp
         val url = "$mainUrl/tim-kiem/${query}.html"
         val document = app.get(url, headers = headers, interceptor = killer).document
-        return document.select("ul.halim-row > li.halim-item").map { it.toSearchResponse() }
+        // ⭐ [FIX] Áp dụng selector mới cho trang tìm kiếm
+        return document.select("div.halim-item").map { it.toSearchResponse() }
     }
 
     override suspend fun load(url: String): LoadResponse {
@@ -112,6 +111,7 @@ class HHDRagonProvider : MainAPI() {
         }
     }
 
+    // Hoàn lại logic loadLinks dùng AJAX như cũ
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
