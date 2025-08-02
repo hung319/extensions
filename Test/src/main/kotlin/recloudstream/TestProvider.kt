@@ -23,81 +23,68 @@ private data class PlayerAjaxResponse(
 class HHDRagonProvider : MainAPI() {
     override var mainUrl = "https://hhdragon.com"
     override var name = "HHDRagon"
-    override val hasMainPage = true
     override var lang = "vi"
+    override val hasMainPage = true
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(
         TvType.Movie, TvType.TvSeries, TvType.Anime,
         TvType.AnimeMovie, TvType.Cartoon,
     )
 
-    // ⭐ [FIX] Khai báo CloudflareKiller và truyền vào từng request
     private val killer = CloudflareKiller()
 
-    private val paginatedGrids = listOf(
-        mapOf("name" to "Phim Mới Cập Nhật", "url" to "$mainUrl/phim-moi-cap-nhap.html", "type" to TvType.Anime),
-        mapOf("name" to "Anime", "url" to "$mainUrl/the-loai/anime.html", "type" to TvType.Anime),
-        mapOf("name" to "Hoạt Hình Trung Quốc", "url" to "$mainUrl/the-loai/cn-animation.html", "type" to TvType.Cartoon)
+    // ⭐ [FIX] Sử dụng 'mainPageOf' để định nghĩa trang chủ
+    override val mainPage = mainPageOf(
+        "/phim-moi-cap-nhap.html" to "Phim Mới Cập Nhật",
+        "/the-loai/anime.html" to "Anime",
+        "/the-loai/cn-animation.html" to "Hoạt Hình Trung Quốc",
     )
-    
-    private fun Element.toSearchResponse(forceTvType: TvType = TvType.Anime): SearchResponse? {
-        val linkTag = this.selectFirst("a.film-poster-ahref") ?: return null
+
+    private fun Element.toSearchResponse(forceTvType: TvType? = null): SearchResponse {
+        val linkTag = this.selectFirst("a.film-poster-ahref")!!
         val href = fixUrl(linkTag.attr("href"))
-        val title = this.selectFirst("h3.film-name a")?.text() ?: return null
+        val title = this.selectFirst("h3.film-name a")!!.text()
         val posterUrl = fixUrlNull(this.selectFirst("img.film-poster-img")?.let {
             it.attr("data-src").ifEmpty { it.attr("src") }
         })
         
-        return if(forceTvType == TvType.Cartoon) {
-             newTvSeriesSearchResponse(title, href, forceTvType) { this.posterUrl = posterUrl }
+        val type = forceTvType ?: if(href.contains("cn-animation")) TvType.Cartoon else TvType.Anime
+
+        return if(type == TvType.Cartoon) {
+             newTvSeriesSearchResponse(title, href, type) { this.posterUrl = posterUrl }
         } else {
-             newAnimeSearchResponse(title, href, forceTvType) { this.posterUrl = posterUrl }
+             newAnimeSearchResponse(title, href, type) { this.posterUrl = posterUrl }
         }
     }
 
+    // ⭐ [FIX] Viết lại hoàn toàn getMainPage theo pattern mới
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        if (page > 1) {
-            val grid = paginatedGrids.find { it["name"] == request.name } ?: return newHomePageResponse(emptyList())
-            val url = grid["url"] as String
-            val type = grid["type"] as TvType
-            val document = app.get("$url?p=$page", interceptor = killer).document
-            val items = document.select("div.film-list div.film-item").mapNotNull { it.toSearchResponse(type) }
-            return newHomePageResponse(request.name, items)
+        val url = "$mainUrl${request.data}?p=$page"
+        val document = app.get(url, interceptor = killer).document
+
+        // Xác định loại nội dung dựa trên request data
+        val type = when {
+            request.data.contains("cn-animation") -> TvType.Cartoon
+            else -> TvType.Anime
         }
 
-        val allRows = mutableListOf<HomePageList>()
-        val frontPageDoc = app.get(mainUrl, interceptor = killer).document
+        val home = document.select("div.film-list div.film-item").map { it.toSearchResponse(type) }
         
-        frontPageDoc.select("div.tray-item").mapNotNull { block ->
-            val header = block.selectFirst("h3.tray-title a")?.text()?.trim()
-            if (header != null) {
-                val items = block.select("div.film-item").mapNotNull { it.toSearchResponse() }
-                if (items.isNotEmpty()) {
-                    allRows.add(HomePageList(header, items))
-                }
-            }
-        }
-        
-        paginatedGrids.apmap { gridData ->
-            val name = gridData["name"] as String
-            val url = gridData["url"] as String
-            val type = gridData["type"] as TvType
-            
-            try {
-                val gridDoc = app.get(url, interceptor = killer).document
-                val items = gridDoc.select("div.film-list div.film-item").mapNotNull { it.toSearchResponse(type) }
-                val homePageList = HomePageList(name, items)
-                homePageList.hasNextPage = true
-                allRows.add(homePageList)
-            } catch (_: Exception) { }
-        }
-        
-        return newHomePageResponse(allRows)
+        // Xác định xem có trang tiếp theo hay không
+        val hasNext = document.selectFirst("li.page-item.active + li:not(.disabled)") != null
+
+        return newHomePageResponse(
+            list = HomePageList(
+                name = request.name,
+                list = home
+            ),
+            hasNext = hasNext
+        )
     }
     
     override suspend fun search(query: String): List<SearchResponse> {
         val document = app.get("$mainUrl/tim-kiem/${query}", interceptor = killer).document
-        return document.select("div.film-list div.film-item").mapNotNull { it.toSearchResponse() }
+        return document.select("div.film-list div.film-item").map { it.toSearchResponse() }
     }
 
     override suspend fun load(url: String): LoadResponse {
