@@ -36,10 +36,11 @@ class HHDRagonProvider : MainAPI() {
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36"
     private val headers = mapOf("User-Agent" to userAgent)
 
+    // ⭐ [FIX] Sử dụng lại slug URL đúng cho các mục trang chủ
     override val mainPage = mainPageOf(
-        "/phim-moi" to "Phim Mới Cập Nhật",
-        "/the-loai/anime" to "Anime",
-        "/the-loai/cn-animation" to "Hoạt Hình Trung Quốc",
+        "/phim-moi-cap-nhap.html" to "Phim Mới Cập Nhật",
+        "/the-loai/anime.html" to "Anime",
+        "/the-loai/cn-animation.html" to "Hoạt Hình Trung Quốc",
     )
 
     private fun Element.toSearchResponse(forceTvType: TvType? = null): SearchResponse {
@@ -60,7 +61,8 @@ class HHDRagonProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = "$mainUrl${request.data}/page/$page"
+        // ⭐ [FIX] Sử dụng cấu trúc URL phân trang đúng (?p=)
+        val url = "$mainUrl${request.data}?p=$page"
         val document = app.get(url, headers = headers, interceptor = killer).document
 
         val type = when {
@@ -70,7 +72,7 @@ class HHDRagonProvider : MainAPI() {
 
         val home = document.select("ul.halim-row > li.halim-item").map { it.toSearchResponse(type) }
         
-        val hasNext = document.selectFirst("a.next.page-numbers") != null
+        val hasNext = document.selectFirst("li.page-item.active + li:not(.disabled)") != null
 
         return newHomePageResponse(
             list = HomePageList(name = request.name, list = home),
@@ -79,7 +81,9 @@ class HHDRagonProvider : MainAPI() {
     }
     
     override suspend fun search(query: String): List<SearchResponse> {
-        val document = app.get("$mainUrl/?s=${query}", headers = headers, interceptor = killer).document
+        // ⭐ [FIX] Sử dụng URL tìm kiếm đúng theo file bạn cung cấp
+        val url = "$mainUrl/tim-kiem/${query}.html"
+        val document = app.get(url, headers = headers, interceptor = killer).document
         return document.select("ul.halim-row > li.halim-item").map { it.toSearchResponse() }
     }
 
@@ -108,28 +112,24 @@ class HHDRagonProvider : MainAPI() {
         }
     }
 
-    // ⭐ [FIX] Khôi phục lại cơ chế load link bằng AJAX
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Trang xem phim có thể có cấu trúc khác trang thông tin, nên cần get lại
         val watchPageDoc = app.get(data, headers = headers, referer = mainUrl, interceptor = killer).document
 
-        // Các selector này có thể cần được kiểm tra lại trên trang xem phim
         val csrfToken = watchPageDoc.selectFirst("meta[name=csrf-token]")?.attr("content")
             ?: throw ErrorLoadingException("Không tìm thấy CSRF token")
 
         val movieId = watchPageDoc.body().attr("data-postid")
         if (movieId.isBlank()) throw ErrorLoadingException("Không tìm thấy Movie ID")
         
-        // Episode ID thường nằm trong URL hoặc một thuộc tính nào đó
         val episodeId = watchPageDoc.selectFirst("a.streaming-server-item.active")?.attr("data-id")
             ?: throw ErrorLoadingException("Không tìm thấy Episode ID")
 
-        val ajaxUrl = "$mainUrl/ajax/player" // Endpoint có thể đã thay đổi
+        val ajaxUrl = "$mainUrl/ajax/player"
         val ajaxData = mapOf("episodeId" to episodeId, "postId" to movieId)
         
         val ajaxHeaders = headers + mapOf(
