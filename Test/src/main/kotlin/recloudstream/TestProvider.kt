@@ -3,13 +3,13 @@
 package recloudstream
 
 import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.network.CloudflareKiller // ⭐ Import đã được cập nhật
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
 
-// Helper data class to parse the JSON response from the AJAX request
 private data class PlayerAjaxResponse(
     val src_vip: String? = null,
     val src_v1: String? = null,
@@ -20,10 +20,6 @@ private data class PlayerAjaxResponse(
     val src_hx: String? = null
 )
 
-/**
- * Main provider for HHDRagon.COM
- * Updated to include paginated grids on the homepage.
- */
 class HHDRagonProvider : MainAPI() {
     override var mainUrl = "https://hhdragon.com"
     override var name = "HHDRagon"
@@ -35,10 +31,14 @@ class HHDRagonProvider : MainAPI() {
         TvType.TvSeries,
         TvType.Anime,
         TvType.AnimeMovie,
-        TvType.Cartoon, // Added cartoon type
+        TvType.Cartoon,
     )
+
+    // Thêm interceptor để xử lý Cloudflare
+    init {
+        this.app.addInterceptor(CloudflareKiller())
+    }
     
-    // ⭐ Updated to accept a TvType parameter
     private fun Element.toSearchResponse(forceTvType: TvType = TvType.Anime): SearchResponse? {
         val linkTag = this.selectFirst("a.film-poster-ahref") ?: return null
         val href = fixUrl(linkTag.attr("href"))
@@ -47,7 +47,6 @@ class HHDRagonProvider : MainAPI() {
             it.attr("data-src").ifEmpty { it.attr("src") }
         })
         
-        // Use newTvSeriesSearchResponse for cartoon to ensure correct library behavior
         return if(forceTvType == TvType.Cartoon) {
              newTvSeriesSearchResponse(title, href, forceTvType) { this.posterUrl = posterUrl }
         } else {
@@ -55,9 +54,7 @@ class HHDRagonProvider : MainAPI() {
         }
     }
 
-    // ⭐ Updated getMainPage to add new grids and handle pagination
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // This part handles loading page 2, 3, ... for a specific grid
         if (page > 1) {
             val type = if (request.data.contains("cn-animation")) TvType.Cartoon else TvType.Anime
             val document = app.get("${request.data}?p=$page").document
@@ -65,30 +62,24 @@ class HHDRagonProvider : MainAPI() {
             return newHomePageResponse(request.name, items)
         }
 
-        // This part loads the initial homepage content (page 1)
         val allRows = mutableListOf<HomePageList>()
-
-        // 1. Add static trays from the main page first
         val frontPageDoc = app.get(mainUrl).document
         frontPageDoc.select("div.tray-item").mapNotNull { block ->
             val header = block.selectFirst("h3.tray-title a")?.text()?.trim()
             if (header != null) {
                 val items = block.select("div.film-item").mapNotNull { it.toSearchResponse() }
                 if (items.isNotEmpty()) {
-                    // These rows don't have pagination, so hasNextPage = false
                     allRows.add(HomePageList(header, items, false))
                 }
             }
         }
         
-        // 2. Define the new paginated grids
         val paginatedGrids = listOf(
             mapOf("name" to "Phim Mới Cập Nhật", "url" to "$mainUrl/phim-moi-cap-nhap.html", "type" to TvType.Anime),
             mapOf("name" to "Anime", "url" to "$mainUrl/the-loai/anime.html", "type" to TvType.Anime),
             mapOf("name" to "Hoạt Hình Trung Quốc", "url" to "$mainUrl/the-loai/cn-animation.html", "type" to TvType.Cartoon)
         )
 
-        // Fetch page 1 for each new grid in parallel
         paginatedGrids.apmap { grid ->
             val name = grid["name"] as String
             val url = grid["url"] as String
@@ -97,12 +88,8 @@ class HHDRagonProvider : MainAPI() {
             try {
                 val gridDoc = app.get(url).document
                 val items = gridDoc.select("div.film-list div.film-item").mapNotNull { it.toSearchResponse(type) }
-                // hasNextPage = true tells the app that this list can be scrolled to load more
-                // The `data` property passes the URL to the next call of getMainPage
                 allRows.add(HomePageList(name, items, true, url))
-            } catch (e: Exception) {
-                // Ignore if a grid fails to load
-            }
+            } catch (_: Exception) { }
         }
         
         return HomePageResponse(allRows)
@@ -121,11 +108,10 @@ class HHDRagonProvider : MainAPI() {
         val tags = document.select("ul.film-meta-info li:contains(Thể loại) a").map { it.text() }
         val year = document.select("ul.film-meta-info li:contains(Năm) a").text().toIntOrNull()
 
-        // Determine TvType based on URL
         val tvType = when {
-            url.contains("/cn-animation") -> TvType.Cartoon
-            url.contains("/anime") -> TvType.Anime
-            else -> TvType.TvSeries // Default
+            tags.any { it.equals("CN Animation", ignoreCase = true) } -> TvType.Cartoon
+            tags.any { it.equals("Anime", ignoreCase = true) } -> TvType.Anime
+            else -> TvType.TvSeries
         }
         
         val episodes = document.select("div.episode-list a.episode-item").map {
