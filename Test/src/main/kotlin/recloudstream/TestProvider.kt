@@ -22,7 +22,7 @@ private data class PlayerAjaxResponse(
 
 /**
  * Main provider for HHDRagon.COM
- * Updated selectors for new site layout as of August 2025.
+ * Updated to include paginated grids on the homepage.
  */
 class HHDRagonProvider : MainAPI() {
     override var mainUrl = "https://hhdragon.com"
@@ -35,11 +35,11 @@ class HHDRagonProvider : MainAPI() {
         TvType.TvSeries,
         TvType.Anime,
         TvType.AnimeMovie,
+        TvType.Cartoon, // Added cartoon type
     )
-
-    // ⭐ Updated helper function to parse new movie card structure
-    private fun Element.toSearchResponse(): SearchResponse? {
-        // Selector for the <a> tag which contains the link and is a parent for other info
+    
+    // ⭐ Updated to accept a TvType parameter
+    private fun Element.toSearchResponse(forceTvType: TvType = TvType.Anime): SearchResponse? {
         val linkTag = this.selectFirst("a.film-poster-ahref") ?: return null
         val href = fixUrl(linkTag.attr("href"))
         val title = this.selectFirst("h3.film-name a")?.text() ?: return null
@@ -47,39 +47,86 @@ class HHDRagonProvider : MainAPI() {
             it.attr("data-src").ifEmpty { it.attr("src") }
         })
         
-        return newAnimeSearchResponse(title, href, TvType.Anime) { this.posterUrl = posterUrl }
+        // Use newTvSeriesSearchResponse for cartoon to ensure correct library behavior
+        return if(forceTvType == TvType.Cartoon) {
+             newTvSeriesSearchResponse(title, href, forceTvType) { this.posterUrl = posterUrl }
+        } else {
+             newAnimeSearchResponse(title, href, forceTvType) { this.posterUrl = posterUrl }
+        }
     }
 
-    // ⭐ Updated to handle new homepage layout
+    // ⭐ Updated getMainPage to add new grids and handle pagination
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get("$mainUrl/").document
-        // New selector for homepage sections
-        val homePageList = document.select("div.tray-item").mapNotNull { block ->
-            // New selector for section title
-            val header = block.selectFirst("h3.tray-title a")?.text()?.trim() ?: return@mapNotNull null
-            // New selector for movie items within a section
-            val items = block.select("div.film-item").mapNotNull { it.toSearchResponse() }
-            if (items.isNotEmpty()) HomePageList(header, items) else null
+        // This part handles loading page 2, 3, ... for a specific grid
+        if (page > 1) {
+            val type = if (request.data.contains("cn-animation")) TvType.Cartoon else TvType.Anime
+            val document = app.get("${request.data}?p=$page").document
+            val items = document.select("div.film-list div.film-item").mapNotNull { it.toSearchResponse(type) }
+            return newHomePageResponse(request.name, items)
         }
-        return HomePageResponse(homePageList)
+
+        // This part loads the initial homepage content (page 1)
+        val allRows = mutableListOf<HomePageList>()
+
+        // 1. Add static trays from the main page first
+        val frontPageDoc = app.get(mainUrl).document
+        frontPageDoc.select("div.tray-item").mapNotNull { block ->
+            val header = block.selectFirst("h3.tray-title a")?.text()?.trim()
+            if (header != null) {
+                val items = block.select("div.film-item").mapNotNull { it.toSearchResponse() }
+                if (items.isNotEmpty()) {
+                    // These rows don't have pagination, so hasNextPage = false
+                    allRows.add(HomePageList(header, items, false))
+                }
+            }
+        }
+        
+        // 2. Define the new paginated grids
+        val paginatedGrids = listOf(
+            mapOf("name" to "Phim Mới Cập Nhật", "url" to "$mainUrl/phim-moi-cap-nhap.html", "type" to TvType.Anime),
+            mapOf("name" to "Anime", "url" to "$mainUrl/the-loai/anime.html", "type" to TvType.Anime),
+            mapOf("name" to "Hoạt Hình Trung Quốc", "url" to "$mainUrl/the-loai/cn-animation.html", "type" to TvType.Cartoon)
+        )
+
+        // Fetch page 1 for each new grid in parallel
+        paginatedGrids.apmap { grid ->
+            val name = grid["name"] as String
+            val url = grid["url"] as String
+            val type = grid["type"] as TvType
+            
+            try {
+                val gridDoc = app.get(url).document
+                val items = gridDoc.select("div.film-list div.film-item").mapNotNull { it.toSearchResponse(type) }
+                // hasNextPage = true tells the app that this list can be scrolled to load more
+                // The `data` property passes the URL to the next call of getMainPage
+                allRows.add(HomePageList(name, items, true, url))
+            } catch (e: Exception) {
+                // Ignore if a grid fails to load
+            }
+        }
+        
+        return HomePageResponse(allRows)
     }
     
-    // ⭐ Updated to handle new search results layout
     override suspend fun search(query: String): List<SearchResponse> {
         val document = app.get("$mainUrl/tim-kiem/${query}").document
-        // New selector for search result items
         return document.select("div.film-list div.film-item").mapNotNull { it.toSearchResponse() }
     }
 
-    // Load function remains largely the same as the detail page structure hasn't changed as much
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
-        // Using more specific selectors to be safe
         val title = document.selectFirst("h1.film-title")?.text()?.trim() ?: "No Title"
         val posterUrl = fixUrlNull(document.selectFirst("div.film-poster img")?.attr("src"))
         val plot = document.selectFirst("div.film-description")?.text()?.trim()
         val tags = document.select("ul.film-meta-info li:contains(Thể loại) a").map { it.text() }
         val year = document.select("ul.film-meta-info li:contains(Năm) a").text().toIntOrNull()
+
+        // Determine TvType based on URL
+        val tvType = when {
+            url.contains("/cn-animation") -> TvType.Cartoon
+            url.contains("/anime") -> TvType.Anime
+            else -> TvType.TvSeries // Default
+        }
         
         val episodes = document.select("div.episode-list a.episode-item").map {
             newEpisode(fixUrl(it.attr("href"))) {
@@ -88,7 +135,7 @@ class HHDRagonProvider : MainAPI() {
         }.reversed()
 
         return if (episodes.isNotEmpty() && episodes.size > 1) {
-            newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+            newTvSeriesLoadResponse(title, url, tvType, episodes) {
                 this.posterUrl = posterUrl; this.plot = plot; this.tags = tags; this.year = year
             }
         } else {
@@ -98,7 +145,6 @@ class HHDRagonProvider : MainAPI() {
         }
     }
 
-    // loadLinks logic remains the same as it depends on the AJAX endpoint, not page layout
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -123,12 +169,10 @@ class HHDRagonProvider : MainAPI() {
         )
         val ajaxRes = app.post(ajaxUrl, headers = headers, data = ajaxData).parsed<PlayerAjaxResponse>()
 
-        val sources = listOfNotNull(
+        listOfNotNull(
             ajaxRes.src_vip, ajaxRes.src_v1, ajaxRes.src_hd,
             ajaxRes.src_arc, ajaxRes.src_ok, ajaxRes.src_dl, ajaxRes.src_hx
-        )
-
-        sources.apmap { url ->
+        ).apmap { url ->
             if (url.endsWith(".mp4")) {
                  callback(
                     ExtractorLink(
