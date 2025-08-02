@@ -3,7 +3,7 @@
 package recloudstream
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.network.CloudflareKiller // ⭐ Import đã được cập nhật
+import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
@@ -27,17 +27,21 @@ class HHDRagonProvider : MainAPI() {
     override var lang = "vi"
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(
-        TvType.Movie,
-        TvType.TvSeries,
-        TvType.Anime,
-        TvType.AnimeMovie,
-        TvType.Cartoon,
+        TvType.Movie, TvType.TvSeries, TvType.Anime,
+        TvType.AnimeMovie, TvType.Cartoon,
     )
 
-    // Thêm interceptor để xử lý Cloudflare
-    init {
-        this.app.addInterceptor(CloudflareKiller())
+    // Khai báo và sử dụng interceptor để xử lý Cloudflare
+    private val interceptor = CloudflareKiller()
+    override val app = newApp {
+        addInterceptor(interceptor)
     }
+
+    private val paginatedGrids = listOf(
+        mapOf("name" to "Phim Mới Cập Nhật", "url" to "$mainUrl/phim-moi-cap-nhap.html", "type" to TvType.Anime),
+        mapOf("name" to "Anime", "url" to "$mainUrl/the-loai/anime.html", "type" to TvType.Anime),
+        mapOf("name" to "Hoạt Hình Trung Quốc", "url" to "$mainUrl/the-loai/cn-animation.html", "type" to TvType.Cartoon)
+    )
     
     private fun Element.toSearchResponse(forceTvType: TvType = TvType.Anime): SearchResponse? {
         val linkTag = this.selectFirst("a.film-poster-ahref") ?: return null
@@ -56,39 +60,38 @@ class HHDRagonProvider : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         if (page > 1) {
-            val type = if (request.data.contains("cn-animation")) TvType.Cartoon else TvType.Anime
-            val document = app.get("${request.data}?p=$page").document
+            val grid = paginatedGrids.find { it["name"] == request.name } ?: return newHomePageResponse(emptyList())
+            val url = grid["url"] as String
+            val type = grid["type"] as TvType
+            val document = app.get("$url?p=$page").document
             val items = document.select("div.film-list div.film-item").mapNotNull { it.toSearchResponse(type) }
             return newHomePageResponse(request.name, items)
         }
 
         val allRows = mutableListOf<HomePageList>()
         val frontPageDoc = app.get(mainUrl).document
+        
         frontPageDoc.select("div.tray-item").mapNotNull { block ->
             val header = block.selectFirst("h3.tray-title a")?.text()?.trim()
             if (header != null) {
                 val items = block.select("div.film-item").mapNotNull { it.toSearchResponse() }
                 if (items.isNotEmpty()) {
-                    allRows.add(HomePageList(header, items, false))
+                    allRows.add(HomePageList(header, items))
                 }
             }
         }
         
-        val paginatedGrids = listOf(
-            mapOf("name" to "Phim Mới Cập Nhật", "url" to "$mainUrl/phim-moi-cap-nhap.html", "type" to TvType.Anime),
-            mapOf("name" to "Anime", "url" to "$mainUrl/the-loai/anime.html", "type" to TvType.Anime),
-            mapOf("name" to "Hoạt Hình Trung Quốc", "url" to "$mainUrl/the-loai/cn-animation.html", "type" to TvType.Cartoon)
-        )
-
-        paginatedGrids.apmap { grid ->
-            val name = grid["name"] as String
-            val url = grid["url"] as String
-            val type = grid["type"] as TvType
+        paginatedGrids.apmap { gridData ->
+            val name = gridData["name"] as String
+            val url = gridData["url"] as String
+            val type = gridData["type"] as TvType
             
             try {
                 val gridDoc = app.get(url).document
                 val items = gridDoc.select("div.film-list div.film-item").mapNotNull { it.toSearchResponse(type) }
-                allRows.add(HomePageList(name, items, true, url))
+                val homePageList = HomePageList(name, items)
+                homePageList.hasNextPage = true
+                allRows.add(homePageList)
             } catch (_: Exception) { }
         }
         
