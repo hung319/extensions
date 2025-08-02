@@ -1,179 +1,147 @@
+// Save this file as HHDRagonProvider.kt
+
 package recloudstream
 
-// Import các thư viện cần thiết
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
 
-// Provider class
-class NikPornProvider : MainAPI() {
-    // Thông tin cơ bản về provider
-    override var mainUrl = "https://nikporn.com"
-    override var name = "NikPorn"
-    override val hasMainPage = true
-    override var lang = "en"
-    override val supportedTypes = setOf(TvType.NSFW)
-    
-    override val hasDownloadSupport = true
-    override val hasChromecastSupport = true
+// Helper data class to parse the JSON response from the AJAX request
+private data class PlayerAjaxResponse(
+    val src_vip: String? = null,
+    val src_v1: String? = null,
+    val src_hd: String? = null,
+    val src_arc: String? = null,
+    val src_ok: String? = null,
+    val src_dl: String? = null,
+    val src_hx: String? = null
+)
 
-    override val mainPage = mainPageOf(
-        "$mainUrl/" to "Hot Videos",
-        "$mainUrl/new/" to "New Videos",
-        "$mainUrl/top-rated/" to "Top Rated",
-        "$mainUrl/most-popular/" to "Most Popular"
+/**
+ * Main provider for HHDRagon.COM
+ * Logic updated to use AJAX endpoint and correct ExtractorLinkType.
+ */
+class HHDRagonProvider : MainAPI() {
+    // Overrides
+    override var mainUrl = "https://hhdragon.com"
+    override var name = "HHDRagon"
+    override val hasMainPage = true
+    override var lang = "vi"
+    override val hasDownloadSupport = true
+    override val supportedTypes = setOf(
+        TvType.Movie,
+        TvType.TvSeries,
+        TvType.Anime,
+        TvType.AnimeMovie,
     )
 
+    // Helper function to parse movie/series cards
+    private fun Element.toSearchResponse(): SearchResponse? {
+        val linkTag = this.selectFirst("a") ?: return null
+        val href = fixUrl(linkTag.attr("href"))
+        val title = this.selectFirst(".name")?.text() ?: return null
+        val posterUrl = fixUrlNull(this.selectFirst("div.image img")?.let {
+            it.attr("data-src").ifEmpty { it.attr("src") }
+        })
+        return newAnimeSearchResponse(title, href, TvType.Anime) { this.posterUrl = posterUrl }
+    }
+
+    // Load main page content
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = request.data
-        val fullUrl = if (page > 1) url + page else url
-        
-        val document = app.get(fullUrl, referer = mainUrl).document
-        val items = document.select("div.list-videos .item").mapNotNull {
-            try {
-                parseVideoCard(it)
-            } catch (e: Exception) {
-                null
-            }
+        val document = app.get("$mainUrl/").document
+        val homePageList = document.select("div.block.body").mapNotNull { block ->
+            val header = block.selectFirst("div.block-title")?.text()?.trim() ?: return@mapNotNull null
+            val items = block.select("li.item").mapNotNull { it.toSearchResponse() }
+            if (items.isNotEmpty()) HomePageList(header, items) else null
         }
-        
-        val hasNext = document.selectFirst("li.next > a") != null
-        return newHomePageResponse(request.name, items, hasNext = hasNext)
+        return HomePageResponse(homePageList)
     }
-
-    private fun parseVideoCard(element: Element): SearchResponse {
-        val link = element.selectFirst("a")!!
-        val href = fixUrl(link.attr("href"))
-        val title = link.selectFirst("strong.title")?.text()?.trim() ?: "N/A"
-        val image = link.selectFirst("img.thumb")?.attr("data-original")
-
-        return newMovieSearchResponse(title, href, TvType.NSFW) {
-            this.posterUrl = image
-        }
-    }
-
+    
+    // Search functionality
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/search/$query/"
-        val document = app.get(searchUrl, referer = mainUrl).document
-
-        return document.select("div.list-videos .item").mapNotNull {
-            try {
-                parseVideoCard(it)
-            } catch (e: Exception) {
-                null
-            }
-        }
+        val document = app.get("$mainUrl/tim-kiem/${query}").document
+        return document.select("ul.list-film > li.item").mapNotNull { it.toSearchResponse() }
     }
 
+    // Load movie/series details
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url, referer = mainUrl).document
+        val document = app.get(url).document
+        val title = document.selectFirst("h1.name")?.text()?.trim() ?: "No Title"
+        val posterUrl = fixUrlNull(document.selectFirst("div.info-image img")?.attr("src"))
+        val plot = document.selectFirst("div.info-film-text")?.text()?.trim()
+        val tags = document.select("div.info-dd[itemprop=genre] a").map { it.text() }
+        val year = document.select("dt:contains(Năm sản xuất) + dd").text().toIntOrNull()
+        
+        val episodes = document.select("div.list-episode a").map {
+            Episode(fixUrl(it.attr("href")), it.text().trim())
+        }.reversed()
 
-        val title = document.selectFirst("h1")?.text()?.trim()
-            ?: document.selectFirst("meta[property=og:title]")?.attr("content") ?: "N/A"
-        
-        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
-        val description = document.selectFirst("meta[property=og:description]")?.attr("content")
-        
-        val recommendations = document.select("div.related-videos .item").mapNotNull {
-            try {
-                parseVideoCard(it)
-            } catch (e: Exception) {
-                null
+        return if (episodes.size > 1) {
+            newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+                this.posterUrl = posterUrl; this.plot = plot; this.tags = tags; this.year = year
             }
-        }
-
-        return newMovieLoadResponse(title, url, TvType.NSFW, data = url) {
-            this.posterUrl = poster
-            this.plot = description
-            this.recommendations = recommendations
+        } else {
+            newMovieLoadResponse(title, url, TvType.Movie, url) {
+                this.posterUrl = posterUrl; this.plot = plot; this.tags = tags; this.year = year
+            }
         }
     }
 
-    // --- Thuật toán giải mã URL được tái tạo từ JavaScript ---
-    private fun decodeUrl(encodedUrl: String): String {
-        try {
-            val parts = encodedUrl.split('/')
-            if (parts.size < 7) return encodedUrl // Không đủ thành phần để giải mã
-
-            val keyString = "16" // Giá trị này được suy ra từ phân tích JS
-            var hashPart = parts[6]
-            var h = hashPart.substring(0, 2 * keyString.toInt())
-
-            // Logic hoán đổi ký tự
-            for (k in h.length - 1 downTo 0) {
-                var l = k
-                for (m in k until keyString.length) {
-                    l += keyString[m].toString().toInt()
-                }
-                while (l >= h.length) {
-                    l -= h.length
-                }
-
-                val charArray = h.toCharArray()
-                val temp = charArray[k]
-                charArray[k] = charArray[l]
-                charArray[l] = temp
-                h = String(charArray)
-            }
-            
-            val originalHashSubstring = parts[6].substring(0, h.length)
-            val decodedHashPart = hashPart.replace(originalHashSubstring, h)
-            
-            // Nối lại URL đã giải mã
-            val finalParts = parts.toMutableList()
-            finalParts[6] = decodedHashPart
-            finalParts.removeAt(0) // Xóa số 0
-            return finalParts.joinToString("/")
-        } catch (e: Exception) {
-            // Nếu giải mã thất bại, trả về URL gốc
-            return encodedUrl.replace("function/0/", "")
-        }
-    }
-
+    // Main logic for extracting video links
     override suspend fun loadLinks(
-        data: String,
+        data: String, // This is the watch page URL
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data, referer = mainUrl).document
-        var foundLinks = false
+        val watchPageDoc = app.get(data, referer = mainUrl).document
 
-        val scriptContent = document.select("script").find { it.data().contains("kt_player") }?.data()
+        val csrfToken = watchPageDoc.selectFirst("meta[name=csrf-token]")?.attr("content") 
+            ?: throw ErrorLoadingException("Không tìm thấy CSRF token")
 
-        if (scriptContent != null) {
-            val startIndex = scriptContent.indexOf("{")
-            val endIndex = scriptContent.lastIndexOf("};")
-            
-            if (startIndex != -1 && endIndex > startIndex) {
-                val objectContent = scriptContent.substring(startIndex + 1, endIndex)
+        val movieId = Regex("""var\s+MOVIE_ID\s*=\s*['"](\d+)['"];""").find(watchPageDoc.html())?.groupValues?.get(1)
+            ?: throw ErrorLoadingException("Không tìm thấy MovieID")
 
-                objectContent.split(',').forEach { part ->
-                    val trimmedPart = part.trim()
-                    
-                    if (trimmedPart.startsWith("'video_url':") || trimmedPart.startsWith("video_url:")) {
-                        val encodedUrl = trimmedPart.substringAfter(":'").substringBeforeLast("'")
-                        if (encodedUrl.isNotBlank()) {
-                            val decodedUrl = decodeUrl(encodedUrl.substringAfter("function/"))
-                            callback(ExtractorLink(this.name, "${this.name} LQ", decodedUrl, mainUrl, Qualities.P480.value, type = ExtractorLinkType.VIDEO))
-                            foundLinks = true
-                        }
-                    }
-                    
-                    if (trimmedPart.startsWith("'video_alt_url':") || trimmedPart.startsWith("video_alt_url:")) {
-                        val encodedUrl = trimmedPart.substringAfter(":'").substringBeforeLast("'")
-                        if (encodedUrl.isNotBlank()) {
-                            val decodedUrl = decodeUrl(encodedUrl.substringAfter("function/"))
-                            callback(ExtractorLink(this.name, "${this.name} HD", decodedUrl, mainUrl, Qualities.P720.value, type = ExtractorLinkType.VIDEO))
-                            foundLinks = true
-                        }
-                    }
-                }
+        val episodeId = Regex("""episode-id-(\d+)\.html""").find(data)?.groupValues?.get(1)
+            ?: throw ErrorLoadingException("Không tìm thấy EpisodeID")
+
+        val ajaxUrl = "$mainUrl/server/ajax/player"
+        val ajaxData = mapOf("MovieID" to movieId, "EpisodeID" to episodeId)
+        val headers = mapOf(
+            "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8",
+            "X-CSRF-TOKEN" to csrfToken,
+            "X-Requested-With" to "XMLHttpRequest",
+            "Referer" to data
+        )
+
+        val ajaxRes = app.post(ajaxUrl, headers = headers, data = ajaxData).parsed<PlayerAjaxResponse>()
+
+        val sources = listOfNotNull(
+            ajaxRes.src_vip, ajaxRes.src_v1, ajaxRes.src_hd,
+            ajaxRes.src_arc, ajaxRes.src_ok, ajaxRes.src_dl, ajaxRes.src_hx
+        )
+
+        sources.apmap { url ->
+            if (url.endsWith(".mp4")) { // Direct .mp4 link
+                 callback(
+                    ExtractorLink(
+                        this.name,
+                        "Archive.org MP4",
+                        url,
+                        data,
+                        quality = Qualities.Unknown.value,
+                        // ⭐ Updated type to VIDEO for single stream files like MP4
+                        type = ExtractorLinkType.VIDEO,
+                    )
+                )
+            } else { // For embed URLs, use CloudStream's built-in extractor
+                loadExtractor(url, data, subtitleCallback, callback)
             }
         }
         
-        return foundLinks
+        return true
     }
 }
