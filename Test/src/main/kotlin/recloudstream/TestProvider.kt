@@ -22,12 +22,12 @@ private data class PlayerAjaxResponse(
 
 /**
  * Main provider for HHDRagon.COM
- * Logic updated to use AJAX endpoint and correct ExtractorLinkType.
+ * Updated to use AJAX endpoint, correct ExtractorLinkType, and newEpisode factory method.
  */
-class HHDRagonProvider : MainAPI() {
+class HHDRagonProvider : MainAPI() { // Reverted class name
     // Overrides
     override var mainUrl = "https://hhdragon.com"
-    override var name = "HHDRagon"
+    override var name = "HHDRagon" // Reverted provider name
     override val hasMainPage = true
     override var lang = "vi"
     override val hasDownloadSupport = true
@@ -76,7 +76,9 @@ class HHDRagonProvider : MainAPI() {
         val year = document.select("dt:contains(Năm sản xuất) + dd").text().toIntOrNull()
         
         val episodes = document.select("div.list-episode a").map {
-            Episode(fixUrl(it.attr("href")), it.text().trim())
+            newEpisode(fixUrl(it.attr("href"))) {
+                this.name = it.text().trim()
+            }
         }.reversed()
 
         return if (episodes.size > 1) {
@@ -92,19 +94,16 @@ class HHDRagonProvider : MainAPI() {
 
     // Main logic for extracting video links
     override suspend fun loadLinks(
-        data: String, // This is the watch page URL
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val watchPageDoc = app.get(data, referer = mainUrl).document
-
         val csrfToken = watchPageDoc.selectFirst("meta[name=csrf-token]")?.attr("content") 
             ?: throw ErrorLoadingException("Không tìm thấy CSRF token")
-
         val movieId = Regex("""var\s+MOVIE_ID\s*=\s*['"](\d+)['"];""").find(watchPageDoc.html())?.groupValues?.get(1)
             ?: throw ErrorLoadingException("Không tìm thấy MovieID")
-
         val episodeId = Regex("""episode-id-(\d+)\.html""").find(data)?.groupValues?.get(1)
             ?: throw ErrorLoadingException("Không tìm thấy EpisodeID")
 
@@ -116,7 +115,6 @@ class HHDRagonProvider : MainAPI() {
             "X-Requested-With" to "XMLHttpRequest",
             "Referer" to data
         )
-
         val ajaxRes = app.post(ajaxUrl, headers = headers, data = ajaxData).parsed<PlayerAjaxResponse>()
 
         val sources = listOfNotNull(
@@ -125,19 +123,14 @@ class HHDRagonProvider : MainAPI() {
         )
 
         sources.apmap { url ->
-            if (url.endsWith(".mp4")) { // Direct .mp4 link
+            if (url.endsWith(".mp4")) {
                  callback(
                     ExtractorLink(
-                        this.name,
-                        "Archive.org MP4",
-                        url,
-                        data,
-                        quality = Qualities.Unknown.value,
-                        // ⭐ Updated type to VIDEO for single stream files like MP4
-                        type = ExtractorLinkType.VIDEO,
+                        this.name, "Archive.org MP4", url, data,
+                        quality = Qualities.Unknown.value, type = ExtractorLinkType.VIDEO,
                     )
                 )
-            } else { // For embed URLs, use CloudStream's built-in extractor
+            } else {
                 loadExtractor(url, data, subtitleCallback, callback)
             }
         }
