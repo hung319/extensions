@@ -65,12 +65,8 @@ class HHDRagonProvider : MainAPI() {
             else -> TvType.Anime
         }
 
-        val home = document.select("div.halim-item").map { it.toSearchResponse(type) }
-        
-        // ⭐ [DEBUG] Ném ra lỗi kèm theo nội dung HTML nếu không tìm thấy item nào
-        if (home.isEmpty()) {
-            throw ErrorLoadingException("getMainPage không tìm thấy item. HTML nhận được:\n${document.html()}")
-        }
+        // ⭐ [FIX] Sử dụng selector wildcard [class*="..."] để tăng độ chính xác
+        val home = document.select("[class*=\"halim-item\"]").map { it.toSearchResponse(type) }
         
         val hasNext = document.selectFirst("li.page-item.active + li:not(.disabled)") != null
         return newHomePageResponse(
@@ -83,14 +79,8 @@ class HHDRagonProvider : MainAPI() {
         val url = "$mainUrl/tim-kiem/${query}.html"
         val document = app.get(url, headers = headers, interceptor = killer).document
         
-        val results = document.select("div.halim-item").map { it.toSearchResponse() }
-
-        // ⭐ [DEBUG] Ném ra lỗi kèm theo nội dung HTML nếu không tìm thấy kết quả
-        if (results.isEmpty()) {
-            throw ErrorLoadingException("Search không tìm thấy kết quả. HTML nhận được:\n${document.html()}")
-        }
-
-        return results
+        // ⭐ [FIX] Áp dụng selector wildcard cho trang tìm kiếm
+        return document.select("[class*=\"halim-item\"]").map { it.toSearchResponse() }
     }
 
     override suspend fun load(url: String): LoadResponse {
