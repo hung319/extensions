@@ -9,6 +9,8 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 
 // JSON response cho AJAX request trong loadLinks
 private data class PlayerAjaxResponse(
@@ -42,8 +44,7 @@ class HHDRagonProvider : MainAPI() {
         "/the-loai/anime.html" to "Anime",
         "/the-loai/cn-animation.html" to "Hoạt Hình Trung Quốc",
     )
-
-    // ⭐ [FIX] Helper được viết lại để parse đúng cấu trúc 'div.movie-item'
+    
     private fun Element.toSearchResponse(forceTvType: TvType? = null): SearchResponse {
         val linkTag = this.selectFirst("a")!!
         val href = fixUrl(linkTag.attr("href"))
@@ -63,10 +64,8 @@ class HHDRagonProvider : MainAPI() {
             else -> TvType.Anime
         }
 
-        // ⭐ [FIX] Selector chính xác cho các mục phim là 'div.movie-item'
         val home = document.select("div.movie-item").map { it.toSearchResponse(type) }
         
-        // Selector cho pagination dựa trên file main.html
         val hasNext = document.selectFirst("a.page-link:contains(Cuối)") != null && home.isNotEmpty()
 
         return newHomePageResponse(
@@ -78,14 +77,12 @@ class HHDRagonProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/tim-kiem/?keyword=${query}"
         val document = app.get(url, headers = headers, interceptor = killer).document
-        // ⭐ [FIX] Trang tìm kiếm cũng dùng 'div.movie-item'
         return document.select("div.movie-item").map { it.toSearchResponse() }
     }
 
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url, headers = headers, interceptor = killer).document
         
-        // ⭐ [FIX] Selectors được cập nhật theo file load.html
         val title = document.selectFirst("h1.heading_movie")?.text() ?: "No Title"
         val posterUrl = fixUrlNull(document.selectFirst("div.first img")?.attr("src"))
         val plot = document.selectFirst("div.desc div.list-item-episode")?.text()
@@ -100,15 +97,18 @@ class HHDRagonProvider : MainAPI() {
         
         val episodes = document.select("div.list-item-episode a").map {
             newEpisode(fixUrl(it.attr("href"))) {
-                this.name = it.attr("title")
+                this.name = "Tập ${it.attr("title")}"
             }
         }.reversed()
+        
+        val recommendations = document.select("div.movies-list div.movie-item").mapNotNull { it.toSearchResponse() }
         
         return newTvSeriesLoadResponse(title, url, tvType, episodes) {
             this.posterUrl = posterUrl
             this.plot = plot
             this.tags = tags
             this.year = year
+            this.recommendations = recommendations
         }
     }
 
@@ -120,7 +120,6 @@ class HHDRagonProvider : MainAPI() {
     ): Boolean {
         val watchPageDoc = app.get(data, headers = headers, referer = mainUrl, interceptor = killer).document
 
-        // ⭐ [FIX] Logic AJAX được xác nhận là đúng, dùng regex để lấy ID từ script
         val script = watchPageDoc.select("script").firstOrNull { it.data().contains("var \$info_play_video") }?.data()
             ?: throw ErrorLoadingException("Không tìm thấy script chứa thông tin phim")
 
@@ -145,11 +144,31 @@ class HHDRagonProvider : MainAPI() {
         
         val ajaxRes = app.post(ajaxUrl, headers = ajaxHeaders, data = ajaxData, interceptor = killer).parsed<PlayerAjaxResponse>()
 
-        listOfNotNull(
+        val sources = listOfNotNull(
             ajaxRes.src_vip, ajaxRes.src_v1, ajaxRes.src_hd,
             ajaxRes.src_arc, ajaxRes.src_ok, ajaxRes.src_dl, ajaxRes.src_hx
-        ).apmap { url ->
-            loadExtractor(url, data, subtitleCallback, callback)
+        )
+
+        // ⭐ [FIX] Thay thế `apmap` bằng `coroutineScope` để xử lý song song không bị chặn
+        coroutineScope {
+            sources.forEach { url ->
+                launch {
+                    if (url.endsWith(".mp4")) {
+                        callback(
+                            ExtractorLink(
+                                name,
+                                "Archive MP4",
+                                url,
+                                referer = mainUrl,
+                                quality = Qualities.Unknown.value,
+                                type = ExtractorLinkType.VIDEO,
+                            )
+                        )
+                    } else {
+                        loadExtractor(url, data, subtitleCallback, callback)
+                    }
+                }
+            }
         }
         
         return true
