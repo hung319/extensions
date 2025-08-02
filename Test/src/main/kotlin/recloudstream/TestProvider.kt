@@ -26,28 +26,28 @@ class HHDRagonProvider : MainAPI() {
     override val hasMainPage = true
     override val hasDownloadSupport = true
     
-    // ⭐ [FIX] Chỉ hỗ trợ các định dạng Anime
     override val supportedTypes = setOf(
         TvType.Anime,
         TvType.AnimeMovie,
         TvType.Cartoon,
     )
 
-    // ⭐ [FIX] Thêm User-Agent và bỏ CloudflareKiller
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36"
     private val headers = mapOf("User-Agent" to userAgent)
 
     override val mainPage = mainPageOf(
-        "/phim-moi-cap-nhap.html" to "Phim Mới Cập Nhật",
-        "/the-loai/anime.html" to "Anime",
-        "/the-loai/cn-animation.html" to "Hoạt Hình Trung Quốc",
+        "/phim-moi" to "Phim Mới Cập Nhật",
+        "/the-loai/anime" to "Anime",
+        "/the-loai/cn-animation" to "Hoạt Hình Trung Quốc",
     )
 
+    // ⭐ [FIX] Cập nhật helper để parse cấu trúc HTML mới
     private fun Element.toSearchResponse(forceTvType: TvType? = null): SearchResponse {
-        val linkTag = this.selectFirst("a.film-poster-ahref")!!
+        val linkTag = this.selectFirst("a")!!
         val href = fixUrl(linkTag.attr("href"))
-        val title = this.selectFirst("h3.film-name a")!!.text()
-        val posterUrl = fixUrlNull(this.selectFirst("img.film-poster-img")?.let {
+        val title = linkTag.attr("title")
+        // Trang web có thể dùng `src` hoặc `data-src` cho ảnh
+        val posterUrl = fixUrlNull(linkTag.selectFirst("img")?.let {
             it.attr("data-src").ifEmpty { it.attr("src") }
         })
         
@@ -61,7 +61,8 @@ class HHDRagonProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = "$mainUrl${request.data}?p=$page"
+        // Cấu trúc URL phân trang của trang cũng đã thay đổi
+        val url = "$mainUrl${request.data}/page/$page"
         val document = app.get(url, headers = headers).document
 
         val type = when {
@@ -69,9 +70,11 @@ class HHDRagonProvider : MainAPI() {
             else -> TvType.Anime
         }
 
-        val home = document.select("div.film-list div.film-item").map { it.toSearchResponse(type) }
+        // ⭐ [FIX] Sử dụng selector mới cho danh sách phim
+        val home = document.select("ul.halim-row > li.halim-item").map { it.toSearchResponse(type) }
         
-        val hasNext = document.selectFirst("li.page-item.active + li:not(.disabled)") != null
+        // Kiểm tra phân trang bằng selector mới
+        val hasNext = document.selectFirst("a.next.page-numbers") != null
 
         return newHomePageResponse(
             list = HomePageList(
@@ -83,32 +86,31 @@ class HHDRagonProvider : MainAPI() {
     }
     
     override suspend fun search(query: String): List<SearchResponse> {
-        val document = app.get("$mainUrl/tim-kiem/${query}", headers = headers).document
-        return document.select("div.film-list div.film-item").map { it.toSearchResponse() }
+        val document = app.get("$mainUrl/?s=${query}", headers = headers).document
+        // ⭐ [FIX] Sử dụng selector mới cho trang tìm kiếm
+        return document.select("ul.halim-row > li.halim-item").map { it.toSearchResponse() }
     }
 
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url, headers = headers).document
-        val title = document.selectFirst("h1.film-title")?.text()?.trim() ?: "No Title"
-        val posterUrl = fixUrlNull(document.selectFirst("div.film-poster img")?.attr("src"))
-        val plot = document.selectFirst("div.film-description")?.text()?.trim()
-        val tags = document.select("ul.film-meta-info li:contains(Thể loại) a").map { it.text() }
-        val year = document.select("ul.film-meta-info li:contains(Năm) a").text().toIntOrNull()
+        val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: "No Title"
+        val posterUrl = fixUrlNull(document.selectFirst("div.poster img")?.attr("src"))
+        val plot = document.selectFirst("div.entry-content > p")?.text()?.trim()
+        val tags = document.select("a[rel=tag]").map { it.text() }
+        val year = tags.firstOrNull { it.toIntOrNull() != null }?.toIntOrNull()
 
         val tvType = when {
             tags.any { it.equals("CN Animation", ignoreCase = true) } -> TvType.Cartoon
             tags.any { it.equals("Anime", ignoreCase = true) } -> TvType.Anime
-            // Mặc định cho series nếu không xác định được
             else -> TvType.Anime 
         }
         
-        val episodes = document.select("div.episode-list a.episode-item").map {
+        val episodes = document.select("ul.list-server li > a").map {
             newEpisode(fixUrl(it.attr("href"))) {
-                this.name = it.attr("title")
+                this.name = it.text().trim()
             }
         }.reversed()
         
-        // Vì không còn Movie, chỉ cần kiểm tra có nhiều tập hay không
         return newTvSeriesLoadResponse(title, url, tvType, episodes) {
             this.posterUrl = posterUrl; this.plot = plot; this.tags = tags; this.year = year
         }
@@ -121,41 +123,36 @@ class HHDRagonProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val watchPageDoc = app.get(data, headers = headers, referer = mainUrl).document
-        val csrfToken = watchPageDoc.selectFirst("meta[name=csrf-token]")?.attr("content") 
-            ?: throw ErrorLoadingException("Không tìm thấy CSRF token")
-        val movieId = Regex("""var\s+MOVIE_ID\s*=\s*['"](\d+)['"];""").find(watchPageDoc.html())?.groupValues?.get(1)
-            ?: throw ErrorLoadingException("Không tìm thấy MovieID")
-        val episodeId = Regex("""episode-id-(\d+)\.html""").find(data)?.groupValues?.get(1)
-            ?: throw ErrorLoadingException("Không tìm thấy EpisodeID")
-
-        val ajaxUrl = "$mainUrl/server/ajax/player"
-        val ajaxData = mapOf("MovieID" to movieId, "EpisodeID" to episodeId)
         
-        // Gộp User-Agent vào các header cần thiết cho request AJAX
-        val ajaxHeaders = headers + mapOf(
-            "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8",
-            "X-CSRF-TOKEN" to csrfToken,
-            "X-Requested-With" to "XMLHttpRequest",
-            "Referer" to data
-        )
-        val ajaxRes = app.post(ajaxUrl, headers = ajaxHeaders, data = ajaxData).parsed<PlayerAjaxResponse>()
+        // Logic trích xuất link của trang này rất phức tạp, cần tìm đúng player
+        // Giả sử logic cũ với AJAX vẫn có thể hoạt động nếu ta tìm được ID
+        val movieId = watchPageDoc.body().attr("data-postid")
+        if (movieId.isBlank()) throw ErrorLoadingException("Không tìm thấy Movie ID")
 
-        listOfNotNull(
-            ajaxRes.src_vip, ajaxRes.src_v1, ajaxRes.src_hd,
-            ajaxRes.src_arc, ajaxRes.src_ok, ajaxRes.src_dl, ajaxRes.src_hx
-        ).apmap { url ->
-            if (url.endsWith(".mp4")) {
-                 callback(
-                    ExtractorLink(
-                        this.name, "Archive.org MP4", url, data,
-                        quality = Qualities.Unknown.value, type = ExtractorLinkType.VIDEO,
-                    )
+        // Trang này có vẻ không còn dùng AJAX nữa, mà dùng iframe trực tiếp
+        val iframeSrc = watchPageDoc.selectFirst("iframe#halim-player")?.attr("src")
+            ?: throw ErrorLoadingException("Không tìm thấy Iframe Player")
+
+        // Tải nội dung từ iframe để tìm link video
+        val iframeDoc = app.get(iframeSrc, headers = headers, referer = data).document
+        val script = iframeDoc.select("script").firstOrNull { it.data().contains("sources:") }?.data()
+            ?: throw ErrorLoadingException("Không tìm thấy script chứa sources")
+
+        // Regex để tìm link m3u8 trong script
+        Regex("""file:\s*['"]([^'"]+\.m3u8)['"]""").findAll(script).forEach { match ->
+            val m3u8Url = match.groupValues[1]
+            callback(
+                ExtractorLink(
+                    this.name,
+                    this.name,
+                    m3u8Url,
+                    referer = mainUrl,
+                    quality = Qualities.Unknown.value,
+                    type = ExtractorLinkType.M3U8,
                 )
-            } else {
-                loadExtractor(url, data, subtitleCallback, callback)
-            }
+            )
         }
-        
+
         return true
     }
 }
