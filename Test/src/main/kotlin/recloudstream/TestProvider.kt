@@ -3,7 +3,6 @@
 package recloudstream
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
@@ -26,14 +25,18 @@ class HHDRagonProvider : MainAPI() {
     override var lang = "vi"
     override val hasMainPage = true
     override val hasDownloadSupport = true
+    
+    // ⭐ [FIX] Chỉ hỗ trợ các định dạng Anime
     override val supportedTypes = setOf(
-        TvType.Movie, TvType.TvSeries, TvType.Anime,
-        TvType.AnimeMovie, TvType.Cartoon,
+        TvType.Anime,
+        TvType.AnimeMovie,
+        TvType.Cartoon,
     )
 
-    private val killer = CloudflareKiller()
+    // ⭐ [FIX] Thêm User-Agent và bỏ CloudflareKiller
+    private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36"
+    private val headers = mapOf("User-Agent" to userAgent)
 
-    // ⭐ [FIX] Sử dụng 'mainPageOf' để định nghĩa trang chủ
     override val mainPage = mainPageOf(
         "/phim-moi-cap-nhap.html" to "Phim Mới Cập Nhật",
         "/the-loai/anime.html" to "Anime",
@@ -57,12 +60,10 @@ class HHDRagonProvider : MainAPI() {
         }
     }
 
-    // ⭐ [FIX] Viết lại hoàn toàn getMainPage theo pattern mới
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = "$mainUrl${request.data}?p=$page"
-        val document = app.get(url, interceptor = killer).document
+        val document = app.get(url, headers = headers).document
 
-        // Xác định loại nội dung dựa trên request data
         val type = when {
             request.data.contains("cn-animation") -> TvType.Cartoon
             else -> TvType.Anime
@@ -70,7 +71,6 @@ class HHDRagonProvider : MainAPI() {
 
         val home = document.select("div.film-list div.film-item").map { it.toSearchResponse(type) }
         
-        // Xác định xem có trang tiếp theo hay không
         val hasNext = document.selectFirst("li.page-item.active + li:not(.disabled)") != null
 
         return newHomePageResponse(
@@ -83,12 +83,12 @@ class HHDRagonProvider : MainAPI() {
     }
     
     override suspend fun search(query: String): List<SearchResponse> {
-        val document = app.get("$mainUrl/tim-kiem/${query}", interceptor = killer).document
+        val document = app.get("$mainUrl/tim-kiem/${query}", headers = headers).document
         return document.select("div.film-list div.film-item").map { it.toSearchResponse() }
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url, interceptor = killer).document
+        val document = app.get(url, headers = headers).document
         val title = document.selectFirst("h1.film-title")?.text()?.trim() ?: "No Title"
         val posterUrl = fixUrlNull(document.selectFirst("div.film-poster img")?.attr("src"))
         val plot = document.selectFirst("div.film-description")?.text()?.trim()
@@ -98,7 +98,8 @@ class HHDRagonProvider : MainAPI() {
         val tvType = when {
             tags.any { it.equals("CN Animation", ignoreCase = true) } -> TvType.Cartoon
             tags.any { it.equals("Anime", ignoreCase = true) } -> TvType.Anime
-            else -> TvType.TvSeries
+            // Mặc định cho series nếu không xác định được
+            else -> TvType.Anime 
         }
         
         val episodes = document.select("div.episode-list a.episode-item").map {
@@ -106,15 +107,10 @@ class HHDRagonProvider : MainAPI() {
                 this.name = it.attr("title")
             }
         }.reversed()
-
-        return if (episodes.isNotEmpty() && episodes.size > 1) {
-            newTvSeriesLoadResponse(title, url, tvType, episodes) {
-                this.posterUrl = posterUrl; this.plot = plot; this.tags = tags; this.year = year
-            }
-        } else {
-            newMovieLoadResponse(title, url, TvType.Movie, url) {
-                this.posterUrl = posterUrl; this.plot = plot; this.tags = tags; this.year = year
-            }
+        
+        // Vì không còn Movie, chỉ cần kiểm tra có nhiều tập hay không
+        return newTvSeriesLoadResponse(title, url, tvType, episodes) {
+            this.posterUrl = posterUrl; this.plot = plot; this.tags = tags; this.year = year
         }
     }
 
@@ -124,7 +120,7 @@ class HHDRagonProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val watchPageDoc = app.get(data, referer = mainUrl, interceptor = killer).document
+        val watchPageDoc = app.get(data, headers = headers, referer = mainUrl).document
         val csrfToken = watchPageDoc.selectFirst("meta[name=csrf-token]")?.attr("content") 
             ?: throw ErrorLoadingException("Không tìm thấy CSRF token")
         val movieId = Regex("""var\s+MOVIE_ID\s*=\s*['"](\d+)['"];""").find(watchPageDoc.html())?.groupValues?.get(1)
@@ -134,13 +130,15 @@ class HHDRagonProvider : MainAPI() {
 
         val ajaxUrl = "$mainUrl/server/ajax/player"
         val ajaxData = mapOf("MovieID" to movieId, "EpisodeID" to episodeId)
-        val headers = mapOf(
+        
+        // Gộp User-Agent vào các header cần thiết cho request AJAX
+        val ajaxHeaders = headers + mapOf(
             "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8",
             "X-CSRF-TOKEN" to csrfToken,
             "X-Requested-With" to "XMLHttpRequest",
             "Referer" to data
         )
-        val ajaxRes = app.post(ajaxUrl, headers = headers, data = ajaxData, interceptor = killer).parsed<PlayerAjaxResponse>()
+        val ajaxRes = app.post(ajaxUrl, headers = ajaxHeaders, data = ajaxData).parsed<PlayerAjaxResponse>()
 
         listOfNotNull(
             ajaxRes.src_vip, ajaxRes.src_v1, ajaxRes.src_hd,
