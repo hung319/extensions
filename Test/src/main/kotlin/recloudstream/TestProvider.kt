@@ -42,12 +42,9 @@ class HHDRagonProvider : MainAPI() {
         "/the-loai/cn-animation.html" to "Hoạt Hình Trung Quốc",
     )
 
-    // ⭐ [FIX] Cập nhật lại helper để parse đúng cấu trúc item mới
     private fun Element.toSearchResponse(forceTvType: TvType? = null): SearchResponse {
-        // Selector mới trỏ trực tiếp vào thẻ 'a' chứa thông tin
         val linkTag = this.selectFirst("a")!!
         val href = fixUrl(linkTag.attr("href"))
-        // Tiêu đề phim thường nằm trong thuộc tính 'title' của thẻ 'a'
         val title = linkTag.attr("title")
 
         val posterUrl = fixUrlNull(this.selectFirst("img")?.let {
@@ -68,11 +65,14 @@ class HHDRagonProvider : MainAPI() {
             else -> TvType.Anime
         }
 
-        // ⭐ [FIX] Sử dụng selector mới, tổng quát hơn cho các item phim
         val home = document.select("div.halim-item").map { it.toSearchResponse(type) }
         
+        // ⭐ [DEBUG] Ném ra lỗi kèm theo nội dung HTML nếu không tìm thấy item nào
+        if (home.isEmpty()) {
+            throw ErrorLoadingException("getMainPage không tìm thấy item. HTML nhận được:\n${document.html()}")
+        }
+        
         val hasNext = document.selectFirst("li.page-item.active + li:not(.disabled)") != null
-
         return newHomePageResponse(
             list = HomePageList(name = request.name, list = home),
             hasNext = hasNext
@@ -82,8 +82,15 @@ class HHDRagonProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/tim-kiem/${query}.html"
         val document = app.get(url, headers = headers, interceptor = killer).document
-        // ⭐ [FIX] Áp dụng selector mới cho trang tìm kiếm
-        return document.select("div.halim-item").map { it.toSearchResponse() }
+        
+        val results = document.select("div.halim-item").map { it.toSearchResponse() }
+
+        // ⭐ [DEBUG] Ném ra lỗi kèm theo nội dung HTML nếu không tìm thấy kết quả
+        if (results.isEmpty()) {
+            throw ErrorLoadingException("Search không tìm thấy kết quả. HTML nhận được:\n${document.html()}")
+        }
+
+        return results
     }
 
     override suspend fun load(url: String): LoadResponse {
@@ -111,7 +118,6 @@ class HHDRagonProvider : MainAPI() {
         }
     }
 
-    // Hoàn lại logic loadLinks dùng AJAX như cũ
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
