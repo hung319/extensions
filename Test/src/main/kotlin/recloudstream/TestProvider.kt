@@ -31,11 +31,8 @@ class HHDRagonProvider : MainAPI() {
         TvType.AnimeMovie, TvType.Cartoon,
     )
 
-    // Khai báo và sử dụng interceptor để xử lý Cloudflare
-    private val interceptor = CloudflareKiller()
-    override val app = newApp {
-        addInterceptor(interceptor)
-    }
+    // ⭐ [FIX] Khai báo CloudflareKiller và truyền vào từng request
+    private val killer = CloudflareKiller()
 
     private val paginatedGrids = listOf(
         mapOf("name" to "Phim Mới Cập Nhật", "url" to "$mainUrl/phim-moi-cap-nhap.html", "type" to TvType.Anime),
@@ -63,13 +60,13 @@ class HHDRagonProvider : MainAPI() {
             val grid = paginatedGrids.find { it["name"] == request.name } ?: return newHomePageResponse(emptyList())
             val url = grid["url"] as String
             val type = grid["type"] as TvType
-            val document = app.get("$url?p=$page").document
+            val document = app.get("$url?p=$page", interceptor = killer).document
             val items = document.select("div.film-list div.film-item").mapNotNull { it.toSearchResponse(type) }
             return newHomePageResponse(request.name, items)
         }
 
         val allRows = mutableListOf<HomePageList>()
-        val frontPageDoc = app.get(mainUrl).document
+        val frontPageDoc = app.get(mainUrl, interceptor = killer).document
         
         frontPageDoc.select("div.tray-item").mapNotNull { block ->
             val header = block.selectFirst("h3.tray-title a")?.text()?.trim()
@@ -87,7 +84,7 @@ class HHDRagonProvider : MainAPI() {
             val type = gridData["type"] as TvType
             
             try {
-                val gridDoc = app.get(url).document
+                val gridDoc = app.get(url, interceptor = killer).document
                 val items = gridDoc.select("div.film-list div.film-item").mapNotNull { it.toSearchResponse(type) }
                 val homePageList = HomePageList(name, items)
                 homePageList.hasNextPage = true
@@ -95,16 +92,16 @@ class HHDRagonProvider : MainAPI() {
             } catch (_: Exception) { }
         }
         
-        return HomePageResponse(allRows)
+        return newHomePageResponse(allRows)
     }
     
     override suspend fun search(query: String): List<SearchResponse> {
-        val document = app.get("$mainUrl/tim-kiem/${query}").document
+        val document = app.get("$mainUrl/tim-kiem/${query}", interceptor = killer).document
         return document.select("div.film-list div.film-item").mapNotNull { it.toSearchResponse() }
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url).document
+        val document = app.get(url, interceptor = killer).document
         val title = document.selectFirst("h1.film-title")?.text()?.trim() ?: "No Title"
         val posterUrl = fixUrlNull(document.selectFirst("div.film-poster img")?.attr("src"))
         val plot = document.selectFirst("div.film-description")?.text()?.trim()
@@ -140,7 +137,7 @@ class HHDRagonProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val watchPageDoc = app.get(data, referer = mainUrl).document
+        val watchPageDoc = app.get(data, referer = mainUrl, interceptor = killer).document
         val csrfToken = watchPageDoc.selectFirst("meta[name=csrf-token]")?.attr("content") 
             ?: throw ErrorLoadingException("Không tìm thấy CSRF token")
         val movieId = Regex("""var\s+MOVIE_ID\s*=\s*['"](\d+)['"];""").find(watchPageDoc.html())?.groupValues?.get(1)
@@ -156,7 +153,7 @@ class HHDRagonProvider : MainAPI() {
             "X-Requested-With" to "XMLHttpRequest",
             "Referer" to data
         )
-        val ajaxRes = app.post(ajaxUrl, headers = headers, data = ajaxData).parsed<PlayerAjaxResponse>()
+        val ajaxRes = app.post(ajaxUrl, headers = headers, data = ajaxData, interceptor = killer).parsed<PlayerAjaxResponse>()
 
         listOfNotNull(
             ajaxRes.src_vip, ajaxRes.src_v1, ajaxRes.src_hd,
