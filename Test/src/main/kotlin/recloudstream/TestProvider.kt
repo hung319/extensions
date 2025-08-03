@@ -10,16 +10,17 @@ class Redtube : MainAPI() {
     override var name = "Redtube"
     override var mainUrl = "https://www.redtube.com"
     override var lang = "en"
-    // Thêm hasMainPage
     override val hasMainPage = true
     override var supportedTypes = setOf(TvType.NSFW)
 
+    // Đã cập nhật selector để tìm các video
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
         val document = app.get("$mainUrl/?page=$page").document
-        val home = document.select("div.video_bloc").mapNotNull {
+        // Thay đổi selector từ "div.video_bloc" thành "div.video_item_wrapper"
+        val home = document.select("div.video_item_wrapper").mapNotNull {
             it.toSearchResult()
         }
         return newHomePageResponse(
@@ -31,24 +32,30 @@ class Redtube : MainAPI() {
         )
     }
 
+    // Cập nhật lại toàn bộ logic trích xuất thông tin cho mỗi video
     private fun Element.toSearchResult(): SearchResponse? {
-        val title = this.selectFirst("a.video_title")?.text() ?: return null
-        val href = fixUrl(this.selectFirst("a")?.attr("href") ?: return null)
-        val posterUrl = this.selectFirst("img.video_thumb")?.attr("data-src")
+        // Selector mới cho link và tiêu đề
+        val linkElement = this.selectFirst("a.video_link") ?: return null
+        val href = fixUrl(linkElement.attr("href"))
+        // Selector mới cho ảnh thumbnail, ưu tiên lấy ảnh chất lượng cao từ 'data-thumb_url'
+        val posterUrl = this.selectFirst("img.video_thumb")?.attr("data-thumb_url")
+        val title = this.selectFirst("span.video_title")?.text() ?: return null
+
 
         return newMovieSearchResponse(title, href, TvType.Movie) {
             this.posterUrl = posterUrl
         }
     }
 
+    // Đã cập nhật selector để tìm kiếm
     override suspend fun search(query: String): List<SearchResponse> {
         val searchResponse = app.get("$mainUrl/?search=$query").document
-        return searchResponse.select("div.video_bloc").mapNotNull {
+        // Thay đổi selector từ "div.video_bloc" thành "div.video_item_wrapper"
+        return searchResponse.select("div.video_item_wrapper").mapNotNull {
             it.toSearchResult()
         }
     }
 
-    // Hàm load bây giờ chỉ lấy thông tin cơ bản của phim
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
         val title = document.selectFirst("h1.video_title")?.text()?.trim() ?: return null
@@ -61,7 +68,6 @@ class Redtube : MainAPI() {
         }
     }
 
-    // Logic trích xuất link được chuyển vào hàm loadLinks
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -72,8 +78,11 @@ class Redtube : MainAPI() {
         val script = document.select("script").find { it.data().contains("mediaDefinition") }?.data()
             ?: return false
 
+        // Logic trích xuất link này có vẻ vẫn ổn, giữ nguyên
         val mediaDefinitionJson = script.substringAfter("mediaDefinition: [").substringBefore("]")
-        val sources = parseJson<List<VideoSource>>(mediaDefinitionJson)
+        // Sửa lỗi parseJson nếu nó không nhận được một mảng JSON hợp lệ
+        val validJson = if (mediaDefinitionJson.endsWith(",")) mediaDefinitionJson.dropLast(1) else mediaDefinitionJson
+        val sources = parseJson<List<VideoSource>>("[$validJson]")
 
         sources.forEach { source ->
             val quality = source.quality
@@ -86,7 +95,6 @@ class Redtube : MainAPI() {
                         videoUrl,
                         referer = mainUrl,
                         quality = quality.toIntOrNull() ?: 0,
-                        // Sử dụng ExtractorLinkType.M3U8 thay cho isM3u8
                         type = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
                     )
                 )
