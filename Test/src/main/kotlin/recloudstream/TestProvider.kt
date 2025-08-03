@@ -1,5 +1,5 @@
 // File: RedtubeProvider.kt
-// Đã sửa lỗi selector bằng cách nhắm thẳng vào class ".videoblock" ổn định.
+// Đã thêm throw Exception để debug nội dung HTML
 
 package recloudstream
 
@@ -11,11 +11,10 @@ import com.google.gson.Gson
 /**
  * Coder's Note:
  * - Provider cho Redtube.
- * - Sửa lỗi không tìm thấy item bằng cách sử dụng selector trực tiếp và ổn định hơn: "li.videoblock".
- * Selector này hoạt động chính xác cho cả trang chính và trang tìm kiếm.
+ * - Đã thêm một `throw Exception` trong `getMainPage` để in ra nội dung HTML mà plugin nhận được.
+ * - Bạn hãy kiểm tra log lỗi sau khi chạy để xem nội dung HTML đầy đủ.
  */
 class RedtubeProvider : MainAPI() {
-    // Thông tin cơ bản của Provider
     override var mainUrl = "https://www.redtube.com"
     override var name = "Redtube"
     override val supportedTypes = setOf(TvType.NSFW)
@@ -26,9 +25,6 @@ class RedtubeProvider : MainAPI() {
         "$mainUrl/?page=" to "New Videos",
     )
 
-    /**
-     * Hàm phân tích cú pháp một video item từ HTML
-     */
     private fun Element.toSearchResult(): SearchResponse? {
         val linkElement = this.selectFirst("a.video_link") ?: return null
         val title = linkElement.attr("title").trim()
@@ -42,36 +38,37 @@ class RedtubeProvider : MainAPI() {
         }
     }
 
-    /**
-     * Tải trang chính
-     */
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = request.data + page
         val document = app.get(url).document
         
-        // SỬA LỖI: Sử dụng selector trực tiếp và ổn định nhất.
+        // DEBUG: Ném ra một exception để in toàn bộ nội dung HTML
+        // Tạm thời vô hiệu hóa logic chính để tập trung debug
+        throw Exception(document.html())
+
+        /*
+        // Logic cũ, tạm thời vô hiệu hóa
         val home = document.select("li.videoblock")
             .mapNotNull { it.toSearchResult() }
 
+        if (home.isEmpty()) {
+             // Nếu vẫn không tìm thấy, ném ra lỗi cùng với HTML
+             throw Exception("No items found on homepage. HTML content:\n\n${document.html()}")
+        }
+
         return newHomePageResponse(request.name, home)
+        */
     }
 
-    /**
-     * Thực hiện tìm kiếm
-     */
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/?search=$query"
         val document = app.get(searchUrl).document
 
-        // SỬA LỖI: Sử dụng cùng một selector ổn định.
         return document.select("li.videoblock").mapNotNull {
             it.toSearchResult()
         }
     }
 
-    /**
-     * Tải thông tin chi tiết của một video
-     */
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
@@ -85,15 +82,11 @@ class RedtubeProvider : MainAPI() {
         }
     }
 
-    // Data class để parse JSON mediaDefinition
     data class MediaDefinition(
         val quality: String?,
         val videoUrl: String?
     )
 
-    /**
-     * Trích xuất các link stream video
-     */
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
