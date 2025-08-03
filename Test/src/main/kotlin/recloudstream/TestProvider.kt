@@ -1,5 +1,5 @@
 // File: RedtubeProvider.kt
-// Tương thích với Cloudstream Toggle
+// Đã sửa lỗi "overrides nothing" và thêm hasMainPage
 
 package recloudstream
 
@@ -11,9 +11,10 @@ import com.google.gson.Gson
 
 /**
  * Coder's Note:
- * - Provider cho Redtube, đã được cập nhật để tương thích với Cloudstream Toggle.
- * - Sử dụng `ExtractorLinkType.VIDEO` cho các luồng MP4 trực tiếp theo tài liệu mới.
- * - `M3u8Helper` sẽ tự động xử lý các luồng HLS (`.m3u8`).
+ * - Provider cho Redtube.
+ * - Đã sửa lỗi 'interceptor' overrides nothing bằng cách truyền interceptor trực tiếp vào hàm app.get().
+ * - Đã thêm 'hasMainPage = true' để khai báo provider có trang chính.
+ * - Tương thích với Cloudstream Toggle và các phiên bản mới.
  */
 class RedtubeProvider : MainAPI() {
     // Thông tin cơ bản của Provider
@@ -21,12 +22,13 @@ class RedtubeProvider : MainAPI() {
     override var name = "Redtube"
     override val supportedTypes = setOf(TvType.NSFW)
     override var lang = "en"
+    override val hasMainPage = true // <--- ĐÃ THÊM
 
     override val mainPage = mainPageOf(
         "$mainUrl/?page=" to "New Videos",
     )
 
-    override val interceptor = CloudflareKiller()
+    // Dòng "override val interceptor" đã được XÓA để sửa lỗi
 
     /**
      * Hàm phân tích cú pháp một video item từ HTML
@@ -46,7 +48,8 @@ class RedtubeProvider : MainAPI() {
      */
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = request.data + page
-        val document = app.get(url, interceptor = interceptor).document
+        // Truyền interceptor trực tiếp
+        val document = app.get(url, interceptor = CloudflareKiller()).document
         val home = document.select("ul#video_shelf_main_content > li.videoblock, ul.videos.search-video-thumbs > li.videoblock")
             .mapNotNull { it.toSearchResult() }
 
@@ -58,7 +61,8 @@ class RedtubeProvider : MainAPI() {
      */
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/?search=$query"
-        val document = app.get(searchUrl, interceptor = interceptor).document
+        // Truyền interceptor trực tiếp
+        val document = app.get(searchUrl, interceptor = CloudflareKiller()).document
 
         return document.select("ul.videos.search-video-thumbs > li.videoblock").mapNotNull {
             it.toSearchResult()
@@ -69,7 +73,8 @@ class RedtubeProvider : MainAPI() {
      * Tải thông tin chi tiết của một video
      */
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url, interceptor = interceptor).document
+        // Truyền interceptor trực tiếp
+        val document = app.get(url, interceptor = CloudflareKiller()).document
 
         val title = document.selectFirst("h1.video_title")?.text()?.trim() ?: "Untitled"
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
@@ -96,12 +101,11 @@ class RedtubeProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val response = app.get(data, interceptor = interceptor)
+        // Truyền interceptor trực tiếp
+        val response = app.get(data, interceptor = CloudflareKiller())
 
-        // Regex để tìm và trích xuất mảng JSON `mediaDefinition`
         val mediaDefinitionRegex = Regex("""mediaDefinition":(\[.*?\])""")
         val matchResult = mediaDefinitionRegex.find(response.text)
-
         val jsonString = matchResult?.groups?.get(1)?.value ?: return false
 
         val mediaList = try {
@@ -122,7 +126,6 @@ class RedtubeProvider : MainAPI() {
                         headers = mapOf("Referer" to mainUrl)
                     ).forEach(callback)
                 } else {
-                    // Xử lý link MP4 trực tiếp
                     callback(
                         ExtractorLink(
                             source = this.name,
@@ -130,13 +133,12 @@ class RedtubeProvider : MainAPI() {
                             url = videoUrl,
                             referer = mainUrl,
                             quality = quality.toIntOrNull() ?: 0,
-                            type = ExtractorLinkType.VIDEO // <--- ĐÃ THAY ĐỔI
+                            type = ExtractorLinkType.VIDEO
                         )
                     )
                 }
             }
         }
-
         return true
     }
 }
