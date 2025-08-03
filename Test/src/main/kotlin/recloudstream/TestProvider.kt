@@ -1,5 +1,5 @@
 // File: RedtubeProvider.kt
-// Đã thêm throw Exception để debug nội dung HTML
+// Cập nhật selector chính xác và tích hợp cơ chế debug thông minh
 
 package recloudstream
 
@@ -11,8 +11,8 @@ import com.google.gson.Gson
 /**
  * Coder's Note:
  * - Provider cho Redtube.
- * - Đã thêm một `throw Exception` trong `getMainPage` để in ra nội dung HTML mà plugin nhận được.
- * - Bạn hãy kiểm tra log lỗi sau khi chạy để xem nội dung HTML đầy đủ.
+ * - Đã cập nhật lại CSS selector chính xác nhất dựa trên phân tích HTML.
+ * - Tích hợp cơ chế debug: Nếu không tìm thấy video, plugin sẽ báo lỗi và đính kèm nội dung HTML để kiểm tra.
  */
 class RedtubeProvider : MainAPI() {
     override var mainUrl = "https://www.redtube.com"
@@ -42,31 +42,34 @@ class RedtubeProvider : MainAPI() {
         val url = request.data + page
         val document = app.get(url).document
         
-        // DEBUG: Ném ra một exception để in toàn bộ nội dung HTML
-        // Tạm thời vô hiệu hóa logic chính để tập trung debug
-        throw Exception(document.html())
-
-        /*
-        // Logic cũ, tạm thời vô hiệu hóa
-        val home = document.select("li.videoblock")
+        // SỬA LỖI: Selector chính xác và cụ thể nhất cho trang chính.
+        val home = document.select("div#video_shelf_main_content li.videoblock")
             .mapNotNull { it.toSearchResult() }
 
+        // DEBUG THÔNG MINH: Nếu không tìm thấy item nào, báo lỗi và in ra HTML.
+        // Điều này giúp xác định vấn đề nếu layout trang web thay đổi hoặc bạn nhận được trang captcha.
         if (home.isEmpty()) {
-             // Nếu vẫn không tìm thấy, ném ra lỗi cùng với HTML
-             throw Exception("No items found on homepage. HTML content:\n\n${document.html()}")
+            throw Exception("Không tìm thấy video nào trên trang chính. Nội dung HTML nhận được:\n\n${document.html()}")
         }
 
         return newHomePageResponse(request.name, home)
-        */
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/?search=$query"
         val document = app.get(searchUrl).document
 
-        return document.select("li.videoblock").mapNotNull {
+        // SỬA LỖI: Selector chính xác và cụ thể nhất cho trang tìm kiếm.
+        val results = document.select("ul.search-video-thumbs li.videoblock").mapNotNull {
             it.toSearchResult()
         }
+
+        // Tùy chọn: Bạn có thể thêm cơ chế debug tương tự ở đây nếu cần.
+        // if (results.isEmpty()) {
+        //     throw Exception("Tìm kiếm cho '$query' không có kết quả. Nội dung HTML nhận được:\n\n${document.html()}")
+        // }
+
+        return results
     }
 
     override suspend fun load(url: String): LoadResponse {
@@ -94,39 +97,22 @@ class RedtubeProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val response = app.get(data)
-
         val mediaDefinitionRegex = Regex("""mediaDefinition":(\[.*?\])""")
         val matchResult = mediaDefinitionRegex.find(response.text)
         val jsonString = matchResult?.groups?.get(1)?.value ?: return false
-
         val mediaList = try {
             Gson().fromJson(jsonString, Array<MediaDefinition>::class.java).toList()
         } catch (e: Exception) {
             return false
         }
-
         mediaList.forEach { media ->
             val videoUrl = media.videoUrl
             val quality = media.quality
             if (!videoUrl.isNullOrBlank() && !quality.isNullOrBlank()) {
                 if (videoUrl.contains(".m3u8")) {
-                    M3u8Helper.generateM3u8(
-                        this.name,
-                        videoUrl,
-                        mainUrl,
-                        headers = mapOf("Referer" to mainUrl)
-                    ).forEach(callback)
+                    M3u8Helper.generateM3u8(this.name, videoUrl, mainUrl, headers = mapOf("Referer" to mainUrl)).forEach(callback)
                 } else {
-                    callback(
-                        ExtractorLink(
-                            source = this.name,
-                            name = "${this.name} - ${quality}p",
-                            url = videoUrl,
-                            referer = mainUrl,
-                            quality = quality.toIntOrNull() ?: 0,
-                            type = ExtractorLinkType.VIDEO
-                        )
-                    )
+                    callback(ExtractorLink(this.name, "${this.name} - ${quality}p", videoUrl, mainUrl, quality.toIntOrNull() ?: 0, type = ExtractorLinkType.VIDEO))
                 }
             }
         }
