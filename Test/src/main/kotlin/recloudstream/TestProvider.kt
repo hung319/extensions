@@ -1,5 +1,5 @@
 // File: RedtubeProvider.kt
-// Đã sửa lỗi selector cho trang chính và trang tìm kiếm
+// Đã sửa lỗi selector bằng cách nhắm thẳng vào class ".videoblock" ổn định.
 
 package recloudstream
 
@@ -11,7 +11,8 @@ import com.google.gson.Gson
 /**
  * Coder's Note:
  * - Provider cho Redtube.
- * - Sửa lỗi không tìm thấy item ở trang chính và trang tìm kiếm bằng cách cập nhật CSS selectors.
+ * - Sửa lỗi không tìm thấy item bằng cách sử dụng selector trực tiếp và ổn định hơn: "li.videoblock".
+ * Selector này hoạt động chính xác cho cả trang chính và trang tìm kiếm.
  */
 class RedtubeProvider : MainAPI() {
     // Thông tin cơ bản của Provider
@@ -29,7 +30,6 @@ class RedtubeProvider : MainAPI() {
      * Hàm phân tích cú pháp một video item từ HTML
      */
     private fun Element.toSearchResult(): SearchResponse? {
-        // Selector bên trong hàm này vẫn chính xác
         val linkElement = this.selectFirst("a.video_link") ?: return null
         val title = linkElement.attr("title").trim()
         if (title.isBlank()) return null
@@ -49,8 +49,8 @@ class RedtubeProvider : MainAPI() {
         val url = request.data + page
         val document = app.get(url).document
         
-        // SỬA LỖI: Cập nhật selector cho trang chính. ID "video_shelf_main_content" nằm trên thẻ <div>.
-        val home = document.select("div#video_shelf_main_content li.videoblock")
+        // SỬA LỖI: Sử dụng selector trực tiếp và ổn định nhất.
+        val home = document.select("li.videoblock")
             .mapNotNull { it.toSearchResult() }
 
         return newHomePageResponse(request.name, home)
@@ -63,8 +63,8 @@ class RedtubeProvider : MainAPI() {
         val searchUrl = "$mainUrl/?search=$query"
         val document = app.get(searchUrl).document
 
-        // SỬA LỖI: Cập nhật selector cho trang tìm kiếm để ổn định hơn.
-        return document.select("div.search-videos-list li.videoblock").mapNotNull {
+        // SỬA LỖI: Sử dụng cùng một selector ổn định.
+        return document.select("li.videoblock").mapNotNull {
             it.toSearchResult()
         }
     }
