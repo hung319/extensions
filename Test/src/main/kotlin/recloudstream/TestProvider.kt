@@ -25,8 +25,7 @@ class Redtube : MainAPI() {
         return newHomePageResponse(
             list = HomePageList(
                 name = "Latest Videos",
-                list = home,
-                isInfinite = true
+                list = home
             ),
             hasNext = true
         )
