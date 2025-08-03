@@ -1,20 +1,17 @@
 // File: RedtubeProvider.kt
-// Đã sửa lỗi "overrides nothing" và thêm hasMainPage
+// Đã loại bỏ hoàn toàn CloudflareKiller
 
 package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.google.gson.Gson
 
 /**
  * Coder's Note:
  * - Provider cho Redtube.
- * - Đã sửa lỗi 'interceptor' overrides nothing bằng cách truyền interceptor trực tiếp vào hàm app.get().
- * - Đã thêm 'hasMainPage = true' để khai báo provider có trang chính.
- * - Tương thích với Cloudstream Toggle và các phiên bản mới.
+ * - Đã loại bỏ CloudflareKiller theo yêu cầu.
  */
 class RedtubeProvider : MainAPI() {
     // Thông tin cơ bản của Provider
@@ -22,13 +19,11 @@ class RedtubeProvider : MainAPI() {
     override var name = "Redtube"
     override val supportedTypes = setOf(TvType.NSFW)
     override var lang = "en"
-    override val hasMainPage = true // <--- ĐÃ THÊM
+    override val hasMainPage = true
 
     override val mainPage = mainPageOf(
         "$mainUrl/?page=" to "New Videos",
     )
-
-    // Dòng "override val interceptor" đã được XÓA để sửa lỗi
 
     /**
      * Hàm phân tích cú pháp một video item từ HTML
@@ -48,8 +43,7 @@ class RedtubeProvider : MainAPI() {
      */
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = request.data + page
-        // Truyền interceptor trực tiếp
-        val document = app.get(url, interceptor = CloudflareKiller()).document
+        val document = app.get(url).document // Bỏ interceptor
         val home = document.select("ul#video_shelf_main_content > li.videoblock, ul.videos.search-video-thumbs > li.videoblock")
             .mapNotNull { it.toSearchResult() }
 
@@ -61,8 +55,7 @@ class RedtubeProvider : MainAPI() {
      */
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/?search=$query"
-        // Truyền interceptor trực tiếp
-        val document = app.get(searchUrl, interceptor = CloudflareKiller()).document
+        val document = app.get(searchUrl).document // Bỏ interceptor
 
         return document.select("ul.videos.search-video-thumbs > li.videoblock").mapNotNull {
             it.toSearchResult()
@@ -73,8 +66,7 @@ class RedtubeProvider : MainAPI() {
      * Tải thông tin chi tiết của một video
      */
     override suspend fun load(url: String): LoadResponse {
-        // Truyền interceptor trực tiếp
-        val document = app.get(url, interceptor = CloudflareKiller()).document
+        val document = app.get(url).document // Bỏ interceptor
 
         val title = document.selectFirst("h1.video_title")?.text()?.trim() ?: "Untitled"
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
@@ -101,8 +93,7 @@ class RedtubeProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Truyền interceptor trực tiếp
-        val response = app.get(data, interceptor = CloudflareKiller())
+        val response = app.get(data) // Bỏ interceptor
 
         val mediaDefinitionRegex = Regex("""mediaDefinition":(\[.*?\])""")
         val matchResult = mediaDefinitionRegex.find(response.text)
