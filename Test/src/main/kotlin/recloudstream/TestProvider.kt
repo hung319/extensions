@@ -1,5 +1,5 @@
 // File: RedtubeProvider.kt
-// Đã loại bỏ hoàn toàn CloudflareKiller
+// Đã sửa lỗi selector cho trang chính và trang tìm kiếm
 
 package recloudstream
 
@@ -11,7 +11,7 @@ import com.google.gson.Gson
 /**
  * Coder's Note:
  * - Provider cho Redtube.
- * - Đã loại bỏ CloudflareKiller theo yêu cầu.
+ * - Sửa lỗi không tìm thấy item ở trang chính và trang tìm kiếm bằng cách cập nhật CSS selectors.
  */
 class RedtubeProvider : MainAPI() {
     // Thông tin cơ bản của Provider
@@ -29,8 +29,12 @@ class RedtubeProvider : MainAPI() {
      * Hàm phân tích cú pháp một video item từ HTML
      */
     private fun Element.toSearchResult(): SearchResponse? {
-        val title = this.selectFirst("a.video_link")?.attr("title")?.trim() ?: return null
-        val href = fixUrlNull(this.selectFirst("a.video_link")?.attr("href")) ?: return null
+        // Selector bên trong hàm này vẫn chính xác
+        val linkElement = this.selectFirst("a.video_link") ?: return null
+        val title = linkElement.attr("title").trim()
+        if (title.isBlank()) return null
+        
+        val href = fixUrlNull(linkElement.attr("href")) ?: return null
         val posterUrl = fixUrlNull(this.selectFirst("img")?.attr("data-src"))
 
         return newMovieSearchResponse(title, href, TvType.NSFW) {
@@ -43,8 +47,10 @@ class RedtubeProvider : MainAPI() {
      */
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = request.data + page
-        val document = app.get(url).document // Bỏ interceptor
-        val home = document.select("ul#video_shelf_main_content > li.videoblock, ul.videos.search-video-thumbs > li.videoblock")
+        val document = app.get(url).document
+        
+        // SỬA LỖI: Cập nhật selector cho trang chính. ID "video_shelf_main_content" nằm trên thẻ <div>.
+        val home = document.select("div#video_shelf_main_content li.videoblock")
             .mapNotNull { it.toSearchResult() }
 
         return newHomePageResponse(request.name, home)
@@ -55,9 +61,10 @@ class RedtubeProvider : MainAPI() {
      */
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/?search=$query"
-        val document = app.get(searchUrl).document // Bỏ interceptor
+        val document = app.get(searchUrl).document
 
-        return document.select("ul.videos.search-video-thumbs > li.videoblock").mapNotNull {
+        // SỬA LỖI: Cập nhật selector cho trang tìm kiếm để ổn định hơn.
+        return document.select("div.search-videos-list li.videoblock").mapNotNull {
             it.toSearchResult()
         }
     }
@@ -66,7 +73,7 @@ class RedtubeProvider : MainAPI() {
      * Tải thông tin chi tiết của một video
      */
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url).document // Bỏ interceptor
+        val document = app.get(url).document
 
         val title = document.selectFirst("h1.video_title")?.text()?.trim() ?: "Untitled"
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
@@ -93,7 +100,7 @@ class RedtubeProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val response = app.get(data) // Bỏ interceptor
+        val response = app.get(data)
 
         val mediaDefinitionRegex = Regex("""mediaDefinition":(\[.*?\])""")
         val matchResult = mediaDefinitionRegex.find(response.text)
