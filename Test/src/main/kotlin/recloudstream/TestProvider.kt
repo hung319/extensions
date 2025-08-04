@@ -19,33 +19,32 @@ class VeoHentaiProvider : MainAPI() {
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
     private val headers = mapOf("User-Agent" to userAgent)
 
-    // Selector chính
-    private val articleSelector = "div.archive-main-content article"
-
     // Dùng để parse JSON từ script
     private data class Source(val file: String, val label: String)
     private data class Track(val file: String, val label: String)
 
-    // Hàm lấy danh sách item
+    // Hàm lấy danh sách item - ĐÃ CẬP NHẬT CHO HTML MỚI
+    // Element đầu vào bây giờ là thẻ <a>
     private fun Element.toSearchResult(): SearchResponse? {
-        val titleElement = this.selectFirst("h2.entry-title a") ?: return null
-        val title = titleElement.text()
-        val href = titleElement.attr("href")
-        val posterUrl = this.selectFirst("div.entry-media img")?.let {
-            it.attr("data-src").ifBlank { it.attr("src") }
-        }
+        val href = this.attr("href")
+        val title = this.selectFirst("h2")?.text()?.trim() ?: return null
+        val posterUrl = this.selectFirst("figure img")?.attr("src")
 
         if (href.isBlank() || title.isBlank()) return null
-        return newAnimeSearchResponse(title, href) { this.posterUrl = posterUrl }
+        
+        return newAnimeSearchResponse(title, href) {
+            this.posterUrl = posterUrl
+        }
     }
 
-    // Tải trang chính
+    // Tải trang chính - ĐÃ CẬP NHẬT SELECTOR
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = if (page > 1) "$mainUrl/page/$page/" else mainUrl
-        // Thêm headers vào yêu cầu
+        // Trang chủ không hỗ trợ phân trang theo kiểu /page/N, ta chỉ tải trang chính
+        val url = mainUrl
         val document = app.get(url, headers = headers).document
         
-        val home = document.select(articleSelector).mapNotNull { it.toSearchResult() }
+        // Selector mới cho trang chủ
+        val home = document.select("div#posts-home a").mapNotNull { it.toSearchResult() }
 
         if (home.isEmpty()) {
             throw RuntimeException("Không tìm thấy item trên trang chủ. Vấn đề có thể do Cloudflare hoặc selector đã thay đổi.")
@@ -54,12 +53,21 @@ class VeoHentaiProvider : MainAPI() {
         return newHomePageResponse("Últimos Episodios", home)
     }
 
-    // Chức năng tìm kiếm
+    // Chức năng tìm kiếm - ĐÃ CẬP NHẬT SELECTOR
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/search/$query/"
-        // Thêm headers vào yêu cầu
         val document = app.get(searchUrl, headers = headers).document
-        return document.select(articleSelector).mapNotNull { it.toSearchResult() }
+        // Trang tìm kiếm vẫn dùng cấu trúc article cũ, ta giữ lại selector cũ cho nó
+        return document.select("div.archive-main-content article").mapNotNull {
+            // Logic parse cho trang tìm kiếm (cấu trúc article)
+            val titleElement = it.selectFirst("h2.entry-title a") ?: return@mapNotNull null
+            val href = titleElement.attr("href")
+            val title = titleElement.text()
+            val posterUrl = it.selectFirst("div.entry-media img")?.let { img ->
+                img.attr("data-src").ifBlank { img.attr("src") }
+            }
+            newAnimeSearchResponse(title, href) { this.posterUrl = posterUrl }
+        }
     }
 
     // Tải thông tin chi tiết
