@@ -1,6 +1,6 @@
 // Desription: провайдер для сайта VeoHentai
 // Date: 2025-08-05
-// Version: 1.8
+// Version: 1.9
 // Author: Coder
 
 package recloudstream
@@ -8,7 +8,6 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-import java.net.URI
 
 class VeoHentaiProvider : MainAPI() {
     override var mainUrl = "https://veohentai.com"
@@ -53,7 +52,7 @@ class VeoHentaiProvider : MainAPI() {
         }
     }
 
-    // ======================= LOAD EPISODE/MOVIE INFO (UPDATED LOGIC) =======================
+    // ======================= LOAD EPISODE/MOVIE INFO =======================
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
@@ -64,7 +63,6 @@ class VeoHentaiProvider : MainAPI() {
         val tags = document.select("meta[property=article:tag]").map { it.attr("content") }
         val description = document.selectFirst("meta[property=og:description]")?.attr("content")
 
-        // SỬA LỖI: Quay lại dùng newMovieLoadResponse và chỉ định đúng TvType.NSFW
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
             this.plot = description
@@ -72,37 +70,36 @@ class VeoHentaiProvider : MainAPI() {
         }
     }
 
-    // ============================ LOAD VIDEO LINKS (UPDATED SELECTOR) ============================
+    // ======================= LOAD VIDEO LINKS (LOGIC MỚI VỚI SLUG) =======================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val watchPageDoc = app.get(data).document
+        // `data` chính là URL của trang xem phim, ví dụ: "https://veohentai.com/ver/shoujo-ramune-episodio-5/"
         
-        val embedUrl = watchPageDoc.selectFirst("div[class*=ratio] iframe, main iframe[src]")?.attr("src")
-            ?: throw ErrorLoadingException("Could not find embed iframe")
+        // 1. Trích xuất slug từ URL
+        val slug = data.trimEnd('/').substringAfterLast("/ver/")
 
-        val embedPageDoc = app.get(embedUrl).document
-        val playerPath = embedPageDoc.selectFirst("div.servers li")?.attr("data-id")
-            ?: throw ErrorLoadingException("Could not find player path in data-id")
+        if (slug.isBlank()) {
+            throw ErrorLoadingException("Không thể trích xuất slug từ URL: $data")
+        }
 
-        val embedUri = URI(embedUrl)
-        val playerUrl = "${embedUri.scheme}://${embedUri.host}$playerPath"
-
-        val playerPageContent = app.get(playerUrl).text
-        val m3u8Url = Regex("""sources:\s*\[\s*\{\s*file:\s*"(.*?)"""").find(playerPageContent)?.groupValues?.get(1)
-            ?: throw ErrorLoadingException("Could not extract m3u8 link")
+        // 2. Chuyển đổi slug theo quy tắc: thay thế "-episodio-" bằng "-"
+        val modifiedSlug = slug.replace("-episodio-", "-")
+        
+        // 3. Xây dựng URL video .mp4 cuối cùng
+        val videoUrl = "https://r2.1hanime.com/$modifiedSlug.mp4"
 
         callback.invoke(
             ExtractorLink(
                 source = this.name,
-                name = this.name,
-                url = m3u8Url,
+                name = "${this.name} MP4", // Tên nguồn để dễ nhận biết
+                url = videoUrl,
                 referer = mainUrl,
                 quality = Qualities.Unknown.value,
-                type = ExtractorLinkType.VIDEO
+                type = ExtractorLinkType.VIDEO // Đây là link video trực tiếp
             )
         )
 
