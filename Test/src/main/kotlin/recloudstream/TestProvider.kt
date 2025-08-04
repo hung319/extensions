@@ -19,11 +19,16 @@ class VeoHentaiProvider : MainAPI() {
     private data class Source(val file: String, val label: String)
     private data class Track(val file: String, val label: String)
 
+    // Selector mới, chính xác hơn
+    private val
+     articleSelector = "div.archive-main-content article"
+
     // Hàm lấy danh sách item từ trang chủ và các trang con
     private fun Element.toSearchResult(): SearchResponse? {
         val titleElement = this.selectFirst("h2.entry-title a") ?: return null
         val title = titleElement.text()
         val href = titleElement.attr("href")
+        // Sử dụng "data-src" nếu có, nếu không thì dùng "src"
         val posterUrl = this.selectFirst("div.entry-media img")?.let {
             it.attr("data-src").ifBlank { it.attr("src") }
         }
@@ -40,10 +45,15 @@ class VeoHentaiProvider : MainAPI() {
     // Tải trang chính
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page > 1) "$mainUrl/page/$page/" else mainUrl
-        val document = app.get(url).document
+        // Thêm timeout và cho phép lỗi Cloudflare để debug
+        val document = app.get(url, timeout = 20, allowRedirects = true).document
         
-        val home = document.select("div.page-content article").mapNotNull {
+        val home = document.select(articleSelector).mapNotNull {
             it.toSearchResult()
+        }
+
+        if (home.isEmpty()) {
+            throw RuntimeException("Không tìm thấy item nào trên trang chủ. Có thể do Cloudflare hoặc selector sai.")
         }
 
         return newHomePageResponse("Últimos Episodios", home)
@@ -52,9 +62,9 @@ class VeoHentaiProvider : MainAPI() {
     // Chức năng tìm kiếm
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/search/$query/"
-        val document = app.get(searchUrl).document
+        val document = app.get(searchUrl, timeout = 20, allowRedirects = true).document
 
-        return document.select("div.page-content article").mapNotNull {
+        return document.select(articleSelector).mapNotNull {
             it.toSearchResult()
         }
     }
@@ -118,7 +128,7 @@ class VeoHentaiProvider : MainAPI() {
                                 url = source.file,
                                 referer = playerUrl,
                                 quality = quality ?: Qualities.Unknown.value,
-                                type = ExtractorLinkType.VIDEO // Đã thay đổi ở đây
+                                type = ExtractorLinkType.VIDEO
                             )
                         )
                     }
