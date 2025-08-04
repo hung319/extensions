@@ -1,6 +1,6 @@
 // Desription: провайдер для сайта VeoHentai
-// Date: 2025-08-04
-// Version: 1.6
+// Date: 2025-08-05
+// Version: 1.7
 // Author: Coder
 
 package recloudstream
@@ -20,7 +20,7 @@ class VeoHentaiProvider : MainAPI() {
         TvType.NSFW
     )
 
-    // ============================ HOMEPAGE & SEARCH (No changes) ============================
+    // ============================ HOMEPAGE & SEARCH ============================
     override val mainPage = mainPageOf(
         "/" to "Episodios Recientes",
     )
@@ -39,7 +39,7 @@ class VeoHentaiProvider : MainAPI() {
             it.toSearchResult()
         }
     }
-    
+
     private fun Element.toSearchResult(): AnimeSearchResponse? {
         val href = this.attr("href")
         if (href.isEmpty()) return null
@@ -57,24 +57,29 @@ class VeoHentaiProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
-        // Lấy thông tin từ các thẻ meta
-        val title = document.selectFirst("meta[property=og:title]")?.attr("content")?.replace("Ver ","")?.replace(" - Ver Hentai en Español","")
+        val title = document.selectFirst("meta[property=og:title]")?.attr("content")?.replace("Ver ","")?.replace(" - Ver Hentai en Español","")?.trim()
             ?: throw Error("Could not find title")
         
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
-        
         val tags = document.select("meta[property=article:tag]").map { it.attr("content") }
-        
         val description = document.selectFirst("meta[property=og:description]")?.attr("content")
 
-        return newMovieLoadResponse(title, url, TvType.Movie, url) {
+        // SỬA LỖI: Coi mỗi video là một TVShow có 1 tập để đảm bảo type an toàn
+        val episodes = listOf(
+            Episode(
+                data = url, // Dữ liệu để load link chính là url của trang
+                name = title,
+            )
+        )
+
+        return newTvShowLoadResponse(title, url, TvType.NSFW, episodes) {
             this.posterUrl = poster
             this.plot = description
             this.tags = tags
         }
     }
 
-    // ============================ LOAD VIDEO LINKS (No changes) ============================
+    // ============================ LOAD VIDEO LINKS (UPDATED SELECTOR) ============================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -82,7 +87,9 @@ class VeoHentaiProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val watchPageDoc = app.get(data).document
-        val embedUrl = watchPageDoc.selectFirst("div.ratio.ratio-16x9 > iframe")?.attr("src")
+        
+        // SỬA LỖI: Selector linh hoạt hơn để tìm iframe
+        val embedUrl = watchPageDoc.selectFirst("div[class*=ratio] iframe, main iframe[src]")?.attr("src")
             ?: throw ErrorLoadingException("Could not find embed iframe")
 
         val embedPageDoc = app.get(embedUrl).document
