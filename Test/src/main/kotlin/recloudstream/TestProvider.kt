@@ -1,33 +1,42 @@
 package recloudstream
 
-// Thêm các import cần thiết
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.AppUtils
+import com.lagradost.cloudstream3.utils.apmap
 import org.jsoup.nodes.Element
 import java.net.URI
 
-// Lớp Provider chính
 class VeoHentaiProvider : MainAPI() {
-    // Thông tin cơ bản của Provider
     override var mainUrl = "https://veohentai.com"
     override var name = "VeoHentai"
     override val hasMainPage = true
     override var lang = "es"
     override val supportedTypes = setOf(TvType.NSFW)
 
-    // User-Agent để giả lập trình duyệt, vượt qua Cloudflare
-    private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
-    private val headers = mapOf("User-Agent" to userAgent)
+    // *** Bỏ qua Cloudflare vì bạn xác nhận không phải vấn đề ***
+    // Tuy nhiên, User-Agent vẫn cần thiết để tránh bị chặn cơ bản
+    private val headers = mapOf(
+        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
+    )
 
-    // Dùng để parse JSON từ script
-    private data class Source(val file: String, val label: String)
-    private data class Track(val file: String, val label: String)
+    // Parser cho Cấu trúc #2 (Layout mới: div#posts-home > a)
+    private fun Element.toSearchResultFromNewLayout(): SearchResponse? {
+        val href = this.attr("href")
+        // Đảm bảo href là một URL hợp lệ
+        if (!href.startsWith("http")) return null
+        
+        val title = this.selectFirst("h2")?.text()?.trim() ?: return null
+        val posterUrl = this.selectFirst("figure img")?.attr("src")
+        
+        if (title.isBlank()) return null
+        
+        return newAnimeSearchResponse(title, href) {
+            this.posterUrl = posterUrl
+        }
+    }
 
-    // Selector chính xác và duy nhất cho trang chủ và trang tìm kiếm
-    private val mainPageSelector = "div.page-content article"
-
-    // Hàm bóc tách dữ liệu cho mỗi item
-    private fun Element.toSearchResult(): SearchResponse? {
+    // Parser cho Cấu trúc #1 (Layout cũ: div.page-content > article)
+    private fun Element.toSearchResultFromOldLayout(): SearchResponse? {
         val titleElement = this.selectFirst("h2.entry-title a") ?: return null
         val href = titleElement.attr("href")
         val title = titleElement.text()
@@ -42,41 +51,42 @@ class VeoHentaiProvider : MainAPI() {
         }
     }
 
-    // Tải trang chính
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page > 1) "$mainUrl/page/$page/" else mainUrl
         val document = app.get(url, headers = headers).document
-        
-        val home = document.select(mainPageSelector).mapNotNull { it.toSearchResult() }
 
-        if (home.isEmpty()) {
-            throw RuntimeException("Không tìm thấy item trên trang chủ. Vấn đề có thể do Cloudflare hoặc selector đã thay đổi.")
+        // Bước 1: Thử tìm item theo layout mới (div#posts-home a)
+        var results = document.select("div#posts-home a").mapNotNull { it.toSearchResultFromNewLayout() }
+
+        // Bước 2: Nếu không thấy, thử lại với layout cũ (article)
+        if (results.isEmpty()) {
+            results = document.select("div.page-content article").mapNotNull { it.toSearchResultFromOldLayout() }
         }
 
-        return newHomePageResponse("Últimos Episodios", home)
+        if (results.isEmpty() && page == 1) {
+            throw RuntimeException("Thất bại: Không tìm thấy item nào với cả hai cấu trúc HTML.")
+        }
+
+        return newHomePageResponse("Últimos Episodios", results)
     }
 
-    // Chức năng tìm kiếm
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/search/$query/"
         val document = app.get(searchUrl, headers = headers).document
-        // Sử dụng cùng selector với trang chủ vì cấu trúc giống hệt
-        return document.select(mainPageSelector).mapNotNull { it.toSearchResult() }
+
+        // Trang tìm kiếm luôn dùng layout cũ (article), nên ta chỉ cần 1 selector
+        return document.select("div.page-content article").mapNotNull { it.toSearchResultFromOldLayout() }
     }
 
-    // Tải thông tin chi tiết
+
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url, headers = headers).document
-
         val title = document.selectFirst("h1.entry-title")?.text()?.trim()
             ?: throw ErrorLoadingException("Không thể tải tiêu đề")
-
         val posterUrl = document.selectFirst("div.single-featured-image img")?.attr("src")
         val description = document.select("div.entry-content > p").joinToString("\n") { it.text() }
         val tags = document.select("span.tag-links a").map { it.text() }
-
         val episode = newEpisode(url) { name = title }
-
         return newAnimeLoadResponse(title, url, TvType.NSFW) {
             this.posterUrl = posterUrl
             this.plot = description
@@ -85,7 +95,6 @@ class VeoHentaiProvider : MainAPI() {
         }
     }
 
-    // Tải link video
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -94,48 +103,30 @@ class VeoHentaiProvider : MainAPI() {
     ): Boolean {
         val document = app.get(data, headers = headers).document
         val serverItems = document.select("div#option-servers span.server-item")
-
         serverItems.apmap { server ->
             val embedUrl = server.attr("data-embed")
             if (embedUrl.isBlank()) return@apmap
-
             try {
                 val embedDoc = app.get(embedUrl, referer = data, headers = headers).document
                 val playerPath = embedDoc.selectFirst("li[data-id]")?.attr("data-id") ?: return@apmap
-                
                 val rootUrl = URI(embedUrl).let { "${it.scheme}://${it.host}" }
                 val playerUrl = rootUrl + playerPath
-
                 val playerContent = app.get(playerUrl, referer = embedUrl, headers = headers).text
-                
                 val sourcesJson = Regex("""var\s*F_sources\s*=\s*'([^']+)';""").find(playerContent)?.groupValues?.get(1)
                 val tracksJson = Regex("""var\s*F_tracks\s*=\s*'([^']+)';""").find(playerContent)?.groupValues?.get(1)
-
-                sourcesJson?.let { json ->
-                    AppUtils.tryParseJson<List<Source>>(json)?.forEach { source ->
-                        val quality = source.label.filter { it.isDigit() }.toIntOrNull()
-                        callback.invoke(
-                            ExtractorLink(
-                                name = this.name,
-                                source = "${server.text()} ${source.label}",
-                                url = source.file,
-                                referer = playerUrl,
-                                quality = quality ?: Qualities.Unknown.value,
-                                type = ExtractorLinkType.VIDEO
-                            )
-                        )
-                    }
-                }
-
-                tracksJson?.let { json ->
-                    AppUtils.tryParseJson<List<Track>>(json)?.forEach { track ->
-                        subtitleCallback.invoke(SubtitleFile(track.label, track.file))
-                    }
-                }
+                sourcesJson?.let { AppUtils.tryParseJson<List<Source>>(it)?.forEach { source ->
+                    callback(ExtractorLink(name, "${server.text()} ${source.label}", source.file, playerUrl, Qualities.Unknown.value, type = ExtractorLinkType.VIDEO))
+                }}
+                tracksJson?.let { AppUtils.tryParseJson<List<Track>>(it)?.forEach { track ->
+                    subtitleCallback(SubtitleFile(track.label, track.file))
+                }}
             } catch (e: Exception) {
                 e.printStackTrace()
             }
         }
         return true
     }
+
+    private data class Source(val file: String, val label: String)
+    private data class Track(val file: String, val label: String)
 }
