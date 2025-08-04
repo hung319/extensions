@@ -1,110 +1,143 @@
 package recloudstream
 
-import com.fasterxml.jackson.annotation.JsonProperty
-import org.jsoup.nodes.Element
+// Thêm các import cần thiết
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import org.jsoup.nodes.Element
+import java.net.URI
 
-class Redtube : MainAPI() {
-    override var name = "Redtube"
-    override var mainUrl = "https://www.redtube.com"
-    override var lang = "en"
+// Lớp Provider chính
+class VeoHentaiProvider : MainAPI() {
+    // Thông tin cơ bản của Provider
+    override var mainUrl = "https://veohentai.com"
+    override var name = "VeoHentai"
     override val hasMainPage = true
-    override var supportedTypes = setOf(TvType.NSFW)
+    override var lang = "es"
+    override val supportedTypes = setOf(TvType.NSFW)
 
-    // Đã cập nhật selector để tìm các video
-    override suspend fun getMainPage(
-        page: Int,
-        request: MainPageRequest
-    ): HomePageResponse {
-        val document = app.get("$mainUrl/?page=$page").document
-        // Thay đổi selector từ "div.video_bloc" thành "div.video_item_wrapper"
-        val home = document.select("div.video_item_wrapper").mapNotNull {
-            it.toSearchResult()
-        }
-        return newHomePageResponse(
-            list = HomePageList(
-                name = "Latest Videos",
-                list = home
-            ),
-            hasNext = true
-        )
-    }
+    // Dùng để parse JSON từ script
+    private data class Source(val file: String, val label: String)
+    private data class Track(val file: String, val label: String)
 
-    // Cập nhật lại toàn bộ logic trích xuất thông tin cho mỗi video
+    // Hàm lấy danh sách item từ trang chủ và các trang con
     private fun Element.toSearchResult(): SearchResponse? {
-        // Selector mới cho link và tiêu đề
-        val linkElement = this.selectFirst("a.video_link") ?: return null
-        val href = fixUrl(linkElement.attr("href"))
-        // Selector mới cho ảnh thumbnail, ưu tiên lấy ảnh chất lượng cao từ 'data-thumb_url'
-        val posterUrl = this.selectFirst("img.video_thumb")?.attr("data-thumb_url")
-        val title = this.selectFirst("span.video_title")?.text() ?: return null
+        val titleElement = this.selectFirst("h2.entry-title a") ?: return null
+        val title = titleElement.text()
+        val href = titleElement.attr("href")
+        val posterUrl = this.selectFirst("div.entry-media img")?.let {
+            it.attr("data-src").ifBlank { it.attr("src") }
+        }
 
+        if (href.isBlank() || title.isBlank()) {
+            return null
+        }
 
-        return newMovieSearchResponse(title, href, TvType.Movie) {
+        return newAnimeSearchResponse(title, href) {
             this.posterUrl = posterUrl
         }
     }
 
-    // Đã cập nhật selector để tìm kiếm
+    // Tải trang chính
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val url = if (page > 1) "$mainUrl/page/$page/" else mainUrl
+        val document = app.get(url).document
+        
+        val home = document.select("div.page-content article").mapNotNull {
+            it.toSearchResult()
+        }
+
+        return newHomePageResponse("Últimos Episodios", home)
+    }
+
+    // Chức năng tìm kiếm
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchResponse = app.get("$mainUrl/?search=$query").document
-        // Thay đổi selector từ "div.video_bloc" thành "div.video_item_wrapper"
-        return searchResponse.select("div.video_item_wrapper").mapNotNull {
+        val searchUrl = "$mainUrl/search/$query/"
+        val document = app.get(searchUrl).document
+
+        return document.select("div.page-content article").mapNotNull {
             it.toSearchResult()
         }
     }
 
-    override suspend fun load(url: String): LoadResponse? {
+    // Tải thông tin chi tiết
+    override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
-        val title = document.selectFirst("h1.video_title")?.text()?.trim() ?: return null
-        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
-        val plot = document.selectFirst("meta[property=og:description]")?.attr("content")
 
-        return newMovieLoadResponse(title, url, TvType.Movie, url) {
-            this.posterUrl = poster
-            this.plot = plot
+        val title = document.selectFirst("h1.entry-title")?.text()?.trim()
+            ?: throw ErrorLoadingException("Không thể tải tiêu đề")
+
+        val posterUrl = document.selectFirst("div.single-featured-image img")?.attr("src")
+        val description = document.select("div.entry-content > p").joinToString("\n") { it.text() }
+        val tags = document.select("span.tag-links a").map { it.text() }
+
+        val episode = newEpisode(url) {
+            name = title
+        }
+
+        return newAnimeLoadResponse(title, url, TvType.NSFW) {
+            this.posterUrl = posterUrl
+            this.plot = description
+            this.tags = tags
+            addEpisodes(DubStatus.Subbed, listOf(episode))
         }
     }
 
+    // Tải link video
     override suspend fun loadLinks(
-        data: String,
+        data: String, // URL trang xem phim
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val document = app.get(data).document
-        val script = document.select("script").find { it.data().contains("mediaDefinition") }?.data()
-            ?: return false
+        val serverItems = document.select("div#option-servers span.server-item")
 
-        // Logic trích xuất link này có vẻ vẫn ổn, giữ nguyên
-        val mediaDefinitionJson = script.substringAfter("mediaDefinition: [").substringBefore("]")
-        // Sửa lỗi parseJson nếu nó không nhận được một mảng JSON hợp lệ
-        val validJson = if (mediaDefinitionJson.endsWith(",")) mediaDefinitionJson.dropLast(1) else mediaDefinitionJson
-        val sources = parseJson<List<VideoSource>>("[$validJson]")
+        serverItems.apmap { server ->
+            val embedUrl = server.attr("data-embed")
+            if (embedUrl.isBlank()) return@apmap
 
-        sources.forEach { source ->
-            val quality = source.quality
-            val videoUrl = source.videoUrl
-            if (quality != null && videoUrl != null) {
-                callback(
-                    ExtractorLink(
-                        name,
-                        "$name $quality",
-                        videoUrl,
-                        referer = mainUrl,
-                        quality = quality.toIntOrNull() ?: 0,
-                        type = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
-                    )
-                )
+            try {
+                val embedDoc = app.get(embedUrl, referer = data).document
+                val playerPath = embedDoc.selectFirst("li[data-id]")?.attr("data-id") ?: return@apmap
+                
+                val rootUrl = URI(embedUrl).let { "${it.scheme}://${it.host}" }
+                val playerUrl = rootUrl + playerPath
+
+                val playerContent = app.get(playerUrl, referer = embedUrl).text
+                
+                val sourcesJson = Regex("""var\s*F_sources\s*=\s*'([^']+)';""").find(playerContent)?.groupValues?.get(1)
+                val tracksJson = Regex("""var\s*F_tracks\s*=\s*'([^']+)';""").find(playerContent)?.groupValues?.get(1)
+
+                sourcesJson?.let { json ->
+                    AppUtils.tryParseJson<List<Source>>(json)?.forEach { source ->
+                        val quality = source.label.filter { it.isDigit() }.toIntOrNull()
+                        callback.invoke(
+                            ExtractorLink(
+                                name = this.name,
+                                source = "${server.text()} ${source.label}",
+                                url = source.file,
+                                referer = playerUrl,
+                                quality = quality ?: Qualities.Unknown.value,
+                                type = ExtractorLinkType.VIDEO // Đã thay đổi ở đây
+                            )
+                        )
+                    }
+                }
+
+                tracksJson?.let { json ->
+                    AppUtils.tryParseJson<List<Track>>(json)?.forEach { track ->
+                        subtitleCallback.invoke(
+                            SubtitleFile(
+                                track.label,
+                                track.file
+                            )
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
         }
         return true
     }
-
-    data class VideoSource(
-        @JsonProperty("quality") val quality: String?,
-        @JsonProperty("videoUrl") val videoUrl: String?
-    )
 }
