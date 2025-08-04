@@ -1,6 +1,6 @@
 // Desription: провайдер для сайта VeoHentai
 // Date: 2025-08-04
-// Version: 1.5
+// Version: 1.6
 // Author: Coder
 
 package recloudstream
@@ -20,32 +20,27 @@ class VeoHentaiProvider : MainAPI() {
         TvType.NSFW
     )
 
-    // ============================ HOMEPAGE ============================
+    // ============================ HOMEPAGE & SEARCH (No changes) ============================
     override val mainPage = mainPageOf(
         "/" to "Episodios Recientes",
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get("$mainUrl${request.data}/page/$page/").document
-        // SỬA LỖI: Selector chính xác cho trang chủ
         val home = document.select("div#posts-home a").mapNotNull {
             it.toSearchResult()
         }
         return newHomePageResponse(request.name, home)
     }
 
-    // ============================ SEARCH ============================
     override suspend fun search(query: String): List<SearchResponse> {
         val searchResponse = app.get("$mainUrl/?s=$query").document
-        // SỬA LỖI: Selector chính xác cho trang tìm kiếm
         return searchResponse.select("div.grid a").mapNotNull {
             it.toSearchResult()
         }
     }
     
-    // SỬA LỖI: Hàm helper được cập nhật để xử lý thẻ <a>
     private fun Element.toSearchResult(): AnimeSearchResponse? {
-        // `this` bây giờ là thẻ <a>
         val href = this.attr("href")
         if (href.isEmpty()) return null
 
@@ -58,15 +53,19 @@ class VeoHentaiProvider : MainAPI() {
         }
     }
 
-    // ============================ LOAD EPISODE/MOVIE INFO ============================
+    // ======================= LOAD EPISODE/MOVIE INFO (UPDATED LOGIC) =======================
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
-        val title = document.selectFirst("h1.entry-title")?.text()?.trim()
+        // Lấy thông tin từ các thẻ meta
+        val title = document.selectFirst("meta[property=og:title]")?.attr("content")?.replace("Ver ","")?.replace(" - Ver Hentai en Español","")
             ?: throw Error("Could not find title")
+        
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
-        val tags = document.select("span.single-tags a").map { it.text() }
-        val description = document.selectFirst("div.entry-content p")?.text()
+        
+        val tags = document.select("meta[property=article:tag]").map { it.attr("content") }
+        
+        val description = document.selectFirst("meta[property=og:description]")?.attr("content")
 
         return newMovieLoadResponse(title, url, TvType.Movie, url) {
             this.posterUrl = poster
@@ -75,7 +74,7 @@ class VeoHentaiProvider : MainAPI() {
         }
     }
 
-    // ============================ LOAD VIDEO LINKS ============================
+    // ============================ LOAD VIDEO LINKS (No changes) ============================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
