@@ -1,6 +1,6 @@
 // Desription: провайдер для сайта VeoHentai
 // Date: 2025-08-05
-// Version: 1.7
+// Version: 1.8
 // Author: Coder
 
 package recloudstream
@@ -64,15 +64,8 @@ class VeoHentaiProvider : MainAPI() {
         val tags = document.select("meta[property=article:tag]").map { it.attr("content") }
         val description = document.selectFirst("meta[property=og:description]")?.attr("content")
 
-        // SỬA LỖI: Coi mỗi video là một TVShow có 1 tập để đảm bảo type an toàn
-        val episodes = listOf(
-            Episode(
-                data = url, // Dữ liệu để load link chính là url của trang
-                name = title,
-            )
-        )
-
-        return newTvShowLoadResponse(title, url, TvType.NSFW, episodes) {
+        // SỬA LỖI: Quay lại dùng newMovieLoadResponse và chỉ định đúng TvType.NSFW
+        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
             this.plot = description
             this.tags = tags
@@ -88,7 +81,6 @@ class VeoHentaiProvider : MainAPI() {
     ): Boolean {
         val watchPageDoc = app.get(data).document
         
-        // SỬA LỖI: Selector linh hoạt hơn để tìm iframe
         val embedUrl = watchPageDoc.selectFirst("div[class*=ratio] iframe, main iframe[src]")?.attr("src")
             ?: throw ErrorLoadingException("Could not find embed iframe")
 
