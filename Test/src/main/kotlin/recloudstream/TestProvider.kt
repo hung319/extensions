@@ -56,7 +56,7 @@ class VeoHentaiProvider : MainAPI() {
         val document = app.get(url).document
 
         val title = document.selectFirst("h1.entry-title")?.text()?.trim()
-            ?: throw-Error("Could not find title")
+            ?: throw Error("Could not find title")
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         val tags = document.select("span.single-tags > a").map { it.text() }
         val description = document.selectFirst("div.entry-content.text-white > p")?.text()
