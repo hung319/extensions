@@ -1,107 +1,145 @@
-// Desription: провайдер для сайта VeoHentai
-// Date: 2025-08-05
-// Version: 1.9
-// Author: Coder
-
+// Đổi package name theo yêu cầu
 package recloudstream
 
+// Import các thư viện cần thiết từ core của CloudStream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import org.jsoup.nodes.Element
+import java.net.URLDecoder
 
-class VeoHentaiProvider : MainAPI() {
-    override var mainUrl = "https://veohentai.com"
-    override var name = "VeoHentai"
+/**
+ * --- METADATA ---
+ * Tên plugin: Redtube Provider
+ * Tác giả: Coder (AI)
+ * Phiên bản: 1.1 (Cập nhật cấu trúc ExtractorLink)
+ * Mô tả: Plugin để xem nội dung từ Redtube, được tạo tự động dựa trên HTML.
+ * Ngôn ngữ: en (Tiếng Anh)
+ */
+class RedtubeProvider : MainAPI() {
+    // Ghi đè các thuộc tính cơ bản của plugin
+    override var mainUrl = "https://www.redtube.com"
+    override var name = "Redtube"
     override val hasMainPage = true
-    override var lang = "es"
+    override var lang = "en"
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(
         TvType.NSFW
     )
 
-    // ============================ HOMEPAGE & SEARCH ============================
-    override val mainPage = mainPageOf(
-        "/" to "Episodios Recientes",
-    )
+    // Hàm bóc tách dữ liệu từ một item video (dùng chung cho trang chủ và tìm kiếm)
+    private fun Element.toSearchResponse(): MovieSearchResponse? {
+        val linkElement = this.selectFirst("a.video_title_link") ?: return null
+        val title = linkElement.attr("title")
+        val href = fixUrl(linkElement.attr("href"))
+        val posterUrl = this.selectFirst("img.video_thumb_img")?.attr("data-src")
+        val durationText = this.selectFirst("span.duration")?.text()?.trim()
 
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get("$mainUrl${request.data}/page/$page/").document
-        val home = document.select("div#posts-home a").mapNotNull {
-            it.toSearchResult()
-        }
-        return newHomePageResponse(request.name, home)
-    }
-
-    override suspend fun search(query: String): List<SearchResponse> {
-        val searchResponse = app.get("$mainUrl/?s=$query").document
-        return searchResponse.select("div.grid a").mapNotNull {
-            it.toSearchResult()
-        }
-    }
-
-    private fun Element.toSearchResult(): AnimeSearchResponse? {
-        val href = this.attr("href")
-        if (href.isEmpty()) return null
-
-        val title = this.selectFirst("h2")?.text() ?: return null
-        val posterUrl = this.selectFirst("figure img")?.attr("src")
-
-        return newAnimeSearchResponse(title, href, TvType.NSFW) {
+        return newMovieSearchResponse(title, href, TvType.Movie) {
             this.posterUrl = posterUrl
-            this.quality = SearchQuality.HD
+            if (durationText != null) {
+                this.extra = mapOf("duration" to durationText)
+            }
+        }
+    }
+    
+    // --- TRANG CHỦ ---
+    override suspend fun getMainPage(
+        page: Int,
+        request: MainPageRequest
+    ): HomePageResponse {
+        val document = app.get(mainUrl).document
+        val allPages = ArrayList<HomePageList>()
+
+        document.select("div.section_title_wrapper").forEach { section ->
+            val title = section.selectFirst("h2.section_title")?.text()?.trim() ?: "Unknown Category"
+            val videoContainer = section.nextElementSibling()
+            val videos = videoContainer?.select("div.video_item_container")?.mapNotNull {
+                it.toSearchResponse()
+            }
+            if (!videos.isNullOrEmpty()) {
+                allPages.add(HomePageList(title, videos))
+            }
+        }
+
+        return HomePageResponse(allPages)
+    }
+
+    // --- TÌM KIẾM ---
+    override suspend fun search(query: String): List<SearchResponse> {
+        val searchUrl = "$mainUrl/redtube/$query"
+        val document = app.get(searchUrl).document
+        return document.select("div.video_item_container").mapNotNull {
+            it.toSearchResponse()
         }
     }
 
-    // ======================= LOAD EPISODE/MOVIE INFO =======================
-    override suspend fun load(url: String): LoadResponse {
+    // --- TẢI THÔNG TIN CHI TIẾT VIDEO ---
+    override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
+        val title = document.selectFirst("h1.video_title")?.text()?.trim()
+            ?: document.selectFirst("title")?.text()?.trim()
+            ?: "Untitled"
+        val poster = document.selectFirst("meta[property='og:image']")?.attr("content")
+        val description = document.selectFirst("div.video_description_text")?.text()?.trim()
+        val recommendations = document.select("div.video_item_container_related").mapNotNull {
+            it.toSearchResponse()
+        }
 
-        val title = document.selectFirst("meta[property=og:title]")?.attr("content")?.replace("Ver ","")?.replace(" - Ver Hentai en Español","")?.trim()
-            ?: throw Error("Could not find title")
-        
-        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
-        val tags = document.select("meta[property=article:tag]").map { it.attr("content") }
-        val description = document.selectFirst("meta[property=og:description]")?.attr("content")
-
-        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
+        return newMovieLoadResponse(title, url, TvType.Movie, url) {
             this.posterUrl = poster
             this.plot = description
-            this.tags = tags
+            this.recommendations = recommendations
         }
     }
 
-    // ======================= LOAD VIDEO LINKS (LOGIC MỚI VỚI SLUG) =======================
+    // --- TẢI LINK STREAM ---
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // `data` chính là URL của trang xem phim, ví dụ: "https://veohentai.com/ver/shoujo-ramune-episodio-5/"
+        val response = app.get(data)
+        val flashvarsRegex = Regex("""mediaDefinition:\s*'([^']+)""")
+        val encodedMediaDef = flashvarsRegex.find(response.text)?.groupValues?.get(1) ?: return false
+        val decodedJson = URLDecoder.decode(encodedMediaDef, "UTF-8")
         
-        // 1. Trích xuất slug từ URL
-        val slug = data.trimEnd('/').substringAfterLast("/ver/")
-
-        if (slug.isBlank()) {
-            throw ErrorLoadingException("Không thể trích xuất slug từ URL: $data")
-        }
-
-        // 2. Chuyển đổi slug theo quy tắc: thay thế "-episodio-" bằng "-"
-        val modifiedSlug = slug.replace("-episodio-", "-")
-        
-        // 3. Xây dựng URL video .mp4 cuối cùng
-        val videoUrl = "https://r2.1hanime.com/$modifiedSlug.mp4"
-
-        callback.invoke(
-            ExtractorLink(
-                source = this.name,
-                name = "${this.name} MP4", // Tên nguồn để dễ nhận biết
-                url = videoUrl,
-                referer = mainUrl,
-                quality = Qualities.Unknown.value,
-                type = ExtractorLinkType.VIDEO // Đây là link video trực tiếp
-            )
+        data class MediaQuality(
+            val quality: String,
+            val videoUrl: String
         )
+        
+        val qualities = parseJson<List<MediaQuality>>(decodedJson)
+
+        qualities.forEach { media ->
+            val videoUrl = media.videoUrl
+            if (videoUrl.isNotBlank()) {
+                if (videoUrl.contains(".m3u8")) {
+                    // M3u8Helper sẽ tự động tạo ExtractorLink với type=M3U8
+                    M3u8Helper.generateM3u8(
+                        this.name,
+                        videoUrl,
+                        mainUrl // referer
+                    ).forEach { link ->
+                        callback(link)
+                    }
+                } else {
+                    // Đối với link MP4, ta tạo ExtractorLink và chỉ định type là VIDEO
+                    callback(
+                        ExtractorLink(
+                            source = this.name,
+                            name = "${this.name} - ${media.quality}p",
+                            url = videoUrl,
+                            referer = mainUrl,
+                            quality = media.quality.toIntOrNull() ?: Qualities.Unknown.value,
+                            // Thêm type theo cấu trúc mới
+                            type = ExtractorLinkType.VIDEO
+                        )
+                    )
+                }
+            }
+        }
 
         return true
     }
