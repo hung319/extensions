@@ -6,14 +6,6 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import org.jsoup.nodes.Element
 import java.net.URLDecoder
 
-/**
- * --- METADATA ---
- * Tên plugin: Redtube Provider
- * Tác giả: Coder (AI)
- * Phiên bản: 1.2 (Sửa lỗi biên dịch 'extra')
- * Mô tả: Plugin để xem nội dung từ Redtube, được tạo tự động dựa trên HTML.
- * Ngôn ngữ: en (Tiếng Anh)
- */
 class RedtubeProvider : MainAPI() {
     override var mainUrl = "https://www.redtube.com"
     override var name = "Redtube"
@@ -24,21 +16,16 @@ class RedtubeProvider : MainAPI() {
         TvType.NSFW
     )
 
-    // Hàm bóc tách dữ liệu từ một item video (dùng chung cho trang chủ và tìm kiếm)
+    // Hàm bóc tách dữ liệu từ một item video
     private fun Element.toSearchResponse(): MovieSearchResponse? {
         val linkElement = this.selectFirst("a.video_title_link") ?: return null
         val title = linkElement.attr("title")
         val href = fixUrl(linkElement.attr("href"))
         val posterUrl = this.selectFirst("img.video_thumb_img")?.attr("data-src")
-        val durationText = this.selectFirst("span.duration")?.text()?.trim()
 
+        // Thời lượng bị bỏ qua hoàn toàn ở màn hình này
         return newMovieSearchResponse(title, href, TvType.Movie) {
             this.posterUrl = posterUrl
-            // FIX: Sử dụng thuộc tính 'quality' để hiển thị thông tin thời lượng.
-            // 'extra' không còn tồn tại trong API hiện tại.
-            if (durationText != null) {
-                this.quality = SearchQuality.Custom(durationText)
-            }
         }
     }
     
@@ -80,6 +67,7 @@ class RedtubeProvider : MainAPI() {
             ?: document.selectFirst("title")?.text()?.trim()
             ?: "Untitled"
         val poster = document.selectFirst("meta[property='og:image']")?.attr("content")
+        // Mô tả trên trang web thường có chứa thời lượng, nên người dùng vẫn xem được ở đây
         val description = document.selectFirst("div.video_description_text")?.text()?.trim()
         val recommendations = document.select("div.video_item_container_related").mapNotNull {
             it.toSearchResponse()
@@ -109,7 +97,6 @@ class RedtubeProvider : MainAPI() {
             val videoUrl: String
         )
         
-        // Sử dụng try-catch để tránh crash nếu JSON không hợp lệ
         val qualities = try {
             parseJson<List<MediaQuality>>(decodedJson)
         } catch (e: Exception) {
