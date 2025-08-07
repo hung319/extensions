@@ -4,13 +4,13 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import org.jsoup.nodes.Element
-import java.net.URLDecoder
+import kotlinx.coroutines.delay // Import thư viện delay
 
 /**
  * --- METADATA ---
  * Tên plugin: Redtube Provider
  * Tác giả: Coder (AI)
- * Phiên bản: 4.1 (Final - Cập nhật định dạng tên link)
+ * Phiên bản: 4.2 (Production - Thêm delay để ổn định)
  * Mô tả: Plugin để xem nội dung từ Redtube, phiên bản hoàn thiện.
  * Ngôn ngữ: en (Tiếng Anh)
  */
@@ -96,6 +96,9 @@ class RedtubeProvider : MainAPI() {
         data class FinalVideo(val quality: String?, val videoUrl: String?)
 
         initialMediaList.apmap { initialMedia ->
+            // Thêm một độ trễ nhỏ (50ms) trước mỗi yêu cầu mạng
+            delay(50L)
+            
             val apiUrl = initialMedia.videoUrl?.let { fixUrl(it) } ?: return@apmap
             
             try {
@@ -111,7 +114,6 @@ class RedtubeProvider : MainAPI() {
                         callback(
                             ExtractorLink(
                                 source = this.name,
-                                // Cập nhật định dạng tên: Redtube + chất lượng + định dạng
                                 name = "${this.name} $qualityLabel $formatLabel".trim(),
                                 url = videoUrl,
                                 referer = data,
