@@ -4,14 +4,14 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import org.jsoup.nodes.Element
-import kotlinx.coroutines.delay // Import thư viện delay
+import java.net.URLDecoder
 
 /**
  * --- METADATA ---
  * Tên plugin: Redtube Provider
  * Tác giả: Coder (AI)
- * Phiên bản: 4.2 (Production - Thêm delay để ổn định)
- * Mô tả: Plugin để xem nội dung từ Redtube, phiên bản hoàn thiện.
+ * Phiên bản: 3.1 (Thêm Log & Exception để Debug)
+ * Mô tả: Plugin để xem nội dung từ Redtube, đã được tối ưu theo yêu cầu.
  * Ngôn ngữ: en (Tiếng Anh)
  */
 class RedtubeProvider : MainAPI() {
@@ -74,47 +74,56 @@ class RedtubeProvider : MainAPI() {
         }
     }
 
+    // --- CẬP NHẬT: THÊM LOG VÀ EXCEPTION ---
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val response = app.get(data).text
-        
-        val mediaDefRegex = Regex(""""mediaDefinitions":(\[.*?\])""")
-        val initialMediaJson = mediaDefRegex.find(response)?.groupValues?.get(1) ?: return false
-
-        data class InitialMedia(val format: String?, val videoUrl: String?)
-        
-        val initialMediaList = try {
-            parseJson<List<InitialMedia>>(initialMediaJson)
-        } catch (e: Exception) {
-            return false
-        }
-
-        data class FinalVideo(val quality: String?, val videoUrl: String?)
-
-        initialMediaList.apmap { initialMedia ->
-            // Thêm một độ trễ nhỏ (50ms) trước mỗi yêu cầu mạng
-            delay(50L)
+        try {
+            println("RedtubeDebug: Bắt đầu loadLinks cho url: $data")
+            val response = app.get(data).text
             
-            val apiUrl = initialMedia.videoUrl?.let { fixUrl(it) } ?: return@apmap
+            val mediaDefRegex = Regex(""""mediaDefinitions":(\[.*?\])""")
+            val initialMediaJson = mediaDefRegex.find(response)?.groupValues?.get(1)
             
-            try {
-                val finalVideoList = app.get(apiUrl).parsed<List<FinalVideo>>()
+            if (initialMediaJson == null) {
+                throw Exception("RedtubeDebug: Không tìm thấy 'mediaDefinitions' trong HTML. Regex thất bại.")
+            }
+            println("RedtubeDebug: Đã tìm thấy mediaDefinitions JSON: $initialMediaJson")
+
+            data class InitialMedia(val format: String?, val videoUrl: String?)
+            val initialMediaList = parseJson<List<InitialMedia>>(initialMediaJson)
+            println("RedtubeDebug: Đã parse được ${initialMediaList.size} API endpoints.")
+
+            data class FinalVideo(val quality: String?, val videoUrl: String?)
+            var linksFound = 0
+
+            initialMediaList.apmap { initialMedia ->
+                val apiUrl = initialMedia.videoUrl?.let { fixUrl(it) }
+                if (apiUrl == null) {
+                    println("RedtubeDebug: Bỏ qua vì apiUrl rỗng.")
+                    return@apmap
+                }
+                println("RedtubeDebug: Đang gọi API: $apiUrl")
+                
+                val apiResponse = app.get(apiUrl).text
+                println("RedtubeDebug: Phản hồi từ API: $apiResponse")
+
+                val finalVideoList = parseJson<List<FinalVideo>>(apiResponse)
                 
                 finalVideoList.forEach { finalVideo ->
                     val videoUrl = finalVideo.videoUrl
                     if (videoUrl != null) {
-                        val qualityLabel = finalVideo.quality?.let { "${it}p" } ?: "Stream"
+                        linksFound++
+                        val qualityName = finalVideo.quality?.let { "${it}p" } ?: "Stream"
                         val qualityInt = finalVideo.quality?.toIntOrNull() ?: Qualities.Unknown.value
-                        val formatLabel = initialMedia.format?.uppercase() ?: ""
 
                         callback(
                             ExtractorLink(
                                 source = this.name,
-                                name = "${this.name} $qualityLabel $formatLabel".trim(),
+                                name = "${this.name} - $qualityName",
                                 url = videoUrl,
                                 referer = data,
                                 quality = qualityInt,
@@ -123,11 +132,17 @@ class RedtubeProvider : MainAPI() {
                         )
                     }
                 }
-            } catch (e: Exception) {
-                // Lỗi trong môi trường production nên sẽ được bỏ qua nhẹ nhàng
             }
-        }
 
+            println("RedtubeDebug: Đã tìm thấy tổng cộng $linksFound links.")
+            if (linksFound == 0) {
+                throw Exception("RedtubeDebug: Không tìm thấy link video nào sau khi xử lý tất cả API.")
+            }
+
+        } catch (e: Exception) {
+            // Ném ra một exception mới với thông tin lỗi đầy đủ để hiển thị trong Logcat
+            throw Exception("Lỗi trong RedtubeProvider: ${e.message}", e)
+        }
         return true
     }
 }
