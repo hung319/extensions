@@ -6,6 +6,14 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import org.jsoup.nodes.Element
 import java.net.URLDecoder
 
+/**
+ * --- METADATA ---
+ * Tên plugin: Redtube Provider
+ * Tác giả: Coder (AI)
+ * Phiên bản: 1.6 (Cập nhật loadLinks)
+ * Mô tả: Plugin để xem nội dung từ Redtube, sử dụng selector đã được xác nhận.
+ * Ngôn ngữ: en (Tiếng Anh)
+ */
 class RedtubeProvider : MainAPI() {
     override var mainUrl = "https://www.redtube.com"
     override var name = "Redtube"
@@ -16,60 +24,46 @@ class RedtubeProvider : MainAPI() {
         TvType.NSFW
     )
 
-    // Hàm bóc tách dữ liệu từ một item video
     private fun Element.toSearchResponse(): MovieSearchResponse? {
-        val linkElement = this.selectFirst("a.video_title_link") ?: return null
+        val linkElement = this.selectFirst("a.video-title-text") ?: return null
         val title = linkElement.attr("title")
         val href = fixUrl(linkElement.attr("href"))
-        val posterUrl = this.selectFirst("img.video_thumb_img")?.attr("data-src")
+        val posterUrl = this.selectFirst("img.js_thumbImageTag")?.attr("data-src")
 
-        // Thời lượng bị bỏ qua hoàn toàn ở màn hình này
         return newMovieSearchResponse(title, href, TvType.Movie) {
             this.posterUrl = posterUrl
         }
     }
     
-    // --- TRANG CHỦ ---
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        val document = app.get(mainUrl).document
-        val allPages = ArrayList<HomePageList>()
-
-        document.select("div.section_title_wrapper").forEach { section ->
-            val title = section.selectFirst("h2.section_title")?.text()?.trim() ?: "Unknown Category"
-            val videoContainer = section.nextElementSibling()
-            val videos = videoContainer?.select("div.video_item_container")?.mapNotNull {
-                it.toSearchResponse()
-            }
-            if (!videos.isNullOrEmpty()) {
-                allPages.add(HomePageList(title, videos))
-            }
+        val document = app.get("$mainUrl/?page=$page").document
+        val mainPageVideos = document.select("li.thumbnail-card").mapNotNull {
+            it.toSearchResponse()
         }
-
-        return HomePageResponse(allPages)
+        
+        if (mainPageVideos.isEmpty()) return HomePageResponse(emptyList())
+        
+        return HomePageResponse(listOf(HomePageList("Page $page", mainPageVideos)))
     }
 
-    // --- TÌM KIẾM ---
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/redtube/$query"
         val document = app.get(searchUrl).document
-        return document.select("div.video_item_container").mapNotNull {
+        return document.select("li.thumbnail-card").mapNotNull {
             it.toSearchResponse()
         }
     }
 
-    // --- TẢI THÔNG TIN CHI TIẾT VIDEO ---
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
-        val title = document.selectFirst("h1.video_title")?.text()?.trim()
-            ?: document.selectFirst("title")?.text()?.trim()
+        val title = document.selectFirst("h1.video_page_title")?.text()?.trim()
             ?: "Untitled"
         val poster = document.selectFirst("meta[property='og:image']")?.attr("content")
-        // Mô tả trên trang web thường có chứa thời lượng, nên người dùng vẫn xem được ở đây
-        val description = document.selectFirst("div.video_description_text")?.text()?.trim()
-        val recommendations = document.select("div.video_item_container_related").mapNotNull {
+        val description = document.selectFirst("meta[name='description']")?.attr("content")
+        val recommendations = document.select("li.thumbnail-card").mapNotNull {
             it.toSearchResponse()
         }
 
@@ -80,7 +74,7 @@ class RedtubeProvider : MainAPI() {
         }
     }
 
-    // --- TẢI LINK STREAM ---
+    // --- CẬP NHẬT HÀM LOADLINKS ---
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -88,38 +82,47 @@ class RedtubeProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val response = app.get(data)
-        val flashvarsRegex = Regex("""mediaDefinition:\s*'([^']+)""")
-        val encodedMediaDef = flashvarsRegex.find(response.text)?.groupValues?.get(1) ?: return false
-        val decodedJson = URLDecoder.decode(encodedMediaDef, "UTF-8")
         
-        data class MediaQuality(
-            val quality: String,
-            val videoUrl: String
+        // Regex mới để tìm mảng JSON "mediaDefinitions"
+        val mediaDefRegex = Regex(""""mediaDefinitions":(\[.*?\])""")
+        val mediaJson = mediaDefRegex.find(response.text)?.groupValues?.get(1) ?: return false
+
+        // Data class mới để parse cấu trúc JSON
+        data class MediaDefinition(
+            val format: String?,
+            val videoUrl: String?,
+            val height: String? // Chất lượng có thể lấy từ height
         )
         
-        val qualities = try {
-            parseJson<List<MediaQuality>>(decodedJson)
+        val mediaList = try {
+            parseJson<List<MediaDefinition>>(mediaJson)
         } catch (e: Exception) {
+            e.printStackTrace()
             return false
         }
 
-        qualities.forEach { media ->
+        mediaList.forEach { media ->
             val videoUrl = media.videoUrl
-            if (videoUrl.isNotBlank()) {
-                if (videoUrl.contains(".m3u8")) {
+            if (videoUrl != null) {
+                // Link trong JSON là link tương đối, cần thêm domain vào
+                val fullUrl = fixUrl(videoUrl)
+                val qualityName = media.height?.let { "${it}p" } ?: media.format ?: "Default"
+
+                if (media.format == "hls") {
                     M3u8Helper.generateM3u8(
                         this.name,
-                        videoUrl,
-                        mainUrl
+                        fullUrl,
+                        mainUrl,
+                        headers = mapOf("Referer" to data) // Thêm referer của trang watch
                     ).forEach(callback)
                 } else {
                     callback(
                         ExtractorLink(
                             source = this.name,
-                            name = "${this.name} - ${media.quality}p",
-                            url = videoUrl,
-                            referer = mainUrl,
-                            quality = media.quality.toIntOrNull() ?: Qualities.Unknown.value,
+                            name = "${this.name} - $qualityName",
+                            url = fullUrl,
+                            referer = data, // Referer là trang watch
+                            quality = media.height?.toIntOrNull() ?: Qualities.Unknown.value,
                             type = ExtractorLinkType.VIDEO
                         )
                     )
