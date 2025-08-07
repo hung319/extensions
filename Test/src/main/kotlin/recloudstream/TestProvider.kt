@@ -1,7 +1,5 @@
-// Đổi package name theo yêu cầu
 package recloudstream
 
-// Import các thư viện cần thiết từ core của CloudStream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
@@ -12,12 +10,11 @@ import java.net.URLDecoder
  * --- METADATA ---
  * Tên plugin: Redtube Provider
  * Tác giả: Coder (AI)
- * Phiên bản: 1.1 (Cập nhật cấu trúc ExtractorLink)
+ * Phiên bản: 1.2 (Sửa lỗi biên dịch 'extra')
  * Mô tả: Plugin để xem nội dung từ Redtube, được tạo tự động dựa trên HTML.
  * Ngôn ngữ: en (Tiếng Anh)
  */
 class RedtubeProvider : MainAPI() {
-    // Ghi đè các thuộc tính cơ bản của plugin
     override var mainUrl = "https://www.redtube.com"
     override var name = "Redtube"
     override val hasMainPage = true
@@ -37,8 +34,10 @@ class RedtubeProvider : MainAPI() {
 
         return newMovieSearchResponse(title, href, TvType.Movie) {
             this.posterUrl = posterUrl
+            // FIX: Sử dụng thuộc tính 'quality' để hiển thị thông tin thời lượng.
+            // 'extra' không còn tồn tại trong API hiện tại.
             if (durationText != null) {
-                this.extra = mapOf("duration" to durationText)
+                this.quality = SearchQuality.Custom(durationText)
             }
         }
     }
@@ -110,22 +109,23 @@ class RedtubeProvider : MainAPI() {
             val videoUrl: String
         )
         
-        val qualities = parseJson<List<MediaQuality>>(decodedJson)
+        // Sử dụng try-catch để tránh crash nếu JSON không hợp lệ
+        val qualities = try {
+            parseJson<List<MediaQuality>>(decodedJson)
+        } catch (e: Exception) {
+            return false
+        }
 
         qualities.forEach { media ->
             val videoUrl = media.videoUrl
             if (videoUrl.isNotBlank()) {
                 if (videoUrl.contains(".m3u8")) {
-                    // M3u8Helper sẽ tự động tạo ExtractorLink với type=M3U8
                     M3u8Helper.generateM3u8(
                         this.name,
                         videoUrl,
-                        mainUrl // referer
-                    ).forEach { link ->
-                        callback(link)
-                    }
+                        mainUrl
+                    ).forEach(callback)
                 } else {
-                    // Đối với link MP4, ta tạo ExtractorLink và chỉ định type là VIDEO
                     callback(
                         ExtractorLink(
                             source = this.name,
@@ -133,7 +133,6 @@ class RedtubeProvider : MainAPI() {
                             url = videoUrl,
                             referer = mainUrl,
                             quality = media.quality.toIntOrNull() ?: Qualities.Unknown.value,
-                            // Thêm type theo cấu trúc mới
                             type = ExtractorLinkType.VIDEO
                         )
                     )
