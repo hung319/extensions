@@ -10,7 +10,7 @@ import java.net.URLDecoder
  * --- METADATA ---
  * Tên plugin: Redtube Provider
  * Tác giả: Coder (AI)
- * Phiên bản: 2.0 (Final - Bỏ phân trang, fix deprecated, dùng ExtractorLink trực tiếp)
+ * Phiên bản: 3.0 (Logic loadLinks 2-bước & fix TvType)
  * Mô tả: Plugin để xem nội dung từ Redtube, đã được tối ưu theo yêu cầu.
  * Ngôn ngữ: en (Tiếng Anh)
  */
@@ -30,23 +30,21 @@ class RedtubeProvider : MainAPI() {
         val href = fixUrl(linkElement.attr("href"))
         val posterUrl = this.selectFirst("img.js_thumbImageTag")?.attr("data-src")
 
-        return newMovieSearchResponse(title, href, TvType.Movie) {
+        // Cập nhật TvType thành NSFW
+        return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
         }
     }
     
-    // --- BỎ PHÂN TRANG & FIX DEPRECATED WARNING ---
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        // Chỉ tải từ trang chính, không dùng `page`
         val document = app.get(mainUrl).document
         val mainPageVideos = document.select("li.thumbnail-card").mapNotNull {
             it.toSearchResponse()
         }
         
-        // Sử dụng `newHomePageResponse` để tránh warning
         return newHomePageResponse(
             list = listOf(HomePageList("Most Recent Videos", mainPageVideos)),
             hasNext = false
@@ -70,67 +68,67 @@ class RedtubeProvider : MainAPI() {
             it.toSearchResponse()
         }
 
-        return newMovieLoadResponse(title, url, TvType.Movie, url) {
+        // Cập nhật TvType thành NSFW
+        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
             this.plot = description
             this.recommendations = recommendations
         }
     }
 
-    // --- DÙNG EXTRACTORLINK TRỰC TIẾP CHO M3U8 ---
+    // --- VIẾT LẠI HOÀN TOÀN HÀM LOADLINKS ---
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val response = app.get(data)
+        val response = app.get(data).text
         
+        // Bước 1: Lấy danh sách các API endpoint từ trang watch
         val mediaDefRegex = Regex(""""mediaDefinitions":(\[.*?\])""")
-        val mediaJson = mediaDefRegex.find(response.text)?.groupValues?.get(1) ?: return false
+        val initialMediaJson = mediaDefRegex.find(response)?.groupValues?.get(1) ?: return false
 
-        data class MediaDefinition(
-            val format: String?,
-            val videoUrl: String?,
-            val height: String?
-        )
+        data class InitialMedia(val format: String?, val videoUrl: String?)
         
-        val mediaList = try {
-            parseJson<List<MediaDefinition>>(mediaJson)
+        val initialMediaList = try {
+            parseJson<List<InitialMedia>>(initialMediaJson)
         } catch (e: Exception) {
             return false
         }
 
-        mediaList.forEach { media ->
-            val videoUrl = media.videoUrl
-            if (videoUrl != null) {
-                val fullUrl = fixUrl(videoUrl)
-                val qualityName = media.height?.let { "${it}p" } ?: media.format?.uppercase() ?: "Stream"
+        // Data class cho kết quả JSON từ API endpoint
+        data class FinalVideo(val quality: String?, val videoUrl: String?)
+
+        // Bước 2: Lặp qua từng API endpoint (HLS, MP4) để lấy link video cuối cùng
+        initialMediaList.apmap { initialMedia -> // Dùng apmap để gọi API song song
+            val apiUrl = initialMedia.videoUrl?.let { fixUrl(it) } ?: return@apmap
+            
+            try {
+                // Gọi API và parse JSON trả về
+                val finalVideoList = app.get(apiUrl).parsed<List<FinalVideo>>()
                 
-                // Kiểm tra định dạng và tạo ExtractorLink tương ứng
-                if (media.format == "hls") {
-                    callback(
-                        ExtractorLink(
-                            source = this.name,
-                            name = "${this.name} - $qualityName",
-                            url = fullUrl,
-                            referer = data,
-                            quality = Qualities.Unknown.value, // Chất lượng sẽ do player xác định
-                            type = ExtractorLinkType.M3U8
+                finalVideoList.forEach { finalVideo ->
+                    val videoUrl = finalVideo.videoUrl
+                    if (videoUrl != null) {
+                        val qualityName = finalVideo.quality?.let { "${it}p" } ?: "Stream"
+                        val qualityInt = finalVideo.quality?.toIntOrNull() ?: Qualities.Unknown.value
+
+                        callback(
+                            ExtractorLink(
+                                source = this.name,
+                                name = "${this.name} - $qualityName",
+                                url = videoUrl,
+                                referer = data, // Referer là trang watch ban đầu
+                                quality = qualityInt,
+                                // Xác định type dựa trên format của API endpoint ban đầu
+                                type = if (initialMedia.format == "hls") ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                            )
                         )
-                    )
-                } else {
-                    callback(
-                        ExtractorLink(
-                            source = this.name,
-                            name = "${this.name} - $qualityName",
-                            url = fullUrl,
-                            referer = data,
-                            quality = media.height?.toIntOrNull() ?: Qualities.Unknown.value,
-                            type = ExtractorLinkType.VIDEO
-                        )
-                    )
+                    }
                 }
+            } catch (e: Exception) {
+                // Bỏ qua nếu có lỗi khi gọi một trong các API
             }
         }
 
