@@ -1,148 +1,314 @@
 package recloudstream
 
+import android.util.Base64
+import com.fasterxml.jackson.annotation.JsonProperty
+import com.fasterxml.jackson.core.type.TypeReference
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import org.jsoup.nodes.Element
-import java.net.URLDecoder
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.Qualities
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
+import com.lagradost.cloudstream3.CommonActivity.showToast
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import android.widget.Toast
 
-/**
- * --- METADATA ---
- * Tên plugin: Redtube Provider
- * Tác giả: Coder (AI)
- * Phiên bản: 3.1 (Thêm Log & Exception để Debug)
- * Mô tả: Plugin để xem nội dung từ Redtube, đã được tối ưu theo yêu cầu.
- * Ngôn ngữ: en (Tiếng Anh)
- */
-class RedtubeProvider : MainAPI() {
-    override var mainUrl = "https://www.redtube.com"
-    override var name = "Redtube"
+class KKPhimProvider : MainAPI() {
+    override var name = "KKPhim"
+    override var mainUrl = "https://kkphim.com"
     override val hasMainPage = true
-    override var lang = "en"
-    override val hasDownloadSupport = true
-    override val supportedTypes = setOf(
-        TvType.NSFW
+    override var lang = "vi"
+
+    private val apiDomain = "https://phimapi.com"
+    private val imageCdnDomain = "https://phimimg.com"
+
+    private val categories = mapOf(
+        "Phim Mới Cập Nhật" to "phim-moi-cap-nhat",
+        "Phim Bộ" to "danh-sach/phim-bo",
+        "Phim Lẻ" to "danh-sach/phim-le",
+        "Hoạt Hình" to "danh-sach/hoat-hinh",
+        "TV Shows" to "danh-sach/tv-shows"
     )
 
-    private fun Element.toSearchResponse(): MovieSearchResponse? {
-        val linkElement = this.selectFirst("a.video-title-text") ?: return null
-        val title = linkElement.attr("title")
-        val href = fixUrl(linkElement.attr("href"))
-        val posterUrl = this.selectFirst("img.js_thumbImageTag")?.attr("data-src")
+    override var supportedTypes = setOf(
+        TvType.Movie,
+        TvType.TvSeries,
+        TvType.Anime
+    )
 
-        return newMovieSearchResponse(title, href, TvType.NSFW) {
-            this.posterUrl = posterUrl
+    // Hàm phụ trợ được cập nhật để trả về thông tin hasNextPage
+private suspend fun getCategoryItems(slug: String, page: Int): CategoryPage {
+    val url = if (slug == "phim-moi-cap-nhat") {
+        "$apiDomain/$slug?page=$page"
+    } else {
+        "$apiDomain/v1/api/$slug?page=$page"
+    }
+
+    return try {
+        // Tách riêng items và pagination từ response của API
+        val (items, pagination) = if (slug == "phim-moi-cap-nhat") {
+            val response = app.get(url).parsed<ApiResponse>()
+            Pair(response.items, response.pagination)
+        } else {
+            val response = app.get(url).parsed<SearchApiResponse>()
+            Pair(response.data?.items, response.data?.params?.pagination)
+        }
+
+        // Kiểm tra xem trang hiện tại có nhỏ hơn tổng số trang không
+        val hasNext = (pagination?.currentPage ?: 0) < (pagination?.totalPages ?: 0)
+        
+        // Trả về đối tượng CategoryPage
+        CategoryPage(items?.mapNotNull { toSearchResponse(it) } ?: emptyList(), hasNext)
+    } catch (e: Exception) {
+        // Nếu lỗi, mặc định là không còn trang tiếp theo
+        CategoryPage(emptyList(), false)
+    }
+}
+
+override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+    // XỬ LÝ PHÂN TRANG
+    if (page > 1) {
+        val slug = categories.entries.find { it.key == request.name }?.value ?: return null
+        
+        // Lấy cả danh sách phim và cờ hasNext
+        val categoryPage = getCategoryItems(slug, page)
+        
+        // **THAY ĐỔI QUAN TRỌNG**: Truyền `hasNext` vào hàm response
+        return newHomePageResponse(request, categoryPage.items, hasNext = categoryPage.hasNextPage)
+    }
+
+    // TẢI TRANG ĐẦU TIÊN (page = 1)
+    withContext(Dispatchers.Main) {
+        CommonActivity.activity?.let { activity ->
+            showToast(activity, "Free Repo From SIX [H4RS]\nTelegram/Discord: hung319", Toast.LENGTH_LONG)
         }
     }
+
+    val homePageLists = coroutineScope {
+        categories.map { (title, slug) ->
+            async {
+                val categoryPage = getCategoryItems(slug, 1)
+                // Khi tải trang đầu, ta chỉ cần danh sách items cho HomePageList
+                HomePageList(title, categoryPage.items)
+            }
+        }.map { it.await() }
+    }
     
-    override suspend fun getMainPage(
-        page: Int,
-        request: MainPageRequest
-    ): HomePageResponse {
-        val document = app.get(mainUrl).document
-        val mainPageVideos = document.select("li.thumbnail-card").mapNotNull {
-            it.toSearchResponse()
+    return newHomePageResponse(homePageLists.filter { it.list.isNotEmpty() })
+}
+
+    private fun toSearchResponse(item: MovieItem): SearchResponse? {
+        val movieUrl = "$mainUrl/phim/${item.slug}"
+        val tvType = when (item.type) {
+            "series" -> TvType.TvSeries
+            "single" -> TvType.Movie
+            "hoathinh" -> TvType.Anime
+            else -> when (item.tmdb?.type) {
+                "movie" -> TvType.Movie
+                "tv" -> TvType.TvSeries
+                else -> null
+            }
+        } ?: return null
+
+        val poster = item.posterUrl?.let {
+            if (it.startsWith("http")) it else "$imageCdnDomain/$it"
         }
-        
-        return newHomePageResponse(
-            list = listOf(HomePageList("Most Recent Videos", mainPageVideos)),
-            hasNext = false
-        )
+
+        return newMovieSearchResponse(item.name, movieUrl, tvType) {
+            this.posterUrl = poster
+        }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/redtube/$query"
-        val document = app.get(searchUrl).document
-        return document.select("li.thumbnail-card").mapNotNull {
-            it.toSearchResponse()
-        }
+        val url = "$apiDomain/v1/api/tim-kiem?keyword=$query"
+        val response = app.get(url).parsed<SearchApiResponse>()
+
+        return response.data?.items?.mapNotNull { item ->
+            toSearchResponse(item)
+        } ?: listOf()
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url).document
-        val title = document.selectFirst("h1.video_page_title")?.text()?.trim() ?: "Untitled"
-        val poster = document.selectFirst("meta[property='og:image']")?.attr("content")
-        val description = document.selectFirst("meta[name='description']")?.attr("content")
-        val recommendations = document.select("li.thumbnail-card").mapNotNull {
-            it.toSearchResponse()
+        val slug = url.substringAfter("/phim/")
+        val apiUrl = "$apiDomain/phim/$slug"
+        val response = app.get(apiUrl).parsed<DetailApiResponse>()
+        val movie = response.movie ?: return null
+
+        val title = movie.name
+        val poster = movie.posterUrl
+        val year = movie.year
+        val description = movie.content
+        val tags = movie.category?.map { it.name }
+        val actors = movie.actor?.let { actorList ->
+            actorList.map { ActorData(Actor(it)) }
         }
 
-        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
-            this.posterUrl = poster
-            this.plot = description
-            this.recommendations = recommendations
+        var recommendations: List<SearchResponse>? = null
+        if (movie.recommendations is List<*>) {
+            try {
+                val movieItems = mapper.convertValue(movie.recommendations, object : TypeReference<List<MovieItem>>() {})
+                recommendations = movieItems.mapNotNull { toSearchResponse(it) }
+            } catch (e: Exception) {
+                // Ignore conversion errors
+            }
+        }
+        if (recommendations.isNullOrEmpty()) {
+            movie.category?.firstOrNull()?.slug?.let { categorySlug ->
+                try {
+                    val recUrl = "$apiDomain/v1/api/the-loai/$categorySlug"
+                    val recResponse = app.get(recUrl).parsed<SearchApiResponse>()
+                    recommendations = recResponse.data?.items
+                        ?.mapNotNull { toSearchResponse(it) }
+                        ?.filter { it.url != url }
+                } catch (e: Exception) {
+                    // Ignore loading errors
+                }
+            }
+        }
+
+        val tvType = when (movie.type) {
+            "series" -> TvType.TvSeries
+            "hoathinh" -> TvType.Anime
+            else -> TvType.Movie
+        }
+
+        val episodes = response.episodes?.flatMap { episodeGroup ->
+            episodeGroup.serverData.map { episodeData ->
+                newEpisode(episodeData) {
+                    this.name = episodeData.name
+                }
+            }
+        } ?: emptyList()
+
+        return when (tvType) {
+            TvType.TvSeries, TvType.Anime -> newTvSeriesLoadResponse(title, url, tvType, episodes) {
+                this.posterUrl = poster; this.year = year; this.plot = description; this.tags = tags; this.actors = actors; this.recommendations = recommendations
+            }
+            TvType.Movie -> newMovieLoadResponse(title, url, tvType, episodes.firstOrNull()?.data) {
+                this.posterUrl = poster; this.year = year; this.plot = description; this.tags = tags; this.actors = actors; this.recommendations = recommendations
+            }
+            else -> null
         }
     }
 
-    // --- CẬP NHẬT: THÊM LOG VÀ EXCEPTION ---
     override suspend fun loadLinks(
-        data: String,
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        try {
-            println("RedtubeDebug: Bắt đầu loadLinks cho url: $data")
-            val response = app.get(data).text
-            
-            val mediaDefRegex = Regex(""""mediaDefinitions":(\[.*?\])""")
-            val initialMediaJson = mediaDefRegex.find(response)?.groupValues?.get(1)
-            
-            if (initialMediaJson == null) {
-                throw Exception("RedtubeDebug: Không tìm thấy 'mediaDefinitions' trong HTML. Regex thất bại.")
-            }
-            println("RedtubeDebug: Đã tìm thấy mediaDefinitions JSON: $initialMediaJson")
+    data: String,
+    isCasting: Boolean,
+    subtitleCallback: (SubtitleFile) -> Unit,
+    callback: (ExtractorLink) -> Unit
+): Boolean {
+    try {
+        val episodeData = mapper.readValue(data, EpisodeData::class.java)
+        val headers = mapOf(
+            "Referer" to mainUrl,
+            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
+        )
 
-            data class InitialMedia(val format: String?, val videoUrl: String?)
-            val initialMediaList = parseJson<List<InitialMedia>>(initialMediaJson)
-            println("RedtubeDebug: Đã parse được ${initialMediaList.size} API endpoints.")
+        // BƯỚC 1: LẤY VÀ PHÂN TÍCH PLAYLIST
+        val masterM3u8Url = episodeData.linkM3u8
+        val masterContent = app.get(masterM3u8Url, headers = headers).text
+        val relativePlaylistUrl = masterContent.lines().lastOrNull { it.endsWith(".m3u8") }
+            ?: throw Exception("No child playlist found in master M3U8")
+        val masterUrlBase = masterM3u8Url.substringBeforeLast("/") + "/"
+        val finalPlaylistUrl = masterUrlBase + relativePlaylistUrl
 
-            data class FinalVideo(val quality: String?, val videoUrl: String?)
-            var linksFound = 0
+        // BƯỚC 2: LỌC NỘI DUNG M3U8
+        val finalPlaylistContent = app.get(finalPlaylistUrl, headers = headers).text
+        var contentToProcess = finalPlaylistContent
+        if (!contentToProcess.contains('\n')) {
+            contentToProcess = contentToProcess.replace("#", "\n#").trim()
+        }
+        val lines = contentToProcess.lines()
 
-            initialMediaList.apmap { initialMedia ->
-                val apiUrl = initialMedia.videoUrl?.let { fixUrl(it) }
-                if (apiUrl == null) {
-                    println("RedtubeDebug: Bỏ qua vì apiUrl rỗng.")
-                    return@apmap
-                }
-                println("RedtubeDebug: Đang gọi API: $apiUrl")
-                
-                val apiResponse = app.get(apiUrl).text
-                println("RedtubeDebug: Phản hồi từ API: $apiResponse")
-
-                val finalVideoList = parseJson<List<FinalVideo>>(apiResponse)
-                
-                finalVideoList.forEach { finalVideo ->
-                    val videoUrl = finalVideo.videoUrl
-                    if (videoUrl != null) {
-                        linksFound++
-                        val qualityName = finalVideo.quality?.let { "${it}p" } ?: "Stream"
-                        val qualityInt = finalVideo.quality?.toIntOrNull() ?: Qualities.Unknown.value
-
-                        callback(
-                            ExtractorLink(
-                                source = this.name,
-                                name = "${this.name} - $qualityName",
-                                url = videoUrl,
-                                referer = data,
-                                quality = qualityInt,
-                                type = if (initialMedia.format == "hls") ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                            )
-                        )
+        val cleanedLines = mutableListOf<String>()
+        var i = 0
+        while (i < lines.size) {
+            val line = lines[i].trim()
+            if (line == "#EXT-X-DISCONTINUITY") {
+                var isAdBlock = false
+                var blockEndIndex = i
+                for (j in (i + 1) until lines.size) {
+                    val nextLine = lines[j]
+                    // THAY ĐỔI 1: Thêm điều kiện kiểm tra "adjump"
+                    if (nextLine.contains("/v7/") || nextLine.contains("convertv7") || nextLine.contains("adjump")) {
+                        isAdBlock = true
+                    }
+                    if (j > i && nextLine.trim() == "#EXT-X-DISCONTINUITY") {
+                        blockEndIndex = j
+                        break
+                    }
+                    if (j == lines.size - 1) {
+                        blockEndIndex = lines.size
                     }
                 }
+                if (isAdBlock) {
+                    i = blockEndIndex
+                    continue
+                }
             }
-
-            println("RedtubeDebug: Đã tìm thấy tổng cộng $linksFound links.")
-            if (linksFound == 0) {
-                throw Exception("RedtubeDebug: Không tìm thấy link video nào sau khi xử lý tất cả API.")
+            if (line.isNotEmpty()) {
+                if (line.startsWith("#")) {
+                    cleanedLines.add(line)
+                } else if (!line.contains("/v7/") && !line.contains("convertv7") && !line.contains("adjump")) { // THAY ĐỔI 2: Thêm điều kiện lọc "adjump"
+                    val segmentUrl = if (line.startsWith("http")) {
+                        line
+                    } else {
+                        (finalPlaylistUrl.substringBeforeLast("/") + "/" + line)
+                    }
+                    cleanedLines.add(segmentUrl)
+                }
             }
-
-        } catch (e: Exception) {
-            // Ném ra một exception mới với thông tin lỗi đầy đủ để hiển thị trong Logcat
-            throw Exception("Lỗi trong RedtubeProvider: ${e.message}", e)
+            i++
         }
+        
+        val cleanedM3u8Content = cleanedLines.joinToString("\n")
+        if (cleanedM3u8Content.isBlank()) throw Exception("M3U8 content is empty after filtering")
+        
+        // BƯỚC 3: UPLOAD LÊN DỊCH VỤ MỚI (paste.swurl.xyz)
+        val postBody = cleanedM3u8Content.toRequestBody("text/plain".toMediaType())
+        val finalUrl = app.post(
+                url = "https://paste.swurl.xyz/kkphim.m3u8",
+                requestBody = postBody
+        ).text.trim()
+
+        if (!finalUrl.startsWith("http")) {
+            throw Exception("Failed to upload to paste.swurl.xyz. Response: $finalUrl")
+        }
+        
+        // BƯỚC 4: TRẢ LINK VỀ CHO TRÌNH PHÁT
+        callback.invoke(
+            ExtractorLink(
+                source = this.name,
+                name = "${this.name}",
+                url = finalUrl,
+                referer = mainUrl,
+                quality = Qualities.Unknown.value,
+                type = ExtractorLinkType.M3U8,
+                headers = headers
+            )
+        )
         return true
+    } catch (e: Exception) {
+        e.printStackTrace()
+        return false
     }
+}
+
+    // --- DATA CLASSES ---
+    data class ApiResponse(@JsonProperty("items") val items: List<MovieItem>? = null, @JsonProperty("pagination") val pagination: Pagination? = null)
+    data class SearchApiResponse(@JsonProperty("data") val data: SearchData? = null)
+    data class SearchData(@JsonProperty("items") val items: List<MovieItem>? = null, @JsonProperty("params") val params: SearchParams? = null)
+    data class SearchParams(@JsonProperty("pagination") val pagination: Pagination? = null)
+    data class MovieItem(@JsonProperty("name") val name: String, @JsonProperty("slug") val slug: String, @JsonProperty("poster_url") val posterUrl: String? = null, @JsonProperty("type") val type: String? = null, @JsonProperty("tmdb") val tmdb: TmdbInfo? = null)
+    data class TmdbInfo(@JsonProperty("type") val type: String? = null)
+    data class Pagination(@JsonProperty("currentPage") val currentPage: Int? = null, @JsonProperty("totalPages") val totalPages: Int? = null)
+    data class DetailApiResponse(@JsonProperty("movie") val movie: DetailMovie? = null, @JsonProperty("episodes") val episodes: List<EpisodeGroup>? = null)
+    data class DetailMovie(@JsonProperty("name") val name: String, @JsonProperty("content") val content: String? = null, @JsonProperty("poster_url") val posterUrl: String? = null, @JsonProperty("year") val year: Int? = null, @JsonProperty("type") val type: String? = null, @JsonProperty("category") val category: List<Category>? = null, @JsonProperty("actor") val actor: List<String>? = null, @JsonProperty("chieurap") val recommendations: Any? = null)
+    data class Category(@JsonProperty("name") val name: String, @JsonProperty("slug") val slug: String)
+    data class EpisodeGroup(@JsonProperty("server_name") val serverName: String, @JsonProperty("server_data") val serverData: List<EpisodeData>)
+    data class EpisodeData(@JsonProperty("name") val name: String, @JsonProperty("slug") val slug: String, @JsonProperty("link_m3u8") val linkM3u8: String, @JsonProperty("link_embed") val linkEmbed: String)
+    data class CategoryPage(val items: List<SearchResponse>, val hasNextPage: Boolean)
 }
