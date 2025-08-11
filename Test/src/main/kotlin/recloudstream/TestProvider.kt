@@ -69,35 +69,47 @@ private suspend fun getCategoryItems(slug: String, page: Int): CategoryPage {
 }
 
 override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-    // XỬ LÝ PHÂN TRANG
+    // XỬ LÝ PHÂN TRANG (page > 1) - Logic này đã đúng.
     if (page > 1) {
         val slug = categories.entries.find { it.key == request.name }?.value ?: return null
-        
-        // Lấy cả danh sách phim và cờ hasNext
         val categoryPage = getCategoryItems(slug, page)
-        
-        // **THAY ĐỔI QUAN TRỌNG**: Truyền `hasNext` vào hàm response
-        return newHomePageResponse(request, categoryPage.items, hasNext = categoryPage.hasNextPage)
+        return newHomePageResponse(
+            name = request.name, 
+            list = categoryPage.items, 
+            hasNext = categoryPage.hasNextPage
+        )
     }
 
-    // TẢI TRANG ĐẦU TIÊN (page = 1)
+    // TẢI TRANG ĐẦU TIÊN (page = 1) - Cập nhật logic `hasNext` ở đây.
     withContext(Dispatchers.Main) {
         CommonActivity.activity?.let { activity ->
             showToast(activity, "Free Repo From SIX [H4RS]\nTelegram/Discord: hung319", Toast.LENGTH_LONG)
         }
     }
 
-    val homePageLists = coroutineScope {
+    // Tải song song và thu thập kết quả, bao gồm cả cờ hasNext của từng danh mục.
+    val results = coroutineScope {
         categories.map { (title, slug) ->
             async {
                 val categoryPage = getCategoryItems(slug, 1)
-                // Khi tải trang đầu, ta chỉ cần danh sách items cho HomePageList
-                HomePageList(title, categoryPage.items)
+                // Trả về một cặp giá trị: HomePageList và cờ hasNext của nó
+                Pair(HomePageList(title, categoryPage.items), categoryPage.hasNextPage)
             }
         }.map { it.await() }
     }
     
-    return newHomePageResponse(homePageLists.filter { it.list.isNotEmpty() })
+    // Lọc bỏ những danh mục rỗng
+    val validResults = results.filter { it.first.list.isNotEmpty() }
+
+    // Chỉ lấy đối tượng HomePageList để đưa vào response
+    val homePageLists = validResults.map { it.first }
+
+    // **THAY ĐỔI QUAN TRỌNG**:
+    // Kiểm tra xem có bất kỳ danh mục nào trong kết quả còn trang tiếp theo không.
+    val globalHasNext = validResults.any { it.second }
+
+    // Trả về response với cờ hasNext đã được tính toán.
+    return newHomePageResponse(homePageLists, hasNext = globalHasNext)
 }
 
     private fun toSearchResponse(item: MovieItem): SearchResponse? {
