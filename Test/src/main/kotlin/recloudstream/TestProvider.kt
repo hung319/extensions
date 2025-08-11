@@ -39,58 +39,8 @@ class KKPhimProvider : MainAPI() {
         TvType.Anime
     )
 
-    // Data class để chứa kết quả từ một trang của danh mục
-data class CategoryPage(val items: List<SearchResponse>, val hasNextPage: Boolean)
-
-// Hàm phụ trợ được cập nhật để xử lý đúng URL và API response cho từng loại
-private suspend fun getCategoryItems(slug: String, page: Int): CategoryPage {
-    // Phân biệt đâu là danh mục "Phim Mới" vì nó dùng API khác
-    val isNewMoviesCategory = slug == "danh-sach/phim-moi-cap-nhat"
-    
-    val url = if (isNewMoviesCategory) {
-        // FIX 1: URL đúng cho "Phim Mới Cập Nhật"
-        "$apiDomain/$slug?page=$page"
-    } else {
-        // URL cho tất cả các danh mục còn lại
-        "$apiDomain/v1/api/$slug?page=$page"
-    }
-
-    return try {
-        // Phân tích JSON response tương ứng với mỗi loại API
-        val (items, pagination) = if (isNewMoviesCategory) {
-            val response = app.get(url).parsed<ApiResponse>()
-            Pair(response.items, response.pagination)
-        } else {
-            val response = app.get(url).parsed<SearchApiResponse>()
-            Pair(response.data?.items, response.data?.params?.pagination)
-        }
-
-        // Tính toán chính xác `hasNext` từ dữ liệu của API
-        val hasNext = (pagination?.currentPage ?: 0) < (pagination?.totalPages ?: 0)
-        
-        CategoryPage(items?.mapNotNull { toSearchResponse(it) } ?: emptyList(), hasNext)
-    } catch (e: Exception) {
-        CategoryPage(emptyList(), false)
-    }
-}
-    
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-    // FIX 2: Quay lại logic phân trang cho từng danh mục riêng lẻ
-    if (page > 1) {
-        // Tìm slug bằng cách tra cứu ngược từ tên danh mục
-        val slug = categories.entries.find { it.key == request.name }?.value ?: return null
-        
-        val categoryPage = getCategoryItems(slug, page)
-        
-        // Trả về kết quả cho đúng danh mục đang được yêu cầu tải thêm
-        return newHomePageResponse(
-            name = request.name, 
-            list = categoryPage.items, 
-            hasNext = categoryPage.hasNextPage
-        )
-    }
-
-    // Tải trang đầu tiên (page = 1)
+    // Chỉ hiển thị toast ở lần tải trang đầu tiên (page <= 1)
     if (page <= 1) {
         withContext(Dispatchers.Main) {
             CommonActivity.activity?.let { activity ->
@@ -102,13 +52,34 @@ private suspend fun getCategoryItems(slug: String, page: Int): CategoryPage {
     val homePageLists = coroutineScope {
         categories.map { (title, slug) ->
             async {
-                val categoryPage = getCategoryItems(slug, 1)
-                HomePageList(title, categoryPage.items)
+                // Logic được sửa lại để xử lý đúng từng trường hợp
+                val isNewMoviesCategory = slug == "danh-sach/phim-moi-cap-nhat"
+
+                // 1. Tạo URL chính xác cho từng loại danh mục
+                val url = if (isNewMoviesCategory) {
+                    "$apiDomain/$slug?page=$page"
+                } else {
+                    "$apiDomain/v1/api/$slug?page=$page"
+                }
+
+                try {
+                    // 2. Phân tích JSON response chính xác cho từng loại API
+                    val items = if (isNewMoviesCategory) {
+                        app.get(url).parsed<ApiResponse>().items
+                    } else {
+                        app.get(url).parsed<SearchApiResponse>().data?.items
+                    } ?: emptyList()
+
+                    val searchResults = items.mapNotNull { toSearchResponse(it) }
+                    HomePageList(title, searchResults)
+                } catch (e: Exception) {
+                    HomePageList(title, emptyList())
+                }
             }
         }.map { it.await() }
     }
-    
-    // Mặc định là có trang tiếp theo để kích hoạt chức năng cuộn tải thêm
+
+    // Luôn trả về `hasNext = true` để đảm bảo có thể cuộn để tải thêm.
     return newHomePageResponse(
         homePageLists.filter { it.list.isNotEmpty() },
         hasNext = true
