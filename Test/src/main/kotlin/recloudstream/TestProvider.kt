@@ -298,7 +298,7 @@ class KKPhimProvider : MainAPI() {
                         // BƯỚC 4: TRẢ LINK VỀ
                         callback.invoke(
                             ExtractorLink(
-                                source = this.name, name = serverName, url = finalUrl,
+                                source = name, name = serverName, url = finalUrl,
                                 referer = mainUrl, quality = Qualities.Unknown.value,
                                 type = ExtractorLinkType.M3U8, headers = headers
                             )
