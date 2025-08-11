@@ -118,169 +118,206 @@ class KKPhimProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val slug = url.substringAfter("/phim/")
-        val apiUrl = "$apiDomain/phim/$slug"
-        val response = app.get(apiUrl).parsed<DetailApiResponse>()
-        val movie = response.movie ?: return null
+    val slug = url.substringAfter("/phim/")
+    val apiUrl = "$apiDomain/phim/$slug"
+    val response = app.get(apiUrl).parsed<DetailApiResponse>()
+    val movie = response.movie ?: return null
 
-        val title = movie.name
-        val poster = movie.posterUrl
-        val year = movie.year
-        val description = movie.content
-        val tags = movie.category?.map { it.name }
-        val actors = movie.actor?.let { actorList ->
-            actorList.map { ActorData(Actor(it)) }
-        }
+    val title = movie.name
+    val poster = movie.posterUrl
+    val year = movie.year
+    val description = movie.content
+    val tags = movie.category?.map { it.name }
+    val actors = movie.actor?.map { ActorData(Actor(it)) }
 
-        var recommendations: List<SearchResponse>? = null
-        if (movie.recommendations is List<*>) {
+    var recommendations: List<SearchResponse>? = null
+    if (movie.recommendations is List<*>) {
+        try {
+            val movieItems = mapper.convertValue(movie.recommendations, object : TypeReference<List<MovieItem>>() {})
+            recommendations = movieItems.mapNotNull { toSearchResponse(it) }
+        } catch (e: Exception) { /* Ignore conversion errors */ }
+    }
+    if (recommendations.isNullOrEmpty()) {
+        movie.category?.firstOrNull()?.slug?.let { categorySlug ->
             try {
-                val movieItems = mapper.convertValue(movie.recommendations, object : TypeReference<List<MovieItem>>() {})
-                recommendations = movieItems.mapNotNull { toSearchResponse(it) }
-            } catch (e: Exception) {
-                // Ignore conversion errors
-            }
-        }
-        if (recommendations.isNullOrEmpty()) {
-            movie.category?.firstOrNull()?.slug?.let { categorySlug ->
-                try {
-                    val recUrl = "$apiDomain/v1/api/the-loai/$categorySlug"
-                    val recResponse = app.get(recUrl).parsed<SearchApiResponse>()
-                    recommendations = recResponse.data?.items
-                        ?.mapNotNull { toSearchResponse(it) }
-                        ?.filter { it.url != url }
-                } catch (e: Exception) {
-                    // Ignore loading errors
-                }
-            }
-        }
-
-        val tvType = when (movie.type) {
-            "series" -> TvType.TvSeries
-            "hoathinh" -> TvType.Anime
-            else -> TvType.Movie
-        }
-
-        val episodes = response.episodes?.flatMap { episodeGroup ->
-            episodeGroup.serverData.map { episodeData ->
-                newEpisode(episodeData) {
-                    this.name = episodeData.name
-                }
-            }
-        } ?: emptyList()
-
-        return when (tvType) {
-            TvType.TvSeries, TvType.Anime -> newTvSeriesLoadResponse(title, url, tvType, episodes) {
-                this.posterUrl = poster; this.year = year; this.plot = description; this.tags = tags; this.actors = actors; this.recommendations = recommendations
-            }
-            TvType.Movie -> newMovieLoadResponse(title, url, tvType, episodes.firstOrNull()?.data) {
-                this.posterUrl = poster; this.year = year; this.plot = description; this.tags = tags; this.actors = actors; this.recommendations = recommendations
-            }
-            else -> null
+                val recUrl = "$apiDomain/v1/api/the-loai/$categorySlug"
+                val recResponse = app.get(recUrl).parsed<SearchApiResponse>()
+                recommendations = recResponse.data?.items
+                    ?.mapNotNull { toSearchResponse(it) }
+                    ?.filter { it.url != url }
+            } catch (e: Exception) { /* Ignore loading errors */ }
         }
     }
 
+    val tvType = when (movie.type) {
+        "series" -> TvType.TvSeries
+        "hoathinh" -> TvType.Anime
+        else -> TvType.Movie
+    }
+
+    // --- BẮT ĐẦU LOGIC NHÓM TẬP PHIM ---
+    val episodesGroupedBySlug = mutableMapOf<String, MutableList<MultiLink>>()
+
+    response.episodes?.forEach { episodeGroup ->
+        episodeGroup.serverData.forEach { episodeData ->
+            // Lấy tên server trong dấu ngoặc đơn, ví dụ: "Vietsub"
+            val serverName = episodeGroup.serverName.substringAfter("(", "").substringBefore(")", "").ifBlank { episodeGroup.serverName }
+            
+            // Tạo đối tượng MultiLink
+            val multiLink = MultiLink(serverName, episodeData)
+
+            // Nhóm các link lại theo slug của tập phim (ví dụ: "full", "tap-1")
+            episodesGroupedBySlug.getOrPut(episodeData.slug) { mutableListOf() }.add(multiLink)
+        }
+    }
+
+    val finalEpisodes = episodesGroupedBySlug.map { (episodeSlug, links) ->
+        // Tạo tên hiển thị cho server, ví dụ: (VS+TM)
+        val serverTags = links.map {
+            when {
+                it.serverName.contains("Vietsub") -> "VS"
+                it.serverName.contains("Thuyết Minh") -> "TM"
+                it.serverName.contains("Lồng Tiếng") -> "LT"
+                else -> ""
+            }
+        }.filter { it.isNotEmpty() }.joinToString("+")
+
+        // Tạo tên tập phim cuối cùng, ví dụ: "Tập 1 (VS+TM)"
+        val episodeName = links.firstOrNull()?.episodeData?.name ?: episodeSlug
+        val finalEpisodeName = if (serverTags.isNotBlank()) "$episodeName ($serverTags)" else episodeName
+
+        // Dữ liệu của episode sẽ là một chuỗi JSON chứa danh sách tất cả các link
+        val episodeDataJson = mapper.writeValueAsString(links)
+
+        // Tạo episode mới với tên đã được gộp và data chứa tất cả link
+        newEpisode(episodeDataJson) {
+            this.name = finalEpisodeName
+        }
+    }
+    // --- KẾT THÚC LOGIC NHÓM TẬP PHIM ---
+
+    return when (tvType) {
+        TvType.TvSeries, TvType.Anime -> newTvSeriesLoadResponse(title, url, tvType, finalEpisodes) {
+            this.posterUrl = poster; this.year = year; this.plot = description; this.tags = tags; this.actors = actors; this.recommendations = recommendations
+        }
+        TvType.Movie -> newMovieLoadResponse(title, url, tvType, finalEpisodes.firstOrNull()?.data) {
+            this.posterUrl = poster; this.year = year; this.plot = description; this.tags = tags; this.actors = actors; this.recommendations = recommendations
+        }
+        else -> null
+    }
+}
+
+    // Data class để chứa danh sách các link cho một tập phim (VS, TM, etc.)
+    data class MultiLink(
+        @JsonProperty("serverName") val serverName: String,
+        @JsonProperty("episodeData") val episodeData: EpisodeData
+    )
+    
     override suspend fun loadLinks(
     data: String,
     isCasting: Boolean,
     subtitleCallback: (SubtitleFile) -> Unit,
     callback: (ExtractorLink) -> Unit
 ): Boolean {
-    try {
-        val episodeData = mapper.readValue(data, EpisodeData::class.java)
-        val headers = mapOf(
-            "Referer" to mainUrl,
-            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
-        )
+    // Dữ liệu 'data' giờ là một JSON array chứa các link đã được nhóm lại
+    val links = mapper.readValue(data, object : TypeReference<List<MultiLink>>() {})
 
-        // BƯỚC 1: LẤY VÀ PHÂN TÍCH PLAYLIST
-        val masterM3u8Url = episodeData.linkM3u8
-        val masterContent = app.get(masterM3u8Url, headers = headers).text
-        val relativePlaylistUrl = masterContent.lines().lastOrNull { it.endsWith(".m3u8") }
-            ?: throw Exception("No child playlist found in master M3U8")
-        val masterUrlBase = masterM3u8Url.substringBeforeLast("/") + "/"
-        val finalPlaylistUrl = masterUrlBase + relativePlaylistUrl
-
-        // BƯỚC 2: LỌC NỘI DUNG M3U8
-        val finalPlaylistContent = app.get(finalPlaylistUrl, headers = headers).text
-        var contentToProcess = finalPlaylistContent
-        if (!contentToProcess.contains('\n')) {
-            contentToProcess = contentToProcess.replace("#", "\n#").trim()
-        }
-        val lines = contentToProcess.lines()
-
-        val cleanedLines = mutableListOf<String>()
-        var i = 0
-        while (i < lines.size) {
-            val line = lines[i].trim()
-            if (line == "#EXT-X-DISCONTINUITY") {
-                var isAdBlock = false
-                var blockEndIndex = i
-                for (j in (i + 1) until lines.size) {
-                    val nextLine = lines[j]
-                    // THAY ĐỔI 1: Thêm điều kiện kiểm tra "adjump"
-                    if (nextLine.contains("/v7/") || nextLine.contains("convertv7") || nextLine.contains("adjump")) {
-                        isAdBlock = true
-                    }
-                    if (j > i && nextLine.trim() == "#EXT-X-DISCONTINUITY") {
-                        blockEndIndex = j
-                        break
-                    }
-                    if (j == lines.size - 1) {
-                        blockEndIndex = lines.size
-                    }
-                }
-                if (isAdBlock) {
-                    i = blockEndIndex
-                    continue
-                }
-            }
-            if (line.isNotEmpty()) {
-                if (line.startsWith("#")) {
-                    cleanedLines.add(line)
-                } else if (!line.contains("/v7/") && !line.contains("convertv7") && !line.contains("adjump")) { // THAY ĐỔI 2: Thêm điều kiện lọc "adjump"
-                    val segmentUrl = if (line.startsWith("http")) {
-                        line
-                    } else {
-                        (finalPlaylistUrl.substringBeforeLast("/") + "/" + line)
-                    }
-                    cleanedLines.add(segmentUrl)
-                }
-            }
-            i++
-        }
-        
-        val cleanedM3u8Content = cleanedLines.joinToString("\n")
-        if (cleanedM3u8Content.isBlank()) throw Exception("M3U8 content is empty after filtering")
-        
-        // BƯỚC 3: UPLOAD LÊN DỊCH VỤ MỚI (paste.swurl.xyz)
-        val postBody = cleanedM3u8Content.toRequestBody("text/plain".toMediaType())
-        val finalUrl = app.post(
-                url = "https://paste.swurl.xyz/kkphim.m3u8",
-                requestBody = postBody
-        ).text.trim()
-
-        if (!finalUrl.startsWith("http")) {
-            throw Exception("Failed to upload to paste.swurl.xyz. Response: $finalUrl")
-        }
-        
-        // BƯỚC 4: TRẢ LINK VỀ CHO TRÌNH PHÁT
-        callback.invoke(
-            ExtractorLink(
-                source = this.name,
-                name = "${this.name}",
-                url = finalUrl,
-                referer = mainUrl,
-                quality = Qualities.Unknown.value,
-                type = ExtractorLinkType.M3U8,
-                headers = headers
+    // Xử lý song song từng link (Vietsub, Thuyết Minh,...)
+    links.apmap { (serverName, episodeData) ->
+        try {
+            val headers = mapOf(
+                "Referer" to mainUrl,
+                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
             )
-        )
-        return true
-    } catch (e: Exception) {
-        e.printStackTrace()
-        return false
+
+            // BƯỚC 1: LẤY VÀ PHÂN TÍCH PLAYLIST (giữ nguyên)
+            val masterM3u8Url = episodeData.linkM3u8
+            val masterContent = app.get(masterM3u8Url, headers = headers).text
+            val relativePlaylistUrl = masterContent.lines().lastOrNull { it.endsWith(".m3u8") }
+                ?: throw Exception("No child playlist found in master M3U8 for $serverName")
+            val masterUrlBase = masterM3u8Url.substringBeforeLast("/") + "/"
+            val finalPlaylistUrl = masterUrlBase + relativePlaylistUrl
+
+            // BƯỚC 2: LỌC NỘI DUNG M3U8 (giữ nguyên logic lọc quảng cáo)
+            val finalPlaylistContent = app.get(finalPlaylistUrl, headers = headers).text
+            var contentToProcess = finalPlaylistContent
+            if (!contentToProcess.contains('\n')) {
+                contentToProcess = contentToProcess.replace("#", "\n#").trim()
+            }
+            val lines = contentToProcess.lines()
+
+            val cleanedLines = mutableListOf<String>()
+            var i = 0
+            while (i < lines.size) {
+                val line = lines[i].trim()
+                if (line == "#EXT-X-DISCONTINUITY") {
+                    var isAdBlock = false
+                    var blockEndIndex = i
+                    for (j in (i + 1) until lines.size) {
+                        val nextLine = lines[j]
+                        if (nextLine.contains("/v7/") || nextLine.contains("convertv7") || nextLine.contains("adjump")) {
+                            isAdBlock = true
+                        }
+                        if (j > i && nextLine.trim() == "#EXT-X-DISCONTINUITY") {
+                            blockEndIndex = j
+                            break
+                        }
+                        if (j == lines.size - 1) {
+                            blockEndIndex = lines.size
+                        }
+                    }
+                    if (isAdBlock) {
+                        i = blockEndIndex
+                        continue
+                    }
+                }
+                if (line.isNotEmpty()) {
+                    if (line.startsWith("#")) {
+                        cleanedLines.add(line)
+                    } else if (!line.contains("/v7/") && !line.contains("convertv7") && !line.contains("adjump")) {
+                        val segmentUrl = if (line.startsWith("http")) line else (finalPlaylistUrl.substringBeforeLast("/") + "/" + line)
+                        cleanedLines.add(segmentUrl)
+                    }
+                }
+                i++
+            }
+            
+            val cleanedM3u8Content = cleanedLines.joinToString("\n")
+            if (cleanedM3u8Content.isBlank()) throw Exception("M3U8 content is empty after filtering for $serverName")
+            
+            // BƯỚC 3: UPLOAD LÊN DỊCH VỤ MỚI (text.h4rs.qzz.io)
+            val postData = mapOf(
+                "data" to cleanedM3u8Content,
+                "exp" to "6h" // Hết hạn sau 6 giờ
+            )
+            val requestBody = mapper.writeValueAsString(postData).toRequestBody("application/json".toMediaType())
+
+            val finalUrl = app.post(
+                url = "https://text.h4rs.qzz.io/kkphim.m3u8",
+                requestBody = requestBody
+            ).text.trim()
+
+            if (!finalUrl.startsWith("http")) {
+                throw Exception("Failed to upload to text.h4rs.qzz.io. Response: $finalUrl")
+            }
+            
+            // BƯỚC 4: TRẢ LINK VỀ CHO TRÌNH PHÁT
+            callback.invoke(
+                ExtractorLink(
+                    source = this.name,
+                    name = serverName, // Tên của link sẽ là "Vietsub", "Thuyết Minh",...
+                    url = finalUrl,
+                    referer = mainUrl,
+                    quality = Qualities.Unknown.value,
+                    type = ExtractorLinkType.M3U8,
+                    headers = headers
+                )
+            )
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
+    return true
 }
 
     // --- DATA CLASSES ---
