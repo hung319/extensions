@@ -219,23 +219,10 @@ class KKPhimProvider : MainAPI() {
     subtitleCallback: (SubtitleFile) -> Unit,
     callback: (ExtractorLink) -> Unit
 ): Boolean {
-    // Thêm kiểm tra để đảm bảo dữ liệu không bị rỗng
-    if (data.isBlank()) {
-        withContext(Dispatchers.Main) {
-            CommonActivity.showToast(CommonActivity.activity, "Lỗi: Dữ liệu link rỗng", Toast.LENGTH_LONG)
-        }
-        return false
-    }
+    if (data.isBlank()) return false
 
     try {
         val links = mapper.readValue(data, object : TypeReference<List<MultiLink>>() {})
-
-        if (links.isEmpty()) {
-             withContext(Dispatchers.Main) {
-                CommonActivity.showToast(CommonActivity.activity, "Lỗi: Không tìm thấy link nào trong dữ liệu", Toast.LENGTH_LONG)
-            }
-            return false
-        }
 
         links.apmap { (serverName, episodeData) ->
             try {
@@ -244,15 +231,13 @@ class KKPhimProvider : MainAPI() {
                     "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
                 )
 
-                // BƯỚC 1: LẤY VÀ PHÂN TÍCH PLAYLIST
+                // BƯỚC 1 & 2: LẤY VÀ LỌC NỘI DUNG M3U8 (giữ nguyên)
                 val masterM3u8Url = episodeData.linkM3u8
                 val masterContent = app.get(masterM3u8Url, headers = headers).text
                 val relativePlaylistUrl = masterContent.lines().lastOrNull { it.endsWith(".m3u8") }
                     ?: throw Exception("Không tìm thấy playlist con")
                 val masterUrlBase = masterM3u8Url.substringBeforeLast("/") + "/"
                 val finalPlaylistUrl = masterUrlBase + relativePlaylistUrl
-
-                // BƯỚC 2: LỌC NỘI DUNG M3U8
                 val finalPlaylistContent = app.get(finalPlaylistUrl, headers = headers).text
                 var contentToProcess = finalPlaylistContent
                 if (!contentToProcess.contains('\n')) {
@@ -294,13 +279,20 @@ class KKPhimProvider : MainAPI() {
                 }
                 val cleanedM3u8Content = cleanedLines.joinToString("\n")
                 if (cleanedM3u8Content.isBlank()) throw Exception("M3U8 rỗng sau khi lọc")
-                
-                // BƯỚC 3: UPLOAD LÊN DỊCH VỤ MỚI
-                val postData = mapOf("data" to cleanedM3u8Content, "exp" to "6h")
-                val requestBody = mapper.writeValueAsString(postData).toRequestBody("application/json".toMediaType())
-                val finalUrl = app.post(url = "https://text.h4rs.qzz.io/kkphim.m3u8", requestBody = requestBody).text.trim()
 
-                if (!finalUrl.startsWith("http")) throw Exception("Upload thất bại: $finalUrl")
+                // BƯỚC 3: UPLOAD LÊN PACEBIN.ONRENDER.COM
+                // Tạo request body với nội dung text thô
+                val requestBody = cleanedM3u8Content.toRequestBody("text/plain".toMediaType())
+                
+                // Gửi POST request để upload
+                val finalUrl = app.post(
+                    url = "https://pacebin.onrender.com/kkphim.m3u8",
+                    requestBody = requestBody
+                ).text.trim()
+
+                if (!finalUrl.startsWith("http")) {
+                    throw Exception("Upload lên pacebin.onrender.com thất bại: $finalUrl")
+                }
                 
                 // BƯỚC 4: TRẢ LINK VỀ
                 callback.invoke(
@@ -311,19 +303,11 @@ class KKPhimProvider : MainAPI() {
                     )
                 )
             } catch (e: Exception) {
-                // **THAY ĐỔI QUAN TRỌNG**: HIỂN THỊ LỖI CHO NGƯỜI DÙNG
-                withContext(Dispatchers.Main) {
-                    CommonActivity.showToast(CommonActivity.activity, "Lỗi xử lý link $serverName: ${e.message}", Toast.LENGTH_LONG)
-                }
                 e.printStackTrace()
             }
         }
         return true
     } catch (e: Exception) {
-        // Bắt lỗi nếu định dạng `data` không phải là một JSON array của MultiLink
-        withContext(Dispatchers.Main) {
-            CommonActivity.showToast(CommonActivity.activity, "Lỗi phân tích dữ liệu: ${e.message}", Toast.LENGTH_LONG)
-        }
         e.printStackTrace()
         return false
     }
