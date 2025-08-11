@@ -9,6 +9,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import com.lagradost.cloudstream3.CommonActivity.showToast
@@ -224,86 +225,88 @@ class KKPhimProvider : MainAPI() {
     try {
         val links = mapper.readValue(data, object : TypeReference<List<MultiLink>>() {})
 
-        links.apmap { (serverName, episodeData) ->
-            try {
-                val headers = mapOf(
-                    "Referer" to mainUrl,
-                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
-                )
+        // THAY THẾ `apmap` BẰNG `coroutineScope` VÀ `launch`
+        coroutineScope {
+            links.forEach { (serverName, episodeData) ->
+                launch { // Chạy mỗi tác vụ xử lý link trên một coroutine riêng
+                    try {
+                        val headers = mapOf(
+                            "Referer" to mainUrl,
+                            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
+                        )
 
-                // BƯỚC 1 & 2: LẤY VÀ LỌC NỘI DUNG M3U8 (giữ nguyên)
-                val masterM3u8Url = episodeData.linkM3u8
-                val masterContent = app.get(masterM3u8Url, headers = headers).text
-                val relativePlaylistUrl = masterContent.lines().lastOrNull { it.endsWith(".m3u8") }
-                    ?: throw Exception("Không tìm thấy playlist con")
-                val masterUrlBase = masterM3u8Url.substringBeforeLast("/") + "/"
-                val finalPlaylistUrl = masterUrlBase + relativePlaylistUrl
-                val finalPlaylistContent = app.get(finalPlaylistUrl, headers = headers).text
-                var contentToProcess = finalPlaylistContent
-                if (!contentToProcess.contains('\n')) {
-                    contentToProcess = contentToProcess.replace("#", "\n#").trim()
-                }
-                val lines = contentToProcess.lines()
-                val cleanedLines = mutableListOf<String>()
-                var i = 0
-                while (i < lines.size) {
-                    val line = lines[i].trim()
-                    if (line == "#EXT-X-DISCONTINUITY") {
-                        var isAdBlock = false
-                        var blockEndIndex = i
-                        for (j in (i + 1) until lines.size) {
-                            val nextLine = lines[j]
-                            if (nextLine.contains("/v7/") || nextLine.contains("convertv7") || nextLine.contains("adjump")) {
-                                isAdBlock = true
-                            }
-                            if (j > i && nextLine.trim() == "#EXT-X-DISCONTINUITY") {
-                                blockEndIndex = j; break
-                            }
-                            if (j == lines.size - 1) {
-                                blockEndIndex = lines.size
-                            }
+                        // BƯỚC 1 & 2: LẤY VÀ LỌC NỘI DUNG M3U8
+                        val masterM3u8Url = episodeData.linkM3u8
+                        val masterContent = app.get(masterM3u8Url, headers = headers).text
+                        val relativePlaylistUrl = masterContent.lines().lastOrNull { it.endsWith(".m3u8") }
+                            ?: throw Exception("Không tìm thấy playlist con")
+                        val masterUrlBase = masterM3u8Url.substringBeforeLast("/") + "/"
+                        val finalPlaylistUrl = masterUrlBase + relativePlaylistUrl
+                        val finalPlaylistContent = app.get(finalPlaylistUrl, headers = headers).text
+                        var contentToProcess = finalPlaylistContent
+                        if (!contentToProcess.contains('\n')) {
+                            contentToProcess = contentToProcess.replace("#", "\n#").trim()
                         }
-                        if (isAdBlock) {
-                            i = blockEndIndex; continue
+                        val lines = contentToProcess.lines()
+                        val cleanedLines = mutableListOf<String>()
+                        var i = 0
+                        while (i < lines.size) {
+                            val line = lines[i].trim()
+                            if (line == "#EXT-X-DISCONTINUITY") {
+                                var isAdBlock = false
+                                var blockEndIndex = i
+                                for (j in (i + 1) until lines.size) {
+                                    val nextLine = lines[j]
+                                    if (nextLine.contains("/v7/") || nextLine.contains("convertv7") || nextLine.contains("adjump")) {
+                                        isAdBlock = true
+                                    }
+                                    if (j > i && nextLine.trim() == "#EXT-X-DISCONTINUITY") {
+                                        blockEndIndex = j; break
+                                    }
+                                    if (j == lines.size - 1) {
+                                        blockEndIndex = lines.size
+                                    }
+                                }
+                                if (isAdBlock) {
+                                    i = blockEndIndex; continue
+                                }
+                            }
+                            if (line.isNotEmpty()) {
+                                if (line.startsWith("#")) {
+                                    cleanedLines.add(line)
+                                } else if (!line.contains("/v7/") && !line.contains("convertv7") && !line.contains("adjump")) {
+                                    val segmentUrl = if (line.startsWith("http")) line else (finalPlaylistUrl.substringBeforeLast("/") + "/" + line)
+                                    cleanedLines.add(segmentUrl)
+                                }
+                            }
+                            i++
                         }
+                        val cleanedM3u8Content = cleanedLines.joinToString("\n")
+                        if (cleanedM3u8Content.isBlank()) throw Exception("M3U8 rỗng sau khi lọc")
+
+                        // BƯỚC 3: UPLOAD LÊN PACEBIN.ONRENDER.COM
+                        val requestBody = cleanedM3u8Content.toRequestBody("text/plain".toMediaType())
+                        val finalUrl = app.post(
+                            url = "https://pacebin.onrender.com/kkphim.m3u8",
+                            requestBody = requestBody
+                        ).text.trim()
+
+                        if (!finalUrl.startsWith("http")) {
+                            throw Exception("Upload lên pacebin.onrender.com thất bại: $finalUrl")
+                        }
+                        
+                        // BƯỚC 4: TRẢ LINK VỀ
+                        callback.invoke(
+                            ExtractorLink(
+                                source = this.name, name = serverName, url = finalUrl,
+                                referer = mainUrl, quality = Qualities.Unknown.value,
+                                type = ExtractorLinkType.M3U8, headers = headers
+                            )
+                        )
+                    } catch (e: Exception) {
+                        e.printStackTrace()
                     }
-                    if (line.isNotEmpty()) {
-                        if (line.startsWith("#")) {
-                            cleanedLines.add(line)
-                        } else if (!line.contains("/v7/") && !line.contains("convertv7") && !line.contains("adjump")) {
-                            val segmentUrl = if (line.startsWith("http")) line else (finalPlaylistUrl.substringBeforeLast("/") + "/" + line)
-                            cleanedLines.add(segmentUrl)
-                        }
-                    }
-                    i++
                 }
-                val cleanedM3u8Content = cleanedLines.joinToString("\n")
-                if (cleanedM3u8Content.isBlank()) throw Exception("M3U8 rỗng sau khi lọc")
-
-                // BƯỚC 3: UPLOAD LÊN PACEBIN.ONRENDER.COM
-                // Tạo request body với nội dung text thô
-                val requestBody = cleanedM3u8Content.toRequestBody("text/plain".toMediaType())
-                
-                // Gửi POST request để upload
-                val finalUrl = app.post(
-                    url = "https://pacebin.onrender.com/kkphim.m3u8",
-                    requestBody = requestBody
-                ).text.trim()
-
-                if (!finalUrl.startsWith("http")) {
-                    throw Exception("Upload lên pacebin.onrender.com thất bại: $finalUrl")
-                }
-                
-                // BƯỚC 4: TRẢ LINK VỀ
-                callback.invoke(
-                    ExtractorLink(
-                        source = this.name, name = serverName, url = finalUrl,
-                        referer = mainUrl, quality = Qualities.Unknown.value,
-                        type = ExtractorLinkType.M3U8, headers = headers
-                    )
-                )
-            } catch (e: Exception) {
-                e.printStackTrace()
             }
         }
         return true
