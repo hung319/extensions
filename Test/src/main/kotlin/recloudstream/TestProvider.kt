@@ -39,77 +39,48 @@ class KKPhimProvider : MainAPI() {
         TvType.Anime
     )
 
-    // Hàm phụ trợ được cập nhật để trả về thông tin hasNextPage
-private suspend fun getCategoryItems(slug: String, page: Int): CategoryPage {
-    val url = if (slug == "phim-moi-cap-nhat") {
-        "$apiDomain/$slug?page=$page"
-    } else {
-        "$apiDomain/v1/api/$slug?page=$page"
-    }
-
-    return try {
-        // Tách riêng items và pagination từ response của API
-        val (items, pagination) = if (slug == "phim-moi-cap-nhat") {
-            val response = app.get(url).parsed<ApiResponse>()
-            Pair(response.items, response.pagination)
-        } else {
-            val response = app.get(url).parsed<SearchApiResponse>()
-            Pair(response.data?.items, response.data?.params?.pagination)
-        }
-
-        // Kiểm tra xem trang hiện tại có nhỏ hơn tổng số trang không
-        val hasNext = (pagination?.currentPage ?: 0) < (pagination?.totalPages ?: 0)
-        
-        // Trả về đối tượng CategoryPage
-        CategoryPage(items?.mapNotNull { toSearchResponse(it) } ?: emptyList(), hasNext)
-    } catch (e: Exception) {
-        // Nếu lỗi, mặc định là không còn trang tiếp theo
-        CategoryPage(emptyList(), false)
-    }
-}
-
-override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-    // XỬ LÝ PHÂN TRANG (page > 1) - Logic này đã đúng.
-    if (page > 1) {
-        val slug = categories.entries.find { it.key == request.name }?.value ?: return null
-        val categoryPage = getCategoryItems(slug, page)
-        return newHomePageResponse(
-            name = request.name, 
-            list = categoryPage.items, 
-            hasNext = categoryPage.hasNextPage
-        )
-    }
-
-    // TẢI TRANG ĐẦU TIÊN (page = 1) - Cập nhật logic `hasNext` ở đây.
-    withContext(Dispatchers.Main) {
-        CommonActivity.activity?.let { activity ->
-            showToast(activity, "Free Repo From SIX [H4RS]\nTelegram/Discord: hung319", Toast.LENGTH_LONG)
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+    // Chỉ hiển thị toast ở lần tải trang đầu tiên
+    if (page <= 1) {
+        withContext(Dispatchers.Main) {
+            CommonActivity.activity?.let { activity ->
+                showToast(activity, "Free Repo From SIX [H4RS]\nTelegram/Discord: hung319", Toast.LENGTH_LONG)
+            }
         }
     }
 
-    // Tải song song và thu thập kết quả, bao gồm cả cờ hasNext của từng danh mục.
-    val results = coroutineScope {
+    val homePageLists = coroutineScope {
         categories.map { (title, slug) ->
             async {
-                val categoryPage = getCategoryItems(slug, 1)
-                // Trả về một cặp giá trị: HomePageList và cờ hasNext của nó
-                Pair(HomePageList(title, categoryPage.items), categoryPage.hasNextPage)
+                // **THAY ĐỔI DUY NHẤT VÀ QUAN TRỌNG NHẤT**
+                // Sử dụng biến `page` thay vì gán cứng số 1
+                val url = if (slug == "phim-moi-cap-nhat") {
+                    "$apiDomain/$slug?page=$page"
+                } else {
+                    "$apiDomain/v1/api/$slug?page=$page"
+                }
+
+                try {
+                    val items = if (slug == "phim-moi-cap-nhat") {
+                        app.get(url).parsed<ApiResponse>().items
+                    } else {
+                        app.get(url).parsed<SearchApiResponse>().data?.items
+                    } ?: emptyList()
+
+                    val searchResults = items.mapNotNull { toSearchResponse(it) }
+                    HomePageList(title, searchResults)
+                } catch (e: Exception) {
+                    HomePageList(title, emptyList())
+                }
             }
         }.map { it.await() }
     }
-    
-    // Lọc bỏ những danh mục rỗng
-    val validResults = results.filter { it.first.list.isNotEmpty() }
 
-    // Chỉ lấy đối tượng HomePageList để đưa vào response
-    val homePageLists = validResults.map { it.first }
-
-    // **THAY ĐỔI QUAN TRỌNG**:
-    // Kiểm tra xem có bất kỳ danh mục nào trong kết quả còn trang tiếp theo không.
-    val globalHasNext = validResults.any { it.second }
-
-    // Trả về response với cờ hasNext đã được tính toán.
-    return newHomePageResponse(homePageLists, hasNext = globalHasNext)
+    // Thêm `hasNext = true` để đảm bảo Cloudstream luôn biết rằng có thể tải thêm.
+    return newHomePageResponse(
+        homePageLists.filter { it.list.isNotEmpty() },
+        hasNext = true
+    )
 }
 
     private fun toSearchResponse(item: MovieItem): SearchResponse? {
@@ -322,5 +293,4 @@ override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageR
     data class Category(@JsonProperty("name") val name: String, @JsonProperty("slug") val slug: String)
     data class EpisodeGroup(@JsonProperty("server_name") val serverName: String, @JsonProperty("server_data") val serverData: List<EpisodeData>)
     data class EpisodeData(@JsonProperty("name") val name: String, @JsonProperty("slug") val slug: String, @JsonProperty("link_m3u8") val linkM3u8: String, @JsonProperty("link_embed") val linkEmbed: String)
-    data class CategoryPage(val items: List<SearchResponse>, val hasNextPage: Boolean)
 }
