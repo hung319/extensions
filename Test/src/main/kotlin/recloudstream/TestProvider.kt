@@ -123,6 +123,7 @@ class KKPhimProvider : MainAPI() {
     val response = app.get(apiUrl).parsed<DetailApiResponse>()
     val movie = response.movie ?: return null
 
+    // Lấy thông tin chung của phim (giữ nguyên)
     val title = movie.name
     val poster = movie.posterUrl
     val year = movie.year
@@ -149,62 +150,61 @@ class KKPhimProvider : MainAPI() {
         }
     }
 
+    // Xác định loại phim
     val tvType = when (movie.type) {
         "series" -> TvType.TvSeries
         "hoathinh" -> TvType.Anime
-        else -> TvType.Movie
+        else -> TvType.Movie // "single" sẽ được coi là Movie
     }
 
-    // --- BẮT ĐẦU LOGIC NHÓM TẬP PHIM ---
+    // Logic nhóm các server (Vietsub, Thuyết Minh,...)
     val episodesGroupedBySlug = mutableMapOf<String, MutableList<MultiLink>>()
-
     response.episodes?.forEach { episodeGroup ->
         episodeGroup.serverData.forEach { episodeData ->
-            // Lấy tên server trong dấu ngoặc đơn, ví dụ: "Vietsub"
             val serverName = episodeGroup.serverName.substringAfter("(", "").substringBefore(")", "").ifBlank { episodeGroup.serverName }
-            
-            // Tạo đối tượng MultiLink
             val multiLink = MultiLink(serverName, episodeData)
-
-            // Nhóm các link lại theo slug của tập phim (ví dụ: "full", "tap-1")
             episodesGroupedBySlug.getOrPut(episodeData.slug) { mutableListOf() }.add(multiLink)
         }
     }
 
-    val finalEpisodes = episodesGroupedBySlug.map { (episodeSlug, links) ->
-        // Tạo tên hiển thị cho server, ví dụ: (VS+TM)
-        val serverTags = links.map {
-            when {
-                it.serverName.contains("Vietsub") -> "VS"
-                it.serverName.contains("Thuyết Minh") -> "TM"
-                it.serverName.contains("Lồng Tiếng") -> "LT"
-                else -> ""
+    // --- BẮT ĐẦU LOGIC SỬA LỖI ---
+    // Phân luồng xử lý riêng cho phim lẻ và phim bộ
+    if (tvType == TvType.Movie) {
+        // **XỬ LÝ CHO PHIM LẺ**
+        // Lấy danh sách tất cả các link server (VS, TM,...) của phim.
+        val movieLinks = episodesGroupedBySlug.values.firstOrNull()
+        
+        // Chuyển danh sách link thành chuỗi JSON để truyền cho nút "Play".
+        val movieData = if (movieLinks != null) mapper.writeValueAsString(movieLinks) else null
+
+        return newMovieLoadResponse(title, url, tvType, movieData) {
+            this.posterUrl = poster; this.year = year; this.plot = description; this.tags = tags; this.actors = actors; this.recommendations = recommendations
+        }
+    } else {
+        // **XỬ LÝ CHO PHIM BỘ / ANIME (logic cũ vẫn đúng)**
+        val finalEpisodes = episodesGroupedBySlug.map { (episodeSlug, links) ->
+            val serverTags = links.map {
+                when {
+                    it.serverName.contains("Vietsub") -> "VS"
+                    it.serverName.contains("Thuyết Minh") -> "TM"
+                    it.serverName.contains("Lồng Tiếng") -> "LT"
+                    else -> ""
+                }
+            }.filter { it.isNotEmpty() }.joinToString("+")
+
+            val episodeName = links.firstOrNull()?.episodeData?.name ?: episodeSlug
+            val finalEpisodeName = if (serverTags.isNotBlank()) "$episodeName ($serverTags)" else episodeName
+            val episodeDataJson = mapper.writeValueAsString(links)
+
+            newEpisode(episodeDataJson) {
+                this.name = finalEpisodeName
             }
-        }.filter { it.isNotEmpty() }.joinToString("+")
-
-        // Tạo tên tập phim cuối cùng, ví dụ: "Tập 1 (VS+TM)"
-        val episodeName = links.firstOrNull()?.episodeData?.name ?: episodeSlug
-        val finalEpisodeName = if (serverTags.isNotBlank()) "$episodeName ($serverTags)" else episodeName
-
-        // Dữ liệu của episode sẽ là một chuỗi JSON chứa danh sách tất cả các link
-        val episodeDataJson = mapper.writeValueAsString(links)
-
-        // Tạo episode mới với tên đã được gộp và data chứa tất cả link
-        newEpisode(episodeDataJson) {
-            this.name = finalEpisodeName
         }
-    }
-    // --- KẾT THÚC LOGIC NHÓM TẬP PHIM ---
-
-    return when (tvType) {
-        TvType.TvSeries, TvType.Anime -> newTvSeriesLoadResponse(title, url, tvType, finalEpisodes) {
+        return newTvSeriesLoadResponse(title, url, tvType, finalEpisodes) {
             this.posterUrl = poster; this.year = year; this.plot = description; this.tags = tags; this.actors = actors; this.recommendations = recommendations
         }
-        TvType.Movie -> newMovieLoadResponse(title, url, tvType, finalEpisodes.firstOrNull()?.data) {
-            this.posterUrl = poster; this.year = year; this.plot = description; this.tags = tags; this.actors = actors; this.recommendations = recommendations
-        }
-        else -> null
     }
+    // --- KẾT THÚC LOGIC SỬA LỖI ---
 }
 
     // Data class để chứa danh sách các link cho một tập phim (VS, TM, etc.)
