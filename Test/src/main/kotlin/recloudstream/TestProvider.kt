@@ -12,7 +12,6 @@ class FapClubProvider : MainAPI() {
     override val hasMainPage = true
     override var lang = "en"
     override val hasDownloadSupport = true
-    // Sử dụng TvType.NSFW cho toàn bộ plugin
     override val supportedTypes = setOf(
         TvType.NSFW
     )
@@ -28,13 +27,10 @@ class FapClubProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/search/?q=$query"
         val document = app.get(searchUrl).document
-        // Sử dụng hàm helper để phân tích kết quả tìm kiếm
         return parseHomepage(document)
     }
 
-    /**
-     * Hàm tải thông tin chi tiết của video, bao gồm cả danh sách gợi ý (recommendations).
-     */
+    // Hàm tải thông tin chi tiết của video và danh sách gợi ý
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
@@ -45,19 +41,16 @@ class FapClubProvider : MainAPI() {
         val description = document.selectFirst("div.moreinfo")?.text()?.trim()
         val tags = document.select("div.vcatsp a").map { it.text() }
 
-        // Phân tích và lấy danh sách video gợi ý từ thẻ <div class="sugg">
         val recommendations = document.select("div.sugg div.video").mapNotNull { element ->
             val href = element.selectFirst("a")?.attr("href") ?: return@mapNotNull null
             val recTitle = element.selectFirst("h2 > a")?.attr("title") ?: return@mapNotNull null
             val recPosterUrl = element.selectFirst("img")?.attr("src")
             
-            // Tạo đối tượng cho video gợi ý, sử dụng TvType.NSFW
             newMovieSearchResponse(recTitle, href, TvType.NSFW) {
                 this.posterUrl = recPosterUrl
             }
         }
         
-        // Trả về thông tin chi tiết của phim cùng với danh sách gợi ý
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = posterUrl
             this.plot = description
@@ -66,20 +59,27 @@ class FapClubProvider : MainAPI() {
         }
     }
 
-    // Hàm tải và phân tích trang chính
+    /**
+     * SỬA LỖI: Xử lý logic phân trang cho trang chủ.
+     * Trang đầu tiên (page = 1) không có hậu tố /page/1.
+     */
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = "$mainUrl${request.data}page/$page/"
+        // Xử lý URL chính xác cho việc phân trang
+        val url = if (page == 1) {
+            "$mainUrl${request.data}"
+        } else {
+            "$mainUrl${request.data}page/$page/"
+        }
+
         val document = app.get(url).document
         val home = parseHomepage(document)
         
+        // Kiểm tra xem có trang tiếp theo không
         val hasNext = document.select("a.np:contains(Next)").isNotEmpty()
         return newHomePageResponse(request.name, home, hasNext)
     }
 
-    /**
-     * Hàm helper chung để phân tích và trích xuất danh sách video từ một trang HTML.
-     * Sử dụng cho trang chủ, các mục, và kết quả tìm kiếm.
-     */
+    // Hàm helper chung để phân tích và trích xuất danh sách video
     private fun parseHomepage(document: Element): List<MovieSearchResponse> {
         return document.select("div.video").mapNotNull { element ->
             val inner = element.selectFirst("div.inner") ?: return@mapNotNull null
@@ -88,7 +88,6 @@ class FapClubProvider : MainAPI() {
             val title = linkElement.attr("title")
             val posterUrl = inner.selectFirst("div.info > a > img")?.attr("src")
 
-            // Tạo đối tượng phim, đảm bảo sử dụng TvType.NSFW
             newMovieSearchResponse(title, href, TvType.NSFW) {
                 this.posterUrl = posterUrl
             }
