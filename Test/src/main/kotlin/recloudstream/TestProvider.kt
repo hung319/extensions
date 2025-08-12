@@ -3,7 +3,7 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-import com.lagradost.cloudstream3.utils.Qualities // Đảm bảo import Qualities
+import com.lagradost.cloudstream3.utils.Qualities
 
 // Định nghĩa lớp Provider chính
 class FapClubProvider : MainAPI() {
@@ -82,7 +82,10 @@ class FapClubProvider : MainAPI() {
         }
     }
 
-    // Hàm trích xuất link xem phim trực tiếp
+    /**
+     * Hàm loadLinks được viết lại hoàn toàn dựa trên việc giải mã tệp KernelTeamp.js
+     * để tạo ra link video chính xác.
+     */
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -90,37 +93,42 @@ class FapClubProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val document = app.get(data).document
-
         val playerDiv = document.selectFirst("div#player") ?: return false
+
+        // 1. Trích xuất các dữ liệu cần thiết từ HTML
+        val qualityData = playerDiv.attr("data-q")
         val videoId = playerDiv.attr("data-id")
-        val s = playerDiv.attr("data-s")
-        val t = playerDiv.attr("data-t")
+        val serverSubdomain = playerDiv.attr("data-n")
 
-        if (videoId.isBlank() || s.isBlank() || t.isBlank()) return false
+        // 2. Tái tạo lại logic từ Javascript
+        val videoIdLong = videoId.toLongOrNull() ?: 0
+        val videoFolder = 1000 * (videoIdLong / 1000)
+        val videoPath = "$videoFolder/$videoId"
 
-        val playerApiUrl = "$mainUrl/player/"
-        val postData = mapOf("id" to videoId, "s" to s, "t" to t)
-
-        val playerResponseText = app.post(
-            playerApiUrl,
-            data = postData,
-            referer = data
-        ).text
-
-        val videoUrlRegex = Regex("""(https?://[^\s'"]+?(\d{3,4}p)\.mp4)""")
+        val domain = "https://$serverSubdomain.vstor.top/"
         
-        videoUrlRegex.findAll(playerResponseText).forEach { match ->
-            val url = match.groupValues[1]
-            val qualityStr = match.groupValues[2]
+        // 3. Tách chuỗi chất lượng và lặp qua để tạo link
+        qualityData.split(",").forEach { qualityBlock ->
+            val parts = qualityBlock.split(";")
+            if (parts.size < 6) return@forEach
+
+            val qualityLabel = parts[0] // vd: "1080p"
+            val timestamp = parts[4]
+            val token = parts[5]
+
+            // Tạo hậu tố chất lượng cho URL (vd: _1080p, _480p, riêng 720p không có)
+            val qualityPrefix = if (qualityLabel == "720p") "" else "_$qualityLabel"
+            
+            // Đây là thuật toán tạo URL được dịch ngược từ KernelTeamp.js
+            val finalUrl = "${domain}whpvid/$timestamp/$token/$videoPath/${videoId}${qualityPrefix}.mp4"
 
             callback.invoke(
                 ExtractorLink(
                     source = this.name,
-                    name = "${this.name} $qualityStr",
-                    url = url,
+                    name = "${this.name} $qualityLabel",
+                    url = finalUrl,
                     referer = mainUrl,
-                    // SỬA LỖI: Thay thế hàm `findFromName` không còn tồn tại
-                    quality = qualityStr.replace("p", "").toIntOrNull() ?: Qualities.Unknown.value,
+                    quality = qualityLabel.replace("p", "").toIntOrNull() ?: Qualities.Unknown.value,
                     type = ExtractorLinkType.VIDEO
                 )
             )
