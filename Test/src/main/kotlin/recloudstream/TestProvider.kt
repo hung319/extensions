@@ -51,17 +51,17 @@ class FapClubProvider : MainAPI() {
             val videoFolder = 1000 * (videoIdLong / 1000)
             "https://i.fapclub.vip/contents/videos_screenshots/$videoFolder/$videoId/preview.jpg"
         } else {
-            // Fallback to og:image if data-id is not found
             document.selectFirst("meta[property=og:image]")?.attr("content")
         }
 
-        // GIỚI HẠN: RCM list có thể không hoạt động do được tải bằng JS
-        val recommendations = document.selectFirst("div.sugg")?.let { suggBox ->
-            parseHomepage(suggBox)
-        } ?: emptyList()
+        // SỬA LỖI: Cập nhật logic lấy RCM list cho đúng với cấu trúc HTML mới
+        val recommendations = document.selectFirst("h1#rell")?.nextElementSiblings()
+            ?.select("div.video")?.let {
+                parseHomepage(it)
+            } ?: emptyList()
         
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
-            this.posterUrl = posterUrl // Gán lại poster đã được lấy
+            this.posterUrl = posterUrl
             this.plot = description
             this.tags = tags
             this.recommendations = recommendations
@@ -79,14 +79,14 @@ class FapClubProvider : MainAPI() {
         val document = app.get(url).document
         val home = parseHomepage(document)
         
-        // SỬA LỖI: Cập nhật lại selector cho nút "Next"
-        val hasNext = document.select("a.pbutton:contains(Next)").isNotEmpty()
+        // SỬA LỖI: Cập nhật lại selector cho nút "Next" của phân trang
+        val hasNext = document.select("a.mpages:contains(Next)").isNotEmpty()
         return newHomePageResponse(request.name, home, hasNext)
     }
 
     // Hàm helper chung để phân tích và trích xuất danh sách video
-    private fun parseHomepage(document: Element): List<MovieSearchResponse> {
-        return document.select("div.video").mapNotNull { element ->
+    private fun parseHomepage(elements: List<Element>): List<MovieSearchResponse> {
+        return elements.mapNotNull { element ->
             val inner = element.selectFirst("div.inner") ?: return@mapNotNull null
             val linkElement = inner.selectFirst("h2 > a")
             val href = linkElement?.attr("href") ?: return@mapNotNull null
@@ -98,6 +98,11 @@ class FapClubProvider : MainAPI() {
             }
         }
     }
+    // Overload function to support parsing from a single root element
+    private fun parseHomepage(element: Element): List<MovieSearchResponse> {
+        return parseHomepage(element.select("div.video"))
+    }
+
 
     // Hàm loadLinks dựa trên việc giải mã KernelTeamp.js
     override suspend fun loadLinks(
