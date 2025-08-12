@@ -30,29 +30,29 @@ class FapClubProvider : MainAPI() {
         return parseHomepage(document)
     }
 
-    // Hàm tải thông tin chi tiết của video và danh sách gợi ý
+    /**
+     * Hàm tải thông tin chi tiết của video và danh sách gợi ý.
+     */
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
         val title = document.selectFirst("h1.movtitl")?.text()?.trim()
             ?: throw RuntimeException("Không tìm thấy tiêu đề")
         
-        val posterUrl = document.selectFirst("meta[property=og:image]")?.attr("content")
         val description = document.selectFirst("div.moreinfo")?.text()?.trim()
         val tags = document.select("div.vcatsp a").map { it.text() }
 
-        val recommendations = document.select("div.sugg div.video").mapNotNull { element ->
-            val href = element.selectFirst("a")?.attr("href") ?: return@mapNotNull null
-            val recTitle = element.selectFirst("h2 > a")?.attr("title") ?: return@mapNotNull null
-            val recPosterUrl = element.selectFirst("img")?.attr("src")
-            
-            newMovieSearchResponse(recTitle, href, TvType.NSFW) {
-                this.posterUrl = recPosterUrl
-            }
-        }
+        // SỬA LỖI: Tối ưu lại cách lấy danh sách video gợi ý
+        val recommendations = document.selectFirst("div.sugg")?.let { suggBox ->
+            parseHomepage(suggBox)
+        } ?: emptyList()
         
+        // Trả về thông tin chi tiết của phim
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
-            this.posterUrl = posterUrl
+            // SỬA LỖI: Không lấy lại poster ở đây. CloudStream sẽ tự giữ lại poster
+            // từ trang danh sách để đảm bảo chất lượng hình ảnh tốt nhất.
+            // this.posterUrl = ... 
+
             this.plot = description
             this.tags = tags
             this.recommendations = recommendations
@@ -60,21 +60,20 @@ class FapClubProvider : MainAPI() {
     }
 
     /**
-     * SỬA LỖI: Xử lý logic phân trang cho trang chủ.
-     * Trang đầu tiên (page = 1) không có hậu tố /page/1.
+     * Hàm tải trang chính và xử lý phân trang
      */
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Xử lý URL chính xác cho việc phân trang
+        // SỬA LỖI: Cập nhật lại cấu trúc URL phân trang cho chính xác
         val url = if (page == 1) {
             "$mainUrl${request.data}"
         } else {
-            "$mainUrl${request.data}page/$page/"
+            // Dạng đúng: /latest-updates/2/
+            "$mainUrl${request.data}$page/" 
         }
 
         val document = app.get(url).document
         val home = parseHomepage(document)
         
-        // Kiểm tra xem có trang tiếp theo không
         val hasNext = document.select("a.np:contains(Next)").isNotEmpty()
         return newHomePageResponse(request.name, home, hasNext)
     }
