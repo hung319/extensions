@@ -2,6 +2,7 @@ package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.utils.Qualities
 
@@ -31,7 +32,9 @@ class FapClubProvider : MainAPI() {
         return parseHomepage(document)
     }
 
-    // Hàm tải thông tin chi tiết của video và danh sách gợi ý
+    /**
+     * Hàm tải thông tin chi tiết của video và danh sách gợi ý.
+     */
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
@@ -41,11 +44,24 @@ class FapClubProvider : MainAPI() {
         val description = document.selectFirst("div.moreinfo")?.text()?.trim()
         val tags = document.select("div.vcatsp a").map { it.text() }
 
+        // SỬA LỖI: Lấy poster chất lượng cao từ logic của player
+        val videoId = document.selectFirst("div#player")?.attr("data-id")
+        val posterUrl = if (videoId != null) {
+            val videoIdLong = videoId.toLongOrNull() ?: 0
+            val videoFolder = 1000 * (videoIdLong / 1000)
+            "https://i.fapclub.vip/contents/videos_screenshots/$videoFolder/$videoId/preview.jpg"
+        } else {
+            // Fallback to og:image if data-id is not found
+            document.selectFirst("meta[property=og:image]")?.attr("content")
+        }
+
+        // GIỚI HẠN: RCM list có thể không hoạt động do được tải bằng JS
         val recommendations = document.selectFirst("div.sugg")?.let { suggBox ->
             parseHomepage(suggBox)
         } ?: emptyList()
         
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
+            this.posterUrl = posterUrl // Gán lại poster đã được lấy
             this.plot = description
             this.tags = tags
             this.recommendations = recommendations
@@ -63,7 +79,8 @@ class FapClubProvider : MainAPI() {
         val document = app.get(url).document
         val home = parseHomepage(document)
         
-        val hasNext = document.select("a.np:contains(Next)").isNotEmpty()
+        // SỬA LỖI: Cập nhật lại selector cho nút "Next"
+        val hasNext = document.select("a.pbutton:contains(Next)").isNotEmpty()
         return newHomePageResponse(request.name, home, hasNext)
     }
 
@@ -82,10 +99,7 @@ class FapClubProvider : MainAPI() {
         }
     }
 
-    /**
-     * Hàm loadLinks được viết lại hoàn toàn dựa trên việc giải mã tệp KernelTeamp.js
-     * để tạo ra link video chính xác.
-     */
+    // Hàm loadLinks dựa trên việc giải mã KernelTeamp.js
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -95,31 +109,26 @@ class FapClubProvider : MainAPI() {
         val document = app.get(data).document
         val playerDiv = document.selectFirst("div#player") ?: return false
 
-        // 1. Trích xuất các dữ liệu cần thiết từ HTML
         val qualityData = playerDiv.attr("data-q")
         val videoId = playerDiv.attr("data-id")
         val serverSubdomain = playerDiv.attr("data-n")
 
-        // 2. Tái tạo lại logic từ Javascript
         val videoIdLong = videoId.toLongOrNull() ?: 0
         val videoFolder = 1000 * (videoIdLong / 1000)
         val videoPath = "$videoFolder/$videoId"
 
         val domain = "https://$serverSubdomain.vstor.top/"
         
-        // 3. Tách chuỗi chất lượng và lặp qua để tạo link
         qualityData.split(",").forEach { qualityBlock ->
             val parts = qualityBlock.split(";")
             if (parts.size < 6) return@forEach
 
-            val qualityLabel = parts[0] // vd: "1080p"
+            val qualityLabel = parts[0]
             val timestamp = parts[4]
             val token = parts[5]
 
-            // Tạo hậu tố chất lượng cho URL (vd: _1080p, _480p, riêng 720p không có)
             val qualityPrefix = if (qualityLabel == "720p") "" else "_$qualityLabel"
             
-            // Đây là thuật toán tạo URL được dịch ngược từ KernelTeamp.js
             val finalUrl = "${domain}whpvid/$timestamp/$token/$videoPath/${videoId}${qualityPrefix}.mp4"
 
             callback.invoke(
