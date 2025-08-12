@@ -3,7 +3,7 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.Qualities // Đảm bảo import Qualities
 
 // Định nghĩa lớp Provider chính
 class FapClubProvider : MainAPI() {
@@ -82,20 +82,15 @@ class FapClubProvider : MainAPI() {
         }
     }
 
-    /**
-     * Hàm trích xuất link đã được viết lại hoàn toàn để gọi API ẩn của trang web,
-     * mô phỏng chính xác cách trình duyệt lấy link video.
-     */
+    // Hàm trích xuất link xem phim trực tiếp
     override suspend fun loadLinks(
-        data: String, // URL của trang xem phim
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Lấy HTML của trang xem phim
         val document = app.get(data).document
 
-        // Trích xuất các tham số cần thiết cho API call từ thẻ div#player
         val playerDiv = document.selectFirst("div#player") ?: return false
         val videoId = playerDiv.attr("data-id")
         val s = playerDiv.attr("data-s")
@@ -103,32 +98,29 @@ class FapClubProvider : MainAPI() {
 
         if (videoId.isBlank() || s.isBlank() || t.isBlank()) return false
 
-        // Xác định endpoint của API và dữ liệu để gửi đi
         val playerApiUrl = "$mainUrl/player/"
         val postData = mapOf("id" to videoId, "s" to s, "t" to t)
 
-        // Thực hiện POST request đến API để lấy dữ liệu player
         val playerResponseText = app.post(
             playerApiUrl,
             data = postData,
-            referer = data // Gửi referer là URL của trang phim
+            referer = data
         ).text
 
-        // Sử dụng regex để tìm tất cả các link .mp4 trong kết quả trả về
         val videoUrlRegex = Regex("""(https?://[^\s'"]+?(\d{3,4}p)\.mp4)""")
         
         videoUrlRegex.findAll(playerResponseText).forEach { match ->
             val url = match.groupValues[1]
             val qualityStr = match.groupValues[2]
 
-            // Thêm link video đã tìm được vào CloudStream
             callback.invoke(
                 ExtractorLink(
                     source = this.name,
                     name = "${this.name} $qualityStr",
                     url = url,
                     referer = mainUrl,
-                    quality = Qualities.findFromName(qualityStr).value,
+                    // SỬA LỖI: Thay thế hàm `findFromName` không còn tồn tại
+                    quality = qualityStr.replace("p", "").toIntOrNull() ?: Qualities.Unknown.value,
                     type = ExtractorLinkType.VIDEO
                 )
             )
