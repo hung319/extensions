@@ -3,6 +3,7 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
+import com.lagradost.cloudstream3.utils.Qualities
 
 // Định nghĩa lớp Provider chính
 class FapClubProvider : MainAPI() {
@@ -30,9 +31,7 @@ class FapClubProvider : MainAPI() {
         return parseHomepage(document)
     }
 
-    /**
-     * Hàm tải thông tin chi tiết của video và danh sách gợi ý.
-     */
+    // Hàm tải thông tin chi tiết của video và danh sách gợi ý
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
@@ -42,32 +41,22 @@ class FapClubProvider : MainAPI() {
         val description = document.selectFirst("div.moreinfo")?.text()?.trim()
         val tags = document.select("div.vcatsp a").map { it.text() }
 
-        // SỬA LỖI: Tối ưu lại cách lấy danh sách video gợi ý
         val recommendations = document.selectFirst("div.sugg")?.let { suggBox ->
             parseHomepage(suggBox)
         } ?: emptyList()
         
-        // Trả về thông tin chi tiết của phim
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
-            // SỬA LỖI: Không lấy lại poster ở đây. CloudStream sẽ tự giữ lại poster
-            // từ trang danh sách để đảm bảo chất lượng hình ảnh tốt nhất.
-            // this.posterUrl = ... 
-
             this.plot = description
             this.tags = tags
             this.recommendations = recommendations
         }
     }
 
-    /**
-     * Hàm tải trang chính và xử lý phân trang
-     */
+    // Hàm tải trang chính và xử lý phân trang
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // SỬA LỖI: Cập nhật lại cấu trúc URL phân trang cho chính xác
         val url = if (page == 1) {
             "$mainUrl${request.data}"
         } else {
-            // Dạng đúng: /latest-updates/2/
             "$mainUrl${request.data}$page/" 
         }
 
@@ -93,47 +82,58 @@ class FapClubProvider : MainAPI() {
         }
     }
 
-    // Hàm trích xuất link xem phim trực tiếp
+    /**
+     * Hàm trích xuất link đã được viết lại hoàn toàn để gọi API ẩn của trang web,
+     * mô phỏng chính xác cách trình duyệt lấy link video.
+     */
     override suspend fun loadLinks(
-        data: String,
+        data: String, // URL của trang xem phim
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // Lấy HTML của trang xem phim
         val document = app.get(data).document
-        
-        val playerDiv = document.selectFirst("div#player")
-            ?: throw RuntimeException("Không tìm thấy player")
 
+        // Trích xuất các tham số cần thiết cho API call từ thẻ div#player
+        val playerDiv = document.selectFirst("div#player") ?: return false
         val videoId = playerDiv.attr("data-id")
         val s = playerDiv.attr("data-s")
         val t = playerDiv.attr("data-t")
-        val n = playerDiv.attr("data-n")
-        val qualityData = playerDiv.attr("data-q")
 
-        qualityData.split(",").forEach { qualityBlock ->
-            val parts = qualityBlock.split(";")
-            if (parts.size >= 6) {
-                val qualityLabel = parts[0]
-                val hash = parts[1]
-                val qualityName = parts[2].replace("&nbsp;", " ")
-                val timestamp = parts[4]
-                val token = parts[5]
+        if (videoId.isBlank() || s.isBlank() || t.isBlank()) return false
 
-                val videoUrl = "https://$n.fapclub.vip/dl/$videoId/$s/$t/$timestamp/$hash/$token/video.mp4"
+        // Xác định endpoint của API và dữ liệu để gửi đi
+        val playerApiUrl = "$mainUrl/player/"
+        val postData = mapOf("id" to videoId, "s" to s, "t" to t)
 
-                callback.invoke(
-                    ExtractorLink(
-                        source = this.name,
-                        name = qualityName,
-                        url = videoUrl,
-                        referer = mainUrl,
-                        quality = qualityLabel.replace("p", "").toIntOrNull() ?: 0,
-                        type = ExtractorLinkType.VIDEO 
-                    )
+        // Thực hiện POST request đến API để lấy dữ liệu player
+        val playerResponseText = app.post(
+            playerApiUrl,
+            data = postData,
+            referer = data // Gửi referer là URL của trang phim
+        ).text
+
+        // Sử dụng regex để tìm tất cả các link .mp4 trong kết quả trả về
+        val videoUrlRegex = Regex("""(https?://[^\s'"]+?(\d{3,4}p)\.mp4)""")
+        
+        videoUrlRegex.findAll(playerResponseText).forEach { match ->
+            val url = match.groupValues[1]
+            val qualityStr = match.groupValues[2]
+
+            // Thêm link video đã tìm được vào CloudStream
+            callback.invoke(
+                ExtractorLink(
+                    source = this.name,
+                    name = "${this.name} $qualityStr",
+                    url = url,
+                    referer = mainUrl,
+                    quality = Qualities.findFromName(qualityStr).value,
+                    type = ExtractorLinkType.VIDEO
                 )
-            }
+            )
         }
+        
         return true
     }
 }
