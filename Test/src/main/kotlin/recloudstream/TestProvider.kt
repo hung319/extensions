@@ -2,152 +2,140 @@ package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
-import com.lagradost.cloudstream3.utils.Qualities
 
-// Định nghĩa lớp Provider chính
-class FapClubProvider : MainAPI() {
-    // Thông tin cơ bản về provider
-    override var mainUrl = "https://fapclub.vip"
-    override var name = "FapClub"
+/**
+ * CloudStream 3 provider for PornDos
+ * Version: 4.1 (Search changed to GET, Poster selector fixed)
+ */
+class PornDosProvider : MainAPI() {
+    // Provider metadata
+    override var mainUrl = "https://www.porndos.com"
+    override var name = "PornDos"
     override val hasMainPage = true
     override var lang = "en"
-    override val hasDownloadSupport = true
-    override val supportedTypes = setOf(
-        TvType.NSFW
-    )
+    override val supportedTypes = setOf(TvType.NSFW)
 
-    // Các mục sẽ hiển thị trên trang chính của plugin
-    override val mainPage = mainPageOf(
-        "/latest-updates/" to "Latest Updates",
-        "/top-rated/" to "Top Rated",
-        "/most-popular/" to "Most Popular",
-    )
+    // --- Helper Functions ---
 
-    // Hàm tìm kiếm video
-    override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/search/?q=$query"
-        val document = app.get(searchUrl).document
-        return parseHomepage(document)
+    private fun fixUrl(url: String): String {
+        return if (url.startsWith("http")) {
+            url
+        } else {
+            "$mainUrl$url"
+        }
     }
 
-    /**
-     * Hàm tải thông tin chi tiết của video và danh sách gợi ý.
-     */
+    private fun parseVideoCard(element: Element): SearchResponse {
+        val link = element.selectFirst("a")!!
+        val href = fixUrl(link.attr("href"))
+        val title = element.selectFirst("p")?.text() ?: "No Title"
+        val posterUrl = fixUrl(element.selectFirst("img")?.attr("data-src") ?: "")
+
+        return newMovieSearchResponse(title, href, TvType.NSFW) {
+            this.posterUrl = posterUrl
+        }
+    }
+
+    // --- Main Page ---
+
+    override val mainPage = mainPageOf(
+        "/videos/" to "New Exclusive Videos",
+        "/most-viewed/" to "Most Viewed Videos",
+        "/top-rated/" to "Top Rated Videos"
+    )
+
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val url = if (page > 1) {
+            "$mainUrl${request.data}$page/"
+        } else {
+            "$mainUrl${request.data}"
+        }
+
+        val document = app.get(url).document
+        val home = document.select("div.thumbs-wrap div.thumb").mapNotNull {
+            try {
+                parseVideoCard(it)
+            } catch (e: Exception) {
+                null
+            }
+        }
+        
+        return newHomePageResponse(request.name, home, hasNext = home.isNotEmpty())
+    }
+
+    // --- Search ---
+
+    // ## MODIFIED: Changed search to use GET request
+    override suspend fun search(query: String): List<SearchResponse> {
+        val searchUrl = "$mainUrl/search/$query/"
+        val document = app.get(searchUrl).document
+        
+        return document.select("div.thumbs-wrap div.thumb").mapNotNull {
+            try {
+                parseVideoCard(it)
+            } catch (e: Exception) {
+                null
+            }
+        }
+    }
+
+    // --- Loading ---
+
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
-        val title = document.selectFirst("h1.movtitl")?.text()?.trim()
-            ?: throw RuntimeException("Không tìm thấy tiêu đề")
-        
-        val description = document.selectFirst("div.moreinfo")?.text()?.trim()
-        val tags = document.select("div.vcatsp a").map { it.text() }
-
-        // SỬA LỖI: Lấy poster chất lượng cao từ logic của player
-        val videoId = document.selectFirst("div#player")?.attr("data-id")
-        val posterUrl = if (videoId != null) {
-            val videoIdLong = videoId.toLongOrNull() ?: 0
-            val videoFolder = 1000 * (videoIdLong / 1000)
-            "https://i.fapclub.vip/contents/videos_screenshots/$videoFolder/$videoId/preview.jpg"
-        } else {
-            document.selectFirst("meta[property=og:image]")?.attr("content")
+        val title = document.selectFirst("h1[itemprop=name]")?.text()?.trim() ?: "No Title"
+        // ## MODIFIED: Fixed poster selector to use 'og:image' which is more reliable.
+        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")?.let { fixUrl(it) }
+        val synopsis = document.selectFirst("div.full-text p")?.text()?.trim()
+        val tags = document.select("div.full-links-items a[href*=category]").map { it.text() }
+        val actors = document.select("div.full-links-items a[href*=pornstar]").map { ActorData(Actor(it.text())) }
+        val recommendations = document.select("div.video-related div.thumb").mapNotNull { 
+            try {
+                parseVideoCard(it)
+            } catch (e: Exception) {
+                null
+            }
         }
 
-        // SỬA LỖI: Cập nhật logic lấy RCM list cho đúng với cấu trúc HTML mới
-        val recommendations = document.selectFirst("h1#rell")?.nextElementSiblings()
-            ?.select("div.video")?.let {
-                parseHomepage(it)
-            } ?: emptyList()
-        
-        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
-            this.posterUrl = posterUrl
-            this.plot = description
+        return newMovieLoadResponse(title, url, TvType.NSFW, data = url) {
+            this.posterUrl = poster
+            this.plot = synopsis
             this.tags = tags
+            this.actors = actors
             this.recommendations = recommendations
         }
     }
 
-    // Hàm tải trang chính và xử lý phân trang
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = if (page == 1) {
-            "$mainUrl${request.data}"
-        } else {
-            "$mainUrl${request.data}$page/" 
-        }
-
-        val document = app.get(url).document
-        val home = parseHomepage(document)
-        
-        // SỬA LỖI: Cập nhật lại selector cho nút "Next" của phân trang
-        val hasNext = document.select("a.mpages:contains(Next)").isNotEmpty()
-        return newHomePageResponse(request.name, home, hasNext)
-    }
-
-    // Hàm helper chung để phân tích và trích xuất danh sách video
-    private fun parseHomepage(elements: List<Element>): List<MovieSearchResponse> {
-        return elements.mapNotNull { element ->
-            val inner = element.selectFirst("div.inner") ?: return@mapNotNull null
-            val linkElement = inner.selectFirst("h2 > a")
-            val href = linkElement?.attr("href") ?: return@mapNotNull null
-            val title = linkElement.attr("title")
-            val posterUrl = inner.selectFirst("div.info > a > img")?.attr("src")
-
-            newMovieSearchResponse(title, href, TvType.NSFW) {
-                this.posterUrl = posterUrl
-            }
-        }
-    }
-    // Overload function to support parsing from a single root element
-    private fun parseHomepage(element: Element): List<MovieSearchResponse> {
-        return parseHomepage(element.select("div.video"))
-    }
-
-
-    // Hàm loadLinks dựa trên việc giải mã KernelTeamp.js
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data).document
-        val playerDiv = document.selectFirst("div#player") ?: return false
+        val pageText = app.get(data).text
 
-        val qualityData = playerDiv.attr("data-q")
-        val videoId = playerDiv.attr("data-id")
-        val serverSubdomain = playerDiv.attr("data-n")
+        val videoUrlRegex = Regex("""video_url: '(.*?)'""")
+        val videoAltUrlRegex = Regex("""video_alt_url: '(.*?)'""")
+        val videoAltUrl2Regex = Regex("""video_alt_url2: '(.*?)'""")
 
-        val videoIdLong = videoId.toLongOrNull() ?: 0
-        val videoFolder = 1000 * (videoIdLong / 1000)
-        val videoPath = "$videoFolder/$videoId"
-
-        val domain = "https://$serverSubdomain.vstor.top/"
-        
-        qualityData.split(",").forEach { qualityBlock ->
-            val parts = qualityBlock.split(";")
-            if (parts.size < 6) return@forEach
-
-            val qualityLabel = parts[0]
-            val timestamp = parts[4]
-            val token = parts[5]
-
-            val qualityPrefix = if (qualityLabel == "720p") "" else "_$qualityLabel"
-            
-            val finalUrl = "${domain}whpvid/$timestamp/$token/$videoPath/${videoId}${qualityPrefix}.mp4"
-
-            callback.invoke(
-                ExtractorLink(
-                    source = this.name,
-                    name = "${this.name} $qualityLabel",
-                    url = finalUrl,
-                    referer = mainUrl,
-                    quality = qualityLabel.replace("p", "").toIntOrNull() ?: Qualities.Unknown.value,
-                    type = ExtractorLinkType.VIDEO
-                )
+        videoUrlRegex.find(pageText)?.groupValues?.get(1)?.let { streamUrl ->
+            callback(
+                ExtractorLink(this.name, "360p", streamUrl, mainUrl, Qualities.P360.value, type = ExtractorLinkType.VIDEO)
             )
         }
-        
+        videoAltUrlRegex.find(pageText)?.groupValues?.get(1)?.let { streamUrl ->
+            callback(
+                ExtractorLink(this.name, "480p", streamUrl, mainUrl, Qualities.P480.value, type = ExtractorLinkType.VIDEO)
+            )
+        }
+        videoAltUrl2Regex.find(pageText)?.groupValues?.get(1)?.let { streamUrl ->
+            callback(
+                ExtractorLink(this.name, "720p", streamUrl, mainUrl, Qualities.P720.value, type = ExtractorLinkType.VIDEO)
+            )
+        }
+
         return true
     }
 }
