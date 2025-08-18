@@ -4,14 +4,14 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.getAndUnpack
-import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.runExtractor // Import the correct utility
 import org.jsoup.nodes.Element
 
 /**
  * Main provider for SDFim
- * V1.3 - 2024-08-18
- * - Reworked loadLinks to handle iframe and obfuscated player URL. This is the correct method.
+ * V1.4 - 2025-08-18
+ * - Fixed build errors by using runExtractor for iframe embeds.
+ * - Updated deprecated Episode constructor to newEpisode helper.
  */
 class SDFimProvider : MainAPI() {
     override var name = "SDFim"
@@ -20,7 +20,35 @@ class SDFimProvider : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime)
 
-    // ... (Các hàm getMainPage, search, load, toSearchResult không thay đổi) ...
+    // ... (Các hàm getMainPage, search, toSearchResult không thay đổi) ...
+
+    override suspend fun load(url: String): LoadResponse? {
+        val document = app.get(url).document
+        val title = document.selectFirst("h1.film-title")?.text()?.trim() ?: return null
+        val posterUrl = document.selectFirst("div.film-thumbnail img")?.attr("src")
+        val plot = document.selectFirst("div.film-description div.film-text")?.text()?.trim()
+        
+        // ================== CHANGE START ==================
+        // Use newEpisode helper instead of the deprecated constructor
+        val episodes = document.select("div.ip_episode_list a.btn.btn-sm.btn-episode").map {
+            newEpisode(it.attr("href")) {
+                this.name = it.text()
+            }
+        }.reversed()
+        // =================== CHANGE END ===================
+
+        return if (episodes.isNotEmpty()) {
+            newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+                this.posterUrl = posterUrl
+                this.plot = plot
+            }
+        } else {
+            newMovieLoadResponse(title, url, TvType.Movie, url) {
+                this.posterUrl = posterUrl
+                this.plot = plot
+            }
+        }
+    }
 
     // Function to extract video links for an episode
     override suspend fun loadLinks(
@@ -29,34 +57,16 @@ class SDFimProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Step 1: Get the episode page HTML
         val episodeDocument = app.get(data).document
         
-        // Step 2: Find the iframe URL from the player container
-        // The iframe is dynamically loaded into div#ip_player
-        val playerIframeUrl = episodeDocument.selectFirst("div#ip_player iframe")?.attr("src") 
-            ?: return false // Return if no iframe is found
-
-        // The URL looks like: https://ssplay.net/v2/embed/31055/...
-        // We can directly call this URL to get the player page
+        val playerIframeUrl = episodeDocument.selectFirst("div#ip_player iframe")?.attr("src") ?: return false
         if (!playerIframeUrl.startsWith("http")) return false
 
-        // Step 3: Fetch the player page and extract the real video link
-        // The player page often contains packed/obfuscated JavaScript that reveals the source
-        return getAndUnpack(playerIframeUrl, referer = data).await.forEach { link ->
-             if (link.url.contains(".m3u8")) {
-                callback.invoke(
-                    ExtractorLink(
-                        source = this.name,
-                        name = this.name, // Name can be simple
-                        url = link.url,
-                        referer = "https://ssplay.net/", // Referer should be the player domain
-                        quality = Qualities.Unknown.value,
-                        type = ExtractorLinkType.M3U8,
-                    )
-                )
-             }
-        }
+        // ================== CHANGE START ==================
+        // Use runExtractor to let CloudStream handle the iframe URL.
+        // This is the correct and most robust way.
+        return runExtractor(playerIframeUrl, data, subtitleCallback, callback)
+        // =================== CHANGE END ===================
     }
     
     // --- Các hàm không thay đổi ---
@@ -82,26 +92,5 @@ class SDFimProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val document = app.get("$mainUrl/tim-kiem/$query/").document
         return document.select("div.item.film-item").mapNotNull { it.toSearchResult() }
-    }
-
-    override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url).document
-        val title = document.selectFirst("h1.film-title")?.text()?.trim() ?: return null
-        val posterUrl = document.selectFirst("div.film-thumbnail img")?.attr("src")
-        val plot = document.selectFirst("div.film-description div.film-text")?.text()?.trim()
-        val episodes = document.select("div.ip_episode_list a.btn.btn-sm.btn-episode").map {
-            Episode(it.attr("href"), name = it.text())
-        }.reversed()
-        return if (episodes.isNotEmpty()) {
-            newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
-                this.posterUrl = posterUrl
-                this.plot = plot
-            }
-        } else {
-            newMovieLoadResponse(title, url, TvType.Movie, url) {
-                this.posterUrl = posterUrl
-                this.plot = plot
-            }
-        }
     }
 }
