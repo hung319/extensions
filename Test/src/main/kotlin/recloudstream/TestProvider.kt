@@ -3,14 +3,14 @@ package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
 
 /**
  * Main provider for SDFim
- * V2.4 - 2025-08-18
- * - Fixed build error: Replaced .copy() with a new ExtractorLink constructor
- * as ExtractorLink is not a data class.
+ * V2.5 - 2025-08-18
+ * - Fixed build error by using a simpler, more compatible ExtractorLink constructor.
  */
 class SDFimProvider : MainAPI() {
     override var name = "SDFim"
@@ -19,8 +19,6 @@ class SDFimProvider : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime)
 
-    // ... (getMainPage, search, toSearchResult from V2.1 are correct and unchanged) ...
-    
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
@@ -77,9 +75,8 @@ class SDFimProvider : MainAPI() {
                 val iframeSrc = iframe?.attr("src")
                 
                 if (iframeSrc != null && iframeSrc.startsWith("http")) {
-                    // Create a custom callback to add the server name to the extracted link
                     val customCallback = { link: ExtractorLink ->
-                        // Create a new ExtractorLink since .copy() is not available
+                        // Use a simpler constructor to ensure compatibility
                         callback.invoke(
                             ExtractorLink(
                                 source = link.source,
@@ -87,9 +84,7 @@ class SDFimProvider : MainAPI() {
                                 url = link.url,
                                 referer = link.referer,
                                 quality = link.quality,
-                                type = link.type,
-                                headers = link.headers,
-                                isDash = link.isDash
+                                type = if (link.url.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                             )
                         )
                     }
