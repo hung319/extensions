@@ -8,9 +8,11 @@ import org.jsoup.nodes.Element
 
 /**
  * Main provider for SDFim
- * V2.2 - 2025-08-18
- * - Updated the `load` function with new selectors for the movie info page.
- * - Added extraction for tags, year, and rating.
+ * V2.3 - 2025-08-18
+ * - Corrected logic in `load` to differentiate between Movies and TV Series.
+ * - `loadLinks` now properly handles multiple servers for Movies.
+ * - Ensured TV Series episodes are reversed correctly.
+ * - Updated all selectors to match the latest site structure.
  */
 class SDFimProvider : MainAPI() {
     override var name = "SDFim"
@@ -28,24 +30,21 @@ class SDFimProvider : MainAPI() {
         val title = document.selectFirst("div.mvic-desc h3")?.text()?.trim() ?: return null
         val posterUrl = document.selectFirst("div.mvic-thumb img")?.attr("src")
         val plot = document.selectFirst("div.mvic-desc div.desc")?.text()?.trim()
-        
-        // Extract tags/genres
         val tags = document.select("div.mvici-left p:contains(Thể loại) a").map { it.text() }
-        
-        // Extract year
         val year = document.selectFirst("div.mvici-right p:contains(Năm SX) a")?.text()?.toIntOrNull()
-
-        // Extract rating
         val rating = document.selectFirst("div.imdb_r span.imdb-r")?.text()?.toRatingInt()
 
-        // New selector for episodes
-        val episodes = document.select("div.les-content a").map {
-            newEpisode(it.attr("href")) {
-                this.name = it.text()
-            }
-        }.reversed()
+        // Check for TV series episodes. This is the most reliable way to distinguish.
+        val tvSeriesEpisodes = document.select("div#seasons div.les-content a")
+        
+        return if (tvSeriesEpisodes.isNotEmpty()) {
+            // It's a TV Series
+            val episodes = tvSeriesEpisodes.map {
+                newEpisode(it.attr("href")) {
+                    this.name = it.text().trim()
+                }
+            }.reversed() // Reverse episode order as requested
 
-        return if (episodes.isNotEmpty()) {
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = posterUrl
                 this.plot = plot
@@ -54,7 +53,7 @@ class SDFimProvider : MainAPI() {
                 this.rating = rating
             }
         } else {
-            // It's a movie, so there are no episodes listed this way. The watch button is the data.
+            // It's a Movie. The main URL itself is the "episode".
             newMovieLoadResponse(title, url, TvType.Movie, url) {
                 this.posterUrl = posterUrl
                 this.plot = plot
@@ -64,33 +63,50 @@ class SDFimProvider : MainAPI() {
             }
         }
     }
-    // =================== CHANGE END ===================
 
     override suspend fun loadLinks(
-        data: String,
+        data: String, // This is the movie/episode URL
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // The loadLinks logic might need adjustment if the player page has also changed.
-        // Assuming it's the same for now.
         val document = app.get(data).document
-        // Let's find the iframe on the new page structure as well.
-        // The old selector was `div#ip_player iframe`, this might need verification.
-        // If the player is on the same page, the selector could be different.
-        // Based on the new HTML, the player is likely loaded into `div#content-embed`.
-        // A robust selector would be `div#content-embed iframe` or just `iframe`.
-        val playerIframeUrl = document.selectFirst("iframe")?.attr("src")
-            ?: return false
-        if (!playerIframeUrl.startsWith("http")) return false
-        return loadExtractor(playerIframeUrl, data, subtitleCallback, callback)
+        var foundLinks = false
+
+        // Logic for Movies with multiple server tabs
+        val movieServers = document.select("div.player_nav ul.idTabs li")
+        if (movieServers.isNotEmpty()) {
+            movieServers.forEach { serverTab ->
+                val serverName = serverTab.selectFirst("strong")?.text() ?: "Server"
+                val tabId = serverTab.attr("data")
+                val iframe = document.selectFirst("div#$tabId iframe")
+                val iframeSrc = iframe?.attr("src")
+                
+                if (iframeSrc != null && iframeSrc.startsWith("http")) {
+                    // Create a custom callback to add the server name to the extracted link
+                    val customCallback = { link: ExtractorLink ->
+                        callback.invoke(link.copy(name = "$serverName - ${link.name}"))
+                    }
+                    foundLinks = loadExtractor(iframeSrc, data, subtitleCallback, customCallback) || foundLinks
+                }
+            }
+        } else {
+            // Logic for TV Series episodes (or movies with a single player)
+            val iframe = document.selectFirst("div#content-embed iframe")
+            val iframeSrc = iframe?.attr("src")
+            if (iframeSrc != null && iframeSrc.startsWith("http")) {
+                foundLinks = loadExtractor(iframeSrc, data, subtitleCallback, callback)
+            }
+        }
+        
+        return foundLinks
     }
+    // =================== CHANGE END ===================
 
     // --- Các hàm không thay đổi từ V2.1 ---
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(mainUrl).document
         val homePageList = ArrayList<HomePageList>()
-
         document.select("div.movies-list-wrap").forEach { block ->
             val title = block.selectFirst("div.ml-title span.pull-left")?.text() ?: "Unknown Category"
             val movies = block.select("div.ml-item").mapNotNull { it.toSearchResult() }
