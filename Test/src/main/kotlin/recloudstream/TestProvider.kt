@@ -8,11 +8,9 @@ import org.jsoup.nodes.Element
 
 /**
  * Main provider for SDFim
- * V2.3 - 2025-08-18
- * - Corrected logic in `load` to differentiate between Movies and TV Series.
- * - `loadLinks` now properly handles multiple servers for Movies.
- * - Ensured TV Series episodes are reversed correctly.
- * - Updated all selectors to match the latest site structure.
+ * V2.4 - 2025-08-18
+ * - Fixed build error: Replaced .copy() with a new ExtractorLink constructor
+ * as ExtractorLink is not a data class.
  */
 class SDFimProvider : MainAPI() {
     override var name = "SDFim"
@@ -23,7 +21,6 @@ class SDFimProvider : MainAPI() {
 
     // ... (getMainPage, search, toSearchResult from V2.1 are correct and unchanged) ...
     
-    // ================== CHANGE START ==================
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
@@ -34,16 +31,14 @@ class SDFimProvider : MainAPI() {
         val year = document.selectFirst("div.mvici-right p:contains(Năm SX) a")?.text()?.toIntOrNull()
         val rating = document.selectFirst("div.imdb_r span.imdb-r")?.text()?.toRatingInt()
 
-        // Check for TV series episodes. This is the most reliable way to distinguish.
         val tvSeriesEpisodes = document.select("div#seasons div.les-content a")
         
         return if (tvSeriesEpisodes.isNotEmpty()) {
-            // It's a TV Series
             val episodes = tvSeriesEpisodes.map {
                 newEpisode(it.attr("href")) {
                     this.name = it.text().trim()
                 }
-            }.reversed() // Reverse episode order as requested
+            }.reversed()
 
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = posterUrl
@@ -53,7 +48,6 @@ class SDFimProvider : MainAPI() {
                 this.rating = rating
             }
         } else {
-            // It's a Movie. The main URL itself is the "episode".
             newMovieLoadResponse(title, url, TvType.Movie, url) {
                 this.posterUrl = posterUrl
                 this.plot = plot
@@ -64,8 +58,9 @@ class SDFimProvider : MainAPI() {
         }
     }
 
+    // ================== CHANGE START ==================
     override suspend fun loadLinks(
-        data: String, // This is the movie/episode URL
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
@@ -73,7 +68,6 @@ class SDFimProvider : MainAPI() {
         val document = app.get(data).document
         var foundLinks = false
 
-        // Logic for Movies with multiple server tabs
         val movieServers = document.select("div.player_nav ul.idTabs li")
         if (movieServers.isNotEmpty()) {
             movieServers.forEach { serverTab ->
@@ -85,13 +79,24 @@ class SDFimProvider : MainAPI() {
                 if (iframeSrc != null && iframeSrc.startsWith("http")) {
                     // Create a custom callback to add the server name to the extracted link
                     val customCallback = { link: ExtractorLink ->
-                        callback.invoke(link.copy(name = "$serverName - ${link.name}"))
+                        // Create a new ExtractorLink since .copy() is not available
+                        callback.invoke(
+                            ExtractorLink(
+                                source = link.source,
+                                name = "$serverName - ${link.name}", // Set the new name
+                                url = link.url,
+                                referer = link.referer,
+                                quality = link.quality,
+                                type = link.type,
+                                headers = link.headers,
+                                isDash = link.isDash
+                            )
+                        )
                     }
                     foundLinks = loadExtractor(iframeSrc, data, subtitleCallback, customCallback) || foundLinks
                 }
             }
         } else {
-            // Logic for TV Series episodes (or movies with a single player)
             val iframe = document.selectFirst("div#content-embed iframe")
             val iframeSrc = iframe?.attr("src")
             if (iframeSrc != null && iframeSrc.startsWith("http")) {
@@ -103,7 +108,7 @@ class SDFimProvider : MainAPI() {
     }
     // =================== CHANGE END ===================
 
-    // --- Các hàm không thay đổi từ V2.1 ---
+    // --- Các hàm không thay đổi ---
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(mainUrl).document
         val homePageList = ArrayList<HomePageList>()
