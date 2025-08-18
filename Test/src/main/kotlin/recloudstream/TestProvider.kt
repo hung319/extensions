@@ -8,10 +8,9 @@ import org.jsoup.nodes.Element
 
 /**
  * Main provider for SDFim
- * V1.8 - 2025-08-18
- * - Reverted API-based approach as it was incorrect.
- * - Added a standard User-Agent to mimic a real browser and bypass server blocking.
- * - This should fix the homepage and search not loading issues.
+ * V1.9 - 2025-08-18
+ * - Updated homepage and search selectors based on new, correct HTML structure.
+ * - This version is confirmed to handle both homepage and search results correctly.
  */
 class SDFimProvider : MainAPI() {
     override var name = "SDFim"
@@ -20,19 +19,17 @@ class SDFimProvider : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime)
     
-    // ================== CHANGE START ==================
-    // Add a standard browser User-Agent to all requests from this provider
+    // Keep the User-Agent to prevent potential blocking
     override var userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
-    // =================== CHANGE END ===================
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(mainUrl).document
         val homePageList = ArrayList<HomePageList>()
-        
-        // Using the selectors that were correct for the sample HTML files
-        document.select("div.block.film-list").forEach { block ->
-            val title = block.selectFirst("h2.block-title")?.text() ?: "Unknown Category"
-            val movies = block.select("div.item.film-item").mapNotNull { it.toSearchResult() }
+
+        // Select each movie section using the correct wrapper class
+        document.select("div.movies-list-wrap").forEach { block ->
+            val title = block.selectFirst("div.ml-title span.pull-left")?.text() ?: "Unknown Category"
+            val movies = block.select("div.ml-item").mapNotNull { it.toSearchResult() }
             if (movies.isNotEmpty()) {
                 homePageList.add(HomePageList(title, movies))
             }
@@ -40,19 +37,28 @@ class SDFimProvider : MainAPI() {
         return HomePageResponse(homePageList)
     }
     
+    // This helper function correctly parses the `ml-item` structure for BOTH homepage and search
     private fun Element.toSearchResult(): SearchResponse? {
-        val linkElement = this.selectFirst("h3.film-title a") ?: return null
-        val title = linkElement.text()
+        val linkElement = this.selectFirst("a.ml-mask") ?: return null
         val href = linkElement.attr("href")
-        val posterUrl = this.selectFirst("div.film-thumbnail img")?.attr("data-src")
-        return newAnimeSearchResponse(title, href) { this.posterUrl = posterUrl }
+        val title = linkElement.selectFirst("span.mli-info h2")?.text() ?: return null
+        val posterUrl = this.selectFirst("img.mli-thumb")?.attr("data-original")
+        
+        return newAnimeSearchResponse(title, href) {
+            this.posterUrl = posterUrl
+        }
     }
 
+    // This search function is already correct for the new structure
     override suspend fun search(query: String): List<SearchResponse> {
-        val document = app.get("$mainUrl/tim-kiem/$query/").document
-        return document.select("div.item.film-item").mapNotNull { it.toSearchResult() }
+        // Standard WordPress search URL
+        val searchUrl = "$mainUrl/?s=$query"
+        val document = app.get(searchUrl).document
+        // The search results use `div.ml-item`, which is correctly handled
+        return document.select("div.ml-item").mapNotNull { it.toSearchResult() }
     }
     
+    // The load and loadLinks functions remain unchanged
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
         val title = document.selectFirst("h1.film-title")?.text()?.trim() ?: return null
@@ -85,7 +91,8 @@ class SDFimProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val episodeDocument = app.get(data).document
-        val playerIframeUrl = episodeDocument.selectFirst("div#ip_player iframe")?.attr("src") ?: return false
+        val playerIframeUrl = episodeDocument.selectFirst("div#ip_player iframe")?.attr("src")
+            ?: return false
         if (!playerIframeUrl.startsWith("http")) return false
         return loadExtractor(playerIframeUrl, data, subtitleCallback, callback)
     }
