@@ -8,9 +8,8 @@ import org.jsoup.nodes.Element
 
 /**
  * Main provider for SDFim
- * V2.0 - 2025-08-18
- * - Fixed build error by setting userAgent in the init block instead of overriding it.
- * - This should be the final, working version.
+ * V2.1 - 2025-08-18
+ * - Removed userAgent property as it's not available in the user's build environment and caused a crash.
  */
 class SDFimProvider : MainAPI() {
     override var name = "SDFim"
@@ -18,13 +17,6 @@ class SDFimProvider : MainAPI() {
     override var lang = "vi"
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime)
-    
-    // ================== CHANGE START ==================
-    // Set the User-Agent in the init block. This is the correct way.
-    init {
-        this.userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
-    }
-    // =================== CHANGE END ===================
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(mainUrl).document
