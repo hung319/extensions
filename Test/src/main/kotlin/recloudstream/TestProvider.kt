@@ -2,15 +2,14 @@
 package recloudstream
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.ExtractorLink 
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
 
 /**
  * Main provider for SDFim
- * V2.5 - 2025-08-18
- * - Fixed build error by using a simpler, more compatible ExtractorLink constructor.
+ * V2.7 - 2025-08-18
+ * - Updated loadLinks to only process Google Drive servers and ignore others.
  */
 class SDFimProvider : MainAPI() {
     override var name = "SDFim"
@@ -66,35 +65,27 @@ class SDFimProvider : MainAPI() {
         val document = app.get(data).document
         var foundLinks = false
 
+        // Logic cho phim lẻ có nhiều server
         val movieServers = document.select("div.player_nav ul.idTabs li")
         if (movieServers.isNotEmpty()) {
             movieServers.forEach { serverTab ->
-                val serverName = serverTab.selectFirst("strong")?.text() ?: "Server"
                 val tabId = serverTab.attr("data")
                 val iframe = document.selectFirst("div#$tabId iframe")
                 val iframeSrc = iframe?.attr("src")
                 
-                if (iframeSrc != null && iframeSrc.startsWith("http")) {
-                    val customCallback = { link: ExtractorLink ->
-                        // Use a simpler constructor to ensure compatibility
-                        callback.invoke(
-                            ExtractorLink(
-                                source = link.source,
-                                name = "$serverName - ${link.name}", // Set the new name
-                                url = link.url,
-                                referer = link.referer,
-                                quality = link.quality,
-                                type = if (link.url.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                            )
-                        )
+                // Chỉ xử lý nếu link là của Google Drive
+                if (iframeSrc != null && iframeSrc.contains("drive.google.com")) {
+                    if (loadExtractor(iframeSrc, data, subtitleCallback, callback)) {
+                        foundLinks = true
                     }
-                    foundLinks = loadExtractor(iframeSrc, data, subtitleCallback, customCallback) || foundLinks
                 }
             }
         } else {
+            // Logic cho phim bộ hoặc phim lẻ chỉ có 1 player
             val iframe = document.selectFirst("div#content-embed iframe")
             val iframeSrc = iframe?.attr("src")
-            if (iframeSrc != null && iframeSrc.startsWith("http")) {
+            // Chỉ xử lý nếu link là của Google Drive
+            if (iframeSrc != null && iframeSrc.contains("drive.google.com")) {
                 foundLinks = loadExtractor(iframeSrc, data, subtitleCallback, callback)
             }
         }
