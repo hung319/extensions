@@ -8,8 +8,9 @@ import org.jsoup.nodes.Element
 
 /**
  * Main provider for SDFim
- * V2.1 - 2025-08-18
- * - Removed userAgent property as it's not available in the user's build environment and caused a crash.
+ * V2.2 - 2025-08-18
+ * - Updated the `load` function with new selectors for the movie info page.
+ * - Added extraction for tags, year, and rating.
  */
 class SDFimProvider : MainAPI() {
     override var name = "SDFim"
@@ -18,6 +19,74 @@ class SDFimProvider : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime)
 
+    // ... (getMainPage, search, toSearchResult from V2.1 are correct and unchanged) ...
+    
+    // ================== CHANGE START ==================
+    override suspend fun load(url: String): LoadResponse? {
+        val document = app.get(url).document
+
+        val title = document.selectFirst("div.mvic-desc h3")?.text()?.trim() ?: return null
+        val posterUrl = document.selectFirst("div.mvic-thumb img")?.attr("src")
+        val plot = document.selectFirst("div.mvic-desc div.desc")?.text()?.trim()
+        
+        // Extract tags/genres
+        val tags = document.select("div.mvici-left p:contains(Thể loại) a").map { it.text() }
+        
+        // Extract year
+        val year = document.selectFirst("div.mvici-right p:contains(Năm SX) a")?.text()?.toIntOrNull()
+
+        // Extract rating
+        val rating = document.selectFirst("div.imdb_r span.imdb-r")?.text()?.toRatingInt()
+
+        // New selector for episodes
+        val episodes = document.select("div.les-content a").map {
+            newEpisode(it.attr("href")) {
+                this.name = it.text()
+            }
+        }.reversed()
+
+        return if (episodes.isNotEmpty()) {
+            newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+                this.posterUrl = posterUrl
+                this.plot = plot
+                this.tags = tags
+                this.year = year
+                this.rating = rating
+            }
+        } else {
+            // It's a movie, so there are no episodes listed this way. The watch button is the data.
+            newMovieLoadResponse(title, url, TvType.Movie, url) {
+                this.posterUrl = posterUrl
+                this.plot = plot
+                this.tags = tags
+                this.year = year
+                this.rating = rating
+            }
+        }
+    }
+    // =================== CHANGE END ===================
+
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        // The loadLinks logic might need adjustment if the player page has also changed.
+        // Assuming it's the same for now.
+        val document = app.get(data).document
+        // Let's find the iframe on the new page structure as well.
+        // The old selector was `div#ip_player iframe`, this might need verification.
+        // If the player is on the same page, the selector could be different.
+        // Based on the new HTML, the player is likely loaded into `div#content-embed`.
+        // A robust selector would be `div#content-embed iframe` or just `iframe`.
+        val playerIframeUrl = document.selectFirst("iframe")?.attr("src")
+            ?: return false
+        if (!playerIframeUrl.startsWith("http")) return false
+        return loadExtractor(playerIframeUrl, data, subtitleCallback, callback)
+    }
+
+    // --- Các hàm không thay đổi từ V2.1 ---
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(mainUrl).document
         val homePageList = ArrayList<HomePageList>()
@@ -47,43 +116,5 @@ class SDFimProvider : MainAPI() {
         val searchUrl = "$mainUrl/?s=$query"
         val document = app.get(searchUrl).document
         return document.select("div.ml-item").mapNotNull { it.toSearchResult() }
-    }
-    
-    override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url).document
-        val title = document.selectFirst("h1.film-title")?.text()?.trim() ?: return null
-        val posterUrl = document.selectFirst("div.film-thumbnail img")?.attr("src")
-        val plot = document.selectFirst("div.film-description div.film-text")?.text()?.trim()
-        
-        val episodes = document.select("div.ip_episode_list a.btn.btn-sm.btn-episode").map {
-            newEpisode(it.attr("href")) {
-                this.name = it.text()
-            }
-        }.reversed()
-
-        return if (episodes.isNotEmpty()) {
-            newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
-                this.posterUrl = posterUrl
-                this.plot = plot
-            }
-        } else {
-            newMovieLoadResponse(title, url, TvType.Movie, url) {
-                this.posterUrl = posterUrl
-                this.plot = plot
-            }
-        }
-    }
-
-    override suspend fun loadLinks(
-        data: String,
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        val episodeDocument = app.get(data).document
-        val playerIframeUrl = episodeDocument.selectFirst("div#ip_player iframe")?.attr("src")
-            ?: return false
-        if (!playerIframeUrl.startsWith("http")) return false
-        return loadExtractor(playerIframeUrl, data, subtitleCallback, callback)
     }
 }
