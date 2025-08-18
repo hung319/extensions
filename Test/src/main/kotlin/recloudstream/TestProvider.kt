@@ -8,9 +8,9 @@ import org.jsoup.nodes.Element
 
 /**
  * Main provider for SDFim
- * V1.9 - 2025-08-18
- * - Updated homepage and search selectors based on new, correct HTML structure.
- * - This version is confirmed to handle both homepage and search results correctly.
+ * V2.0 - 2025-08-18
+ * - Fixed build error by setting userAgent in the init block instead of overriding it.
+ * - This should be the final, working version.
  */
 class SDFimProvider : MainAPI() {
     override var name = "SDFim"
@@ -19,14 +19,17 @@ class SDFimProvider : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime)
     
-    // Keep the User-Agent to prevent potential blocking
-    override var userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
+    // ================== CHANGE START ==================
+    // Set the User-Agent in the init block. This is the correct way.
+    init {
+        this.userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
+    }
+    // =================== CHANGE END ===================
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(mainUrl).document
         val homePageList = ArrayList<HomePageList>()
 
-        // Select each movie section using the correct wrapper class
         document.select("div.movies-list-wrap").forEach { block ->
             val title = block.selectFirst("div.ml-title span.pull-left")?.text() ?: "Unknown Category"
             val movies = block.select("div.ml-item").mapNotNull { it.toSearchResult() }
@@ -37,7 +40,6 @@ class SDFimProvider : MainAPI() {
         return HomePageResponse(homePageList)
     }
     
-    // This helper function correctly parses the `ml-item` structure for BOTH homepage and search
     private fun Element.toSearchResult(): SearchResponse? {
         val linkElement = this.selectFirst("a.ml-mask") ?: return null
         val href = linkElement.attr("href")
@@ -49,16 +51,12 @@ class SDFimProvider : MainAPI() {
         }
     }
 
-    // This search function is already correct for the new structure
     override suspend fun search(query: String): List<SearchResponse> {
-        // Standard WordPress search URL
         val searchUrl = "$mainUrl/?s=$query"
         val document = app.get(searchUrl).document
-        // The search results use `div.ml-item`, which is correctly handled
         return document.select("div.ml-item").mapNotNull { it.toSearchResult() }
     }
     
-    // The load and loadLinks functions remain unchanged
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
         val title = document.selectFirst("h1.film-title")?.text()?.trim() ?: return null
