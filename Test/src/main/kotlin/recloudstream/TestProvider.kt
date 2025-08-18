@@ -1,141 +1,107 @@
+// To be placed in app/src/main/java/recloudstream/
 package recloudstream
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.getAndUnpack
+import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
 
 /**
- * CloudStream 3 provider for PornDos
- * Version: 4.1 (Search changed to GET, Poster selector fixed)
+ * Main provider for SDFim
+ * V1.3 - 2024-08-18
+ * - Reworked loadLinks to handle iframe and obfuscated player URL. This is the correct method.
  */
-class PornDosProvider : MainAPI() {
-    // Provider metadata
-    override var mainUrl = "https://www.porndos.com"
-    override var name = "PornDos"
+class SDFimProvider : MainAPI() {
+    override var name = "SDFim"
+    override var mainUrl = "https://sdfim.net"
+    override var lang = "vi"
     override val hasMainPage = true
-    override var lang = "en"
-    override val supportedTypes = setOf(TvType.NSFW)
+    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime)
 
-    // --- Helper Functions ---
+    // ... (Các hàm getMainPage, search, load, toSearchResult không thay đổi) ...
 
-    private fun fixUrl(url: String): String {
-        return if (url.startsWith("http")) {
-            url
-        } else {
-            "$mainUrl$url"
-        }
-    }
-
-    private fun parseVideoCard(element: Element): SearchResponse {
-        val link = element.selectFirst("a")!!
-        val href = fixUrl(link.attr("href"))
-        val title = element.selectFirst("p")?.text() ?: "No Title"
-        val posterUrl = fixUrl(element.selectFirst("img")?.attr("data-src") ?: "")
-
-        return newMovieSearchResponse(title, href, TvType.NSFW) {
-            this.posterUrl = posterUrl
-        }
-    }
-
-    // --- Main Page ---
-
-    override val mainPage = mainPageOf(
-        "/videos/" to "New Exclusive Videos",
-        "/most-viewed/" to "Most Viewed Videos",
-        "/top-rated/" to "Top Rated Videos"
-    )
-
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = if (page > 1) {
-            "$mainUrl${request.data}$page/"
-        } else {
-            "$mainUrl${request.data}"
-        }
-
-        val document = app.get(url).document
-        val home = document.select("div.thumbs-wrap div.thumb").mapNotNull {
-            try {
-                parseVideoCard(it)
-            } catch (e: Exception) {
-                null
-            }
-        }
-        
-        return newHomePageResponse(request.name, home, hasNext = home.isNotEmpty())
-    }
-
-    // --- Search ---
-
-    // ## MODIFIED: Changed search to use GET request
-    override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/search/$query/"
-        val document = app.get(searchUrl).document
-        
-        return document.select("div.thumbs-wrap div.thumb").mapNotNull {
-            try {
-                parseVideoCard(it)
-            } catch (e: Exception) {
-                null
-            }
-        }
-    }
-
-    // --- Loading ---
-
-    override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url).document
-
-        val title = document.selectFirst("h1[itemprop=name]")?.text()?.trim() ?: "No Title"
-        // ## MODIFIED: Fixed poster selector to use 'og:image' which is more reliable.
-        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")?.let { fixUrl(it) }
-        val synopsis = document.selectFirst("div.full-text p")?.text()?.trim()
-        val tags = document.select("div.full-links-items a[href*=category]").map { it.text() }
-        val actors = document.select("div.full-links-items a[href*=pornstar]").map { ActorData(Actor(it.text())) }
-        val recommendations = document.select("div.video-related div.thumb").mapNotNull { 
-            try {
-                parseVideoCard(it)
-            } catch (e: Exception) {
-                null
-            }
-        }
-
-        return newMovieLoadResponse(title, url, TvType.NSFW, data = url) {
-            this.posterUrl = poster
-            this.plot = synopsis
-            this.tags = tags
-            this.actors = actors
-            this.recommendations = recommendations
-        }
-    }
-
+    // Function to extract video links for an episode
     override suspend fun loadLinks(
-        data: String,
+        data: String, // This will be the episode URL
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val pageText = app.get(data).text
+        // Step 1: Get the episode page HTML
+        val episodeDocument = app.get(data).document
+        
+        // Step 2: Find the iframe URL from the player container
+        // The iframe is dynamically loaded into div#ip_player
+        val playerIframeUrl = episodeDocument.selectFirst("div#ip_player iframe")?.attr("src") 
+            ?: return false // Return if no iframe is found
 
-        val videoUrlRegex = Regex("""video_url: '(.*?)'""")
-        val videoAltUrlRegex = Regex("""video_alt_url: '(.*?)'""")
-        val videoAltUrl2Regex = Regex("""video_alt_url2: '(.*?)'""")
+        // The URL looks like: https://ssplay.net/v2/embed/31055/...
+        // We can directly call this URL to get the player page
+        if (!playerIframeUrl.startsWith("http")) return false
 
-        videoUrlRegex.find(pageText)?.groupValues?.get(1)?.let { streamUrl ->
-            callback(
-                ExtractorLink(this.name, "360p", streamUrl, mainUrl, Qualities.P360.value, type = ExtractorLinkType.VIDEO)
-            )
+        // Step 3: Fetch the player page and extract the real video link
+        // The player page often contains packed/obfuscated JavaScript that reveals the source
+        return getAndUnpack(playerIframeUrl, referer = data).await.forEach { link ->
+             if (link.url.contains(".m3u8")) {
+                callback.invoke(
+                    ExtractorLink(
+                        source = this.name,
+                        name = this.name, // Name can be simple
+                        url = link.url,
+                        referer = "https://ssplay.net/", // Referer should be the player domain
+                        quality = Qualities.Unknown.value,
+                        type = ExtractorLinkType.M3U8,
+                    )
+                )
+             }
         }
-        videoAltUrlRegex.find(pageText)?.groupValues?.get(1)?.let { streamUrl ->
-            callback(
-                ExtractorLink(this.name, "480p", streamUrl, mainUrl, Qualities.P480.value, type = ExtractorLinkType.VIDEO)
-            )
+    }
+    
+    // --- Các hàm không thay đổi ---
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val document = app.get(mainUrl).document
+        val homePageList = ArrayList<HomePageList>()
+        document.select("div.block.film-list").forEach { block ->
+            val title = block.selectFirst("h2.block-title")?.text() ?: "Unknown Category"
+            val movies = block.select("div.item.film-item").mapNotNull { it.toSearchResult() }
+            if (movies.isNotEmpty()) homePageList.add(HomePageList(title, movies))
         }
-        videoAltUrl2Regex.find(pageText)?.groupValues?.get(1)?.let { streamUrl ->
-            callback(
-                ExtractorLink(this.name, "720p", streamUrl, mainUrl, Qualities.P720.value, type = ExtractorLinkType.VIDEO)
-            )
-        }
+        return HomePageResponse(homePageList)
+    }
 
-        return true
+    private fun Element.toSearchResult(): SearchResponse? {
+        val linkElement = this.selectFirst("h3.film-title a") ?: return null
+        val title = linkElement.text()
+        val href = linkElement.attr("href")
+        val posterUrl = this.selectFirst("div.film-thumbnail img")?.attr("data-src")
+        return newAnimeSearchResponse(title, href) { this.posterUrl = posterUrl }
+    }
+
+    override suspend fun search(query: String): List<SearchResponse> {
+        val document = app.get("$mainUrl/tim-kiem/$query/").document
+        return document.select("div.item.film-item").mapNotNull { it.toSearchResult() }
+    }
+
+    override suspend fun load(url: String): LoadResponse? {
+        val document = app.get(url).document
+        val title = document.selectFirst("h1.film-title")?.text()?.trim() ?: return null
+        val posterUrl = document.selectFirst("div.film-thumbnail img")?.attr("src")
+        val plot = document.selectFirst("div.film-description div.film-text")?.text()?.trim()
+        val episodes = document.select("div.ip_episode_list a.btn.btn-sm.btn-episode").map {
+            Episode(it.attr("href"), name = it.text())
+        }.reversed()
+        return if (episodes.isNotEmpty()) {
+            newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+                this.posterUrl = posterUrl
+                this.plot = plot
+            }
+        } else {
+            newMovieLoadResponse(title, url, TvType.Movie, url) {
+                this.posterUrl = posterUrl
+                this.plot = plot
+            }
+        }
     }
 }
