@@ -5,6 +5,8 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.M3u8Helper
+import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.parseJson
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 
@@ -14,15 +16,21 @@ data class PlayerResponse(
     @JsonProperty("html") val html: String
 )
 
+// Data class for parsing episode info from the script tag's JSON
+data class EpisodeJson(
+    @JsonProperty("postUrl") val postUrl: String?,
+    @JsonProperty("episodeName") val episodeName: String?
+)
+
 class HHTQProvider : MainAPI() {
     override var mainUrl = "https://hhtq4k.top"
     override var name = "HHTQ4K"
     override val hasMainPage = true
     override var lang = "vi"
     override val supportedTypes = setOf(
-        TvType.Cartoon,
-        TvType.Anime,
-        TvType.Movie
+        TvType.TvSeries, // Explicitly state that we primarily handle TvSeries
+        TvType.Movie,
+        TvType.Anime
     )
 
     override val mainPage = mainPageOf(
@@ -32,9 +40,6 @@ class HHTQProvider : MainAPI() {
         "$mainUrl/the-loai/huyen-huyen/page/" to "Huyền Huyễn",
     )
 
-    // ================================ FIX START ================================
-
-    // Helper function used for both MainPage and Search
     private fun Element.toSearchResult(): SearchResponse? {
         val thumb = this.selectFirst("a.halim-thumb") ?: return null
         val href = thumb.attr("href")
@@ -42,19 +47,13 @@ class HHTQProvider : MainAPI() {
         if (title.isBlank()) return null
 
         val posterUrl = thumb.selectFirst("img")?.attr("data-src")
-        
-        // Sửa lỗi: Lấy chuỗi chất lượng từ span.status
         val qualityString = thumb.selectFirst("span.status")?.text()
 
-        return newMovieSearchResponse(title, href, TvType.Movie) {
+        return newAnimeSearchResponse(title, href, TvType.TvSeries) { // Default to TvSeries
             this.posterUrl = posterUrl
-            // Sử dụng hàm getQualityFromString để chuyển đổi chuỗi thành enum SearchQuality một cách an toàn
             this.quality = getQualityFromString(qualityString)
         }
     }
-    
-    // ================================= FIX END =================================
-
 
     override suspend fun getMainPage(
         page: Int,
@@ -63,6 +62,8 @@ class HHTQProvider : MainAPI() {
         val url = if (page == 1) request.data.removeSuffix("page/") else request.data + page
         val document = app.get(url).document
         
+        // Note: If the homepage is still empty, the selector below might need adjustment
+        // based on the current live website's HTML structure.
         val home = document.select("div.halim_box article.grid-item")
             .mapNotNull { it.toSearchResult() }
             
@@ -78,19 +79,46 @@ class HHTQProvider : MainAPI() {
         }
     }
 
+    // ================================ CRITICAL FIX START ================================
 
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
+
         val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: return null
         val poster = document.selectFirst("div.movie-poster img.movie-thumb")?.attr("src")
         val description = document.selectFirst("div.entry-content.htmlwrap")?.text()?.trim()
 
-        val episodes = document.select("ul.halim-list-eps li.halim-episode-item").mapNotNull {
-            val epUrl = it.selectFirst("a")?.attr("href") ?: return@mapNotNull null
-            newEpisode(epUrl) {
-                name = it.selectFirst("a span")?.text()
+        // NEW: Extract episodes from the JSON variable in a <script> tag. This is more reliable.
+        val scriptContent = document.select("script").find { it.data().contains("var jsonEpisodes") }?.data()
+        
+        val episodes = scriptContent?.let { script ->
+            val jsonRegex = Regex("""var jsonEpisodes\s*=\s*(\[\[.*?\]\])""")
+            val jsonString = jsonRegex.find(script)?.groupValues?.get(1)
+            
+            try {
+                // The JSON is a list of lists, so we flatten it.
+                parseJson<List<List<EpisodeJson>>>(jsonString ?: "[]")
+                    .flatten()
+                    .mapNotNull { epJson ->
+                        // Ensure URL and name are not null before creating an episode
+                        val epUrl = epJson.postUrl ?: return@mapNotNull null
+                        val epName = epJson.episodeName
+                        newEpisode(epUrl) {
+                            name = epName
+                        }
+                    }.reversed() // Reverse to show episode 1 first
+            } catch (e: Exception) {
+                // If JSON parsing fails, return null to avoid crashes
+                e.printStackTrace()
+                null
             }
-        }.reversed()
+        }
+
+        // If no episodes are found (either from JSON or as a fallback), we can't load it as a TV series.
+        if (episodes.isNullOrEmpty()) {
+            // This prevents the "got no episodes" error.
+            return null
+        }
 
         val recommendations = document.select("section.related-movies article.grid-item").mapNotNull {
             it.toSearchResult()
@@ -102,6 +130,8 @@ class HHTQProvider : MainAPI() {
             this.recommendations = recommendations
         }
     }
+    // ================================= CRITICAL FIX END =================================
+
 
     override suspend fun loadLinks(
         data: String,
@@ -109,6 +139,7 @@ class HHTQProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // ... (loadLinks function remains the same as it's working correctly)
         val episodeDocument = app.get(data).document
         val servers = episodeDocument.select("ul.halim-list-server li.halim-server-items")
 
