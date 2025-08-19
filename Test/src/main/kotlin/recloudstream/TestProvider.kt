@@ -1,9 +1,7 @@
 // Save this file as HHTQProvider.kt
 package recloudstream
 
-// ================================ FIX START ================================
-import com.fasterxml.jackson.annotation.JsonAlias // FIX: Thêm import còn thiếu cho JsonAlias
-// ================================= FIX END =================================
+import com.fasterxml.jackson.annotation.JsonAlias
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
@@ -11,7 +9,8 @@ import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
-import android.util.Log
+import kotlinx.coroutines.async // Thêm import cho coroutine
+import kotlinx.coroutines.awaitAll // Thêm import cho coroutine
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 
@@ -27,7 +26,7 @@ data class EpisodeJson(
     @JsonProperty("episodeName") val episodeName: String?,
     @JsonProperty("postId") val postId: Int?,
     @JsonProperty("episodeSlug") val episodeSlug: String?,
-    @JsonAlias("serverld", "serverId") // Use JsonAlias to accept both "serverId" and the typo "serverld"
+    @JsonAlias("serverld", "serverId")
     val serverId: Int?
 )
 
@@ -40,10 +39,6 @@ data class EpisodeData(
 )
 
 class HHTQProvider : MainAPI() {
-    companion object {
-        const val TAG = "HHTQProvider"
-    }
-
     override var mainUrl = "https://hhtq4k.top"
     override var name = "HHTQ4K"
     override val hasMainPage = true
@@ -150,81 +145,72 @@ class HHTQProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.e(TAG, "loadLinks started with data: $data")
         val episodeData = parseJson<EpisodeData>(data)
 
-        (1..2).toList().apmap { subsvId ->
-            try {
-                val serverName = "Server $subsvId"
-                val ajaxUrl = "$mainUrl/wp-content/themes/halimmovies/player.php?" + 
-                              "episode_slug=${episodeData.episodeSlug}&" + 
-                              "server_id=${episodeData.serverId}&" +
-                              "subsv_id=$subsvId&" +
-                              "post_id=${episodeData.postId}"
-                Log.e(TAG, "Requesting AJAX URL: $ajaxUrl")
-                
-                val headers = mapOf(
-                    "Accept" to "text/html, */*; q=0.01",
-                    "X-Requested-With" to "XMLHttpRequest",
-                    "Referer" to episodeData.referer
-                )
-                
-                val playerHtml = app.get(ajaxUrl, headers = headers).text
-                Log.e(TAG, "Received player HTML for $serverName: $playerHtml")
+        // ================================ FIX START: Replace deprecated apmap ================================
+        // Thay thế apmap bằng async/awaitAll để xử lý song song không-chặn (non-blocking)
+        (1..2).map { subsvId ->
+            async {
+                try {
+                    val serverName = "Server $subsvId"
+                    val ajaxUrl = "$mainUrl/wp-content/themes/halimmovies/player.php?" +
+                            "episode_slug=${episodeData.episodeSlug}&" +
+                            "server_id=${episodeData.serverId}&" +
+                            "subsv_id=$subsvId&" +
+                            "post_id=${episodeData.postId}"
 
-                if (playerHtml.contains("jwplayer('ajax-player')")) {
-                    Log.e(TAG, "Found JWPlayer in response for $serverName")
-                    val m3u8Regex = Regex("""sources:\s*\[\{"file":"([^"]+?)","type":"hls"\}\]""")
-                    val m3u8Url = m3u8Regex.find(playerHtml)?.groupValues?.get(1)
-                    if (m3u8Url != null) {
-                        val cleanUrl = m3u8Url.replace("\\/", "/")
-                        Log.e(TAG, "Extracted m3u8 link: $cleanUrl")
-                        callback(
-                            ExtractorLink(
-                                source = this.name,
-                                name = "$name $serverName",
-                                url = cleanUrl,
-                                referer = mainUrl,
-                                quality = Qualities.Unknown.value,
-                                type = ExtractorLinkType.M3U8
-                            )
-                        )
-                    } else {
-                        Log.e(TAG, "JWPlayer found but m3u8 URL was not extracted.")
-                    }
-                } 
-                else if (playerHtml.contains("helvid.net")) {
-                    Log.e(TAG, "Found helvid.net iframe in response for $serverName")
-                    val iframeSrc = Jsoup.parse(playerHtml).selectFirst("iframe")?.attr("src")
-                    if (iframeSrc != null) {
-                        Log.e(TAG, "Iframe src: $iframeSrc")
-                        val helvidPage = app.get(iframeSrc, referer = ajaxUrl).text
-                        val helvidRegex = Regex("""file:\s*"([^"]+\.m3u8)"""")
-                        val m3u8Url = helvidRegex.find(helvidPage)?.groupValues?.get(1)
+                    val headers = mapOf(
+                        "Accept" to "text/html, */*; q=0.01",
+                        "X-Requested-With" to "XMLHttpRequest",
+                        "Referer" to episodeData.referer
+                    )
+
+                    val playerHtml = app.get(ajaxUrl, headers = headers).text
+
+                    if (playerHtml.contains("jwplayer('ajax-player')")) {
+                        val m3u8Regex = Regex("""sources:\s*\[\{"file":"([^"]+?)","type":"hls"\}\]""")
+                        val m3u8Url = m3u8Regex.find(playerHtml)?.groupValues?.get(1)
                         if (m3u8Url != null) {
-                            Log.e(TAG, "Extracted m3u8 link from Helvid: $m3u8Url")
+                            val cleanUrl = m3u8Url.replace("\\/", "/")
                             callback(
                                 ExtractorLink(
                                     source = this.name,
-                                    name = "$name $serverName (Helvid)",
-                                    url = m3u8Url,
-                                    referer = "https://helvid.net/",
+                                    name = "$name $serverName",
+                                    url = cleanUrl,
+                                    referer = mainUrl,
                                     quality = Qualities.Unknown.value,
                                     type = ExtractorLinkType.M3U8
                                 )
                             )
-                        } else {
-                            Log.e(TAG, "Helvid iframe found but m3u8 URL was not extracted.")
+                        }
+                    } else if (playerHtml.contains("helvid.net")) {
+                        val iframeSrc = Jsoup.parse(playerHtml).selectFirst("iframe")?.attr("src")
+                        if (iframeSrc != null) {
+                            val helvidPage = app.get(iframeSrc, referer = ajaxUrl).text
+                            val helvidRegex = Regex("""file:\s*"([^"]+\.m3u8)"""")
+                            val m3u8Url = helvidRegex.find(helvidPage)?.groupValues?.get(1)
+                            if (m3u8Url != null) {
+                                callback(
+                                    ExtractorLink(
+                                        source = this.name,
+                                        name = "$name $serverName (Helvid)",
+                                        url = m3u8Url,
+                                        referer = "https://helvid.net/",
+                                        quality = Qualities.Unknown.value,
+                                        type = ExtractorLinkType.M3U8
+                                    )
+                                )
+                            }
                         }
                     }
-                } else {
-                     Log.e(TAG, "No known player found for $serverName.")
+                } catch (e: Exception) {
+                    // Lỗi ở một server sẽ không ảnh hưởng đến server khác
+                    e.printStackTrace()
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error in loadLinks for subsvId $subsvId: ${e.message}", e)
-                throw e
             }
-        }
+        }.awaitAll() // Chờ tất cả các tác vụ song song hoàn thành
+        // ================================= FIX END =================================
+        
         return true
     }
 }
