@@ -8,11 +8,12 @@ import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
-import android.util.Log // Import Log for debugging
+import android.util.Log
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 
 // Data class to parse the JSON response from the server AJAX call
+// NOTE: This is no longer used by loadLinks but kept in case the site reverts.
 data class PlayerResponse(
     @JsonProperty("status") val status: Boolean,
     @JsonProperty("html") val html: String
@@ -24,7 +25,8 @@ data class EpisodeJson(
     @JsonProperty("episodeName") val episodeName: String?,
     @JsonProperty("postId") val postId: Int?,
     @JsonProperty("episodeSlug") val episodeSlug: String?,
-    @JsonProperty("serverId") val serverId: Int?
+    @JsonAlias("serverld", "serverId") // Accept both correct and incorrect key
+    val serverId: Int?
 )
 
 // Data class to pass all necessary info from `load` to `loadLinks`
@@ -36,7 +38,6 @@ data class EpisodeData(
 )
 
 class HHTQProvider : MainAPI() {
-    // Companion object to hold a static tag for logging
     companion object {
         const val TAG = "HHTQProvider"
     }
@@ -147,7 +148,6 @@ class HHTQProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.e(TAG, "loadLinks started with data: $data")
         val episodeData = parseJson<EpisodeData>(data)
 
         (1..2).toList().apmap { subsvId ->
@@ -158,26 +158,27 @@ class HHTQProvider : MainAPI() {
                               "server_id=${episodeData.serverId}&" +
                               "subsv_id=$subsvId&" +
                               "post_id=${episodeData.postId}"
-                Log.e(TAG, "Requesting AJAX URL: $ajaxUrl")
                 
                 val headers = mapOf(
-                    "Accept" to "application/json, text/javascript, */*; q=0.01",
+                    "Accept" to "text/html, */*; q=0.01", // Adjusted accept header
                     "X-Requested-With" to "XMLHttpRequest",
                     "Referer" to episodeData.referer
                 )
                 
-                val playerResponse = app.get(ajaxUrl, headers = headers).parsed<PlayerResponse>()
-                val playerHtml = playerResponse.html
-                Log.e(TAG, "Received player HTML for $serverName: $playerHtml")
+                // ================================ CRITICAL FIX START ================================
+                // LỖI Ở ĐÂY: Server trả về HTML, không phải JSON.
+                // val playerResponse = app.get(ajaxUrl, headers = headers).parsed<PlayerResponse>()
+                // val playerHtml = playerResponse.html
+                
+                // SỬA LẠI: Đọc phản hồi dưới dạng văn bản thuần túy.
+                val playerHtml = app.get(ajaxUrl, headers = headers).text
+                // ================================= CRITICAL FIX END =================================
 
                 if (playerHtml.contains("jwplayer('ajax-player')")) {
-                    Log.e(TAG, "Found JWPlayer in response for $serverName")
                     val m3u8Regex = Regex("""sources:\s*\[\{"file":"([^"]+?)","type":"hls"\}\]""")
                     val m3u8Url = m3u8Regex.find(playerHtml)?.groupValues?.get(1)
                     if (m3u8Url != null) {
                         val cleanUrl = m3u8Url.replace("\\/", "/")
-                        Log.e(TAG, "Extracted m3u8 link: $cleanUrl")
-                        // ================================ UPDATE START ================================
                         callback(
                             ExtractorLink(
                                 source = this.name,
@@ -188,22 +189,15 @@ class HHTQProvider : MainAPI() {
                                 type = ExtractorLinkType.M3U8
                             )
                         )
-                        // ================================= UPDATE END =================================
-                    } else {
-                        Log.e(TAG, "JWPlayer found but m3u8 URL was not extracted.")
                     }
                 } 
                 else if (playerHtml.contains("helvid.net")) {
-                    Log.e(TAG, "Found helvid.net iframe in response for $serverName")
                     val iframeSrc = Jsoup.parse(playerHtml).selectFirst("iframe")?.attr("src")
                     if (iframeSrc != null) {
-                        Log.e(TAG, "Iframe src: $iframeSrc")
                         val helvidPage = app.get(iframeSrc, referer = ajaxUrl).text
                         val helvidRegex = Regex("""file:\s*"([^"]+\.m3u8)"""")
                         val m3u8Url = helvidRegex.find(helvidPage)?.groupValues?.get(1)
                         if (m3u8Url != null) {
-                            Log.e(TAG, "Extracted m3u8 link from Helvid: $m3u8Url")
-                            // ================================ UPDATE START ================================
                             callback(
                                 ExtractorLink(
                                     source = this.name,
@@ -214,13 +208,8 @@ class HHTQProvider : MainAPI() {
                                     type = ExtractorLinkType.M3U8
                                 )
                             )
-                            // ================================= UPDATE END =================================
-                        } else {
-                            Log.e(TAG, "Helvid iframe found but m3u8 URL was not extracted.")
                         }
                     }
-                } else {
-                     Log.e(TAG, "No known player found for $serverName.")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error in loadLinks for subsvId $subsvId: ${e.message}", e)
