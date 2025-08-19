@@ -9,16 +9,11 @@ import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
-import kotlinx.coroutines.async // Thêm import cho coroutine
-import kotlinx.coroutines.awaitAll // Thêm import cho coroutine
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope // FIX: Thêm import cho coroutineScope
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
-
-// Data class to parse the JSON response from the server AJAX call
-data class PlayerResponse(
-    @JsonProperty("status") val status: Boolean,
-    @JsonProperty("html") val html: String
-)
 
 // Data class for parsing episode info from the script tag's JSON
 data class EpisodeJson(
@@ -40,7 +35,7 @@ data class EpisodeData(
 
 class HHTQProvider : MainAPI() {
     override var mainUrl = "https://hhtq4k.top"
-    override var name = "HHTQ4K"
+    override var name = "HHTQProvider" // Changed name for clarity in ExtractorLink
     override val hasMainPage = true
     override var lang = "vi"
     override val supportedTypes = setOf(
@@ -58,10 +53,8 @@ class HHTQProvider : MainAPI() {
         request: MainPageRequest
     ): HomePageResponse {
         val document = app.get(request.data).document
-        
         val home = document.select("div.halim_box article.grid-item")
             .mapNotNull { it.toSearchResult() }
-            
         return newHomePageResponse(request.name, home)
     }
 
@@ -83,7 +76,6 @@ class HHTQProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/search/$query"
         val document = app.get(searchUrl).document
-        
         return document.select("div.halim_box article.grid-item").mapNotNull {
             it.toSearchResult()
         }
@@ -124,9 +116,7 @@ class HHTQProvider : MainAPI() {
             }
         }
 
-        if (episodes.isNullOrEmpty()) {
-            return null
-        }
+        if (episodes.isNullOrEmpty()) return null
 
         val recommendations = document.select("section.related-movies article.grid-item").mapNotNull {
             it.toSearchResult()
@@ -147,69 +137,70 @@ class HHTQProvider : MainAPI() {
     ): Boolean {
         val episodeData = parseJson<EpisodeData>(data)
 
-        // ================================ FIX START: Replace deprecated apmap ================================
-        // Thay thế apmap bằng async/awaitAll để xử lý song song không-chặn (non-blocking)
-        (1..2).map { subsvId ->
-            async {
-                try {
-                    val serverName = "Server $subsvId"
-                    val ajaxUrl = "$mainUrl/wp-content/themes/halimmovies/player.php?" +
-                            "episode_slug=${episodeData.episodeSlug}&" +
-                            "server_id=${episodeData.serverId}&" +
-                            "subsv_id=$subsvId&" +
-                            "post_id=${episodeData.postId}"
+        // FIX 1: Bọc khối lệnh bằng `coroutineScope` để tạo scope hợp lệ cho `async`
+        coroutineScope {
+            listOf("", "1", "2").map { subsv_id ->
+                async {
+                    try {
+                        val serverName = if (subsv_id.isBlank()) "Server Chính" else "Server $subsv_id"
+                        val ajaxUrl = "$mainUrl/wp-content/themes/halimmovies/player.php?" +
+                                "episode_slug=${episodeData.episodeSlug}&" +
+                                "server_id=${episodeData.serverId}&" +
+                                "subsv_id=$subsv_id&" +
+                                "post_id=${episodeData.postId}&" +
+                                "nonce="
 
-                    val headers = mapOf(
-                        "Accept" to "text/html, */*; q=0.01",
-                        "X-Requested-With" to "XMLHttpRequest",
-                        "Referer" to episodeData.referer
-                    )
+                        val headers = mapOf(
+                            "Accept" to "text/html, */*; q=0.01",
+                            "X-Requested-With" to "XMLHttpRequest",
+                            "Referer" to episodeData.referer
+                        )
 
-                    val playerHtml = app.get(ajaxUrl, headers = headers).text
+                        val playerHtml = app.get(ajaxUrl, headers = headers).text
 
-                    if (playerHtml.contains("jwplayer('ajax-player')")) {
-                        val m3u8Regex = Regex("""sources:\s*\[\{"file":"([^"]+?)","type":"hls"\}\]""")
-                        val m3u8Url = m3u8Regex.find(playerHtml)?.groupValues?.get(1)
-                        if (m3u8Url != null) {
-                            val cleanUrl = m3u8Url.replace("\\/", "/")
-                            callback(
-                                ExtractorLink(
-                                    source = this.name,
-                                    name = "$name $serverName",
-                                    url = cleanUrl,
-                                    referer = mainUrl,
-                                    quality = Qualities.Unknown.value,
-                                    type = ExtractorLinkType.M3U8
-                                )
-                            )
-                        }
-                    } else if (playerHtml.contains("helvid.net")) {
-                        val iframeSrc = Jsoup.parse(playerHtml).selectFirst("iframe")?.attr("src")
-                        if (iframeSrc != null) {
-                            val helvidPage = app.get(iframeSrc, referer = ajaxUrl).text
-                            val helvidRegex = Regex("""file:\s*"([^"]+\.m3u8)"""")
-                            val m3u8Url = helvidRegex.find(helvidPage)?.groupValues?.get(1)
+                        if (playerHtml.contains("jwplayer('ajax-player')")) {
+                            val m3u8Regex = Regex("""sources:\s*\[\{"file":"([^"]+?)","type":"hls"\}\]""")
+                            val m3u8Url = m3u8Regex.find(playerHtml)?.groupValues?.get(1)
                             if (m3u8Url != null) {
+                                val cleanUrl = m3u8Url.replace("\\/", "/")
+                                // FIX 2: Sử dụng this@HHTQProvider.name để truy cập đúng thuộc tính `name`
                                 callback(
                                     ExtractorLink(
-                                        source = this.name,
-                                        name = "$name $serverName (Helvid)",
-                                        url = m3u8Url,
-                                        referer = "https://helvid.net/",
+                                        source = this@HHTQProvider.name,
+                                        name = "${this@HHTQProvider.name} $serverName",
+                                        url = cleanUrl,
+                                        referer = mainUrl,
                                         quality = Qualities.Unknown.value,
                                         type = ExtractorLinkType.M3U8
                                     )
                                 )
                             }
+                        } else if (playerHtml.contains("helvid.net")) {
+                            val iframeSrc = Jsoup.parse(playerHtml).selectFirst("iframe")?.attr("src")
+                            if (iframeSrc != null) {
+                                val helvidPage = app.get(iframeSrc, referer = ajaxUrl).text
+                                val helvidRegex = Regex("""file:\s*"([^"]+\.m3u8)"""")
+                                val m3u8Url = helvidRegex.find(helvidPage)?.groupValues?.get(1)
+                                if (m3u8Url != null) {
+                                    callback(
+                                        ExtractorLink(
+                                            source = this@HHTQProvider.name,
+                                            name = "${this@HHTQProvider.name} $serverName (Helvid)",
+                                            url = m3u8Url,
+                                            referer = "https://helvid.net/",
+                                            quality = Qualities.Unknown.value,
+                                            type = ExtractorLinkType.M3U8
+                                        )
+                                    )
+                                }
+                            }
                         }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
                     }
-                } catch (e: Exception) {
-                    // Lỗi ở một server sẽ không ảnh hưởng đến server khác
-                    e.printStackTrace()
                 }
-            }
-        }.awaitAll() // Chờ tất cả các tác vụ song song hoàn thành
-        // ================================= FIX END =================================
+            }.awaitAll()
+        }
         
         return true
     }
