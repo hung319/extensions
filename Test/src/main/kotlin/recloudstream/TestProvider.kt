@@ -107,57 +107,49 @@ class KuraKura21Provider : MainAPI() {
         referer: String,
         callback: (ExtractorLink) -> Unit
     ) {
-        try {
-            val document = app.get(url, referer = referer).text
-            val packedJsRegex = """(eval\(function\(p,a,c,k,e,d\)\{.+?\}\(.*?split\('\|'\)\)\))""".toRegex()
-            val packedJs = packedJsRegex.find(document)?.groupValues?.get(1)
-            if (packedJs == null) {
-                println("Filemoon Extractor: Không tìm thấy packed script.")
-                return
-            }
+        // Khối try-catch chính đã có trong hàm gọi (loadLinks), nên ở đây ta chỉ cần throw lỗi
+        val document = app.get(url, referer = referer).text
+        val packedJsRegex = """(eval\(function\(p,a,c,k,e,d\)\{.+?\}\(.*?split\('\|'\)\)\))""".toRegex()
+        val packedJs = packedJsRegex.find(document)?.groupValues?.get(1)
+            // === CẬP NHẬT LOGGING ===
+            ?: throw Exception("Filemoon Extractor: Không tìm thấy packed script.")
 
-            fun unpack(script: String): String {
-                val unpackRegex = Regex("""eval\(function\(p,a,c,k,e,d\)\{.*return p\}\('(.*)',\d+,\d+,'(.*)'\.split\('\|'\)\)\)""")
-                val match = unpackRegex.find(script) ?: return ""
-                var payload = match.groupValues[1]
-                val dictionary = match.groupValues[2].split("|")
-                val lookup = mutableMapOf<String, String>()
-                for (i in dictionary.indices.reversed()) {
-                    val key = i.toString(36)
-                    lookup[key] = if (dictionary[i].isNotBlank()) dictionary[i] else key
-                }
-                return payload.replace(Regex("""\b\w+\b""")) {
-                    lookup[it.value] ?: it.value
-                }
+        fun unpack(script: String): String {
+            val unpackRegex = Regex("""eval\(function\(p,a,c,k,e,d\)\{.*return p\}\('(.*)',\d+,\d+,'(.*)'\.split\('\|'\)\)\)""")
+            val match = unpackRegex.find(script) ?: return ""
+            val payload = match.groupValues[1]
+            val dictionary = match.groupValues[2].split("|")
+            val lookup = mutableMapOf<String, String>()
+            for (i in dictionary.indices.reversed()) {
+                val key = i.toString(36)
+                lookup[key] = if (dictionary[i].isNotBlank()) dictionary[i] else key
             }
-
-            val unpackedJs = unpack(packedJs)
-            if (unpackedJs.isBlank()) {
-                println("Filemoon Extractor: Giải mã script thất bại.")
-                return
+            return payload.replace(Regex("""\b\w+\b""")) {
+                lookup[it.value] ?: it.value
             }
-
-            val m3u8Regex = """file":"([^"]+master\.m3u8[^"]+)"""".toRegex()
-            val m3u8Url = m3u8Regex.find(unpackedJs)?.groupValues?.get(1)
-            if (m3u8Url != null) {
-                callback.invoke(
-                    ExtractorLink(
-                        source = "Filemoon",
-                        name = "Filemoon HLS",
-                        url = m3u8Url,
-                        referer = "https://filemoon.to/",
-                        quality = Qualities.Unknown.value,
-                        // === ĐÃ CẬP NHẬT Ở ĐÂY ===
-                        type = ExtractorLinkType.M3U8
-                    )
-                )
-            } else {
-                 println("Filemoon Extractor: Không tìm thấy link M3U8 trong script đã giải mã.")
-            }
-
-        } catch (e: Exception) {
-            e.printStackTrace()
         }
+
+        val unpackedJs = unpack(packedJs)
+        if (unpackedJs.isBlank()) {
+            // === CẬP NHẬT LOGGING ===
+            throw Exception("Filemoon Extractor: Giải mã script thất bại, script rỗng.")
+        }
+
+        val m3u8Regex = """file":"([^"]+master\.m3u8[^"]+)"""".toRegex()
+        val m3u8Url = m3u8Regex.find(unpackedJs)?.groupValues?.get(1)
+            // === CẬP NHẬT LOGGING ===
+            ?: throw Exception("Filemoon Extractor: Không tìm thấy link M3U8 trong script đã giải mã.")
+        
+        callback.invoke(
+            ExtractorLink(
+                source = "Filemoon",
+                name = "Filemoon HLS",
+                url = m3u8Url,
+                referer = "https://filemoon.to/",
+                quality = Qualities.Unknown.value,
+                type = ExtractorLinkType.M3U8
+            )
+        )
     }
 
     override suspend fun loadLinks(
@@ -206,6 +198,7 @@ class KuraKura21Provider : MainAPI() {
                             }
                         }
                     } catch (e: Exception) {
+                        // Khối này sẽ bắt Exception từ filemoonExtractor và in ra log
                         e.printStackTrace()
                     }
                 }
