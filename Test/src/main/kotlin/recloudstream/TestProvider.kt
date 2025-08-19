@@ -1,155 +1,78 @@
-package recloudstream
+// Save this file as HHTQProvider.kt
+package recloudstream // Tên package đã được thay đổi
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.M3u8Helper
 import org.jsoup.nodes.Element
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.awaitAll
-// Thêm import cho ExtractorLinkType
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
 
-class KuraKura21Provider : MainAPI() {
-    override var name = "KuraKura21"
-    override var mainUrl = "https://kurakura21.it.com"
-    override var lang = "id"
-    override var hasMainPage = true
-
+class HHTQProvider : MainAPI() {
+    override var mainUrl = "https://hhtq4k.top"
+    override var name = "HHTQ4K"
+    override val hasMainPage = true
+    override var lang = "vi"
     override val supportedTypes = setOf(
-        TvType.NSFW
+        TvType.Cartoon,
+        TvType.Anime,
+        TvType.Movie
     )
 
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val pages = listOf(
-            Pair("Best Rating", "$mainUrl/best-rating/"),
-            Pair("18+ Sub Indo", "$mainUrl/tag/18-sub-indo/"),
-            Pair("Jav Sub Indo", "$mainUrl/genre/jav-sub-indo/"),
-            Pair("Korea 18+", "$mainUrl/genre/korea-18/")
-        )
+    override val mainPage = mainPageOf(
+        "$mainUrl/phim-moi-cap-nhat/page/" to "Phim Mới Cập Nhật",
+        "$mainUrl/the-loai/hoat-hinh-trung-quoc/page/" to "Hoạt Hình Trung Quốc",
+        "$mainUrl/the-loai/tien-hiep/page/" to "Tiên Hiệp",
+        "$mainUrl/the-loai/huyen-huyen/page/" to "Huyền Huyễn",
+    )
 
-        return coroutineScope {
-            val mainPageDocument = app.get(mainUrl).document
-            val recentPosts = HomePageList(
-                "RECENT POST",
-                mainPageDocument.select("div.gmr-item-modulepost").mapNotNull {
-                    it.toSearchResult()
-                }
-            )
-
-            val otherLists = pages.map { (name, url) ->
-                async {
-                    try {
-                        val document = app.get(url).document
-                        val list = document.select("article.item-infinite").mapNotNull { element ->
-                            element.toSearchResult()
-                        }
-                        HomePageList(name, list)
-                    } catch (e: Exception) {
-                        null
-                    }
-                }
-            }.awaitAll().filterNotNull()
-            
-            newHomePageResponse(listOf(recentPosts) + otherLists)
-        }
+    override suspend fun getMainPage(
+        page: Int,
+        request: MainPageRequest
+    ): HomePageResponse {
+        val url = if (page == 1) request.data.removeSuffix("page/") else request.data + page
+        val document = app.get(url).document
+        val home = document.select("div.halim_box article > div.halim-content > div.movies-list > div.item")
+            .mapNotNull { it.toSearchResult() }
+        return newHomePageResponse(request.name, home)
     }
-    
-    private fun Element.toSearchResult(): SearchResponse? {
-        val href = this.selectFirst("a")?.attr("href") ?: return null
-        val title = this.selectFirst("h2.entry-title a")?.text() ?: "Không có tiêu đề"
-        val posterUrl = this.selectFirst("img")?.let { it.attr("data-src").ifBlank { it.attr("src") } }
 
-        return newMovieSearchResponse(
-            name = title,
-            url = href,
-            type = TvType.NSFW
-        ) {
+    private fun Element.toSearchResult(): SearchResponse? {
+        val title = this.selectFirst("p.entry-title a")?.text() ?: return null
+        val href = this.selectFirst("a.halim-thumb")?.attr("href") ?: return null
+        val posterUrl = this.selectFirst("a.halim-thumb img.lazy")?.attr("data-src")
+        val quality = this.selectFirst("span.halim-btn")?.text()
+        
+        return newMovieSearchResponse(title, href, TvType.Movie) {
             this.posterUrl = posterUrl
+            this.quality = getQualityFromString(quality)
         }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/?s=$query"
+        val searchUrl = "$mainUrl/search/$query"
         val document = app.get(searchUrl).document
-
-        return document.select("article.item-infinite").mapNotNull {
+        return document.select("div.halim-content > div.movies-list > div.item").mapNotNull {
             it.toSearchResult()
         }
     }
 
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
+        val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: return null
+        val poster = document.selectFirst("div.movie-thumb img.wp-post-image")?.attr("src")
+        val description = document.selectFirst("div.summary-content div.entry-content")?.text()?.trim()
 
-        val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: "Không có tiêu đề"
-        val poster = document.selectFirst("div.gmr-movie-data img")?.attr("data-src")
-        val description = document.selectFirst("div.entry-content")?.text()?.trim()
-        val tags = document.select("div.gmr-moviedata a[rel=tag]").map { it.text() }
+        // Sử dụng newEpisode thay vì constructor Episode()
+        val episodes = document.select("div#halim-list-episode ul.halim-list-eps li.halim-episode").mapNotNull {
+            val epUrl = it.selectFirst("a")?.attr("href") ?: return@mapNotNull null
+            newEpisode(epUrl) {
+                name = it.selectFirst("a")?.text()
+            }
+        }.reversed()
 
-        val recommendations = document.select("div.gmr-grid:has(h3.gmr-related-title) article.item").mapNotNull {
-            it.toSearchResult()
-        }
-
-        return newMovieLoadResponse(
-            name = title,
-            url = url,
-            type = TvType.NSFW,
-            dataUrl = url
-        ) {
+        return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
             this.posterUrl = poster
             this.plot = description
-            this.tags = tags
-            this.recommendations = recommendations
         }
-    }
-
-    private suspend fun filemoonExtractor(
-        url: String,
-        referer: String,
-        callback: (ExtractorLink) -> Unit
-    ) {
-        // Khối try-catch chính đã có trong hàm gọi (loadLinks), nên ở đây ta chỉ cần throw lỗi
-        val document = app.get(url, referer = referer).text
-        val packedJsRegex = """(eval\(function\(p,a,c,k,e,d\)\{.+?\}\(.*?split\('\|'\)\)\))""".toRegex()
-        val packedJs = packedJsRegex.find(document)?.groupValues?.get(1)
-            // === CẬP NHẬT LOGGING ===
-            ?: throw Exception("Filemoon Extractor: Không tìm thấy packed script.")
-
-        fun unpack(script: String): String {
-            val unpackRegex = Regex("""eval\(function\(p,a,c,k,e,d\)\{.*return p\}\('(.*)',\d+,\d+,'(.*)'\.split\('\|'\)\)\)""")
-            val match = unpackRegex.find(script) ?: return ""
-            val payload = match.groupValues[1]
-            val dictionary = match.groupValues[2].split("|")
-            val lookup = mutableMapOf<String, String>()
-            for (i in dictionary.indices.reversed()) {
-                val key = i.toString(36)
-                lookup[key] = if (dictionary[i].isNotBlank()) dictionary[i] else key
-            }
-            return payload.replace(Regex("""\b\w+\b""")) {
-                lookup[it.value] ?: it.value
-            }
-        }
-
-        val unpackedJs = unpack(packedJs)
-        if (unpackedJs.isBlank()) {
-            // === CẬP NHẬT LOGGING ===
-            throw Exception("Filemoon Extractor: Giải mã script thất bại, script rỗng.")
-        }
-
-        val m3u8Regex = """file":"([^"]+master\.m3u8[^"]+)"""".toRegex()
-        val m3u8Url = m3u8Regex.find(unpackedJs)?.groupValues?.get(1)
-            // === CẬP NHẬT LOGGING ===
-            ?: throw Exception("Filemoon Extractor: Không tìm thấy link M3U8 trong script đã giải mã.")
-        
-        callback.invoke(
-            ExtractorLink(
-                source = "Filemoon",
-                name = "Filemoon HLS",
-                url = m3u8Url,
-                referer = "https://filemoon.to/",
-                quality = Qualities.Unknown.value,
-                type = ExtractorLinkType.M3U8
-            )
-        )
     }
 
     override suspend fun loadLinks(
@@ -158,66 +81,23 @@ class KuraKura21Provider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val pageUrl = data
-        val document = app.get(pageUrl, referer = mainUrl).document
-
-        val postId = document.selectFirst("body[class*='postid-']")
-            ?.attr("class")
-            ?.split(" ")
-            ?.find { it.startsWith("postid-") }
-            ?.removePrefix("postid-")
+        // Step 1: Get the main episode page to find the iframe URL
+        val episodePage = app.get(data).document
+        val iframeSrc = episodePage.selectFirst("div#halim-player-wrapper iframe")?.attr("src")
             ?: return false
 
-        val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
+        // Step 2: Get the content of the iframe
+        val iframeContent = app.get(iframeSrc, referer = data).text
 
-        coroutineScope {
-            // Lấy link streaming
-            document.select("ul.muvipro-player-tabs li a").map { tab ->
-                async {
-                    try {
-                        val tabId = tab.attr("href").removePrefix("#")
-                        if (tabId.isEmpty()) return@async
-
-                        val postData = mapOf(
-                            "action" to "muvipro_player_content",
-                            "tab" to tabId,
-                            "post_id" to postId
-                        )
-
-                        val playerContent = app.post(
-                            url = ajaxUrl,
-                            data = postData,
-                            referer = pageUrl
-                        ).document
-
-                        playerContent.select("iframe").firstOrNull()?.attr("src")?.let { iframeSrc ->
-                            if (iframeSrc.contains("filemoon.to")) {
-                                filemoonExtractor(iframeSrc, pageUrl, callback)
-                            } else {
-                                loadExtractor(iframeSrc, pageUrl, subtitleCallback, callback)
-                            }
-                        }
-                    } catch (e: Exception) {
-                        // Khối này sẽ bắt Exception từ filemoonExtractor và in ra log
-                        e.printStackTrace()
-                    }
-                }
-            }.awaitAll()
-
-            // Lấy link download
-            document.select("div#download a.button").map { downloadButton ->
-                async {
-                    try {
-                        val downloadUrl = downloadButton.attr("href")
-                        if (downloadUrl.isNotBlank()) {
-                            loadExtractor(downloadUrl, pageUrl, subtitleCallback, callback)
-                        }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
-                }
-            }.awaitAll()
-        }
+        // Step 3: Extract the m3u8 link from the iframe's content
+        val m3u8Pattern = Regex("""(https?://[^\s'"]+\.m3u8)""")
+        val m3u8Link = m3u8Pattern.find(iframeContent)?.value ?: return false
+        
+        M3u8Helper.generateM3u8(
+            this.name,
+            m3u8Link,
+            referer = mainUrl
+        ).forEach(callback)
 
         return true
     }
