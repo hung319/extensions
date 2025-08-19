@@ -32,6 +32,8 @@ class HHTQProvider : MainAPI() {
         "$mainUrl/the-loai/huyen-huyen/page/" to "Huyền Huyễn",
     )
 
+    // ================================ FIX START ================================
+
     // Helper function used for both MainPage and Search
     private fun Element.toSearchResult(): SearchResponse? {
         val thumb = this.selectFirst("a.halim-thumb") ?: return null
@@ -40,15 +42,19 @@ class HHTQProvider : MainAPI() {
         if (title.isBlank()) return null
 
         val posterUrl = thumb.selectFirst("img")?.attr("data-src")
-        val latestEpisode = thumb.selectFirst("span.episode")?.text()
+        
+        // Sửa lỗi: Lấy chuỗi chất lượng từ span.status
+        val qualityString = thumb.selectFirst("span.status")?.text()
 
         return newMovieSearchResponse(title, href, TvType.Movie) {
             this.posterUrl = posterUrl
-            if (latestEpisode != null) {
-                this.quality = SearchQuality(latestEpisode)
-            }
+            // Sử dụng hàm getQualityFromString để chuyển đổi chuỗi thành enum SearchQuality một cách an toàn
+            this.quality = getQualityFromString(qualityString)
         }
     }
+    
+    // ================================= FIX END =================================
+
 
     override suspend fun getMainPage(
         page: Int,
@@ -72,26 +78,20 @@ class HHTQProvider : MainAPI() {
         }
     }
 
-    // ================================ UPDATE START ================================
 
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
-
-        // Cập nhật các selector để lấy thông tin phim
         val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: return null
         val poster = document.selectFirst("div.movie-poster img.movie-thumb")?.attr("src")
         val description = document.selectFirst("div.entry-content.htmlwrap")?.text()?.trim()
 
-        // Cập nhật selector để lấy danh sách tập phim
         val episodes = document.select("ul.halim-list-eps li.halim-episode-item").mapNotNull {
             val epUrl = it.selectFirst("a")?.attr("href") ?: return@mapNotNull null
             newEpisode(epUrl) {
-                // Tên tập phim nằm trong thẻ span
                 name = it.selectFirst("a span")?.text()
             }
-        }.reversed() // Đảo ngược danh sách để tập 1 ở đầu
+        }.reversed()
 
-        // Thêm tính năng phim đề xuất
         val recommendations = document.select("section.related-movies article.grid-item").mapNotNull {
             it.toSearchResult()
         }
@@ -102,9 +102,6 @@ class HHTQProvider : MainAPI() {
             this.recommendations = recommendations
         }
     }
-
-    // ================================= UPDATE END =================================
-
 
     override suspend fun loadLinks(
         data: String,
