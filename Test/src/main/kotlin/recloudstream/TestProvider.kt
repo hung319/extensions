@@ -3,9 +3,8 @@ package recloudstream
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
-// ================================ FIX: ADD MISSING IMPORT ================================
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson 
-// =========================================================================================
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.M3u8Helper
 import org.jsoup.Jsoup
@@ -20,7 +19,18 @@ data class PlayerResponse(
 // Data class for parsing episode info from the script tag's JSON
 data class EpisodeJson(
     @JsonProperty("postUrl") val postUrl: String?,
-    @JsonProperty("episodeName") val episodeName: String?
+    @JsonProperty("episodeName") val episodeName: String?,
+    @JsonProperty("postId") val postId: Int?,
+    @JsonProperty("episodeSlug") val episodeSlug: String?,
+    @JsonProperty("serverId") val serverId: Int?
+)
+
+// Data class to pass all necessary info from `load` to `loadLinks`
+data class EpisodeData(
+    val postId: String,
+    val episodeSlug: String,
+    val serverId: String,
+    val referer: String
 )
 
 class HHTQProvider : MainAPI() {
@@ -34,12 +44,30 @@ class HHTQProvider : MainAPI() {
         TvType.Anime
     )
 
+    // ================================ UPDATE START ================================
+    
+    // Simplified homepage
     override val mainPage = mainPageOf(
-        "$mainUrl/phim-moi-cap-nhat/page/" to "Phim Mới Cập Nhật",
-        "$mainUrl/the-loai/hoat-hinh-trung-quoc/page/" to "Hoạt Hình Trung Quốc",
-        "$mainUrl/the-loai/tien-hiep/page/" to "Tiên Hiệp",
-        "$mainUrl/the-loai/huyen-huyen/page/" to "Huyền Huyễn",
+        mainUrl to "Trang Chủ"
     )
+
+    override suspend fun getMainPage(
+        page: Int,
+        request: MainPageRequest
+    ): HomePageResponse {
+        // Adjusted URL for pagination from root
+        val url = if (page > 1) {
+            request.data.removeSuffix("/") + "/page/$page"
+        } else {
+            request.data
+        }
+        val document = app.get(url).document
+        
+        val home = document.select("div.halim_box article.grid-item")
+            .mapNotNull { it.toSearchResult() }
+            
+        return newHomePageResponse(request.name, home)
+    }
 
     private fun Element.toSearchResult(): SearchResponse? {
         val thumb = this.selectFirst("a.halim-thumb") ?: return null
@@ -55,19 +83,8 @@ class HHTQProvider : MainAPI() {
             this.quality = getQualityFromString(qualityString)
         }
     }
-
-    override suspend fun getMainPage(
-        page: Int,
-        request: MainPageRequest
-    ): HomePageResponse {
-        val url = if (page == 1) request.data.removeSuffix("page/") else request.data + page
-        val document = app.get(url).document
-        
-        val home = document.select("div.halim_box article.grid-item")
-            .mapNotNull { it.toSearchResult() }
-            
-        return newHomePageResponse(request.name, home)
-    }
+    
+    // ================================= UPDATE END =================================
 
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/search/$query"
@@ -92,13 +109,21 @@ class HHTQProvider : MainAPI() {
             val jsonString = jsonRegex.find(script)?.groupValues?.get(1)
             
             try {
-                // With the import, parseJson can now be resolved correctly.
-                val parsedData = parseJson<List<List<EpisodeJson>>>(jsonString ?: "[]")
-                parsedData.flatten().mapNotNull { epJson ->
-                        val epUrl = epJson.postUrl ?: return@mapNotNull null
+                parseJson<List<List<EpisodeJson>>>(jsonString ?: "[]")
+                    .flatten()
+                    .mapNotNull { epJson ->
                         val epName = epJson.episodeName
-                        newEpisode(epUrl) {
-                            name = epName
+                        // Create a data object with all necessary info for loadLinks
+                        val episodeData = EpisodeData(
+                            postId = epJson.postId.toString(),
+                            episodeSlug = epJson.episodeSlug ?: "",
+                            serverId = epJson.serverId.toString(),
+                            referer = epJson.postUrl ?: url
+                        ).toJson() // Convert to JSON string
+
+                        newEpisode(episodeData) {
+                            // Add "Tập" prefix to episode name
+                            name = "Tập $epName"
                         }
                     }.reversed()
             } catch (e: Exception) {
@@ -123,27 +148,28 @@ class HHTQProvider : MainAPI() {
     }
 
     override suspend fun loadLinks(
-        data: String,
+        data: String, // This is now a JSON string of EpisodeData
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val episodeDocument = app.get(data).document
-        val servers = episodeDocument.select("ul.halim-list-server li.halim-server-items")
+        // Parse the JSON string back to an object
+        val episodeData = parseJson<EpisodeData>(data)
 
-        servers.apmap { server ->
+        // Loop through potential sub-servers (usually 1 and 2)
+        (1..2).apmap { subsvId ->
             try {
-                val episodeSlug = server.attr("data-episode-slug")
-                val serverId = server.attr("data-server-id")
-                val subsvId = server.attr("data-subsv-id")
-                val postId = server.attr("data-post-id")
-                val serverName = server.text().trim()
-
-                val ajaxUrl = "$mainUrl/wp-content/themes/halimmovies/player.php?episode_slug=$episodeSlug&server_id=$serverId&subsv_id=$subsvId&post_id=$postId"
+                val serverName = "Server $subsvId"
+                val ajaxUrl = "$mainUrl/wp-content/themes/halimmovies/player.php?" + 
+                              "episode_slug=${episodeData.episodeSlug}&" + 
+                              "server_id=${episodeData.serverId}&" +
+                              "subsv_id=$subsvId&" +
+                              "post_id=${episodeData.postId}"
+                
                 val headers = mapOf(
                     "Accept" to "application/json, text/javascript, */*; q=0.01",
                     "X-Requested-With" to "XMLHttpRequest",
-                    "Referer" to data
+                    "Referer" to episodeData.referer
                 )
                 
                 val playerResponse = app.get(ajaxUrl, headers = headers).parsed<PlayerResponse>()
@@ -177,7 +203,6 @@ class HHTQProvider : MainAPI() {
                 e.printStackTrace()
             }
         }
-
         return true
     }
 }
