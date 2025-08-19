@@ -1,10 +1,18 @@
 // Save this file as HHTQProvider.kt
-package recloudstream // Tên package đã được thay đổi
+package recloudstream
 
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.M3u8Helper
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
+
+// Data class to parse the JSON response from the server AJAX call
+data class PlayerResponse(
+    @JsonProperty("status") val status: Boolean,
+    @JsonProperty("html") val html: String
+)
 
 class HHTQProvider : MainAPI() {
     override var mainUrl = "https://hhtq4k.top"
@@ -24,56 +32,79 @@ class HHTQProvider : MainAPI() {
         "$mainUrl/the-loai/huyen-huyen/page/" to "Huyền Huyễn",
     )
 
+    // Helper function used for both MainPage and Search
+    private fun Element.toSearchResult(): SearchResponse? {
+        val thumb = this.selectFirst("a.halim-thumb") ?: return null
+        val href = thumb.attr("href")
+        val title = thumb.selectFirst("h2.entry-title")?.text() ?: thumb.attr("title")
+        if (title.isBlank()) return null
+
+        val posterUrl = thumb.selectFirst("img")?.attr("data-src")
+        val latestEpisode = thumb.selectFirst("span.episode")?.text()
+
+        return newMovieSearchResponse(title, href, TvType.Movie) {
+            this.posterUrl = posterUrl
+            if (latestEpisode != null) {
+                this.quality = SearchQuality(latestEpisode)
+            }
+        }
+    }
+
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
         val url = if (page == 1) request.data.removeSuffix("page/") else request.data + page
         val document = app.get(url).document
-        val home = document.select("div.halim_box article > div.halim-content > div.movies-list > div.item")
-            .mapNotNull { it.toSearchResult() }
-        return newHomePageResponse(request.name, home)
-    }
-
-    private fun Element.toSearchResult(): SearchResponse? {
-        val title = this.selectFirst("p.entry-title a")?.text() ?: return null
-        val href = this.selectFirst("a.halim-thumb")?.attr("href") ?: return null
-        val posterUrl = this.selectFirst("a.halim-thumb img.lazy")?.attr("data-src")
-        val quality = this.selectFirst("span.halim-btn")?.text()
         
-        return newMovieSearchResponse(title, href, TvType.Movie) {
-            this.posterUrl = posterUrl
-            this.quality = getQualityFromString(quality)
-        }
+        val home = document.select("div.halim_box article.grid-item")
+            .mapNotNull { it.toSearchResult() }
+            
+        return newHomePageResponse(request.name, home)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/search/$query"
         val document = app.get(searchUrl).document
-        return document.select("div.halim-content > div.movies-list > div.item").mapNotNull {
+        
+        return document.select("div.halim_box article.grid-item").mapNotNull {
             it.toSearchResult()
         }
     }
 
+    // ================================ UPDATE START ================================
+
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
-        val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: return null
-        val poster = document.selectFirst("div.movie-thumb img.wp-post-image")?.attr("src")
-        val description = document.selectFirst("div.summary-content div.entry-content")?.text()?.trim()
 
-        // Sử dụng newEpisode thay vì constructor Episode()
-        val episodes = document.select("div#halim-list-episode ul.halim-list-eps li.halim-episode").mapNotNull {
+        // Cập nhật các selector để lấy thông tin phim
+        val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: return null
+        val poster = document.selectFirst("div.movie-poster img.movie-thumb")?.attr("src")
+        val description = document.selectFirst("div.entry-content.htmlwrap")?.text()?.trim()
+
+        // Cập nhật selector để lấy danh sách tập phim
+        val episodes = document.select("ul.halim-list-eps li.halim-episode-item").mapNotNull {
             val epUrl = it.selectFirst("a")?.attr("href") ?: return@mapNotNull null
             newEpisode(epUrl) {
-                name = it.selectFirst("a")?.text()
+                // Tên tập phim nằm trong thẻ span
+                name = it.selectFirst("a span")?.text()
             }
-        }.reversed()
+        }.reversed() // Đảo ngược danh sách để tập 1 ở đầu
+
+        // Thêm tính năng phim đề xuất
+        val recommendations = document.select("section.related-movies article.grid-item").mapNotNull {
+            it.toSearchResult()
+        }
 
         return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
             this.posterUrl = poster
             this.plot = description
+            this.recommendations = recommendations
         }
     }
+
+    // ================================= UPDATE END =================================
+
 
     override suspend fun loadLinks(
         data: String,
@@ -81,23 +112,55 @@ class HHTQProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Step 1: Get the main episode page to find the iframe URL
-        val episodePage = app.get(data).document
-        val iframeSrc = episodePage.selectFirst("div#halim-player-wrapper iframe")?.attr("src")
-            ?: return false
+        val episodeDocument = app.get(data).document
+        val servers = episodeDocument.select("ul.halim-list-server li.halim-server-items")
 
-        // Step 2: Get the content of the iframe
-        val iframeContent = app.get(iframeSrc, referer = data).text
+        servers.apmap { server ->
+            try {
+                val episodeSlug = server.attr("data-episode-slug")
+                val serverId = server.attr("data-server-id")
+                val subsvId = server.attr("data-subsv-id")
+                val postId = server.attr("data-post-id")
+                val serverName = server.text().trim()
 
-        // Step 3: Extract the m3u8 link from the iframe's content
-        val m3u8Pattern = Regex("""(https?://[^\s'"]+\.m3u8)""")
-        val m3u8Link = m3u8Pattern.find(iframeContent)?.value ?: return false
-        
-        M3u8Helper.generateM3u8(
-            this.name,
-            m3u8Link,
-            referer = mainUrl
-        ).forEach(callback)
+                val ajaxUrl = "$mainUrl/wp-content/themes/halimmovies/player.php?episode_slug=$episodeSlug&server_id=$serverId&subsv_id=$subsvId&post_id=$postId"
+                val headers = mapOf(
+                    "Accept" to "application/json, text/javascript, */*; q=0.01",
+                    "X-Requested-With" to "XMLHttpRequest",
+                    "Referer" to data
+                )
+                
+                val playerResponse = app.get(ajaxUrl, headers = headers).parsed<PlayerResponse>()
+                val playerHtml = playerResponse.html
+
+                if (playerHtml.contains("jwplayer('ajax-player')")) {
+                    val m3u8Regex = Regex("""sources:\s*\[\{"file":"([^"]+?)","type":"hls"\}\]""")
+                    m3u8Regex.find(playerHtml)?.groupValues?.get(1)?.let { m3u8Url ->
+                        val cleanUrl = m3u8Url.replace("\\/", "/")
+                        M3u8Helper.generateM3u8(
+                            "$name $serverName",
+                            cleanUrl,
+                            mainUrl
+                        ).forEach(callback)
+                    }
+                } 
+                else if (playerHtml.contains("helvid.net")) {
+                    Jsoup.parse(playerHtml).selectFirst("iframe")?.attr("src")?.let { iframeSrc ->
+                        val helvidPage = app.get(iframeSrc, referer = ajaxUrl).text
+                        val helvidRegex = Regex("""file:\s*"([^"]+\.m3u8)"""")
+                        helvidRegex.find(helvidPage)?.groupValues?.get(1)?.let { m3u8Url ->
+                            M3u8Helper.generateM3u8(
+                                "$name $serverName (Helvid)",
+                                m3u8Url,
+                                "https://helvid.net/"
+                            ).forEach(callback)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
 
         return true
     }
