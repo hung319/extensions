@@ -6,6 +6,8 @@ import org.jsoup.nodes.Element
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.awaitAll
+// Thêm import cho ExtractorLinkType
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 
 class KuraKura21Provider : MainAPI() {
     override var name = "KuraKura21"
@@ -39,7 +41,7 @@ class KuraKura21Provider : MainAPI() {
                     try {
                         val document = app.get(url).document
                         val list = document.select("article.item-infinite").mapNotNull { element ->
-                            element.toSearchResult() // Sử dụng lại helper function
+                            element.toSearchResult()
                         }
                         HomePageList(name, list)
                     } catch (e: Exception) {
@@ -70,7 +72,6 @@ class KuraKura21Provider : MainAPI() {
         val searchUrl = "$mainUrl/?s=$query"
         val document = app.get(searchUrl).document
 
-        // Cải tiến: Sử dụng lại toSearchResult() cho code gọn hơn
         return document.select("article.item-infinite").mapNotNull {
             it.toSearchResult()
         }
@@ -146,7 +147,8 @@ class KuraKura21Provider : MainAPI() {
                         url = m3u8Url,
                         referer = "https://filemoon.to/",
                         quality = Qualities.Unknown.value,
-                        isM3u8 = true
+                        // === ĐÃ CẬP NHẬT Ở ĐÂY ===
+                        type = ExtractorLinkType.M3U8
                     )
                 )
             } else {
