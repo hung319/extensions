@@ -51,8 +51,6 @@ class HHTQProvider : MainAPI() {
         TvType.Anime
     )
 
-    // ================================ UPDATE START ================================
-    // Simplified homepage, removed pagination
     override val mainPage = mainPageOf(
         mainUrl to "Trang Chủ"
     )
@@ -61,7 +59,6 @@ class HHTQProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        // Pagination logic is removed as we only have one main page
         val document = app.get(request.data).document
         
         val home = document.select("div.halim_box article.grid-item")
@@ -69,7 +66,6 @@ class HHTQProvider : MainAPI() {
             
         return newHomePageResponse(request.name, home)
     }
-    // ================================= UPDATE END =================================
 
     private fun Element.toSearchResult(): SearchResponse? {
         val thumb = this.selectFirst("a.halim-thumb") ?: return null
@@ -145,14 +141,13 @@ class HHTQProvider : MainAPI() {
         }
     }
 
-    // ================================ UPDATE START: DETAILED LOGGING ================================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d(TAG, "loadLinks started with data: $data")
+        Log.e(TAG, "loadLinks started with data: $data")
         val episodeData = parseJson<EpisodeData>(data)
 
         (1..2).toList().apmap { subsvId ->
@@ -163,7 +158,7 @@ class HHTQProvider : MainAPI() {
                               "server_id=${episodeData.serverId}&" +
                               "subsv_id=$subsvId&" +
                               "post_id=${episodeData.postId}"
-                Log.d(TAG, "Requesting AJAX URL: $ajaxUrl")
+                Log.e(TAG, "Requesting AJAX URL: $ajaxUrl")
                 
                 val headers = mapOf(
                     "Accept" to "application/json, text/javascript, */*; q=0.01",
@@ -173,49 +168,65 @@ class HHTQProvider : MainAPI() {
                 
                 val playerResponse = app.get(ajaxUrl, headers = headers).parsed<PlayerResponse>()
                 val playerHtml = playerResponse.html
-                Log.d(TAG, "Received player HTML for $serverName: $playerHtml")
+                Log.e(TAG, "Received player HTML for $serverName: $playerHtml")
 
                 if (playerHtml.contains("jwplayer('ajax-player')")) {
-                    Log.d(TAG, "Found JWPlayer in response for $serverName")
+                    Log.e(TAG, "Found JWPlayer in response for $serverName")
                     val m3u8Regex = Regex("""sources:\s*\[\{"file":"([^"]+?)","type":"hls"\}\]""")
                     val m3u8Url = m3u8Regex.find(playerHtml)?.groupValues?.get(1)
                     if (m3u8Url != null) {
                         val cleanUrl = m3u8Url.replace("\\/", "/")
-                        Log.d(TAG, "Extracted m3u8 link: $cleanUrl")
+                        Log.e(TAG, "Extracted m3u8 link: $cleanUrl")
+                        // ================================ UPDATE START ================================
                         callback(
-                            ExtractorLink(this.name, "$name $serverName", cleanUrl, mainUrl, Qualities.Unknown.value, ExtractorLinkType.M3U8)
+                            ExtractorLink(
+                                source = this.name,
+                                name = "$name $serverName",
+                                url = cleanUrl,
+                                referer = mainUrl,
+                                quality = Qualities.Unknown.value,
+                                type = ExtractorLinkType.M3U8
+                            )
                         )
+                        // ================================= UPDATE END =================================
                     } else {
-                        Log.w(TAG, "JWPlayer found but m3u8 URL was not extracted.")
+                        Log.e(TAG, "JWPlayer found but m3u8 URL was not extracted.")
                     }
                 } 
                 else if (playerHtml.contains("helvid.net")) {
-                    Log.d(TAG, "Found helvid.net iframe in response for $serverName")
+                    Log.e(TAG, "Found helvid.net iframe in response for $serverName")
                     val iframeSrc = Jsoup.parse(playerHtml).selectFirst("iframe")?.attr("src")
                     if (iframeSrc != null) {
-                        Log.d(TAG, "Iframe src: $iframeSrc")
+                        Log.e(TAG, "Iframe src: $iframeSrc")
                         val helvidPage = app.get(iframeSrc, referer = ajaxUrl).text
                         val helvidRegex = Regex("""file:\s*"([^"]+\.m3u8)"""")
                         val m3u8Url = helvidRegex.find(helvidPage)?.groupValues?.get(1)
                         if (m3u8Url != null) {
-                            Log.d(TAG, "Extracted m3u8 link from Helvid: $m3u8Url")
+                            Log.e(TAG, "Extracted m3u8 link from Helvid: $m3u8Url")
+                            // ================================ UPDATE START ================================
                             callback(
-                                ExtractorLink(this.name, "$name $serverName (Helvid)", m3u8Url, "https://helvid.net/", Qualities.Unknown.value, ExtractorLinkType.M3U8)
+                                ExtractorLink(
+                                    source = this.name,
+                                    name = "$name $serverName (Helvid)",
+                                    url = m3u8Url,
+                                    referer = "https://helvid.net/",
+                                    quality = Qualities.Unknown.value,
+                                    type = ExtractorLinkType.M3U8
+                                )
                             )
+                            // ================================= UPDATE END =================================
                         } else {
-                            Log.w(TAG, "Helvid iframe found but m3u8 URL was not extracted.")
+                            Log.e(TAG, "Helvid iframe found but m3u8 URL was not extracted.")
                         }
                     }
                 } else {
-                     Log.w(TAG, "No known player found for $serverName.")
+                     Log.e(TAG, "No known player found for $serverName.")
                 }
             } catch (e: Exception) {
-                // Log the detailed error message and then re-throw it to make it visible in the tester.
                 Log.e(TAG, "Error in loadLinks for subsvId $subsvId: ${e.message}", e)
                 throw e
             }
         }
         return true
     }
-    // ================================= UPDATE END =================================
 }
