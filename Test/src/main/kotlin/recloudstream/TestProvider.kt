@@ -6,7 +6,8 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.M3u8Helper
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 
@@ -44,9 +45,6 @@ class HHTQProvider : MainAPI() {
         TvType.Anime
     )
 
-    // ================================ UPDATE START ================================
-    
-    // Simplified homepage
     override val mainPage = mainPageOf(
         mainUrl to "Trang Chủ"
     )
@@ -55,7 +53,6 @@ class HHTQProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        // Adjusted URL for pagination from root
         val url = if (page > 1) {
             request.data.removeSuffix("/") + "/page/$page"
         } else {
@@ -83,8 +80,6 @@ class HHTQProvider : MainAPI() {
             this.quality = getQualityFromString(qualityString)
         }
     }
-    
-    // ================================= UPDATE END =================================
 
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/search/$query"
@@ -113,16 +108,14 @@ class HHTQProvider : MainAPI() {
                     .flatten()
                     .mapNotNull { epJson ->
                         val epName = epJson.episodeName
-                        // Create a data object with all necessary info for loadLinks
                         val episodeData = EpisodeData(
                             postId = epJson.postId.toString(),
                             episodeSlug = epJson.episodeSlug ?: "",
                             serverId = epJson.serverId.toString(),
                             referer = epJson.postUrl ?: url
-                        ).toJson() // Convert to JSON string
+                        ).toJson()
 
                         newEpisode(episodeData) {
-                            // Add "Tập" prefix to episode name
                             name = "Tập $epName"
                         }
                     }.reversed()
@@ -147,17 +140,17 @@ class HHTQProvider : MainAPI() {
         }
     }
 
+    // ================================ FIX START ================================
     override suspend fun loadLinks(
-        data: String, // This is now a JSON string of EpisodeData
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Parse the JSON string back to an object
         val episodeData = parseJson<EpisodeData>(data)
 
-        // Loop through potential sub-servers (usually 1 and 2)
-        (1..2).apmap { subsvId ->
+        // Sửa lỗi: Chuyển range (1..2) thành list trước khi dùng apmap
+        (1..2).toList().apmap { subsvId ->
             try {
                 val serverName = "Server $subsvId"
                 val ajaxUrl = "$mainUrl/wp-content/themes/halimmovies/player.php?" + 
@@ -177,25 +170,40 @@ class HHTQProvider : MainAPI() {
 
                 if (playerHtml.contains("jwplayer('ajax-player')")) {
                     val m3u8Regex = Regex("""sources:\s*\[\{"file":"([^"]+?)","type":"hls"\}\]""")
-                    m3u8Regex.find(playerHtml)?.groupValues?.get(1)?.let { m3u8Url ->
+                    // Sửa lỗi: Không gọi suspend function trong lambda của .let
+                    val m3u8Url = m3u8Regex.find(playerHtml)?.groupValues?.get(1)
+                    if (m3u8Url != null) {
                         val cleanUrl = m3u8Url.replace("\\/", "/")
-                        M3u8Helper.generateM3u8(
-                            "$name $serverName",
-                            cleanUrl,
-                            mainUrl
-                        ).forEach(callback)
+                        callback(
+                            ExtractorLink(
+                                source = this.name,
+                                name = "$name $serverName",
+                                url = cleanUrl,
+                                referer = mainUrl,
+                                quality = Qualities.Unknown.value,
+                                type = ExtractorLinkType.M3U8
+                            )
+                        )
                     }
                 } 
                 else if (playerHtml.contains("helvid.net")) {
-                    Jsoup.parse(playerHtml).selectFirst("iframe")?.attr("src")?.let { iframeSrc ->
+                     // Sửa lỗi: Không gọi suspend function trong lambda của .let
+                    val iframeSrc = Jsoup.parse(playerHtml).selectFirst("iframe")?.attr("src")
+                    if (iframeSrc != null) {
                         val helvidPage = app.get(iframeSrc, referer = ajaxUrl).text
                         val helvidRegex = Regex("""file:\s*"([^"]+\.m3u8)"""")
-                        helvidRegex.find(helvidPage)?.groupValues?.get(1)?.let { m3u8Url ->
-                            M3u8Helper.generateM3u8(
-                                "$name $serverName (Helvid)",
-                                m3u8Url,
-                                "https://helvid.net/"
-                            ).forEach(callback)
+                        val m3u8Url = helvidRegex.find(helvidPage)?.groupValues?.get(1)
+                        if (m3u8Url != null) {
+                            callback(
+                                ExtractorLink(
+                                    source = this.name,
+                                    name = "$name $serverName (Helvid)",
+                                    url = m3u8Url,
+                                    referer = "https://helvid.net/",
+                                    quality = Qualities.Unknown.value,
+                                    type = ExtractorLinkType.M3U8
+                                )
+                            )
                         }
                     }
                 }
@@ -205,4 +213,5 @@ class HHTQProvider : MainAPI() {
         }
         return true
     }
+    // ================================= FIX END =================================
 }
