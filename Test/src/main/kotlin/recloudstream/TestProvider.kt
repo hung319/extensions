@@ -1,109 +1,67 @@
-// To be placed in app/src/main/java/recloudstream/
 package recloudstream
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.ExtractorLink 
-import com.lagradost.cloudstream3.utils.loadExtractor
+import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.awaitAll
 
-/**
- * Main provider for SDFim
- * V2.8 - 2025-08-18
- * - Added detailed logging to `loadLinks` and throws an Exception for debugging purposes.
- */
-class SDFimProvider : MainAPI() {
-    override var name = "SDFim"
-    override var mainUrl = "https://sdfim.net"
-    override var lang = "vi"
+class KuraKura21Provider : MainAPI() {
+    override var name = "KuraKura21"
+    override var mainUrl = "https://kurakura21.it.com"
+    override var lang = "id"
     override var hasMainPage = true
-    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime)
 
-    // ... (Các hàm getMainPage, search, load, toSearchResult giữ nguyên) ...
+    override val supportedTypes = setOf(
+        TvType.NSFW
+    )
 
-    // ================== CHANGE START ==================
-    override suspend fun loadLinks(
-        data: String,
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        // Build a log string for debugging
-        var log = "--- START SDFim loadLinks DEBUG ---\n"
-        log += "Data URL: $data\n"
-
-        val document = app.get(data).document
-        log += "Fetched document HTML (first 500 chars): ${document.html().take(500)}\n\n"
-
-        var foundLinks = false
-
-        // Logic for movies with multiple server tabs
-        val movieServers = document.select("div.player_nav ul.idTabs li")
-        log += "Found ${movieServers.size} potential movie servers using selector 'div.player_nav ul.idTabs li'.\n"
-
-        if (movieServers.isNotEmpty()) {
-            movieServers.forEachIndexed { index, serverTab ->
-                val tabId = serverTab.attr("data")
-                val serverName = serverTab.selectFirst("strong")?.text() ?: "Unknown"
-                val iframe = document.selectFirst("div#$tabId iframe")
-                val iframeSrc = iframe?.attr("src")
-                
-                log += "  - Server #${index + 1}: Name='${serverName}', TabID='${tabId}', IframeSrc='${iframeSrc}'\n"
-
-                // Only process if it's a Google Drive link
-                if (iframeSrc != null && iframeSrc.contains("drive.google.com")) {
-                    log += "    -> Found Google Drive link. Attempting to load extractor...\n"
-                    if (loadExtractor(iframeSrc, data, subtitleCallback, callback)) {
-                        foundLinks = true
-                    }
-                } else {
-                     log += "    -> Skipping, not a Google Drive link.\n"
-                }
-            }
-        } else {
-            // Logic for TV series or single-player movies
-            log += "No movie server tabs found. Checking for single player iframe using selector 'div#content-embed iframe'.\n"
-            val iframe = document.selectFirst("div#content-embed iframe")
-            val iframeSrc = iframe?.attr("src")
-            log += "  - Found single iframe with src: '${iframeSrc}'\n"
-            
-            // Only process if it's a Google Drive link
-            if (iframeSrc != null && iframeSrc.contains("drive.google.com")) {
-                log += "    -> Found Google Drive link. Attempting to load extractor...\n"
-                foundLinks = loadExtractor(iframeSrc, data, subtitleCallback, callback)
-            } else {
-                 log += "    -> Skipping, not a Google Drive link.\n"
-            }
-        }
-        
-        log += "Finished processing. Found links: $foundLinks\n"
-        log += "--- END SDFim loadLinks DEBUG ---"
-        
-        // Throw exception to display the entire log
-        throw Exception(log)
-    }
-    // =================== CHANGE END ===================
-
-    // --- Các hàm không thay đổi ---
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get(mainUrl).document
-        val homePageList = ArrayList<HomePageList>()
-        document.select("div.movies-list-wrap").forEach { block ->
-            val title = block.selectFirst("div.ml-title span.pull-left")?.text() ?: "Unknown Category"
-            val movies = block.select("div.ml-item").mapNotNull { it.toSearchResult() }
-            if (movies.isNotEmpty()) {
-                homePageList.add(HomePageList(title, movies))
-            }
+        val pages = listOf(
+            Pair("Best Rating", "$mainUrl/best-rating/"),
+            Pair("18+ Sub Indo", "$mainUrl/tag/18-sub-indo/"),
+            Pair("Jav Sub Indo", "$mainUrl/genre/jav-sub-indo/"),
+            Pair("Korea 18+", "$mainUrl/genre/korea-18/")
+        )
+
+        return coroutineScope {
+            val mainPageDocument = app.get(mainUrl).document
+            val recentPosts = HomePageList(
+                "RECENT POST",
+                mainPageDocument.select("div.gmr-item-modulepost").mapNotNull {
+                    it.toSearchResult()
+                }
+            )
+
+            val otherLists = pages.map { (name, url) ->
+                async {
+                    try {
+                        val document = app.get(url).document
+                        val list = document.select("article.item-infinite").mapNotNull { element ->
+                            element.toSearchResult() // Sử dụng lại helper function
+                        }
+                        HomePageList(name, list)
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+            }.awaitAll().filterNotNull()
+            
+            newHomePageResponse(listOf(recentPosts) + otherLists)
         }
-        return HomePageResponse(homePageList)
     }
     
     private fun Element.toSearchResult(): SearchResponse? {
-        val linkElement = this.selectFirst("a.ml-mask") ?: return null
-        val href = linkElement.attr("href")
-        val title = linkElement.selectFirst("span.mli-info h2")?.text() ?: return null
-        val posterUrl = this.selectFirst("img.mli-thumb")?.attr("data-original")
-        
-        return newAnimeSearchResponse(title, href) {
+        val href = this.selectFirst("a")?.attr("href") ?: return null
+        val title = this.selectFirst("h2.entry-title a")?.text() ?: "Không có tiêu đề"
+        val posterUrl = this.selectFirst("img")?.let { it.attr("data-src").ifBlank { it.attr("src") } }
+
+        return newMovieSearchResponse(
+            name = title,
+            url = href,
+            type = TvType.NSFW
+        ) {
             this.posterUrl = posterUrl
         }
     }
@@ -111,43 +69,161 @@ class SDFimProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/?s=$query"
         val document = app.get(searchUrl).document
-        return document.select("div.ml-item").mapNotNull { it.toSearchResult() }
+
+        // Cải tiến: Sử dụng lại toSearchResult() cho code gọn hơn
+        return document.select("article.item-infinite").mapNotNull {
+            it.toSearchResult()
+        }
     }
-    
+
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
-        val title = document.selectFirst("div.mvic-desc h3")?.text()?.trim() ?: return null
-        val posterUrl = document.selectFirst("div.mvic-thumb img")?.attr("src")
-        val plot = document.selectFirst("div.mvic-desc div.desc")?.text()?.trim()
-        val tags = document.select("div.mvici-left p:contains(Thể loại) a").map { it.text() }
-        val year = document.selectFirst("div.mvici-right p:contains(Năm SX) a")?.text()?.toIntOrNull()
-        val rating = document.selectFirst("div.imdb_r span.imdb-r")?.text()?.toRatingInt()
+        val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: "Không có tiêu đề"
+        val poster = document.selectFirst("div.gmr-movie-data img")?.attr("data-src")
+        val description = document.selectFirst("div.entry-content")?.text()?.trim()
+        val tags = document.select("div.gmr-moviedata a[rel=tag]").map { it.text() }
 
-        val tvSeriesEpisodes = document.select("div#seasons div.les-content a")
-        
-        return if (tvSeriesEpisodes.isNotEmpty()) {
-            val episodes = tvSeriesEpisodes.map {
-                newEpisode(it.attr("href")) {
-                    this.name = it.text().trim()
-                }
-            }.reversed()
-
-            newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
-                this.posterUrl = posterUrl
-                this.plot = plot
-                this.tags = tags
-                this.year = year
-                this.rating = rating
-            }
-        } else {
-            newMovieLoadResponse(title, url, TvType.Movie, url) {
-                this.posterUrl = posterUrl
-                this.plot = plot
-                this.tags = tags
-                this.year = year
-                this.rating = rating
-            }
+        val recommendations = document.select("div.gmr-grid:has(h3.gmr-related-title) article.item").mapNotNull {
+            it.toSearchResult()
         }
+
+        return newMovieLoadResponse(
+            name = title,
+            url = url,
+            type = TvType.NSFW,
+            dataUrl = url
+        ) {
+            this.posterUrl = poster
+            this.plot = description
+            this.tags = tags
+            this.recommendations = recommendations
+        }
+    }
+
+    private suspend fun filemoonExtractor(
+        url: String,
+        referer: String,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        try {
+            val document = app.get(url, referer = referer).text
+            val packedJsRegex = """(eval\(function\(p,a,c,k,e,d\)\{.+?\}\(.*?split\('\|'\)\)\))""".toRegex()
+            val packedJs = packedJsRegex.find(document)?.groupValues?.get(1)
+            if (packedJs == null) {
+                println("Filemoon Extractor: Không tìm thấy packed script.")
+                return
+            }
+
+            fun unpack(script: String): String {
+                val unpackRegex = Regex("""eval\(function\(p,a,c,k,e,d\)\{.*return p\}\('(.*)',\d+,\d+,'(.*)'\.split\('\|'\)\)\)""")
+                val match = unpackRegex.find(script) ?: return ""
+                var payload = match.groupValues[1]
+                val dictionary = match.groupValues[2].split("|")
+                val lookup = mutableMapOf<String, String>()
+                for (i in dictionary.indices.reversed()) {
+                    val key = i.toString(36)
+                    lookup[key] = if (dictionary[i].isNotBlank()) dictionary[i] else key
+                }
+                return payload.replace(Regex("""\b\w+\b""")) {
+                    lookup[it.value] ?: it.value
+                }
+            }
+
+            val unpackedJs = unpack(packedJs)
+            if (unpackedJs.isBlank()) {
+                println("Filemoon Extractor: Giải mã script thất bại.")
+                return
+            }
+
+            val m3u8Regex = """file":"([^"]+master\.m3u8[^"]+)"""".toRegex()
+            val m3u8Url = m3u8Regex.find(unpackedJs)?.groupValues?.get(1)
+            if (m3u8Url != null) {
+                callback.invoke(
+                    ExtractorLink(
+                        source = "Filemoon",
+                        name = "Filemoon HLS",
+                        url = m3u8Url,
+                        referer = "https://filemoon.to/",
+                        quality = Qualities.Unknown.value,
+                        isM3u8 = true
+                    )
+                )
+            } else {
+                 println("Filemoon Extractor: Không tìm thấy link M3U8 trong script đã giải mã.")
+            }
+
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val pageUrl = data
+        val document = app.get(pageUrl, referer = mainUrl).document
+
+        val postId = document.selectFirst("body[class*='postid-']")
+            ?.attr("class")
+            ?.split(" ")
+            ?.find { it.startsWith("postid-") }
+            ?.removePrefix("postid-")
+            ?: return false
+
+        val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
+
+        coroutineScope {
+            // Lấy link streaming
+            document.select("ul.muvipro-player-tabs li a").map { tab ->
+                async {
+                    try {
+                        val tabId = tab.attr("href").removePrefix("#")
+                        if (tabId.isEmpty()) return@async
+
+                        val postData = mapOf(
+                            "action" to "muvipro_player_content",
+                            "tab" to tabId,
+                            "post_id" to postId
+                        )
+
+                        val playerContent = app.post(
+                            url = ajaxUrl,
+                            data = postData,
+                            referer = pageUrl
+                        ).document
+
+                        playerContent.select("iframe").firstOrNull()?.attr("src")?.let { iframeSrc ->
+                            if (iframeSrc.contains("filemoon.to")) {
+                                filemoonExtractor(iframeSrc, pageUrl, callback)
+                            } else {
+                                loadExtractor(iframeSrc, pageUrl, subtitleCallback, callback)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+            }.awaitAll()
+
+            // Lấy link download
+            document.select("div#download a.button").map { downloadButton ->
+                async {
+                    try {
+                        val downloadUrl = downloadButton.attr("href")
+                        if (downloadUrl.isNotBlank()) {
+                            loadExtractor(downloadUrl, pageUrl, subtitleCallback, callback)
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+            }.awaitAll()
+        }
+
+        return true
     }
 }
