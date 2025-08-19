@@ -3,10 +3,11 @@ package recloudstream
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
+// ================================ FIX: ADD MISSING IMPORT ================================
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson 
+// =========================================================================================
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.M3u8Helper
-import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.parseJson
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 
@@ -28,7 +29,7 @@ class HHTQProvider : MainAPI() {
     override val hasMainPage = true
     override var lang = "vi"
     override val supportedTypes = setOf(
-        TvType.TvSeries, // Explicitly state that we primarily handle TvSeries
+        TvType.TvSeries,
         TvType.Movie,
         TvType.Anime
     )
@@ -49,7 +50,7 @@ class HHTQProvider : MainAPI() {
         val posterUrl = thumb.selectFirst("img")?.attr("data-src")
         val qualityString = thumb.selectFirst("span.status")?.text()
 
-        return newAnimeSearchResponse(title, href, TvType.TvSeries) { // Default to TvSeries
+        return newAnimeSearchResponse(title, href, TvType.TvSeries) {
             this.posterUrl = posterUrl
             this.quality = getQualityFromString(qualityString)
         }
@@ -62,8 +63,6 @@ class HHTQProvider : MainAPI() {
         val url = if (page == 1) request.data.removeSuffix("page/") else request.data + page
         val document = app.get(url).document
         
-        // Note: If the homepage is still empty, the selector below might need adjustment
-        // based on the current live website's HTML structure.
         val home = document.select("div.halim_box article.grid-item")
             .mapNotNull { it.toSearchResult() }
             
@@ -79,8 +78,6 @@ class HHTQProvider : MainAPI() {
         }
     }
 
-    // ================================ CRITICAL FIX START ================================
-
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
@@ -88,7 +85,6 @@ class HHTQProvider : MainAPI() {
         val poster = document.selectFirst("div.movie-poster img.movie-thumb")?.attr("src")
         val description = document.selectFirst("div.entry-content.htmlwrap")?.text()?.trim()
 
-        // NEW: Extract episodes from the JSON variable in a <script> tag. This is more reliable.
         val scriptContent = document.select("script").find { it.data().contains("var jsonEpisodes") }?.data()
         
         val episodes = scriptContent?.let { script ->
@@ -96,27 +92,22 @@ class HHTQProvider : MainAPI() {
             val jsonString = jsonRegex.find(script)?.groupValues?.get(1)
             
             try {
-                // The JSON is a list of lists, so we flatten it.
-                parseJson<List<List<EpisodeJson>>>(jsonString ?: "[]")
-                    .flatten()
-                    .mapNotNull { epJson ->
-                        // Ensure URL and name are not null before creating an episode
+                // With the import, parseJson can now be resolved correctly.
+                val parsedData = parseJson<List<List<EpisodeJson>>>(jsonString ?: "[]")
+                parsedData.flatten().mapNotNull { epJson ->
                         val epUrl = epJson.postUrl ?: return@mapNotNull null
                         val epName = epJson.episodeName
                         newEpisode(epUrl) {
                             name = epName
                         }
-                    }.reversed() // Reverse to show episode 1 first
+                    }.reversed()
             } catch (e: Exception) {
-                // If JSON parsing fails, return null to avoid crashes
                 e.printStackTrace()
                 null
             }
         }
 
-        // If no episodes are found (either from JSON or as a fallback), we can't load it as a TV series.
         if (episodes.isNullOrEmpty()) {
-            // This prevents the "got no episodes" error.
             return null
         }
 
@@ -130,8 +121,6 @@ class HHTQProvider : MainAPI() {
             this.recommendations = recommendations
         }
     }
-    // ================================= CRITICAL FIX END =================================
-
 
     override suspend fun loadLinks(
         data: String,
@@ -139,7 +128,6 @@ class HHTQProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // ... (loadLinks function remains the same as it's working correctly)
         val episodeDocument = app.get(data).document
         val servers = episodeDocument.select("ul.halim-list-server li.halim-server-items")
 
