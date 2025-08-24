@@ -57,37 +57,24 @@ class Motchill : MainAPI() {
         }
     }
 
-    // UPDATE: The entire 'load' function has been updated with new selectors
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
-        // New selector for the title from the <h1> tag
         val title = document.selectFirst("h1.movie-title span.title-1")?.text() ?: return null
-        
-        // Poster selector is still the same
         val poster = document.selectFirst("div.poster img")?.attr("src")
-        
-        // New selector for the plot/synopsis
         val plot = document.selectFirst("div.detail-content-main")?.text()
-        
-        // New selector for the year
         val year = document.selectFirst("h1.movie-title span.title-year")
             ?.text()?.trim()?.removeSurrounding("(", ")")?.toIntOrNull()
-            
-        // New selector for tags
         val tags = document.select("div#tags a").map { it.text().trim() }
 
-        // New selector for the episode list
         val episodes = document.select("div.page-tap ul > li > a").map {
-            // The episode name is now inside a <span>
             val epName = it.selectFirst("span")?.text() ?: it.text()
             val epHref = it.attr("href")
             newEpisode(epHref) {
                 name = epName.replace("Xem tập", "").trim()
             }
-        }.reversed() // Reverse the list to show episode 1 first
+        }.reversed()
 
-        // New selector for recommendations
         val recommendations = document.select("div.top-movie li.film-item-ver").mapNotNull {
             val recTitle = it.selectFirst("p.data1")?.text() ?: return@mapNotNull null
             val recHref = it.selectFirst("a")?.attr("href") ?: return@mapNotNull null
@@ -117,30 +104,28 @@ class Motchill : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // This function does not need changes as the viewing page logic seems to be the same
         val episodePage = app.get(data).document
         
         val token = episodePage.selectFirst("input#token")?.attr("value") ?: return false
-        // The episode ID might be in the URL differently, let's check
-        // Example: /phim/than-tuong-con-thu/tap-1 -> this doesn't contain the ID.
-        // We need to find the ID from the script or AJAX calls on the page.
-        // Let's assume the old logic for getting links from `loadlinks.html` is still valid for now.
-        // If it fails, this part needs re-investigation by checking network requests on the website.
-        val episodeIdRegex = Regex(""".*-(\d+)\.html""")
-        val episodeId = if(data.contains(".html")) episodeIdRegex.find(data)?.groupValues?.get(1) else {
-            // If the URL is like /phim/abc/tap-1, we need to find the ID inside the page
-            // This requires re-inspecting the watch page. For now, let's assume it fails gracefully.
-             episodePage.body().html().let {
-                Regex(""""episode_id":(\d+),""").find(it)?.groupValues?.get(1)
-            } ?: return false
-        }
         
+        // UPDATE: Fixed the logic to ensure episodeId is never null
+        val episodeId = (if (data.contains(".html")) {
+            // Case 1: ID is in the URL (old format)
+            Regex(""".*-(\d+)\.html""").find(data)?.groupValues?.get(1)
+        } else {
+            // Case 2: ID is in the page script (new format)
+            episodePage.body().html().let { html ->
+                Regex(""""episode_id":(\d+),""").find(html)?.groupValues?.get(1)
+            }
+        }) ?: return false // If ID is not found in either case, stop.
+
         val servers = episodePage.select("div.list-server span.server")
         
         servers.apmap { server ->
             val serverId = server.attr("data-id")
             val ajaxUrl = "$mainUrl/ajax/get_link/"
             
+            // This map is now safe because episodeId, serverId, and token are all non-nullable Strings
             val postData = mapOf(
                 "id" to episodeId,
                 "sv" to serverId,
