@@ -45,7 +45,6 @@ class Motchill : MainAPI() {
 
         return newMovieSearchResponse(title, href, TvType.Movie) {
             this.posterUrl = posterUrl
-            addQuality(episode)
         }
     }
 
