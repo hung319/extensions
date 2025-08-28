@@ -17,14 +17,16 @@ class JavmostProvider : MainAPI() {
 
     private val interceptor = CloudflareKiller()
     override val mainPage = mainPageOf(
-        "" to "Latest",
-        "topview/" to "Most Viewed",
-        "topdaily/" to "Daily Top",
-        "topweek/" to "Weekly Top",
-        "topmonth/" to "Monthly Top",
+        // SỬA LỖI PHÂN TRANG: Cập nhật 'data' cho mục Latest
+        "category/all" to "Latest",
+        "topview" to "Most Viewed",
+        "topdaily" to "Daily Top",
+        "topweek" to "Weekly Top",
+        "topmonth" to "Monthly Top",
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        // Logic URL được giữ nguyên, nhưng sẽ hoạt động đúng với 'data' đã sửa
         val url = "$mainUrl/${request.data}/page/$page/"
         val document = app.get(url, interceptor = interceptor).document
         val home = document.select("div.col-md-4.col-sm-6").mapNotNull {
@@ -72,7 +74,8 @@ class JavmostProvider : MainAPI() {
         val recommendations = document.select("div.card-group div.card").mapNotNull {
             val recTitle = it.selectFirst("h2.card-title")?.text() ?: return@mapNotNull null
             val recHref = it.selectFirst("a")?.attr("href") ?: return@mapNotNull null
-            val recPoster = it.selectFirst("img.lazyload")?.attr("data-srcset")
+            // SỬA LỖI POSTER: Sửa selector để lấy đúng poster
+            val recPoster = it.selectFirst("source")?.attr("data-srcset")
             newMovieSearchResponse(recTitle, recHref, TvType.NSFW) {
                 this.posterUrl = recPoster
             }
@@ -82,7 +85,6 @@ class JavmostProvider : MainAPI() {
             this.posterUrl = poster
             this.plot = description
             this.tags = tags + genres
-            // SỬA LỖI 1: Chuyển đổi List<Actor> thành List<ActorData>
             this.actors = actors.map { ActorData(it) }
             this.recommendations = recommendations
         }
@@ -148,7 +150,6 @@ class JavmostProvider : MainAPI() {
                     loadExtractor(videoUrl, data, subtitleCallback, callback)
                 }
             } catch (e: Exception) {
-                // SỬA LỖI 2: Thay thế logError bằng e.printStackTrace()
                 e.printStackTrace()
             }
         }
