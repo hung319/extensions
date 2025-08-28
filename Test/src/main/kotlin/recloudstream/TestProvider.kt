@@ -17,7 +17,6 @@ class JavmostProvider : MainAPI() {
 
     private val interceptor = CloudflareKiller()
     override val mainPage = mainPageOf(
-        // SỬA LỖI PHÂN TRANG: Cập nhật 'data' cho mục Latest
         "category/all" to "Latest",
         "topview" to "Most Viewed",
         "topdaily" to "Daily Top",
@@ -26,7 +25,6 @@ class JavmostProvider : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Logic URL được giữ nguyên, nhưng sẽ hoạt động đúng với 'data' đã sửa
         val url = "$mainUrl/${request.data}/page/$page/"
         val document = app.get(url, interceptor = interceptor).document
         val home = document.select("div.col-md-4.col-sm-6").mapNotNull {
@@ -74,7 +72,6 @@ class JavmostProvider : MainAPI() {
         val recommendations = document.select("div.card-group div.card").mapNotNull {
             val recTitle = it.selectFirst("h2.card-title")?.text() ?: return@mapNotNull null
             val recHref = it.selectFirst("a")?.attr("href") ?: return@mapNotNull null
-            // SỬA LỖI POSTER: Sửa selector để lấy đúng poster
             val recPoster = it.selectFirst("source")?.attr("data-srcset")
             newMovieSearchResponse(recTitle, recHref, TvType.NSFW) {
                 this.posterUrl = recPoster
@@ -106,8 +103,9 @@ class JavmostProvider : MainAPI() {
     ): Boolean {
         val document = app.get(data, interceptor = interceptor).document
         
+        // SỬA LỖI: Cải thiện regex để trích xuất mã 'value' ổn định hơn
         val scriptContent = document.select("script").find { it.data().contains("var YWRzMQo") }?.data()
-        val valueCode = Regex("""var YWRzMQo = '([^']+)';""").find(scriptContent ?: "")?.groupValues?.get(1)
+        val valueCode = Regex("""var\s+YWRzMQo\s*=\s*'([^']+)';""").find(scriptContent ?: "")?.groupValues?.get(1)
             ?: throw ErrorLoadingException("Could not extract value code from page")
 
         val servers = document.select("ul.nav-tabs-inverse li button[onclick]").mapNotNull {
@@ -140,8 +138,10 @@ class JavmostProvider : MainAPI() {
                     headers = mapOf(
                         "Referer" to data,
                         "Origin" to mainUrl,
-                        "X-Requested-With" to "XMLHttpRequest"
-                        ),
+                        "X-Requested-With" to "XMLHttpRequest",
+                        // SỬA LỖI: Thêm User-Agent để giả lập trình duyệt di động
+                        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36"
+                    ),
                     interceptor = interceptor
                 ).parsed<VideoResponse>()
 
