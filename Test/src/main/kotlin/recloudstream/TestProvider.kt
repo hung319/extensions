@@ -4,6 +4,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.network.CloudflareKiller
+import com.lagradost.cloudstream3.HttpException
 
 class JavmostProvider : MainAPI() {
     override var mainUrl = "https://www5.javmost.com"
@@ -105,7 +106,7 @@ class JavmostProvider : MainAPI() {
         
         val scriptContent = document.select("script").find { it.data().contains("var YWRzMQo") }?.data()
         val valueCode = Regex("""var\s+YWRzMQo\s*=\s*'([^']+)';""").find(scriptContent ?: "")?.groupValues?.get(1)
-            ?: throw ErrorLoadingException("Failed to extract 'valueCode'. The website structure might have changed.")
+            ?: throw ErrorLoadingException("Bước 1/3 THẤT BẠI: Không thể trích xuất mã 'valueCode'.")
 
         val servers = document.select("ul.nav-tabs-inverse li button[onclick]").mapNotNull {
             val onclick = it.attr("onclick")
@@ -120,52 +121,54 @@ class JavmostProvider : MainAPI() {
         }
 
         if (servers.isEmpty()) {
-            throw ErrorLoadingException("Failed to find any servers on the page.")
+            throw ErrorLoadingException("Bước 2/3 THẤT BẠI: Không tìm thấy nút chọn server.")
         }
 
-        var linksLoaded = false
         val ajaxUrl = "$mainUrl/ri3123o235r/"
-        
-        servers.apmap { server ->
+        val errorMessages = mutableListOf<String>()
+
+        for (server in servers) {
+            var responseText = ""
             try {
-                val res = app.post(
+                val response = app.post(
                     ajaxUrl,
                     data = mapOf(
-                        "group" to server.serverId,
-                        "part" to server.part,
-                        "code" to server.code1,
-                        "code2" to server.code2,
-                        "code3" to server.code3,
-                        "value" to valueCode,
+                        "group" to server.serverId, "part" to server.part, "code" to server.code1,
+                        "code2" to server.code2, "code3" to server.code3, "value" to valueCode,
                         "sound" to "av"
                     ),
                     headers = mapOf(
-                        "Referer" to data,
-                        "Origin" to mainUrl,
-                        "X-Requested-With" to "XMLHttpRequest",
+                        "Referer" to data, "Origin" to mainUrl, "X-Requested-With" to "XMLHttpRequest",
                         "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36"
                     ),
                     interceptor = interceptor
-                ).parsed<VideoResponse>()
+                )
+                
+                // Lưu lại nội dung response để gỡ lỗi
+                responseText = response.text
+                val res = response.parsed<VideoResponse>()
 
                 if (res.status == "success" && res.data.isNotEmpty()) {
                     val videoUrl = res.data.first()
-                    // loadExtractor sẽ gọi callback và trả về true nếu thành công
                     if (loadExtractor(videoUrl, data, subtitleCallback, callback)) {
-                        linksLoaded = true
+                        // Thành công, thoát khỏi hàm
+                        return true
+                    } else {
+                        errorMessages.add("Server ${server.serverId}: Extractor thất bại với URL $videoUrl")
                     }
+                } else {
+                     errorMessages.add("Server ${server.serverId}: API không thành công. Response: $responseText")
                 }
             } catch (e: Exception) {
-                e.printStackTrace()
+                // Thêm log chi tiết vào exception gốc và ném ra
+                val detailedError = "Server ${server.serverId} gặp lỗi: ${e.message}\nAJAX Response: $responseText"
+                errorMessages.add(detailedError)
+                // Ném ra exception gốc kèm theo thông tin chi tiết
+                throw e.initCause(Exception(detailedError))
             }
         }
 
-        // THÊM EXCEPTION: Nếu không có link nào được tải, văng lỗi để log
-        if (!linksLoaded) {
-            throw ErrorLoadingException("All servers failed to return a valid video link. The site might be blocking requests.")
-        }
-
-        return linksLoaded
+        throw ErrorLoadingException("Bước 3/3 THẤT BẠI: Tất cả các server đều thất bại. Chi tiết:\n${errorMessages.joinToString("\n\n")}")
     }
 
     data class VideoResponse(
