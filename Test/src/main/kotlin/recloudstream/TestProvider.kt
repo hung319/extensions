@@ -1,4 +1,3 @@
-// Đã cập nhật package name theo yêu cầu
 package recloudstream
 
 import com.lagradost.cloudstream3.*
@@ -83,7 +82,8 @@ class JavmostProvider : MainAPI() {
             this.posterUrl = poster
             this.plot = description
             this.tags = tags + genres
-            this.actors = actors
+            // SỬA LỖI 1: Chuyển đổi List<Actor> thành List<ActorData>
+            this.actors = actors.map { ActorData(it) }
             this.recommendations = recommendations
         }
     }
@@ -148,7 +148,8 @@ class JavmostProvider : MainAPI() {
                     loadExtractor(videoUrl, data, subtitleCallback, callback)
                 }
             } catch (e: Exception) {
-                logError(e)
+                // SỬA LỖI 2: Thay thế logError bằng e.printStackTrace()
+                e.printStackTrace()
             }
         }
 
