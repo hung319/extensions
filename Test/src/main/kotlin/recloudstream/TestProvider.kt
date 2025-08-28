@@ -4,7 +4,6 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.network.CloudflareKiller
-import com.lagradost.cloudstream3.HttpException
 
 class JavmostProvider : MainAPI() {
     override var mainUrl = "https://www5.javmost.com"
@@ -128,7 +127,7 @@ class JavmostProvider : MainAPI() {
         val errorMessages = mutableListOf<String>()
 
         for (server in servers) {
-            var responseText = ""
+            var responseText = "" // Biến để lưu trữ nội dung response thô
             try {
                 val response = app.post(
                     ajaxUrl,
@@ -144,15 +143,14 @@ class JavmostProvider : MainAPI() {
                     interceptor = interceptor
                 )
                 
-                // Lưu lại nội dung response để gỡ lỗi
+                // Luôn lấy nội dung text của response để ghi log
                 responseText = response.text
                 val res = response.parsed<VideoResponse>()
 
                 if (res.status == "success" && res.data.isNotEmpty()) {
                     val videoUrl = res.data.first()
                     if (loadExtractor(videoUrl, data, subtitleCallback, callback)) {
-                        // Thành công, thoát khỏi hàm
-                        return true
+                        return true // Thành công, thoát
                     } else {
                         errorMessages.add("Server ${server.serverId}: Extractor thất bại với URL $videoUrl")
                     }
@@ -160,15 +158,15 @@ class JavmostProvider : MainAPI() {
                      errorMessages.add("Server ${server.serverId}: API không thành công. Response: $responseText")
                 }
             } catch (e: Exception) {
-                // Thêm log chi tiết vào exception gốc và ném ra
-                val detailedError = "Server ${server.serverId} gặp lỗi: ${e.message}\nAJAX Response: $responseText"
+                // Ghi lại lỗi và nội dung response thô (nếu có)
+                val detailedError = "Server ${server.serverId} gặp lỗi: ${e.message}\nAJAX Response (thô): $responseText"
                 errorMessages.add(detailedError)
-                // Ném ra exception gốc kèm theo thông tin chi tiết
-                throw e.initCause(Exception(detailedError))
+                e.printStackTrace() // Vẫn in stacktrace ra logcat nếu có thể
             }
         }
 
-        throw ErrorLoadingException("Bước 3/3 THẤT BẠI: Tất cả các server đều thất bại. Chi tiết:\n${errorMessages.joinToString("\n\n")}")
+        // Nếu tất cả server đều lỗi, ném ra Exception tổng hợp
+        throw ErrorLoadingException("Bước 3/3 THẤT BẠI: Tất cả các server đều thất bại. Chi tiết:\n\n${errorMessages.joinToString("\n\n")}")
     }
 
     data class VideoResponse(
