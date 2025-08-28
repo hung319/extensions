@@ -103,10 +103,9 @@ class JavmostProvider : MainAPI() {
     ): Boolean {
         val document = app.get(data, interceptor = interceptor).document
         
-        // SỬA LỖI: Cải thiện regex để trích xuất mã 'value' ổn định hơn
         val scriptContent = document.select("script").find { it.data().contains("var YWRzMQo") }?.data()
         val valueCode = Regex("""var\s+YWRzMQo\s*=\s*'([^']+)';""").find(scriptContent ?: "")?.groupValues?.get(1)
-            ?: throw ErrorLoadingException("Could not extract value code from page")
+            ?: throw ErrorLoadingException("Failed to extract 'valueCode'. The website structure might have changed.")
 
         val servers = document.select("ul.nav-tabs-inverse li button[onclick]").mapNotNull {
             val onclick = it.attr("onclick")
@@ -120,6 +119,11 @@ class JavmostProvider : MainAPI() {
             }
         }
 
+        if (servers.isEmpty()) {
+            throw ErrorLoadingException("Failed to find any servers on the page.")
+        }
+
+        var linksLoaded = false
         val ajaxUrl = "$mainUrl/ri3123o235r/"
         
         servers.apmap { server ->
@@ -139,7 +143,6 @@ class JavmostProvider : MainAPI() {
                         "Referer" to data,
                         "Origin" to mainUrl,
                         "X-Requested-With" to "XMLHttpRequest",
-                        // SỬA LỖI: Thêm User-Agent để giả lập trình duyệt di động
                         "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36"
                     ),
                     interceptor = interceptor
@@ -147,14 +150,22 @@ class JavmostProvider : MainAPI() {
 
                 if (res.status == "success" && res.data.isNotEmpty()) {
                     val videoUrl = res.data.first()
-                    loadExtractor(videoUrl, data, subtitleCallback, callback)
+                    // loadExtractor sẽ gọi callback và trả về true nếu thành công
+                    if (loadExtractor(videoUrl, data, subtitleCallback, callback)) {
+                        linksLoaded = true
+                    }
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
             }
         }
 
-        return true
+        // THÊM EXCEPTION: Nếu không có link nào được tải, văng lỗi để log
+        if (!linksLoaded) {
+            throw ErrorLoadingException("All servers failed to return a valid video link. The site might be blocking requests.")
+        }
+
+        return linksLoaded
     }
 
     data class VideoResponse(
