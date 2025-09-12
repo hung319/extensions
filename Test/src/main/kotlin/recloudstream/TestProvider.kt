@@ -64,30 +64,29 @@ class AnimetmProvider : MainAPI() {
         return getPage(searchUrl)
     }
 
+    // === Giữ nguyên hàm load theo yêu cầu ===
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url, interceptor = killer).document
-        
-        // Selector đã được cập nhật cho tiêu đề và các thông tin khác
-        val title = document.selectFirst("h2.film-name a")?.text()?.trim() ?: "Không rõ"
-        val poster = document.selectFirst("div.anis-cover")?.attr("style")?.let {
-            Regex("url\\((.*?)\\)").find(it)?.groupValues?.get(1)
-        }
-        val plot = document.selectFirst("div.film-description div.text")?.text()?.trim()
-        
-        // === FIX: Lấy danh sách tập phim trực tiếp từ trang xem phim ===
-        // Không cần load trang episode riêng nữa
-        val episodes = document.select("div.ep-range a.ssl-item").map {
-            val episodeNumber = it.attr("title")
-            newEpisode(it.attr("href")) {
-                name = "Tập $episodeNumber"
-            }
-        }.reversed() // Đảo ngược để có thứ tự 1, 2, 3...
+        val title = document.selectFirst("h2.film-name")?.text()?.trim() ?: "Không rõ"
+        val poster = document.selectFirst("div.anisc-poster img")?.attr("src")
+        val plot = document.selectFirst("div.film-description > div.text")?.text()?.trim()
+
+        val episodePageUrl = document.selectFirst("a.btn-play")?.attr("href")
 
         return newAnimeLoadResponse(title, url, TvType.Anime) {
             this.posterUrl = poster
             this.plot = plot
-            
-            if (episodes.isNotEmpty()) {
+
+            if (episodePageUrl != null) {
+                val episodeListDocument = app.get(episodePageUrl, interceptor = killer).document
+                
+                val episodes = episodeListDocument.select("div.ep-range a.ssl-item").map {
+                    val episodeNumber = it.attr("title")
+                    newEpisode(it.attr("href")) {
+                        name = "Tập $episodeNumber"
+                    }
+                }.reversed()
+                
                 addEpisodes(DubStatus.Subbed, episodes)
             }
 
@@ -97,40 +96,34 @@ class AnimetmProvider : MainAPI() {
         }
     }
 
+    // === Cập nhật lại hàm loadLinks cho phù hợp HTML mới ===
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // === FIX: Logic trích xuất link mới ===
         val document = app.get(data, interceptor = killer).document
         val scriptContent = document.select("script").html()
 
-        // Lấy tất cả các button server
         val servers = document.select("div.ps__-list a.btn3dsv")
 
-        // Duyệt qua từng server để lấy link
         servers.forEach { serverElement ->
             try {
-                // Lấy tên server (VD: "LINK1", "LINK10") và nhãn chất lượng (VD: "HD", "1080")
                 val name = serverElement.attr("name")
                 val qualityLabel = serverElement.text()
                 
-                // Trích xuất số ID từ tên server
                 val serverId = name.removePrefix("LINK")
 
-                // Dùng regex để tìm biến JavaScript tương ứng và lấy URL
                 val linkRegex = Regex("""var\s*\${'$'}checkLink$serverId\s*=\s*"([^"]+)"""")
                 val url = linkRegex.find(scriptContent)?.groupValues?.get(1)
 
                 if (!url.isNullOrBlank()) {
-                    // Ưu tiên link M3U8 vì có thể play trực tiếp
                     if (url.contains(".m3u8")) {
                         callback.invoke(
                             ExtractorLink(
                                 source = this.name,
-                                name = qualityLabel, // Dùng nhãn từ button
+                                name = qualityLabel,
                                 url = url,
                                 referer = "$mainUrl/",
                                 quality = Qualities.Unknown.value,
@@ -138,15 +131,14 @@ class AnimetmProvider : MainAPI() {
                             )
                         )
                     } else {
-                        // Với các link khác (iframe, shortener), để Cloudstream tự xử lý
                         loadExtractor(url, data, subtitleCallback, callback)
                     }
                 }
             } catch (e: Exception) {
-                // Bỏ qua nếu có lỗi ở một server cụ thể
+                // Bỏ qua nếu có lỗi
             }
         }
 
-        return true // Trả về true vì đã bắt đầu quá trình tìm link
+        return true
     }
 }
