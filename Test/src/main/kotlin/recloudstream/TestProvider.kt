@@ -136,7 +136,7 @@ class AnimetmProvider : MainAPI() {
                                 url = streamUrl,
                                 referer = "$mainUrl/",
                                 quality = Qualities.Unknown.value,
-                                type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.MP4
+                                type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                             )
                         )
                         extracted = true
@@ -180,7 +180,7 @@ class AnimetmProvider : MainAPI() {
                             url = url,
                             referer = "$mainUrl/",
                             quality = Qualities.Unknown.value,
-                            type = if (url.endsWith(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.MP4
+                            type = if (url.endsWith(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                         )
                     )
                     extracted = true
