@@ -64,28 +64,29 @@ class AnimetmProvider : MainAPI() {
         return getPage(searchUrl)
     }
 
-    // Sửa lại hàm load để lấy danh sách tập phim chính xác
+    // === Giữ nguyên hàm load theo yêu cầu ===
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url, interceptor = killer).document
-        
-        val title = document.selectFirst("h2.film-name a")?.text()?.trim() ?: "Không rõ"
-        val poster = document.selectFirst("div.anis-cover")?.attr("style")?.let {
-            Regex("url\\((.*?)\\)").find(it)?.groupValues?.get(1)
-        }
-        val plot = document.selectFirst("div.film-description div.text")?.text()?.trim()
-        
-        val episodes = document.select("div.ep-range a.ssl-item").map {
-            val episodeNumber = it.attr("title")
-            newEpisode(it.attr("href")) {
-                name = "Tập $episodeNumber"
-            }
-        }.reversed()
+        val title = document.selectFirst("h2.film-name")?.text()?.trim() ?: "Không rõ"
+        val poster = document.selectFirst("div.anisc-poster img")?.attr("src")
+        val plot = document.selectFirst("div.film-description > div.text")?.text()?.trim()
+
+        val episodePageUrl = document.selectFirst("a.btn-play")?.attr("href")
 
         return newAnimeLoadResponse(title, url, TvType.Anime) {
             this.posterUrl = poster
             this.plot = plot
-            
-            if (episodes.isNotEmpty()) {
+
+            if (episodePageUrl != null) {
+                val episodeListDocument = app.get(episodePageUrl, interceptor = killer).document
+                
+                val episodes = episodeListDocument.select("div.ep-range a.ssl-item").map {
+                    val episodeNumber = it.attr("title")
+                    newEpisode(it.attr("href")) {
+                        name = "Tập $episodeNumber"
+                    }
+                }.reversed()
+                
                 addEpisodes(DubStatus.Subbed, episodes)
             }
 
@@ -95,7 +96,7 @@ class AnimetmProvider : MainAPI() {
         }
     }
 
-    // Cập nhật hàm loadLinks để xử lý cả iframe player
+    // === Cập nhật hàm loadLinks với logic xử lý iframe player ===
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
