@@ -96,7 +96,7 @@ class AnimetmProvider : MainAPI() {
         }
     }
 
-    // === Cập nhật: Thêm logic xử lý các link trực tiếp phổ biến ===
+    // === Cập nhật: Đổi MP4 thành VIDEO và tối ưu logic lặp ===
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -107,7 +107,8 @@ class AnimetmProvider : MainAPI() {
         val scriptContent = document.select("script").html()
         var extracted = false
 
-        document.select("div.ps__-list a.btn3dsv").apmap { serverElement ->
+        // Dùng forEach để xử lý tuần tự, ổn định hơn
+        document.select("div.ps__-list a.btn3dsv").forEach { serverElement ->
             try {
                 val name = serverElement.attr("name")
                 val qualityLabel = serverElement.text()
@@ -116,7 +117,7 @@ class AnimetmProvider : MainAPI() {
                 val url = Regex("""var\s*\${'$'}checkLink$serverId\s*=\s*"([^"]+)"""")
                     .find(scriptContent)?.groupValues?.get(1)
 
-                if (url.isNullOrBlank()) return@apmap
+                if (url.isNullOrBlank()) return@forEach
 
                 // Trường hợp 1: Link là iframe player cần bóc tách
                 if (url.contains("/play-fb-v7/play/")) {
