@@ -3,7 +3,6 @@ package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-// Thêm import cho AppUtils để sử dụng parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.utils.M3u8Helper
@@ -62,7 +61,9 @@ class XTapesProvider : MainAPI() {
         val recommendations = document.select(".sidebar-widget:has(> .widget-title > span:contains(Related Videos)) ul.listing-tube > li").mapNotNull {
             it.toSearchResponse()
         }
-        return newMovieSearchResponse(title, url, TvType.NSFW, embedUrls) {
+
+        // SỬA LỖI: Dùng đúng hàm `newMovieLoadResponse`
+        return newMovieLoadResponse(title, url, TvType.NSFW, embedUrls) {
             this.posterUrl = poster
             this.plot = synopsis
             this.tags = tags
@@ -76,7 +77,6 @@ class XTapesProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Sửa lỗi: Gọi đầy đủ AppUtils.parseJson<T>()
         val embedUrls = parseJson<List<String>>(data)
         
         coroutineScope {
