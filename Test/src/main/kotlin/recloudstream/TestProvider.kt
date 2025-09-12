@@ -3,8 +3,11 @@ package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.AppUtils.mapper
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.utils.M3u8Helper
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 
 class XTapesProvider : MainAPI() {
     override var mainUrl = "https://xtapes.in"
@@ -16,40 +19,44 @@ class XTapesProvider : MainAPI() {
         TvType.NSFW
     )
 
-    // Helper function to parse video items from the page
+    // *** LƯU Ý QUAN TRỌNG ***
+    // Vì phiên bản của bạn không có `mainPageLinks`, bạn cần khai báo
+    // các mục trang chủ ở nơi khác để `getMainPage` được gọi với request.name tương ứng.
+    // Ví dụ, trong MainAPI của bạn có thể có một thuộc tính như:
+    // override val mainPageRequests = listOf(
+    //     MainPageRequest("New Videos", "new_videos"),
+    //     MainPageRequest("New Movies", "new_movies")
+    // )
+    // Đoạn code trên chỉ là VÍ DỤ, bạn cần tìm thuộc tính đúng trong bản của mình.
+
     private fun Element.toSearchResponse(): SearchResponse? {
         val link = this.selectFirst("a") ?: return null
         val href = fixUrl(link.attr("href"))
-        // Skip if the link is not a video page
         if (!href.contains("xtapes.in/") || href.endsWith(".in/")) return null
-        
         val title = link.attr("title")
         val posterUrl = fixUrlNull(this.selectFirst("img")?.attr("src"))
-
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
         }
     }
 
-    override val mainPageLinks = mainPageLinksOf(
-        "New Videos" to mainUrl,
-        "New Movies" to "$mainUrl/porn-movies-hd/"
-    )
-
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = if (page > 1) "${request.data}page/$page/" else request.data
+        val url = when (request.name) {
+            "New Movies" -> if (page > 1) "$mainUrl/porn-movies-hd/page/$page/" else "$mainUrl/porn-movies-hd/"
+            else -> if (page > 1) "$mainUrl/page/$page/" else mainUrl // Mặc định là "New Videos"
+        }
+
         val document = app.get(url).document
-        
         val list = document.select("ul.listing-tube > li, ul.listing-videos > li")
         val homePageList = list.mapNotNull { it.toSearchResponse() }
         
-        return newHomePageResponse(request.name, homePageList)
+        // hasNext được xác định bằng việc có tìm thấy item nào không
+        return newHomePageResponse(request.name, homePageList, hasNext = homePageList.isNotEmpty())
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/?s=$query"
         val document = app.get(searchUrl).document
-
         return document.select("ul.listing-videos.listing-tube > li").mapNotNull {
             it.toSearchResponse()
         }
@@ -57,19 +64,14 @@ class XTapesProvider : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
-
         val title = document.selectFirst("h1.border-radius-top-5")?.text()?.trim() ?: return null
         val poster = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
         val tags = document.select("#cat-tag li a").map { it.text() }
         val synopsis = document.selectFirst("meta[name=description]")?.attr("content")
-        
         val embedUrls = document.select(".video-embed iframe").mapNotNull { it.attr("src") }.filter { it.isNotBlank() }
-
         val recommendations = document.select(".sidebar-widget:has(> .widget-title > span:contains(Related Videos)) ul.listing-tube > li").mapNotNull {
             it.toSearchResponse()
         }
-
-        // Sửa lỗi: Dùng newMovieLoadResponse thay vì newNsfwLoadResponse
         return newMovieLoadResponse(title, url, TvType.NSFW, embedUrls) {
             this.posterUrl = poster
             this.plot = synopsis
@@ -84,32 +86,32 @@ class XTapesProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val embedUrls = parseJson<List<String>>(data)
+        val embedUrls = mapper.readValue<List<String>>(data)
         
-        embedUrls.apmap { url ->
-            if (url.contains("74k.io")) {
-                try {
-                    val doc = app.get(url, referer = mainUrl).document
-                    val script = doc.select("script").find { it.data().contains("eval(function(p,a,c,k,e,d)") }?.data()
-                    if (script != null) {
-                        val unpacked = getAndUnpack(script)
-                        val m3u8Url = Regex("""sources":\[\{"file":"([^"]+)""").find(unpacked)?.groupValues?.getOrNull(1)?.replace("\\/", "/")
-                        if (m3u8Url != null) {
-                            M3u8Helper.generateM3u8(
-                                name,
-                                m3u8Url,
-                                mainUrl
-                            ).forEach { link -> callback(link) }
+        coroutineScope {
+            embedUrls.forEach { url ->
+                launch {
+                    if (url.contains("74k.io")) {
+                        try {
+                            val doc = app.get(url, referer = mainUrl).document
+                            val script = doc.select("script").find { it.data().contains("eval(function(p,a,c,k,e,d)") }?.data()
+                            if (script != null) {
+                                val unpacked = getAndUnpack(script)
+                                val m3u8Url = Regex("""sources":\[\{"file":"([^"]+)""").find(unpacked)?.groupValues?.getOrNull(1)?.replace("\\/", "/")
+                                if (m3u8Url != null) {
+                                    M3u8Helper.generateM3u8(name, m3u8Url, mainUrl)
+                                        .forEach(callback)
+                                }
+                            }
+                        } catch (e: Exception) {
+                            // Fail gracefully
                         }
+                    } else {
+                        loadExtractor(url, mainUrl, subtitleCallback, callback)
                     }
-                } catch (e: Exception) {
-                    // Fail gracefully
                 }
-            } else {
-                loadExtractor(url, mainUrl, subtitleCallback, callback)
             }
         }
-
         return true
     }
 }
