@@ -3,7 +3,8 @@ package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.utils.AppUtils.mapper
+// Thêm import cho AppUtils để sử dụng parseJson
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.utils.M3u8Helper
 import kotlinx.coroutines.coroutineScope
@@ -19,16 +20,6 @@ class XTapesProvider : MainAPI() {
         TvType.NSFW
     )
 
-    // *** LƯU Ý QUAN TRỌNG ***
-    // Vì phiên bản của bạn không có `mainPageLinks`, bạn cần khai báo
-    // các mục trang chủ ở nơi khác để `getMainPage` được gọi với request.name tương ứng.
-    // Ví dụ, trong MainAPI của bạn có thể có một thuộc tính như:
-    // override val mainPageRequests = listOf(
-    //     MainPageRequest("New Videos", "new_videos"),
-    //     MainPageRequest("New Movies", "new_movies")
-    // )
-    // Đoạn code trên chỉ là VÍ DỤ, bạn cần tìm thuộc tính đúng trong bản của mình.
-
     private fun Element.toSearchResponse(): SearchResponse? {
         val link = this.selectFirst("a") ?: return null
         val href = fixUrl(link.attr("href"))
@@ -43,14 +34,13 @@ class XTapesProvider : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = when (request.name) {
             "New Movies" -> if (page > 1) "$mainUrl/porn-movies-hd/page/$page/" else "$mainUrl/porn-movies-hd/"
-            else -> if (page > 1) "$mainUrl/page/$page/" else mainUrl // Mặc định là "New Videos"
+            else -> if (page > 1) "$mainUrl/page/$page/" else mainUrl
         }
 
         val document = app.get(url).document
         val list = document.select("ul.listing-tube > li, ul.listing-videos > li")
         val homePageList = list.mapNotNull { it.toSearchResponse() }
         
-        // hasNext được xác định bằng việc có tìm thấy item nào không
         return newHomePageResponse(request.name, homePageList, hasNext = homePageList.isNotEmpty())
     }
 
@@ -72,7 +62,7 @@ class XTapesProvider : MainAPI() {
         val recommendations = document.select(".sidebar-widget:has(> .widget-title > span:contains(Related Videos)) ul.listing-tube > li").mapNotNull {
             it.toSearchResponse()
         }
-        return newMovieLoadResponse(title, url, TvType.NSFW, embedUrls) {
+        return newMovieSearchResponse(title, url, TvType.NSFW, embedUrls) {
             this.posterUrl = poster
             this.plot = synopsis
             this.tags = tags
@@ -86,7 +76,8 @@ class XTapesProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val embedUrls = mapper.readValue<List<String>>(data)
+        // Sửa lỗi: Gọi đầy đủ AppUtils.parseJson<T>()
+        val embedUrls = parseJson<List<String>>(data)
         
         coroutineScope {
             embedUrls.forEach { url ->
