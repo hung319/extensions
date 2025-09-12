@@ -6,6 +6,7 @@ import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.utils.M3u8Helper
+import com.fasterxml.jackson.annotation.JsonProperty
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 
@@ -17,6 +18,14 @@ class XTapesProvider : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(
         TvType.NSFW
+    )
+
+    // Data class để parse đối tượng 'links' từ Javascript
+    private data class VideoLinks(
+        @JsonProperty("hls3") val hls3: String? = null,
+        @JsonProperty("hls2") val hls2: String? = null,
+        @JsonProperty("hls") val hls: String? = null, // Thêm các key dự phòng
+        @JsonProperty("file") val file: String? = null
     )
 
     private fun Element.toSearchResponse(): SearchResponse? {
@@ -62,7 +71,6 @@ class XTapesProvider : MainAPI() {
             it.toSearchResponse()
         }
 
-        // SỬA LỖI: Dùng đúng hàm `newMovieLoadResponse`
         return newMovieLoadResponse(title, url, TvType.NSFW, embedUrls) {
             this.posterUrl = poster
             this.plot = synopsis
@@ -83,19 +91,27 @@ class XTapesProvider : MainAPI() {
             embedUrls.forEach { url ->
                 launch {
                     if (url.contains("74k.io")) {
+                        // CẬP NHẬT LOGIC EXTRACTOR CHO 74K.IO
                         try {
                             val doc = app.get(url, referer = mainUrl).document
                             val script = doc.select("script").find { it.data().contains("eval(function(p,a,c,k,e,d)") }?.data()
                             if (script != null) {
                                 val unpacked = getAndUnpack(script)
-                                val m3u8Url = Regex("""sources":\[\{"file":"([^"]+)""").find(unpacked)?.groupValues?.getOrNull(1)?.replace("\\/", "/")
-                                if (m3u8Url != null) {
-                                    M3u8Helper.generateM3u8(name, m3u8Url, mainUrl)
-                                        .forEach(callback)
+                                // Regex mới để lấy đối tượng 'links'
+                                val linksJson = Regex("""var\s+links\s*=\s*(\{.*?\})""").find(unpacked)?.groupValues?.getOrNull(1)
+                                
+                                if (linksJson != null) {
+                                    val videoData = parseJson<VideoLinks>(linksJson)
+                                    // Ưu tiên lấy link hls3 hoặc hls2
+                                    val m3u8Url = videoData.hls3 ?: videoData.hls2 ?: videoData.hls ?: videoData.file
+                                    if (m3u8Url != null) {
+                                        M3u8Helper.generateM3u8(name, m3u8Url, mainUrl)
+                                            .forEach(callback)
+                                    }
                                 }
                             }
                         } catch (e: Exception) {
-                            // Fail gracefully
+                            // Bỏ qua nếu có lỗi
                         }
                     } else {
                         loadExtractor(url, mainUrl, subtitleCallback, callback)
