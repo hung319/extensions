@@ -1,13 +1,14 @@
+// Save this file as XTapesProvider.kt
 package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-import com.lagradost.cloudstream3.network.CloudflareKiller
+import com.lagradost.cloudstream3.utils.M3u8Helper
 
-class JavmostProvider : MainAPI() {
-    override var mainUrl = "https://www5.javmost.com"
-    override var name = "Javmost"
+class XTapesProvider : MainAPI() {
+    override var mainUrl = "https://xtapes.in"
+    override var name = "XTapes"
     override val hasMainPage = true
     override var lang = "en"
     override val hasDownloadSupport = true
@@ -15,85 +16,67 @@ class JavmostProvider : MainAPI() {
         TvType.NSFW
     )
 
-    private val interceptor = CloudflareKiller()
-    override val mainPage = mainPageOf(
-        "category/all" to "Latest",
-        "topview" to "Most Viewed",
-        "topdaily" to "Daily Top",
-        "topweek" to "Weekly Top",
-        "topmonth" to "Monthly Top",
-    )
-
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = "$mainUrl/${request.data}/page/$page/"
-        val document = app.get(url, interceptor = interceptor).document
-        val home = document.select("div.col-md-4.col-sm-6").mapNotNull {
-            it.toSearchResult()
-        }
-        return newHomePageResponse(request.name, home)
-    }
-
-    private fun Element.toSearchResult(): SearchResponse? {
-        val title = this.selectFirst("h1.card-title")?.text()?.trim() ?: return null
-        val href = this.selectFirst("a")?.attr("href") ?: return null
-        val posterUrl = this.selectFirst("img.lazyload")?.let {
-            it.parent()?.selectFirst("source")?.attr("data-srcset")
-        }
+    // Helper function to parse video items from the page
+    private fun Element.toSearchResponse(): SearchResponse? {
+        val link = this.selectFirst("a") ?: return null
+        val href = fixUrl(link.attr("href"))
+        // Skip if the link is not a video page
+        if (!href.contains("xtapes.in/") || href.endsWith(".in/")) return null
         
+        val title = link.attr("title")
+        val posterUrl = fixUrlNull(this.selectFirst("img")?.attr("src"))
+
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
         }
     }
 
+    override val mainPageLinks = mainPageLinksOf(
+        "New Videos" to mainUrl,
+        "New Movies" to "$mainUrl/porn-movies-hd/"
+    )
+
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val url = if (page > 1) "${request.data}page/$page/" else request.data
+        val document = app.get(url).document
+        
+        val list = document.select("ul.listing-tube > li, ul.listing-videos > li")
+        val homePageList = list.mapNotNull { it.toSearchResponse() }
+        
+        return newHomePageResponse(request.name, homePageList)
+    }
+
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/search/$query/"
-        val document = app.get(searchUrl, interceptor = interceptor).document
-        return document.select("div.col-md-4.col-sm-6").mapNotNull {
-            it.toSearchResult()
+        val searchUrl = "$mainUrl/?s=$query"
+        val document = app.get(searchUrl).document
+
+        return document.select("ul.listing-videos.listing-tube > li").mapNotNull {
+            it.toSearchResponse()
         }
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url, interceptor = interceptor).document
+        val document = app.get(url).document
 
-        val title = document.selectFirst("h1.page-header")?.text()?.trim() ?: return null
-        val poster = document.selectFirst("div.card.bg-black img.lazyload")?.let {
-             it.parent()?.selectFirst("source")?.attr("data-srcset")
-        }
-        val description = document.selectFirst("div.card-block a h2")?.text()
+        val title = document.selectFirst("h1.border-radius-top-5")?.text()?.trim() ?: return null
+        val poster = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
+        val tags = document.select("#cat-tag li a").map { it.text() }
+        val synopsis = document.selectFirst("meta[name=description]")?.attr("content")
         
-        val tags = document.select("p.card-text i.fa-tag ~ a").map { it.text() }
-        val genres = document.select("p.card-text i.ion-ios-videocam ~ a").map { it.text() }
-        
-        val actors = document.select("p.card-text i.fa-female ~ a").map {
-            Actor(it.text(), it.attr("href"))
+        val embedUrls = document.select(".video-embed iframe").mapNotNull { it.attr("src") }.filter { it.isNotBlank() }
+
+        val recommendations = document.select(".sidebar-widget:has(> .widget-title > span:contains(Related Videos)) ul.listing-tube > li").mapNotNull {
+            it.toSearchResponse()
         }
 
-        val recommendations = document.select("div.card-group div.card").mapNotNull {
-            val recTitle = it.selectFirst("h2.card-title")?.text() ?: return@mapNotNull null
-            val recHref = it.selectFirst("a")?.attr("href") ?: return@mapNotNull null
-            val recPoster = it.selectFirst("source")?.attr("data-srcset")
-            newMovieSearchResponse(recTitle, recHref, TvType.NSFW) {
-                this.posterUrl = recPoster
-            }
-        }
-
-        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
+        // Sửa lỗi: Dùng newMovieLoadResponse thay vì newNsfwLoadResponse
+        return newMovieLoadResponse(title, url, TvType.NSFW, embedUrls) {
             this.posterUrl = poster
-            this.plot = description
-            this.tags = tags + genres
-            this.actors = actors.map { ActorData(it) }
+            this.plot = synopsis
+            this.tags = tags
             this.recommendations = recommendations
         }
     }
-
-    private data class ServerData(
-        val part: String,
-        val serverId: String,
-        val code1: String,
-        val code2: String,
-        val code3: String
-    )
 
     override suspend fun loadLinks(
         data: String,
@@ -101,76 +84,32 @@ class JavmostProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data, interceptor = interceptor).document
+        val embedUrls = parseJson<List<String>>(data)
         
-        val scriptContent = document.select("script").find { it.data().contains("var YWRzMQo") }?.data()
-        val valueCode = Regex("""var\s+YWRzMQo\s*=\s*'([^']+)';""").find(scriptContent ?: "")?.groupValues?.get(1)
-            ?: throw ErrorLoadingException("Bước 1/3 THẤT BẠI: Không thể trích xuất mã 'valueCode'.")
-
-        val servers = document.select("ul.nav-tabs-inverse li button[onclick]").mapNotNull {
-            val onclick = it.attr("onclick")
-            val regex = Regex("""select_part\('(\d+)','(\d+)',this,'parent','([^']+)','([^']+)','([^']+)'\)""")
-            val match = regex.find(onclick)
-            if (match != null) {
-                val (part, serverId, code1, code2, code3) = match.destructured
-                ServerData(part, serverId, code1, code2, code3)
-            } else {
-                null
-            }
-        }
-
-        if (servers.isEmpty()) {
-            throw ErrorLoadingException("Bước 2/3 THẤT BẠI: Không tìm thấy nút chọn server.")
-        }
-
-        val ajaxUrl = "$mainUrl/ri3123o235r/"
-        val errorMessages = mutableListOf<String>()
-
-        for (server in servers) {
-            var responseText = "" // Biến để lưu trữ nội dung response thô
-            try {
-                val response = app.post(
-                    ajaxUrl,
-                    data = mapOf(
-                        "group" to server.serverId, "part" to server.part, "code" to server.code1,
-                        "code2" to server.code2, "code3" to server.code3, "value" to valueCode,
-                        "sound" to "av"
-                    ),
-                    headers = mapOf(
-                        "Referer" to data, "Origin" to mainUrl, "X-Requested-With" to "XMLHttpRequest",
-                        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36"
-                    ),
-                    interceptor = interceptor
-                )
-                
-                // Luôn lấy nội dung text của response để ghi log
-                responseText = response.text
-                val res = response.parsed<VideoResponse>()
-
-                if (res.status == "success" && res.data.isNotEmpty()) {
-                    val videoUrl = res.data.first()
-                    if (loadExtractor(videoUrl, data, subtitleCallback, callback)) {
-                        return true // Thành công, thoát
-                    } else {
-                        errorMessages.add("Server ${server.serverId}: Extractor thất bại với URL $videoUrl")
+        embedUrls.apmap { url ->
+            if (url.contains("74k.io")) {
+                try {
+                    val doc = app.get(url, referer = mainUrl).document
+                    val script = doc.select("script").find { it.data().contains("eval(function(p,a,c,k,e,d)") }?.data()
+                    if (script != null) {
+                        val unpacked = getAndUnpack(script)
+                        val m3u8Url = Regex("""sources":\[\{"file":"([^"]+)""").find(unpacked)?.groupValues?.getOrNull(1)?.replace("\\/", "/")
+                        if (m3u8Url != null) {
+                            M3u8Helper.generateM3u8(
+                                name,
+                                m3u8Url,
+                                mainUrl
+                            ).forEach { link -> callback(link) }
+                        }
                     }
-                } else {
-                     errorMessages.add("Server ${server.serverId}: API không thành công. Response: $responseText")
+                } catch (e: Exception) {
+                    // Fail gracefully
                 }
-            } catch (e: Exception) {
-                // Ghi lại lỗi và nội dung response thô (nếu có)
-                val detailedError = "Server ${server.serverId} gặp lỗi: ${e.message}\nAJAX Response (thô): $responseText"
-                errorMessages.add(detailedError)
-                e.printStackTrace() // Vẫn in stacktrace ra logcat nếu có thể
+            } else {
+                loadExtractor(url, mainUrl, subtitleCallback, callback)
             }
         }
 
-        // Nếu tất cả server đều lỗi, ném ra Exception tổng hợp
-        throw ErrorLoadingException("Bước 3/3 THẤT BẠI: Tất cả các server đều thất bại. Chi tiết:\n\n${errorMessages.joinToString("\n\n")}")
+        return true
     }
-
-    data class VideoResponse(
-        val status: String,
-        val data: List<String>
-    )
 }
