@@ -96,7 +96,7 @@ class AnimetmProvider : MainAPI() {
         }
     }
 
-    // === Cập nhật hàm loadLinks với logic xử lý iframe player ===
+    // === Cập nhật: Thêm logic xử lý các link trực tiếp phổ biến ===
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -105,58 +105,96 @@ class AnimetmProvider : MainAPI() {
     ): Boolean {
         val document = app.get(data, interceptor = killer).document
         val scriptContent = document.select("script").html()
+        var extracted = false
 
-        val servers = document.select("div.ps__-list a.btn3dsv")
-
-        servers.forEach { serverElement ->
+        document.select("div.ps__-list a.btn3dsv").apmap { serverElement ->
             try {
                 val name = serverElement.attr("name")
                 val qualityLabel = serverElement.text()
-                
                 val serverId = name.removePrefix("LINK")
 
-                val linkRegex = Regex("""var\s*\${'$'}checkLink$serverId\s*=\s*"([^"]+)"""")
-                val url = linkRegex.find(scriptContent)?.groupValues?.get(1)
+                val url = Regex("""var\s*\${'$'}checkLink$serverId\s*=\s*"([^"]+)"""")
+                    .find(scriptContent)?.groupValues?.get(1)
 
-                if (!url.isNullOrBlank()) {
-                    // Trường hợp 1: Link là M3U8 trực tiếp
-                    if (url.contains(".m3u8")) {
+                if (url.isNullOrBlank()) return@apmap
+
+                // Trường hợp 1: Link là iframe player cần bóc tách
+                if (url.contains("/play-fb-v7/play/")) {
+                    val playerDocument = app.get(url, referer = data).document
+                    var streamUrl = playerDocument.selectFirst("#player")?.attr("data-stream-url")
+                    
+                    if (streamUrl.isNullOrBlank()) {
+                        streamUrl = Regex("""var cccc = "([^"]+)""").find(playerDocument.html())?.groupValues?.get(1)
+                    }
+
+                    if (!streamUrl.isNullOrBlank()) {
+                        val isM3u8 = streamUrl.contains(".m3u8")
                         callback.invoke(
                             ExtractorLink(
                                 source = this.name,
                                 name = qualityLabel,
-                                url = url,
+                                url = streamUrl,
                                 referer = "$mainUrl/",
                                 quality = Qualities.Unknown.value,
-                                type = ExtractorLinkType.M3U8
+                                type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.MP4
                             )
                         )
-                    // Trường hợp 2: Link là iframe player cần bóc tách
-                    } else if (url.contains("/play-fb-v7/play/")) {
-                        val playerPage = app.get(url, referer = data).document
-                        val streamUrl = playerPage.selectFirst("#player")?.attr("data-stream-url")
-                        if (streamUrl != null) {
-                            callback.invoke(
-                                ExtractorLink(
-                                    source = this.name,
-                                    name = qualityLabel,
-                                    url = streamUrl,
-                                    referer = "$mainUrl/",
-                                    quality = Qualities.Unknown.value,
-                                    type = ExtractorLinkType.M3U8
-                                )
-                            )
-                        }
-                    // Trường hợp 3: Các loại link khác (VD: link rút gọn), để loadExtractor xử lý
-                    } else {
-                        loadExtractor(url, data, subtitleCallback, callback)
+                        extracted = true
                     }
                 }
+                // Trường hợp 2: Link short-cdn.ink cần nối thêm /master.m3u8
+                else if (url.contains("short-cdn.ink/video/")) {
+                    callback.invoke(
+                        ExtractorLink(
+                            source = this.name,
+                            name = qualityLabel,
+                            url = "$url/master.m3u8",
+                            referer = url,
+                            quality = Qualities.Unknown.value,
+                            type = ExtractorLinkType.M3U8
+                        )
+                    )
+                    extracted = true
+                }
+                // Trường hợp 3: Link M3U8 của fbcdn cần chuyển đổi
+                else if (url.contains("fbcdn.cloud") && url.contains("/o1/v/")) {
+                    val realM3u8Url = url.replace(Regex("/o1/v/t2/f2/m366/"), "/stream/m3u8/")
+                    callback.invoke(
+                        ExtractorLink(
+                            source = this.name,
+                            name = qualityLabel,
+                            url = realM3u8Url,
+                            referer = "$mainUrl/",
+                            quality = Qualities.Unknown.value,
+                            type = ExtractorLinkType.M3U8
+                        )
+                    )
+                    extracted = true
+                }
+                // Trường hợp 4: Các link video trực tiếp khác
+                else if (url.endsWith(".mp4", true) || url.endsWith(".m3u8", true) || url.endsWith(".webm", true) || url.endsWith(".mkv", true)) {
+                    callback.invoke(
+                        ExtractorLink(
+                            source = this.name,
+                            name = qualityLabel,
+                            url = url,
+                            referer = "$mainUrl/",
+                            quality = Qualities.Unknown.value,
+                            type = if (url.endsWith(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.MP4
+                        )
+                    )
+                    extracted = true
+                }
+                // Trường hợp 5: Các loại link còn lại (VD: link rút gọn), để loadExtractor xử lý
+                else {
+                    loadExtractor(url, data, subtitleCallback, callback)
+                    extracted = true
+                }
             } catch (e: Exception) {
-                // Bỏ qua nếu có lỗi
+                // Bỏ qua nếu có lỗi ở một server
             }
         }
 
-        return true
+        return extracted
     }
 }
