@@ -12,6 +12,7 @@ import com.lagradost.cloudstream3.CommonActivity.showToast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import android.widget.Toast
+import android.util.Log
 
 class Yanhh3dProvider : MainAPI() {
     override var mainUrl = "https://yanhh3d.vip"
@@ -135,101 +136,116 @@ class Yanhh3dProvider : MainAPI() {
 
     private suspend fun extractLinksFromPage(
         url: String,
-        prefix: String,
+        prefix: String, // Tham số "tag" (TM hoặc VS)
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
+        val TAG = "Yanhh3dProvider"
+        Log.d(TAG, "[$prefix] Bắt đầu trích xuất từ URL: $url")
         try {
             val document = app.get(url).document
-            val scriptData = document.select("script:containsData(checkLink)").html()
-
-            // Dùng selector CSS ổn định nhất để lấy danh sách server
-            val servers = document.select("div#list_sv a").associate {
-                it.attr("name") to it.text().trim()
+            val scriptContent = document.select("script:containsData(checkLink)").html()
+            if (scriptContent.isBlank()) {
+                throw Exception("[$prefix] Không tìm thấy script chứa link server tại $url")
             }
-            
-            val linkRegex = Regex("""var\s*\${'$'}check(\w+)\s*=\s*"([^"]+)"""")
+            Log.d(TAG, "[$prefix] Đã lấy được script content.")
 
             coroutineScope {
-                linkRegex.findAll(scriptData).forEach { match ->
-                    launch {
-                        try {
-                            val serverId = match.groupValues.getOrNull(1) ?: return@launch
-                            var link = match.groupValues.getOrNull(2) ?: return@launch
-                            
-                            // Lấy tên server, nếu không có thì dùng ID làm tên
-                            val serverName = servers[serverId] ?: serverId 
-                            if (link.isBlank()) return@launch
+                val serverElements = document.select("div#list_sv a")
+                Log.d(TAG, "[$prefix] Tìm thấy ${serverElements.size} server element(s).")
 
-                            if (link.contains("short.icu")) {
-                                link = app.get(link, allowRedirects = false).headers["location"] ?: return@launch
+                serverElements.forEach { serverElement ->
+                    launch {
+                        val serverName = serverElement.text().trim()
+                        val serverId = serverElement.attr("name")
+                        try {
+                            Log.d(TAG, "[$prefix] -> Đang xử lý server: '$serverName' (ID: $serverId)")
+
+                            val link = Regex("""var\s*\${'$'}check$serverId\s*=\s*"([^"]+)"""")
+                                .find(scriptContent)?.groupValues?.get(1)
+
+                            if (link.isNullOrBlank()) {
+                                Log.w(TAG, "[$prefix] -> Server '$serverName': Không tìm thấy link trong script.")
+                                return@launch
+                            }
+                            Log.d(TAG, "[$prefix] -> Server '$serverName': Link gốc trích xuất được: $link")
+                            
+                            var finalUrl = link
+                            if (finalUrl.contains("short.icu")) {
+                                Log.d(TAG, "[$prefix] -> Server '$serverName': Phát hiện link rút gọn, đang giải mã...")
+                                finalUrl = app.get(finalUrl, allowRedirects = false).headers["location"] ?: ""
+                                Log.d(TAG, "[$prefix] -> Server '$serverName': Link sau khi giải mã: $finalUrl")
                             }
                             
-                            val finalUrl = fixUrl(link)
-                            if (finalUrl.isBlank()) return@launch
+                            finalUrl = fixUrl(finalUrl)
+                            if (finalUrl.isBlank()) {
+                                throw Exception("Link sau khi xử lý của server '$serverName' bị rỗng.")
+                            }
 
                             val finalName = "$prefix - $serverName"
 
-                            // =================================================================
-                            // LOGIC MỚI: DỰA VÀO CẤU TRÚC URL, GỌN GÀNG VÀ ỔN ĐỊNH HƠN
-                            // =================================================================
                             when {
-                                // Nhóm 1: Các link cần bóc tách đặc biệt
                                 finalUrl.contains("helvid.net") -> {
+                                    Log.d(TAG, "[$prefix] -> Server '$serverName': Logic Helvid, URL: $finalUrl")
                                     val helvidDoc = app.get(finalUrl).document
                                     val playerScript = helvidDoc.selectFirst("script:containsData('playerInstance.setup')")?.data()
                                     val videoPath = Regex("""file:\s*"(.*?)"""").find(playerScript ?: "")?.groupValues?.get(1)
 
                                     if (videoPath?.isNotBlank() == true) {
                                         val videoUrl = "https://helvid.net$videoPath"
-                                        callback(
-                                            newExtractorLink(this@Yanhh3dProvider.name, finalName, videoUrl, type = ExtractorLinkType.M3U8) {
-                                                this.referer = "https://helvid.net/"
-                                            }
-                                        )
+                                        Log.d(TAG, "[$prefix] -> Server '$serverName': Bóc tách thành công: $videoUrl")
+                                        callback(/*...*/) // Giữ nguyên callback của bạn
+                                        Log.i(TAG, "[$prefix] -> Server '$serverName': SUCCESS")
+                                    } else {
+                                        throw Exception("Không bóc tách được videoPath từ Helvid cho server '$serverName'")
                                     }
                                 }
                                 finalUrl.contains("/play-fb-v") -> {
+                                    Log.d(TAG, "[$prefix] -> Server '$serverName': Logic Play-FB-V, URL: $finalUrl")
                                     val playerDocument = app.get(finalUrl, referer = url).document
                                     val scrapedUrl = playerDocument.selectFirst("#player")?.attr("data-stream-url")
                                         ?: Regex("""var cccc = "([^"]+)""").find(playerDocument.html())?.groupValues?.get(1)
 
                                     if (scrapedUrl?.isNotBlank() == true) {
+                                        Log.d(TAG, "[$prefix] -> Server '$serverName': Bóc tách thành công: $scrapedUrl")
                                         loadExtractor(scrapedUrl, mainUrl, subtitleCallback, callback)
-                                    }
-                                }
-
-                                // Nhóm 2: Các link từ CDN của Facebook
-                                finalUrl.contains("fbcdn.") -> {
-                                    if (finalUrl.contains(".m3u8")) {
-                                        val m3u8Url = finalUrl.replace("/o1/v/t2/f2/m366/", "/stream/m3u8/")
-                                        callback(
-                                            newExtractorLink(this@Yanhh3dProvider.name, finalName, m3u8Url, type = ExtractorLinkType.M3U8) {
-                                                this.referer = mainUrl
-                                            }
-                                        )
+                                        Log.i(TAG, "[$prefix] -> Server '$serverName': SUCCESS (via loadExtractor)")
                                     } else {
-                                        callback(
-                                            newExtractorLink(this@Yanhh3dProvider.name, finalName, finalUrl, type = ExtractorLinkType.VIDEO) {
-                                                this.referer = mainUrl
-                                            }
-                                        )
+                                        throw Exception("Không bóc tách được scrapedUrl từ Play-FB-V cho server '$serverName'")
                                     }
                                 }
-
-                                // Nhóm 3: Các trường hợp còn lại
+                                finalUrl.contains("fbcdn.cloud/video/") -> {
+                                    val m3u8Url = "$finalUrl/master.m3u8"
+                                    Log.d(TAG, "[$prefix] -> Server '$serverName': Logic FBCDN Video, URL cuối: $m3u8Url")
+                                    callback(/*...*/) // Giữ nguyên callback của bạn
+                                    Log.i(TAG, "[$prefix] -> Server '$serverName': SUCCESS")
+                                }
+                                finalUrl.contains("fbcdn.") -> {
+                                    Log.d(TAG, "[$prefix] -> Server '$serverName': Logic FBCDN, URL: $finalUrl")
+                                    if (finalUrl.contains(".m3u8")) {
+                                        val m3u8Url = finalUrl.replace("/o1/v/t2/f2/m3m3u8/")
+                                        Log.d(TAG, "[$prefix] -> Server '$serverName': Biến đổi thành M3U8: $m3u8Url")
+                                        callback(/*...*/) // Giữ nguyên callback của bạn
+                                    } else {
+                                        Log.d(TAG, "[$prefix] -> Server '$serverName': Xử lý như link video trực tiếp.")
+                                        callback(/*...*/) // Giữ nguyên callback của bạn
+                                    }
+                                    Log.i(TAG, "[$prefix] -> Server '$serverName': SUCCESS")
+                                }
                                 else -> {
+                                    Log.d(TAG, "[$prefix] -> Server '$serverName': Không khớp logic nào, dùng loadExtractor mặc định. URL: $finalUrl")
                                     loadExtractor(finalUrl, mainUrl, subtitleCallback, callback)
                                 }
                             }
                         } catch (e: Exception) {
-                            e.printStackTrace()
+                            Log.e(TAG, "[$prefix] ### LỖI ### khi xử lý server '$serverName' (ID: $serverId): ${e.message}", e)
                         }
                     }
                 }
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e(TAG, "### LỖI NGHIÊM TRỌNG ### trong extractLinksFromPage cho URL: $url. Message: ${e.message}", e)
+            throw e // Ném lại lỗi để Cloudstream biết và xử lý
         }
     }
 
@@ -239,21 +255,31 @@ class Yanhh3dProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Giữ nguyên cấu trúc gốc xử lý TM/VS
-        val path = try {
-            URI(data).path.removePrefix("/sever2")
-        } catch (e: Exception) {
-            return false
-        }
-        if (path.isBlank()) return false
-        
-        val dubUrl = "$mainUrl$path"
-        val subUrl = "$mainUrl/sever2$path"
+        val TAG = "Yanhh3dProvider"
+        Log.d(TAG, "Bắt đầu loadLinks với data: $data")
+        try {
+            val path = try {
+                URI(data).path.removePrefix("/sever2")
+            } catch (e: Exception) {
+                Log.e(TAG, "URL của tập phim không hợp lệ: $data", e)
+                throw Exception("URL của tập phim không hợp lệ: $data", e)
+            }
+            if (path.isBlank()) return false
+            
+            val dubUrl = "$mainUrl$path"
+            val subUrl = "$mainUrl/sever2$path"
 
-        coroutineScope {
-            launch { extractLinksFromPage(dubUrl, "TM", subtitleCallback, callback) }
-            launch { extractLinksFromPage(subUrl, "VS", subtitleCallback, callback) }
+            Log.d(TAG, "Chuẩn bị lấy link song song. TM: $dubUrl || VS: $subUrl")
+
+            coroutineScope {
+                launch { extractLinksFromPage(dubUrl, "TM", subtitleCallback, callback) }
+                launch { extractLinksFromPage(subUrl, "VS", subtitleCallback, callback) }
+            }
+            Log.d(TAG, "loadLinks hoàn tất.")
+            return true
+        } catch (e: Exception) {
+            Log.e(TAG, "### LỖI CUỐI CÙNG ### trong hàm loadLinks: ${e.message}", e)
+            throw e
         }
-        return true
     }
 }
