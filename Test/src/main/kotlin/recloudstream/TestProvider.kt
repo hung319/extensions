@@ -195,18 +195,39 @@ class Yanhh3dProvider : MainAPI() {
                                 }
                             }
                             "1080", "4K" -> {
-                                val m3u8Url = link.replace("/o1/v/t2/f2/m366/", "/stream/m3u8/").substringBefore("?")
-                                 callback(
-                                    ExtractorLink(
-                                        this@Yanhh3dProvider.name, // Sửa lỗi tham chiếu
-                                        finalName,
-                                        m3u8Url,
-                                        mainUrl,
-                                        Qualities.Unknown.value,
-                                        type = ExtractorLinkType.M3U8
-                                    )
-                                )
-                            }
+    // Logic MỚI: Xử lý nhiều loại link cho các server này
+    if (link.contains("scontent") && link.contains(".m3u8")) {
+        // 1. Xử lý định dạng link scontent... như cũ
+        val m3u8Url = link.replace("/o1/v/t2/f2/m366/", "/stream/m3u8/").substringBefore("?")
+        callback(
+            ExtractorLink(
+                this@Yanhh3dProvider.name,
+                finalName,
+                m3u8Url,
+                mainUrl,
+                Qualities.Unknown.value,
+                type = ExtractorLinkType.M3U8
+            )
+        )
+    } else if (link.contains("fbcdn.cloud/video/")) {
+        // 2. Sửa lỗi cho định dạng fbcdn.cloud/video/... bằng cách thêm /master.m3u8
+        val m3u8Link = if (link.endsWith("/master.m3u8")) link else "$link/master.m3u8"
+        callback(
+            ExtractorLink(
+                this@Yanhh3dProvider.name,
+                finalName,
+                m3u8Link,
+                mainUrl, // Referrer
+                Qualities.Unknown.value,
+                type = ExtractorLinkType.M3U8
+            )
+        )
+    }
+    else {
+        // 3. Dự phòng cho các định dạng link khác có thể xuất hiện
+        loadExtractor(link, mainUrl, subtitleCallback, callback)
+    }
+}
                             "LINK8" -> {
                                 if(link.contains("helvid.net")) {
                                     val helvidPage = app.get(link).text
