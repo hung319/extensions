@@ -298,8 +298,8 @@ class Yanhh3dProvider : MainAPI() {
             val chosenLink = preferredLink ?: bestQualityLink ?: dailymotionLinks.first()
             
             // Ghi đè tên của link được chọn bằng tên từ website
-            chosenLink.name = name
-            callback(chosenLink)
+            val finalLink = chosenLink.copy(name = name)
+            callback(finalLink)
         }
     }
 }
