@@ -189,7 +189,7 @@ class Yanhh3dProvider : MainAPI() {
                                         finalName,
                                         videoUrl,
                                         "https://helvid.net/", // Referer quan trọng
-                                        type = ExtractorLinkType.HLS // Định dạng video là HLS
+                                        type = ExtractorLinkType.M3U8 // Định dạng video là HLS
                                     )
                                 )
                             }
