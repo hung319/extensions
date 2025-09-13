@@ -97,7 +97,7 @@ class AnimetmProvider : MainAPI() {
         }
     }
 
-    // === Cập nhật: Chuyển về xử lý song song, thêm logic cho fbcdn.cloud/video và player v6 ===
+    // === Cập nhật: Thêm lại logic nối chuỗi cho short-cdn.ink ===
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -108,120 +108,56 @@ class AnimetmProvider : MainAPI() {
         val scriptContent = document.select("script").html()
         var extracted = false
 
-        // Dùng apmap để xử lý song song
         document.select("div.ps__-list a.btn3dsv").apmap { serverElement ->
             try {
-                val name = serverElement.attr("name")
-                val qualityLabel = serverElement.text()
-                val serverId = name.removePrefix("LINK")
+                val qualityLabel = serverElement.text() // Giữ tên gốc từ nút bấm
+                val serverId = serverElement.attr("name").removePrefix("LINK")
 
                 val url = Regex("""var\s*\${'$'}checkLink$serverId\s*=\s*"([^"]+)"""")
                     .find(scriptContent)?.groupValues?.get(1)
 
                 if (url.isNullOrBlank()) return@apmap
 
-                // Case 1a: Iframe player v7
-                if (url.contains("/play-fb-v7/play/")) {
-                    val playerDocument = app.get(url, referer = data).document
-                    var streamUrl = playerDocument.selectFirst("#player")?.attr("data-stream-url")
-                    
-                    if (streamUrl.isNullOrBlank()) {
-                        streamUrl = Regex("""var cccc = "([^"]+)""").find(playerDocument.html())?.groupValues?.get(1)
-                    }
+                var finalUrl: String? = null
 
-                    if (!streamUrl.isNullOrBlank()) {
-                        callback.invoke(
-                            ExtractorLink(
-                                source = this.name,
-                                name = qualityLabel,
-                                url = streamUrl,
-                                referer = "$mainUrl/",
-                                quality = Qualities.Unknown.value,
-                                type = if (streamUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                            )
-                        )
-                        extracted = true
+                // Nhóm 1: Các iframe player (v6, v7)
+                if (url.contains("/play-fb-v")) {
+                    val playerDocument = app.get(url, referer = data).document
+                    finalUrl = playerDocument.selectFirst("#player")?.attr("data-stream-url")
+                    if (finalUrl.isNullOrBlank()) {
+                        finalUrl = Regex("""var cccc = "([^"]+)""").find(playerDocument.html())?.groupValues?.get(1)
                     }
                 }
-                // Case 1b: Iframe player v6 (Base64 encoded)
-                else if (url.contains("/play-fb-v6/play/")) {
-                    val playerContent = app.get(url, referer = data).text
-                    val base64Url = Regex("""var hashes = "([^"]+)""").find(playerContent)?.groupValues?.get(1)
-                    if (base64Url != null) {
-                        val streamUrl = String(Base64.decode(base64Url, Base64.DEFAULT))
-                        callback.invoke(
-                            ExtractorLink(
-                                source = this.name,
-                                name = qualityLabel,
-                                url = streamUrl,
-                                referer = "$mainUrl/",
-                                quality = Qualities.Unknown.value,
-                                type = ExtractorLinkType.VIDEO
-                            )
-                        )
-                        extracted = true
-                    }
+                // Nhóm 2: Các link cần nối thêm "/master.m3u8"
+                else if (url.contains("fbcdn.cloud/video/") || url.contains("short-cdn.ink/video/")) {
+                    finalUrl = "$url/master.m3u8"
                 }
-                // Case 2a: fbcdn.cloud/video/ rule
-                else if (url.contains("fbcdn.cloud/video/")) {
-                     callback.invoke(
-                        ExtractorLink(
-                            source = this.name,
-                            name = qualityLabel,
-                            url = "$url/master.m3u8",
-                            referer = "$mainUrl/",
-                            quality = Qualities.Unknown.value,
-                            type = ExtractorLinkType.M3U8
-                        )
-                    )
-                    extracted = true
-                }
-                // Case 2b: short-cdn.ink rule
-                else if (url.contains("short-cdn.ink/video/")) {
-                    callback.invoke(
-                        ExtractorLink(
-                            source = this.name,
-                            name = qualityLabel,
-                            url = "$url/master.m3u8",
-                            referer = url,
-                            quality = Qualities.Unknown.value,
-                            type = ExtractorLinkType.M3U8
-                        )
-                    )
-                    extracted = true
-                }
-                // Case 2c: fbcdn.cloud transformation rule
+                // Nhóm 3: Link fbcdn cần chuyển đổi
                 else if (url.contains("fbcdn.cloud") && url.contains("/o1/v/")) {
-                    val realM3u8Url = url.replace(Regex("/o1/v/t2/f2/m366/"), "/stream/m3u8/")
-                    callback.invoke(
-                        ExtractorLink(
-                            source = this.name,
-                            name = qualityLabel,
-                            url = realM3u8Url,
-                            referer = "$mainUrl/",
-                            quality = Qualities.Unknown.value,
-                            type = ExtractorLinkType.M3U8
-                        )
-                    )
-                    extracted = true
+                    finalUrl = url.replace(Regex("/o1/v/t2/f2/m366/"), "/stream/m3u8/")
                 }
-                // Case 3: Generic direct links
+                // Nhóm 4: Các link video trực tiếp
                 else if (url.endsWith(".mp4", true) || url.endsWith(".m3u8", true) || url.endsWith(".webm", true) || url.endsWith(".mkv", true)) {
-                    callback.invoke(
-                        ExtractorLink(
-                            source = this.name,
-                            name = qualityLabel,
-                            url = url,
-                            referer = "$mainUrl/",
-                            quality = Qualities.Unknown.value,
-                            type = if (url.endsWith(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                        )
-                    )
-                    extracted = true
+                    finalUrl = url
                 }
-                // Case 4: Fallback for everything else
+                // Nhóm 5: Các trường hợp khác (link rút gọn...)
                 else {
                     loadExtractor(url, data, subtitleCallback, callback)
+                    extracted = true
+                    return@apmap // Dừng vì loadExtractor đã tự gọi callback
+                }
+
+                if (!finalUrl.isNullOrBlank()) {
+                    callback.invoke(
+                        ExtractorLink(
+                            source = this.name,
+                            name = qualityLabel, // Sử dụng tên gốc
+                            url = finalUrl,
+                            referer = "$mainUrl/",
+                            quality = Qualities.Unknown.value,
+                            type = if (finalUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                        )
+                    )
                     extracted = true
                 }
             } catch (e: Exception) {
