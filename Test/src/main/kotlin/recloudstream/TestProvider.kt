@@ -7,12 +7,10 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import java.net.URI
 import com.lagradost.cloudstream3.CommonActivity.showToast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import android.widget.Toast
-import android.util.Log
 
 class Yanhh3dProvider : MainAPI() {
     override var mainUrl = "https://yanhh3d.vip"
@@ -42,7 +40,6 @@ class Yanhh3dProvider : MainAPI() {
         val url = "$mainUrl/moi-cap-nhat?page=$page"
         val document = app.get(url).document
         val newMovies = document.select("div.film_list-wrap div.flw-item").mapNotNull { it.toSearchResult() }
-        // Sửa: Dùng đúng tên tham số `hasNext`
         return newHomePageResponse(listOf(HomePageList("Phim Mới Cập Nhật", newMovies)), hasNext = newMovies.isNotEmpty())
     }
 
@@ -113,9 +110,8 @@ class Yanhh3dProvider : MainAPI() {
                     else -> ""
                 }
                 val episodeName = "Tập $name $tag".trim()
-                val episodeUrl = info.dubUrl ?: info.subUrl!!
-                newEpisode(episodeUrl) { this.name = episodeName }
-            // Sửa: Logic sắp xếp an toàn hơn để không còn lỗi
+                val episodeData = info.dubUrl ?: info.subUrl!! 
+                newEpisode(episodeData) { this.name = episodeName }
             }.sortedBy { episode ->
                 episode.name?.let { Regex("""\d+""").find(it)?.value?.toIntOrNull() } ?: 0
             }
@@ -134,173 +130,115 @@ class Yanhh3dProvider : MainAPI() {
         }
     }
 
-    private suspend fun extractLinksFromPage(
-        url: String,
-        prefix: String,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ) {
-        val TAG = "Yanhh3dProvider"
-        Log.d(TAG, "[$prefix] Bắt đầu trích xuất từ URL: $url")
-        try {
-            val document = app.get(url).document
-            val scriptContent = document.select("script:containsData(checkLink)").html()
-            if (scriptContent.isBlank()) {
-                throw Exception("[$prefix] Không tìm thấy script chứa link server tại $url")
-            }
-            Log.d(TAG, "[$prefix] Đã lấy được script content.")
-
-            coroutineScope {
-                val serverElements = document.select("div#list_sv a")
-                Log.d(TAG, "[$prefix] Tìm thấy ${serverElements.size} server element(s).")
-
-                serverElements.forEach { serverElement ->
-                    launch {
-                        val serverName = serverElement.text().trim()
-                        val serverId = serverElement.attr("name")
-                        try {
-                            Log.d(TAG, "[$prefix] -> Đang xử lý server: '$serverName' (ID: $serverId)")
-
-                            val link = Regex("""var\s*\${'$'}check$serverId\s*=\s*"([^"]+)"""")
-                                .find(scriptContent)?.groupValues?.get(1)
-
-                            if (link.isNullOrBlank()) {
-                                Log.w(TAG, "[$prefix] -> Server '$serverName': Không tìm thấy link trong script.")
-                                return@launch
-                            }
-                            Log.d(TAG, "[$prefix] -> Server '$serverName': Link gốc trích xuất được: $link")
-                            
-                            var finalUrl = link
-                            if (finalUrl.contains("short.icu")) {
-                                Log.d(TAG, "[$prefix] -> Server '$serverName': Phát hiện link rút gọn, đang giải mã...")
-                                finalUrl = app.get(finalUrl, allowRedirects = false).headers["location"] ?: ""
-                                Log.d(TAG, "[$prefix] -> Server '$serverName': Link sau khi giải mã: $finalUrl")
-                            }
-                            
-                            finalUrl = fixUrl(finalUrl)
-                            if (finalUrl.isBlank()) {
-                                throw Exception("Link sau khi xử lý của server '$serverName' bị rỗng.")
-                            }
-
-                            val finalName = "$prefix - $serverName"
-
-                            when {
-                                finalUrl.contains("helvid.net") -> {
-                                    Log.d(TAG, "[$prefix] -> Server '$serverName': Logic Helvid, URL: $finalUrl")
-                                    val helvidDoc = app.get(finalUrl).document
-                                    val playerScript = helvidDoc.selectFirst("script:containsData('playerInstance.setup')")?.data()
-                                    val videoPath = Regex("""file:\s*"(.*?)"""").find(playerScript ?: "")?.groupValues?.get(1)
-
-                                    if (videoPath?.isNotBlank() == true) {
-                                        val videoUrl = "https://helvid.net$videoPath"
-                                        Log.d(TAG, "[$prefix] -> Server '$serverName': Bóc tách thành công: $videoUrl")
-                                        // SỬA: Điền lại callback hoàn chỉnh
-                                        callback(
-                                            newExtractorLink(this@Yanhh3dProvider.name, finalName, videoUrl, type = ExtractorLinkType.M3U8) {
-                                                this.referer = "https://helvid.net/"
-                                            }
-                                        )
-                                        Log.i(TAG, "[$prefix] -> Server '$serverName': SUCCESS")
-                                    } else {
-                                        throw Exception("Không bóc tách được videoPath từ Helvid cho server '$serverName'")
-                                    }
-                                }
-                                finalUrl.contains("/play-fb-v") -> {
-                                    Log.d(TAG, "[$prefix] -> Server '$serverName': Logic Play-FB-V, URL: $finalUrl")
-                                    val playerDocument = app.get(finalUrl, referer = url).document
-                                    val scrapedUrl = playerDocument.selectFirst("#player")?.attr("data-stream-url")
-                                        ?: Regex("""var cccc = "([^"]+)""").find(playerDocument.html())?.groupValues?.get(1)
-
-                                    if (scrapedUrl?.isNotBlank() == true) {
-                                        Log.d(TAG, "[$prefix] -> Server '$serverName': Bóc tách thành công: $scrapedUrl")
-                                        loadExtractor(scrapedUrl, mainUrl, subtitleCallback, callback)
-                                        Log.i(TAG, "[$prefix] -> Server '$serverName': SUCCESS (via loadExtractor)")
-                                    } else {
-                                        throw Exception("Không bóc tách được scrapedUrl từ Play-FB-V cho server '$serverName'")
-                                    }
-                                }
-                                finalUrl.contains("fbcdn.cloud/video/") -> {
-                                    val m3u8Url = "$finalUrl/master.m3u8"
-                                    Log.d(TAG, "[$prefix] -> Server '$serverName': Logic FBCDN Video, URL cuối: $m3u8Url")
-                                    // SỬA: Điền lại callback hoàn chỉnh
-                                    callback(
-                                        newExtractorLink(this@Yanhh3dProvider.name, finalName, m3u8Url, type = ExtractorLinkType.M3U8) {
-                                            this.referer = mainUrl
-                                        }
-                                    )
-                                    Log.i(TAG, "[$prefix] -> Server '$serverName': SUCCESS")
-                                }
-                                finalUrl.contains("fbcdn.") -> {
-                                    Log.d(TAG, "[$prefix] -> Server '$serverName': Logic FBCDN, URL: $finalUrl")
-                                    if (finalUrl.contains(".m3u8")) {
-                                        // SỬA: Sửa lại hàm replace bị lỗi cú pháp
-                                        val m3u8Url = finalUrl.replace("/o1/v/t2/f2/m366/", "/stream/m3u8/")
-                                        Log.d(TAG, "[$prefix] -> Server '$serverName': Biến đổi thành M3U8: $m3u8Url")
-                                        // SỬA: Điền lại callback hoàn chỉnh
-                                        callback(
-                                            newExtractorLink(this@Yanhh3dProvider.name, finalName, m3u8Url, type = ExtractorLinkType.M3U8) {
-                                                this.referer = mainUrl
-                                            }
-                                        )
-                                    } else {
-                                        Log.d(TAG, "[$prefix] -> Server '$serverName': Xử lý như link video trực tiếp.")
-                                        // SỬA: Điền lại callback hoàn chỉnh
-                                        callback(
-                                            newExtractorLink(this@Yanhh3dProvider.name, finalName, finalUrl, type = ExtractorLinkType.VIDEO) {
-                                                this.referer = mainUrl
-                                            }
-                                        )
-                                    }
-                                    Log.i(TAG, "[$prefix] -> Server '$serverName': SUCCESS")
-                                }
-                                else -> {
-                                    Log.d(TAG, "[$prefix] -> Server '$serverName': Không khớp logic nào, dùng loadExtractor mặc định. URL: $finalUrl")
-                                    loadExtractor(finalUrl, mainUrl, subtitleCallback, callback)
-                                }
-                            }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "[$prefix] ### LỖI ### khi xử lý server '$serverName' (ID: $serverId): ${e.message}", e)
-                        }
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "### LỖI NGHIÊM TRỌNG ### trong extractLinksFromPage cho URL: $url. Message: ${e.message}", e)
-            throw e
-        }
-    }
-
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val TAG = "Yanhh3dProvider"
-        Log.d(TAG, "Bắt đầu loadLinks với data: $data")
-        try {
-            val path = try {
-                URI(data).path.removePrefix("/sever2")
-            } catch (e: Exception) {
-                Log.e(TAG, "URL của tập phim không hợp lệ: $data", e)
-                throw Exception("URL của tập phim không hợp lệ: $data", e)
-            }
-            if (path.isBlank()) return false
-            
-            val dubUrl = "$mainUrl$path"
-            val subUrl = "$mainUrl/sever2$path"
-
-            Log.d(TAG, "Chuẩn bị lấy link song song. TM: $dubUrl || VS: $subUrl")
-
-            coroutineScope {
-                launch { extractLinksFromPage(dubUrl, "TM", subtitleCallback, callback) }
-                launch { extractLinksFromPage(subUrl, "VS", subtitleCallback, callback) }
-            }
-            Log.d(TAG, "loadLinks hoàn tất.")
-            return true
-        } catch (e: Exception) {
-            Log.e(TAG, "### LỖI CUỐI CÙNG ### trong hàm loadLinks: ${e.message}", e)
-            throw e
+        val isSubServer = data.contains("/sever2/")
+        val (dubUrl, subUrl) = if (isSubServer) {
+            data.replace("/sever2/", "/") to data
+        } else {
+            data to data.replace(mainUrl, "$mainUrl/sever2")
         }
+
+        coroutineScope {
+            launch { processPageLinks(dubUrl, "TM", callback) }
+            launch { processPageLinks(subUrl, "VS", callback) }
+        }
+        return true
+    }
+
+    private suspend fun processPageLinks(
+        pageUrl: String,
+        prefix: String,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        runCatching {
+            val document = app.get(pageUrl, timeout = 10L).document
+            val scriptContent = document.select("script").firstOrNull {
+                val d = it.data()
+                d.contains("\$checkFbo") || d.contains("\$checkLink")
+            }?.data() ?: return@runCatching
+
+            val serverNames = document.select("a.btn3dsv").associate {
+                it.attr("name").uppercase() to it.text()
+            }
+            
+            val linkRegex = Regex("""var\s*\$(check(?:Fbo|Link\d{1,2}))\s*=\s*['"](.*?)['"];""")
+            linkRegex.findAll(scriptContent).forEach { match ->
+                val varName = match.groupValues[1]
+                val link = match.groupValues[2]
+                if (link.isBlank()) return@forEach
+
+                val serverId = varName.removePrefix("check").uppercase()
+                val serverDisplayName = serverNames[serverId] ?: serverId
+                val finalName = "$prefix - $serverDisplayName"
+                
+                when (serverId) {
+                    "FBO" -> handleDirectLink(link, finalName, callback)
+                    "LINK1" -> handleIframeCCCC(link, finalName, callback)
+                    "LINK2", "LINK4" -> handleCloudM3u8(link, finalName, callback)
+                    "LINK8" -> handleHelvidLink(link, finalName, callback)
+                    else -> handleDirectLink(link, finalName, callback) // Xử lý các link còn lại như link trực tiếp
+                }
+            }
+        }.onFailure { it.printStackTrace() }
+    }
+
+    private fun getLinkType(url: String): ExtractorLinkType {
+        return if (url.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+    }
+
+    private suspend fun handleDirectLink(url: String, name: String, callback: (ExtractorLink) -> Unit) {
+        if (url.isBlank()) return
+        callback(
+            newExtractorLink(this.name, name, url, type = getLinkType(url)) {
+                this.referer = mainUrl
+            }
+        )
+    }
+
+    private suspend fun handleIframeCCCC(url: String, name: String, callback: (ExtractorLink) -> Unit) {
+        runCatching {
+            val iframeDoc = app.get(url).document
+            val script = iframeDoc.selectFirst("script:containsData(var cccc)")?.data() ?: return@runCatching
+            val videoUrl = Regex("""var\s*cccc\s*=\s*'([^']+)';""").find(script)?.groupValues?.get(1)
+            
+            if (!videoUrl.isNullOrBlank()) {
+                callback(
+                    newExtractorLink(this.name, name, videoUrl, type = getLinkType(videoUrl)) {
+                        this.referer = url
+                    }
+                )
+            }
+        }.onFailure { it.printStackTrace() }
+    }
+
+    private suspend fun handleCloudM3u8(url: String, name: String, callback: (ExtractorLink) -> Unit) {
+        if (!url.contains("m3u8")) return
+        val streamUrl = url.replace("/o1/v/t2/f2/m366/", "/stream/m3u8/")
+        callback(
+            newExtractorLink(this.name, name, streamUrl, type = ExtractorLinkType.M3U8) {
+                this.referer = mainUrl
+            }
+        )
+    }
+    
+    private suspend fun handleHelvidLink(url: String, name: String, callback: (ExtractorLink) -> Unit) {
+        runCatching {
+            val helvidDoc = app.get(url).document
+            val script = helvidDoc.selectFirst("script:containsData(const sources)")?.data() ?: return@runCatching
+            val obfuscatedUrl = Regex("""'file':\s*'([^']*)'""").find(script)?.groupValues?.get(1)
+            if (!obfuscatedUrl.isNullOrBlank()) {
+                val realUrl = obfuscatedUrl.replace("https_//", "https://")
+                callback(
+                    newExtractorLink(this.name, name, realUrl, type = ExtractorLinkType.M3U8) {
+                        this.referer = url
+                    }
+                )
+            }
+        }.onFailure { it.printStackTrace() }
     }
 }
