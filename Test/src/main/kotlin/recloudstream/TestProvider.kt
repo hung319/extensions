@@ -190,13 +190,17 @@ class Yanhh3dProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
+        val blockedDomains = listOf("short.icu", "streamc.xyz", "freeplayervideo.com", "abysscdn.com")
+        if (blockedDomains.any { it in url }) {
+            return
+        }
+
         when {
-            // Thay đổi 1: Linh hoạt hóa link iframe
-            "yanhh3d.vip/play-fb-v" in url -> handleIframeCCCC(url, name, callback)
+            "yanhh3d.vip/play-fb-v" in url -> handleIframePlayer(url, name, callback)
             "fbcdn.cloud/" in url -> handleFbCdnLink(url, name, callback)
+            "short-cdn.ink/video/" in url -> handleShortCdnLink(url, name, callback)
             "helvid.net/" in url -> handleHelvidLink(url, name, callback)
-            "dailymotion.com/" in url -> loadExtractor(url, mainUrl, subtitleCallback, callback)
-            // Thay đổi 2: "short.icu/" đã được loại bỏ
+            "dailymotion.com/" in url -> handleDailymotion(url, name, subtitleCallback, callback)
             else -> handleDirectLink(url, name, callback)
         }
     }
@@ -214,12 +218,15 @@ class Yanhh3dProvider : MainAPI() {
         )
     }
 
-    private suspend fun handleIframeCCCC(url: String, name: String, callback: (ExtractorLink) -> Unit) {
+    private suspend fun handleIframePlayer(url: String, name: String, callback: (ExtractorLink) -> Unit) {
         runCatching {
             val iframeDoc = app.get(url).document
-            val script = iframeDoc.selectFirst("script:containsData(var cccc)")?.data() ?: return@runCatching
-            val videoUrl = Regex("""var\s*cccc\s*=\s*'([^']+)';""").find(script)?.groupValues?.get(1)
+            val script = iframeDoc.selectFirst("script:containsData(eval), script:containsData(var cccc)")?.data() ?: return@runCatching
             
+            // Ưu tiên tìm 'var cccc', nếu không có mới tìm trong 'eval'
+            val videoUrl = Regex("""var\s*cccc\s*=\s*'([^']+)';""").find(script)?.groupValues?.get(1)
+                ?: Regex("""'file':"([^"]+)"""").find(script)?.groupValues?.get(1)?.replace("\\/", "/")
+
             if (!videoUrl.isNullOrBlank()) {
                 callback(
                     newExtractorLink(this.name, name, videoUrl, type = getLinkType(videoUrl)) {
@@ -230,6 +237,7 @@ class Yanhh3dProvider : MainAPI() {
         }.onFailure { it.printStackTrace() }
     }
 
+
     private suspend fun handleFbCdnLink(url: String, name: String, callback: (ExtractorLink) -> Unit) {
         val streamUrl = when {
             url.contains("fbcdn.cloud/video/") -> "$url/master.m3u8"
@@ -237,6 +245,15 @@ class Yanhh3dProvider : MainAPI() {
             else -> url
         }
         if (!streamUrl.contains(".m3u8")) return
+        callback(
+            newExtractorLink(this.name, name, streamUrl, type = ExtractorLinkType.M3U8) {
+                this.referer = mainUrl
+            }
+        )
+    }
+
+    private suspend fun handleShortCdnLink(url: String, name: String, callback: (ExtractorLink) -> Unit) {
+        val streamUrl = "$url/master.m3u8"
         callback(
             newExtractorLink(this.name, name, streamUrl, type = ExtractorLinkType.M3U8) {
                 this.referer = mainUrl
@@ -258,5 +275,31 @@ class Yanhh3dProvider : MainAPI() {
                 )
             }
         }.onFailure { it.printStackTrace() }
+    }
+
+    private suspend fun handleDailymotion(
+        url: String,
+        name: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        val dailymotionLinks = mutableListOf<ExtractorLink>()
+        loadExtractor(url, mainUrl, subtitleCallback) { link ->
+            dailymotionLinks.add(link)
+        }
+
+        if (dailymotionLinks.isNotEmpty()) {
+            // Ưu tiên 1: Tìm link có tên "Dailymotion" (thường là link tổng hợp/auto)
+            val preferredLink = dailymotionLinks.find { it.name.equals("Dailymotion", ignoreCase = true) }
+            
+            // Ưu tiên 2: Nếu không có link tổng, tìm link có chất lượng cao nhất
+            val bestQualityLink = dailymotionLinks.maxByOrNull { it.quality }
+
+            val chosenLink = preferredLink ?: bestQualityLink ?: dailymotionLinks.first()
+            
+            // Ghi đè tên của link được chọn bằng tên từ website
+            chosenLink.name = name
+            callback(chosenLink)
+        }
     }
 }
