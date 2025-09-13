@@ -134,121 +134,103 @@ class Yanhh3dProvider : MainAPI() {
     }
 
     private suspend fun extractLinksFromPage(
-        url: String,
-        prefix: String, // Tham số "tag" (TM hoặc VS)
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ) {
-        try {
-            val document = app.get(url).document
-            val scriptContent = document.select("script:containsData(checkLink)").html()
+    url: String,
+    prefix: String,
+    subtitleCallback: (SubtitleFile) -> Unit,
+    callback: (ExtractorLink) -> Unit
+) {
+    try {
+        val document = app.get(url).document
+        val scriptData = document.select("script").find {
+            val data = it.data()
+            data.contains("checkLink") || data.contains("checkFbo")
+        }?.data() ?: return
 
-            coroutineScope {
-                document.select("div.ps__-list a.btn3dsv").forEach { serverElement ->
-                    launch {
-                        try {
-                            val serverName = serverElement.text().trim()
-                            val serverId = serverElement.attr("name")
+        // DÙNG SELECTOR ĐÃ ĐƯỢC XÁC NHẬN LÀ ĐÚNG
+        val serverElements = document.select("div#list_sv a")
 
-                            // Bước 1: Quét server và tìm biến "$check" tương ứng
-                            val link = Regex("""var\s*\${'$'}check$serverId\s*=\s*"([^"]+)"""")
-                                .find(scriptContent)?.groupValues?.get(1)
+        // Phần code còn lại không đổi
+        val servers = serverElements.associate {
+            it.attr("name").uppercase() to it.text().trim()
+        }
+        val linkRegex = Regex("""var\s*\${'$'}check(\w+)\s*=\s*['"](.*?)['"];""")
 
-                            if (link.isNullOrBlank()) return@launch
-                            
-                            var finalUrl = link
-                            if (finalUrl.contains("short.icu")) {
-                                finalUrl = app.get(finalUrl, allowRedirects = false).headers["location"] ?: return@launch
+        coroutineScope {
+            linkRegex.findAll(scriptData).forEach { match ->
+                launch {
+                    try {
+                        val serverId = match.groupValues.getOrNull(1)?.uppercase() ?: return@launch
+                        var link = match.groupValues.getOrNull(2) ?: return@launch
+                        
+                        val serverName = servers[serverId] ?: return@launch
+                        if (link.isBlank()) return@launch
+
+                        if (link.contains("short.icu")) {
+                            link = app.get(link, allowRedirects = false).headers["location"] ?: return@launch
+                        }
+                        
+                        val finalUrl = fixUrl(link)
+                        if (finalUrl.isBlank()) return@launch
+
+                        val finalName = "$prefix - $serverName"
+
+                        when (serverName) {
+                            "HD+" -> {
+                                callback(
+                                    newExtractorLink(this@Yanhh3dProvider.name, finalName, finalUrl, type = ExtractorLinkType.VIDEO) {
+                                        this.referer = mainUrl
+                                    }
+                                )
                             }
-                            
-                            finalUrl = fixUrl(finalUrl)
-                            if (finalUrl.isBlank()) return@launch
-
-                            // Bước 2: Đặt tag "TM" hoặc "VS" vào tên của link
-                            val finalName = "$prefix - $serverName"
-
-                            // Bước 3: Áp dụng logic xử lý link theo serverName đã hoàn thiện
-                            when (serverName) {
-                                "HD+" -> {
+                            "1080", "4K" -> {
+                                if (finalUrl.contains(".m3u8")) {
+                                    val m3u8Url = finalUrl.replace("/o1/v/t2/f2/m366/", "/stream/m3u8/")
                                     callback(
-                                        newExtractorLink(this@Yanhh3dProvider.name, finalName, finalUrl, type = ExtractorLinkType.VIDEO) {
+                                        newExtractorLink(this@Yanhh3dProvider.name, finalName, m3u8Url, type = ExtractorLinkType.M3U8) {
                                             this.referer = mainUrl
                                         }
                                     )
                                 }
-                                "1080", "4K" -> {
-                                    if (finalUrl.contains(".m3u8")) {
-                                        val m3u8Url = finalUrl.replace("/o1/v/t2/f2/m366/", "/stream/m3u8/")
+                            }
+                            "HD" -> {
+                                if (finalUrl.contains("/play-fb-v")) {
+                                    val playerDocument = app.get(finalUrl, referer = url).document
+                                    val scrapedUrl = playerDocument.selectFirst("#player")?.attr("data-stream-url")
+                                        ?: Regex("""var cccc = "([^"]+)""").find(playerDocument.html())?.groupValues?.get(1)
+
+                                    if (scrapedUrl?.isNotBlank() == true) {
+                                        loadExtractor(scrapedUrl, mainUrl, subtitleCallback, callback)
+                                    }
+                                }
+                            }
+                            "Link8" -> {
+                                if (finalUrl.contains("helvid.net")) {
+                                    val helvidDoc = app.get(finalUrl).document
+                                    val playerScript = helvidDoc.selectFirst("script:containsData('playerInstance.setup')")?.data()
+                                    val videoPath = Regex("""file:\s*"(.*?)"""").find(playerScript ?: "")?.groupValues?.get(1)
+
+                                    if (videoPath?.isNotBlank() == true) {
+                                        val videoUrl = "https://helvid.net$videoPath"
                                         callback(
-                                            newExtractorLink(this@Yanhh3dProvider.name, finalName, m3u8Url, type = ExtractorLinkType.M3U8) {
-                                                this.referer = mainUrl
+                                            newExtractorLink(this@Yanhh3dProvider.name, finalName, videoUrl, type = ExtractorLinkType.M3U8) {
+                                                this.referer = "https://helvid.net/"
                                             }
                                         )
                                     }
                                 }
-                                "HD" -> {
-                                    if (finalUrl.contains("/play-fb-v")) {
-                                        val playerDocument = app.get(finalUrl, referer = url).document
-                                        val scrapedUrl = playerDocument.selectFirst("#player")?.attr("data-stream-url")
-                                            ?: Regex("""var cccc = "([^"]+)""").find(playerDocument.html())?.groupValues?.get(1)
-
-                                        if (scrapedUrl?.isNotBlank() == true) {
-                                            loadExtractor(scrapedUrl, mainUrl, subtitleCallback, callback)
-                                        }
-                                    }
-                                }
-                                "Link8" -> {
-                                    if (finalUrl.contains("helvid.net")) {
-                                        val helvidDoc = app.get(finalUrl).document
-                                        val playerScript = helvidDoc.selectFirst("script:containsData('playerInstance.setup')")?.data()
-                                        val videoPath = Regex("""file:\s*"(.*?)"""").find(playerScript ?: "")?.groupValues?.get(1)
-
-                                        if (videoPath?.isNotBlank() == true) {
-                                            val videoUrl = "https://helvid.net$videoPath"
-                                            callback(
-                                                newExtractorLink(this@Yanhh3dProvider.name, finalName, videoUrl, type = ExtractorLinkType.M3U8) {
-                                                    this.referer = "https://helvid.net/"
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                                else -> {
-                                    loadExtractor(finalUrl, mainUrl, subtitleCallback, callback)
-                                }
                             }
-                        } catch (e: Exception) {
-                            e.printStackTrace()
+                            else -> {
+                                loadExtractor(finalUrl, mainUrl, subtitleCallback, callback)
+                            }
                         }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
                     }
                 }
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
         }
+    } catch (e: Exception) {
+        e.printStackTrace()
     }
-
-    override suspend fun loadLinks(
-        data: String,
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        // Giữ nguyên cấu trúc gốc xử lý TM/VS
-        val path = try {
-            URI(data).path.removePrefix("/sever2")
-        } catch (e: Exception) {
-            return false
-        }
-        if (path.isBlank()) return false
-        
-        val dubUrl = "$mainUrl$path"
-        val subUrl = "$mainUrl/sever2$path"
-
-        coroutineScope {
-            launch { extractLinksFromPage(dubUrl, "TM", subtitleCallback, callback) }
-            launch { extractLinksFromPage(subUrl, "VS", subtitleCallback, callback) }
-        }
-        return true
-    }
+}
 }
