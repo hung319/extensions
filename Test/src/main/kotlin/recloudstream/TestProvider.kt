@@ -151,11 +151,8 @@ class Yanhh3dProvider : MainAPI() {
         }
         val linkRegex = Regex("""var\s*\${'$'}check(\w+)\s*=\s*['"](.*?)['"];""")
 
-        // Sử dụng coroutineScope để xử lý song song các server, tăng tốc độ tải link
         coroutineScope {
             linkRegex.findAll(scriptData).forEach { match ->
-                // Mỗi server được xử lý trong một coroutine (launch) riêng biệt.
-                // Nếu một server bị lỗi, các server khác sẽ không bị ảnh hưởng.
                 launch {
                     try {
                         val serverId = match.groupValues.getOrNull(1)?.uppercase() ?: return@launch
@@ -164,55 +161,17 @@ class Yanhh3dProvider : MainAPI() {
                         val serverName = servers[serverId] ?: return@launch
                         if (link.isBlank()) return@launch
 
-                        val finalName = "$prefix - $serverName"
-
                         if (link.contains("short.icu")) {
                             link = app.get(link, allowRedirects = false).headers["location"] ?: return@launch
                         }
                         
                         val finalUrl = fixUrl(link)
                         if (finalUrl.isBlank()) return@launch
-                        
-                        // =================================================================
-                        // LOGIC XỬ LÝ CHO TỪNG LOẠI SERVER
-                        // =================================================================
-                        when {
-                            // Server HD+: Link video trực tiếp
-                            serverName == "HD+" -> {
-                                callback(
-                                    newExtractorLink(this@Yanhh3dProvider.name, finalName, finalUrl, type = ExtractorLinkType.VIDEO) {
-                                        this.referer = mainUrl
-                                        this.quality = Qualities.P720.value
-                                    }
-                                )
-                            }
-                            
-                            // Server 1080 & 4K: Link M3U8 cần biến đổi
-                            serverName == "1080" || serverName == "4K" -> {
-                                if (finalUrl.contains(".m3u8")) {
-                                    val m3u8Url = finalUrl.replace("/o1/v/t2/f2/m366/", "/stream/m3u8/")
-                                    callback(
-                                        newExtractorLink(this@Yanhh3dProvider.name, finalName, m3u8Url, type = ExtractorLinkType.M3U8) {
-                                            this.referer = mainUrl
-                                            this.quality = if (serverName == "4K") Qualities.P2160.value else Qualities.P1080.value
-                                        }
-                                    )
-                                }
-                            }
-                            
-                            // Server HD: Cần bóc tách thêm một lớp nữa
-                            serverName == "HD" && finalUrl.contains("/play-fb-v") -> {
-                                val playerDocument = app.get(finalUrl, referer = url).document
-                                val scrapedUrl = playerDocument.selectFirst("#player")?.attr("data-stream-url")
-                                    ?: Regex("""var cccc = "([^"]+)""").find(playerDocument.html())?.groupValues?.get(1)
 
-                                if (scrapedUrl?.isNotBlank() == true) {
-                                    loadExtractor(scrapedUrl, mainUrl, subtitleCallback, callback)
-                                }
-                            }
-                            
-                            // Server Link8: Bóc tách riêng từ iframe của Helvid.net
-                            serverName == "Link8" && finalUrl.contains("helvid.net") -> {
+                        val finalName = "$prefix - $serverName"
+
+                        when {
+                            finalUrl.contains("helvid.net") -> {
                                 val helvidDoc = app.get(finalUrl).document
                                 val playerScript = helvidDoc.selectFirst("script:containsData('playerInstance.setup')")?.data()
                                 val videoPath = Regex("""file:\s*"(.*?)"""").find(playerScript ?: "")?.groupValues?.get(1)
@@ -226,21 +185,47 @@ class Yanhh3dProvider : MainAPI() {
                                     )
                                 }
                             }
-                            
-                            // Các server còn lại: Dùng trình bóc tách mặc định
+
+                            finalUrl.contains("/play-fb-v") -> {
+                                val playerDocument = app.get(finalUrl, referer = url).document
+                                val scrapedUrl = playerDocument.selectFirst("#player")?.attr("data-stream-url")
+                                    ?: Regex("""var cccc = "([^"]+)""").find(playerDocument.html())?.groupValues?.get(1)
+
+                                if (scrapedUrl?.isNotBlank() == true) {
+                                    loadExtractor(scrapedUrl, mainUrl, subtitleCallback, callback)
+                                }
+                            }
+
+                            finalUrl.contains("fbcdn.") -> {
+                                if (finalUrl.contains(".m3u8")) {
+                                    val m3u8Url = finalUrl.replace("/o1/v/t2/f2/m366/", "/stream/m3u8/")
+                                    callback(
+                                        newExtractorLink(this@Yanhh3dProvider.name, finalName, m3u8Url, type = ExtractorLinkType.M3U8) {
+                                            this.referer = mainUrl
+                                            // ĐÃ XÓA DÒNG SET CHẤT LƯỢNG
+                                        }
+                                    )
+                                } else {
+                                    callback(
+                                        newExtractorLink(this@Yanhh3dProvider.name, finalName, finalUrl, type = ExtractorLinkType.VIDEO) {
+                                            this.referer = mainUrl
+                                            // ĐÃ XÓA DÒNG SET CHẤT LƯỢNG
+                                        }
+                                    )
+                                }
+                            }
+
                             else -> {
                                 loadExtractor(finalUrl, mainUrl, subtitleCallback, callback)
                             }
                         }
                     } catch (e: Exception) {
-                        // Ghi lại lỗi của một server cụ thể mà không làm dừng các server khác
                         e.printStackTrace()
                     }
                 }
             }
         }
     } catch (e: Exception) {
-        // Lỗi nghiêm trọng ở cấp độ cao nhất (ví dụ: không tải được trang tập phim)
         e.printStackTrace()
     }
 }
