@@ -1,243 +1,190 @@
 package recloudstream
 
+// Info: Plugin for phevkl.gg
+// Author: Coder
+// Date: 2025-07-26
+// Version: 2.7 (Added Recommendations & Reordered Main Page)
+
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
-import org.jsoup.nodes.Document
-import com.lagradost.cloudstream3.network.CloudflareKiller
-import kotlinx.coroutines.withTimeoutOrNull
-import android.util.Log
 
-class JavmostProvider : MainAPI() {
-    override var mainUrl = "https://www5.javmost.com"
-    override var name = "Javmost"
+class Phevkl : MainAPI() {
+    override var mainUrl = "https://phevkl.fit"
+    override var name = "Phevkl"
     override val hasMainPage = true
-    override var lang = "en"
+    override var lang = "vi"
     override val hasDownloadSupport = true
+    
     override val supportedTypes = setOf(
         TvType.NSFW
     )
 
-    private val interceptor = CloudflareKiller()
-
-    // FIX 1: Chuyển TAG vào companion object
-    companion object {
-        private const val TAG = "JavmostProvider"
-    }
-
     override val mainPage = mainPageOf(
-        "category/all" to "Latest",
-        "topview" to "Most Viewed",
-        "topdaily" to "Daily Top",
-        "topweek" to "Weekly Top",
-        "topmonth" to "Monthly Top",
+        "$mainUrl/page/%d/" to "Mới cập nhật",
+        "$mainUrl/phim-sex-hay/" to "Phim sex hay",
+        "$mainUrl/phim-sex-viet-nam/" to "Phim sex Việt Nam",
+        "$mainUrl/phim-sex-trung-quoc/" to "Phim sex Trung Quốc",
+        "$mainUrl/phim-sex-onlyfans/" to "Sex Onlyfans",
+        "$mainUrl/phim-sex-tiktok/" to "Sex Tiktok"
     )
 
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = "$mainUrl/${request.data}/page/$page/"
-        val document = app.get(url, interceptor = interceptor).document
-        val home = document.select("div.col-md-4.col-sm-6").mapNotNull {
+    override suspend fun getMainPage(
+        page: Int,
+        request: MainPageRequest
+    ): HomePageResponse {
+        val url = if (request.data.contains("%d")) {
+            request.data.format(page)
+        } else {
+            if (page == 1) request.data else "${request.data}page/$page/"
+        }
+        
+        val document = app.get(url).document
+        val home = document.select("div#video-list div.video-item").mapNotNull {
             it.toSearchResult()
         }
         return newHomePageResponse(request.name, home)
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
-        val title = this.selectFirst("h1.card-title")?.text()?.trim() ?: return null
-        val href = this.selectFirst("a")?.attr("href") ?: return null
-        val posterUrl = this.selectFirst("img.lazyload")?.let {
-            it.parent()?.selectFirst("source")?.attr("data-srcset")
-        }
-        
-        return newMovieSearchResponse(title, href, TvType.NSFW) {
-            this.posterUrl = posterUrl
-        }
-    }
-    
-    private fun parseDetailPageAsSearchResult(document: Document, url: String): SearchResponse? {
-        val title = document.selectFirst("h1.page-header")?.text()?.trim()
-        if (title.isNullOrBlank()) return null
+        val link = this.selectFirst("a") ?: return null
+        val title = link.attr("title").trim()
+        val href = link.attr("href")
+        val posterUrl = this.selectFirst("img.video-image")?.let { it.attr("data-src").ifEmpty { it.attr("src") } }
 
-        val poster = document.selectFirst("div.card.bg-black img.lazyload")?.let {
-             it.parent()?.selectFirst("source")?.attr("data-srcset")
-        }
-
-        return newMovieSearchResponse(title, url, TvType.NSFW) {
-            this.posterUrl = poster
+        return if (href.isNotBlank() && title.isNotBlank()) {
+            newMovieSearchResponse(title, href, TvType.NSFW) {
+                this.posterUrl = posterUrl
+            }
+        } else {
+            null
         }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/search/$query/"
-        Log.d(TAG, "Searching with URL: $searchUrl")
-
-        val response = withTimeoutOrNull(15000) {
-            app.get(searchUrl, interceptor = interceptor)
-        }
-
-        if (response == null) {
-            Log.e(TAG, "Search request timed out or failed for query: $query")
-            return emptyList()
-        }
-
-        val document = response.document
-
-        if (!response.url.contains("/search/")) {
-            Log.d(TAG, "Search redirected to a single result page: ${response.url}")
-            
-            val singleResult = parseDetailPageAsSearchResult(document, response.url)
-            
-            return if (singleResult != null) {
-                Log.d(TAG, "Successfully parsed single result page.")
-                listOf(singleResult)
-            } else {
-                Log.w(TAG, "Failed to parse single result page. It might be blank or has a different structure.")
-                emptyList()
-            }
-        } else {
-            Log.d(TAG, "Search returned a standard list page.")
-            return document.select("div.col-md-4.col-sm-6").mapNotNull {
-                it.toSearchResult()
-            }
+        val searchUrl = "$mainUrl/?s=$query"
+        val document = app.get(searchUrl).document
+        return document.select("div#video-list div.video-item").mapNotNull {
+            it.toSearchResult()
         }
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url, interceptor = interceptor).document
-
-        val title = document.selectFirst("h1.page-header")?.text()?.trim() ?: return null
-        val poster = document.selectFirst("div.card.bg-black img.lazyload")?.let {
-             it.parent()?.selectFirst("source")?.attr("data-srcset")
-        }
-        val description = document.selectFirst("div.card-block a h2")?.text()
+        val document = app.get(url).document
+        val title = document.selectFirst("h1#page-title")?.text()?.trim() ?: return null
+        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
+        val description = document.selectFirst("div.video-description")?.text()?.trim()
+        val tags = document.select("div.actress-tag a").map { it.text() }
         
-        val tags = document.select("p.card-text i.fa-tag ~ a").map { it.text() }
-        val genres = document.select("p.card-text i.ion-ios-videocam ~ a").map { it.text() }
+        // Extract recommendations from the "Phim sex liên quan" section
+        val recommendations = document.select("div#video-list div.video-item").mapNotNull {
+            it.toSearchResult()
+        }
         
-        val actors = document.select("p.card-text i.fa-female ~ a").map {
-            Actor(it.text(), it.attr("href"))
-        }
-
-        val recommendations = document.select("div.card-group div.card").mapNotNull {
-            val recTitle = it.selectFirst("h2.card-title")?.text() ?: return@mapNotNull null
-            val recHref = it.selectFirst("a")?.attr("href") ?: return@mapNotNull null
-            val recPoster = it.selectFirst("source")?.attr("data-srcset")
-            newMovieSearchResponse(recTitle, recHref, TvType.NSFW) {
-                this.posterUrl = recPoster
-            }
-        }
-
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
             this.plot = description
-            this.tags = tags + genres
-            this.actors = actors.map { ActorData(it) }
+            this.tags = tags
             this.recommendations = recommendations
         }
     }
+    
+    private data class AjaxResponse(val type: String?, val player: String?)
 
-    private data class ServerButtonData(
-        val part: String,
-        val serverId: String,
-    )
+    // Thêm 2 data class này vào bên trong class Phevkl
+private data class BloggerStream(val play_url: String?, val format_id: Int?)
+private data class BloggerConfig(val streams: List<BloggerStream>?)
 
-    data class VideoResponse(
-        val status: String,
-        val msg: String?,
-        val data: List<String>
-    )
+override suspend fun loadLinks(
+    data: String,
+    isCasting: Boolean,
+    subtitleCallback: (SubtitleFile) -> Unit,
+    callback: (ExtractorLink) -> Unit
+): Boolean {
+    val doc = app.get(data).document
+    // Id của player vẫn lấy như cũ
+    val postId = doc.selectFirst("#haun-player")?.attr("data-id") ?: return false
+    val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
+    var foundLinks = false
 
-    override suspend fun loadLinks(
-        data: String,
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        Log.d(TAG, "--- Bắt đầu loadLinks cho url: $data ---")
-
-        val document = try {
-            app.get(data, interceptor = interceptor).document
-        } catch (e: Exception) {
-            // CHUYỂN SANG LOG.E VÀ THROW
-            val errorMsg = "Lỗi Mạng: Không tải được trang chi tiết."
-            Log.e(TAG, "$errorMsg URL: $data", e)
-            throw ErrorLoadingException(errorMsg)
-        }
-
-        if (document.body().html().isBlank()) {
-            // CHUYỂN SANG LOG.E VÀ THROW
-            val errorMsg = "Lỗi: Server trả về trang rỗng."
-            Log.e(TAG, "$errorMsg URL: $data")
-            throw ErrorLoadingException(errorMsg)
-        }
-
-        val errorMessages = mutableListOf<String>()
-        var foundLink = false
-
+    // Lặp qua các server (thường là 2)
+    for (server in 1..2) {
         try {
-            val scriptContent = document.select("script:containsData(var YWRzMQo)").first()?.data()
-                ?: throw ErrorLoadingException("Không tìm thấy script chứa mã")
+            val response = app.post(
+                ajaxUrl,
+                headers = mapOf(
+                    "Referer" to data,
+                    "X-Requested-With" to "XMLHttpRequest",
+                    "Origin" to mainUrl // Thêm Origin header để an toàn hơn
+                ),
+                data = mapOf(
+                    "action" to "load_server",
+                    "id" to postId,
+                    "server" to server.toString()
+                )
+            ).parsedSafe<AjaxResponse>()
 
-            val valueCode = Regex("""var\s+YWRzMQo\s*=\s*'([^']+)';""").find(scriptContent)?.groupValues?.get(1)
-                ?: throw ErrorLoadingException("Không lấy được 'valueCode'")
-            val code1 = Regex("""var\s+YWRzNA\s*=\s*'([^']+)';""").find(scriptContent)?.groupValues?.get(1)
-                ?: throw ErrorLoadingException("Không lấy được 'code1'")
-            val code2 = Regex("""var\s+YWRzNQ\s*=\s*'([^']+)';""").find(scriptContent)?.groupValues?.get(1)
-                ?: throw ErrorLoadingException("Không lấy được 'code2'")
-            val code3 = Regex("""var\s+YWRzNg\s*=\s*'([^']+)';""").find(scriptContent)?.groupValues?.get(1)
-                ?: throw ErrorLoadingException("Không lấy được 'code3'")
+            // Lấy src của iframe từ response
+            val iframeSrc = response?.player?.let {
+                Jsoup.parse(it).selectFirst("iframe")?.attr("src")
+            } ?: continue
 
-            val servers = document.select("ul.nav-tabs-inverse li button[onclick], span.partlist button[onclick]").mapNotNull {
-                Regex("""select_part\('([^']+)','([^']+)'.*?\)""").find(it.attr("onclick"))?.destructured
-            }.distinct()
-
-            if (servers.isEmpty()) throw ErrorLoadingException("Không tìm thấy nút chọn server")
-
-            val ajaxUrl = "$mainUrl/ri3123o235r/"
-            
-            run loop@{
-                servers.forEach { (part, serverId) ->
-                    try {
-                        val postData = mapOf(
-                            "group" to serverId, "part" to part, "code" to code1,
-                            "code2" to code2, "code3" to code3, "value" to valueCode, "sound" to "av"
-                        )
-                        val res = app.post(ajaxUrl, data = postData, headers = mapOf("Referer" to data, "X-Requested-With" to "XMLHttpRequest")).parsed<VideoResponse>()
-
-                        if (res.status == "success" && res.data.isNotEmpty()) {
-                            val intermediateUrl = res.data.first()
-                            Log.d(TAG, "Got intermediate URL: $intermediateUrl, passing to loadExtractor")
-                            
-                            if (loadExtractor(intermediateUrl, data, subtitleCallback, callback)) {
-                                Log.d(TAG, "loadExtractor successfully handled the link.")
-                                foundLink = true
-                                return@loop
-                            } else {
-                                errorMessages.add("S${serverId}P${part}: loadExtractor thất bại")
-                            }
-                        } else {
-                            errorMessages.add("S${serverId}P${part}: API lỗi")
+            // ==================================================================
+            // LOGIC MỚI: Xử lý nguồn từ Blogger/Blogspot
+            // ==================================================================
+            if (iframeSrc.contains("blogger.com") || iframeSrc.contains("blogspot.com")) {
+                val iframeContent = app.get(iframeSrc, referer = data).text
+                // Dùng Regex để lấy JSON config từ trong script
+                val videoConfigJson = Regex("""var VIDEO_CONFIG = (\{.*?\})""").find(iframeContent)?.groupValues?.get(1)
+                
+                if (videoConfigJson != null) {
+                    val config = app.parseJson<BloggerConfig>(videoConfigJson)
+                    config.streams?.forEach { stream ->
+                        val videoUrl = stream.play_url ?: return@forEach
+                        // Xác định chất lượng dựa trên format_id
+                        val quality = when (stream.format_id) {
+                            18 -> "SD - 360p"
+                            22 -> "HD - 720p"
+                            else -> "Unknown"
                         }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error processing server S${serverId}P${part}", e)
-                        errorMessages.add("S${serverId}P${part}: Exception")
+                        callback.invoke(
+                            ExtractorLink(
+                                name = this.name,
+                                source = "Blogger - $quality",
+                                url = videoUrl,
+                                referer = "https://www.blogger.com/",
+                                quality = Qualities.Unknown.value, // Hoặc có thể parse quality string
+                                type = ExtractorLinkType.VIDEO
+                            )
+                        )
+                        foundLinks = true
                     }
                 }
+            } 
+            // ==================================================================
+            // LOGIC CŨ: Vẫn giữ lại cho cnd-videosvn.online
+            // ==================================================================
+            else if (iframeSrc.contains("cnd-videosvn.online")) {
+                val videoId = iframeSrc.substringAfterLast('/')
+                val m3u8Url = "https://oss1.dlhls.xyz/videos/$videoId/main.m3u8"
+                callback.invoke(
+                    ExtractorLink(
+                        this.name,
+                        "Server 2",
+                        m3u8Url,
+                        mainUrl,
+                        Qualities.Unknown.value,
+                        type = ExtractorLinkType.M3U8
+                    )
+                )
+                foundLinks = true
             }
-        } catch (e: Exception) {
-            // CHUYỂN SANG LOG.E VÀ THROW
-            val errorMsg = "Lỗi Parse: ${e.message}"
-            Log.e(TAG, errorMsg, e)
-            throw ErrorLoadingException(errorMsg)
-        }
 
-        if (!foundLink) {
-            // CHUYỂN SANG LOG.E VÀ THROW
-            val finalErrorMessage = "Tất cả server đều thất bại. (${errorMessages.joinToString(", ")})"
-            Log.e(TAG, finalErrorMessage)
-            throw ErrorLoadingException(finalErrorMessage)
+        } catch (e: Exception) {
+            // Bỏ qua lỗi và thử server tiếp theo
         }
-        
-        return true
     }
+    return foundLinks
+  }
 }
