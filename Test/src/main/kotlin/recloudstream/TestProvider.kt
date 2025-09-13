@@ -140,7 +140,7 @@ class Yanhh3dProvider : MainAPI() {
     callback: (ExtractorLink) -> Unit
 ) {
     try {
-        val document = app.get(url, timeout L).document
+        val document = app.get(url).document
         val script = document.select("script").find {
             val data = it.data()
             data.contains("checkLink") || data.contains("checkFbo")
@@ -167,21 +167,24 @@ class Yanhh3dProvider : MainAPI() {
                 
                 val finalUrl = fixUrl(link)
                 
-                // ÁP DỤNG CÁC QUY TẮC XỬ LÝ LINK (ĐÃ BỔ SUNG LINK8)
                 when {
                     serverName == "HD+" -> {
+                        // SỬA: Dùng builder lambda và đổi MP4 thành VIDEO
                         callback(
-                            newExtractorLink(this.name, finalName, finalUrl, referer = mainUrl, type = ExtractorLinkType.MP4) {
-                                quality = Qualities.P720.value
+                            newExtractorLink(this.name, finalName, finalUrl, type = ExtractorLinkType.VIDEO) {
+                                this.referer = mainUrl
+                                this.quality = Qualities.P720.value
                             }
                         )
                     }
                     serverName == "1080" || serverName == "4K" -> {
                         if (finalUrl.contains(".m3u8")) {
                             val m3u8Url = finalUrl.replace("/o1/v/t2/f2/m366/", "/stream/m3u8/")
+                            // SỬA: Dùng builder lambda
                             callback(
-                                newExtractorLink(this.name, finalName, m3u8Url, referer = mainUrl, type = ExtractorLinkType.M3U8) {
-                                    quality = if (serverName == "4K") Qualities.P2160.value else Qualities.P1080.value
+                                newExtractorLink(this.name, finalName, m3u8Url, type = ExtractorLinkType.M3U8) {
+                                    this.referer = mainUrl
+                                    this.quality = if (serverName == "4K") Qualities.P2160.value else Qualities.P1080.value
                                 }
                             )
                         }
@@ -197,9 +200,6 @@ class Yanhh3dProvider : MainAPI() {
                             loadExtractor(scrapedUrl, mainUrl, subtitleCallback, callback)
                         }
                     }
-                    // =================================================================
-                    // LOGIC CHO LINK8 ĐÃ ĐƯỢC THÊM LẠI
-                    // =================================================================
                     serverName == "Link8" && finalUrl.contains("helvid.net") -> {
                         val helvidDoc = app.get(finalUrl).document
                         val playerScript = helvidDoc.selectFirst("script:containsData('playerInstance.setup')")?.data()
@@ -209,18 +209,15 @@ class Yanhh3dProvider : MainAPI() {
 
                         if (videoPath != null) {
                             val videoUrl = "https://helvid.net$videoPath"
+                            // SỬA: Dùng builder lambda
                             callback(
-                                newExtractorLink(
-                                    this.name,
-                                    finalName,
-                                    videoUrl,
-                                    referer = "https://helvid.net/",
-                                    type = ExtractorLinkType.M3U8
-                                )
+                                newExtractorLink(this.name, finalName, videoUrl, type = ExtractorLinkType.M3U8) {
+                                    this.referer = "https://helvid.net/"
+                                }
                             )
                         }
                     }
-                    else -> { // Logic mặc định cho 2K và các server iframe khác
+                    else -> {
                         loadExtractor(finalUrl, mainUrl, subtitleCallback, callback)
                     }
                 }
