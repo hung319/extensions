@@ -1,5 +1,7 @@
-package recloudstream 
+package recloudstream
 
+// Thêm đầy đủ các import cần thiết
+import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -64,7 +66,7 @@ class Yanhh3dProvider : MainAPI() {
         val document = app.get(searchUrl).document
         return document.select("div.film_list-wrap div.flw-item").mapNotNull { it.toSearchResult() }
     }
-    
+
     private fun getEpisodeData(doc: Document?, type: String): List<Pair<String, String>> {
         val selector = if (type == "TM") "#top-comment .ss-list a.ssl-item" else "#new-comment .ss-list a.ssl-item"
         return doc?.select(selector)
@@ -86,7 +88,6 @@ class Yanhh3dProvider : MainAPI() {
         val tags = document.select(".anisc-info .item-list:contains(Thể loại) a.name").map { it.text() }
         val year = document.selectFirst(".anisc-info .item-list:contains(Năm:) .name")?.text()?.toIntOrNull()
 
-        // logic cũ để lấy danh sách tập, hiện tại trang đã đổi sang load trực tiếp không qua trang chi tiết nữa
         val firstEpisodeUrl = document.selectFirst(".btn-play")?.attr("href")
             ?: document.selectFirst("a.ssl-item")?.attr("href")
             ?: url
@@ -107,11 +108,9 @@ class Yanhh3dProvider : MainAPI() {
                 else -> ""
             }
             val episodeName = "Tập $name $tag".trim()
-            // Ưu tiên URL thuyết minh nếu có
             val episodeUrl = info.dubUrl ?: info.subUrl!!
             newEpisode(episodeUrl) { this.name = episodeName }
         }.sortedBy { episode ->
-            // Sắp xếp an toàn hơn, xử lý cả trường hợp gộp tập "1-5"
             episode.name?.let { Regex("""\d+""").find(it)?.value?.toIntOrNull() } ?: 0
         }
 
@@ -129,105 +128,106 @@ class Yanhh3dProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        try {
-            val document = app.get(url, timeout = 20L).document
-            val scriptContent = document.select("script").find {
-                it.data().contains("\$checkLink") || it.data().contains("\$checkFbo")
-            }?.data() ?: return
+        coroutineScope {
+            try {
+                val document = app.get(url, timeout = 20L).document
+                val scriptContent = document.select("script").find {
+                    it.data().contains("\$checkLink") || it.data().contains("\$checkFbo")
+                }?.data() ?: return@coroutineScope
 
-            // 1. Extract all potential links from script into a map
-            val linksMap = mutableMapOf<String, String>()
-            Regex("""var\s*\${'$'}check(\w+)\s*=\s*['"](.*?)['"];""").findAll(scriptContent).forEach {
-                val id = it.groupValues[1].uppercase()
-                val link = it.groupValues[2]
-                if (link.isNotBlank()) linksMap[id] = link
-            }
-            // Extract FBO link specifically
-            Regex("""source_fbo:\s*\[\{"file":"(.*?)"\}\]""").find(scriptContent)?.let {
-                linksMap["FBO"] = it.groupValues[1]
-            }
+                val linksMap = mutableMapOf<String, String>()
+                Regex("""var\s*\${'$'}check(\w+)\s*=\s*['"](.*?)['"];""").findAll(scriptContent).forEach {
+                    val id = it.groupValues[1].uppercase()
+                    val link = it.groupValues[2]
+                    if (link.isNotBlank()) linksMap[id] = link
+                }
+                Regex("""source_fbo:\s*\[\{"file":"(.*?)"\}\]""").find(scriptContent)?.let {
+                    linksMap["FBO"] = it.groupValues[1]
+                }
 
-            // 2. Iterate through server buttons to process links
-            document.select("div.ps__-list a.btn3dsv").forEach { serverElement ->
-                try {
-                    val serverId = serverElement.attr("name").uppercase()
-                    val serverName = serverElement.text()
-                    var link = linksMap[serverId] ?: return@forEach
+                document.select("div.ps__-list a.btn3dsv").forEach { serverElement ->
+                    launch { // Sử dụng launch để xử lý song song và an toàn
+                        try {
+                            val serverId = serverElement.attr("name").uppercase()
+                            val serverName = serverElement.text()
+                            var link = linksMap[serverId] ?: return@launch
 
-                    val finalName = "$prefix - $serverName"
+                            val finalName = "$prefix - $serverName"
 
-                    if (link.contains("short.icu")) {
-                        link = app.get(link, allowRedirects = false).headers["location"] ?: return@forEach
-                    }
-
-                    when (serverName.uppercase()) {
-                        "HD+" -> { // FBO direct link
-                            callback(
-                                ExtractorLink(
-                                    this.name,
-                                    finalName,
-                                    link,
-                                    "",
-                                    Qualities.Unknown.value,
-                                    type = ExtractorLinkType.VIDEO
-                                )
-                            )
-                        }
-                        "HD" -> { // Custom play-fb-v7 logic
-                             if (link.contains("/play-fb-v")) {
-                                val playerDoc = app.get(link, referer = url).document
-                                var finalUrl = playerDoc.selectFirst("#player")?.attr("data-stream-url")
-                                if (finalUrl.isNullOrBlank()) {
-                                    finalUrl = Regex("""var cccc = "([^"]+)""").find(playerDoc.html())?.groupValues?.get(1)
-                                }
-                                if (!finalUrl.isNullOrBlank()) {
-                                   loadExtractor(finalUrl, mainUrl, subtitleCallback, callback)
-                                }
+                            if (link.contains("short.icu")) {
+                                link = app.get(link, allowRedirects = false).headers["location"] ?: return@launch
                             }
-                        }
-                        "1080", "4K" -> { // M3U8 Stream link
-                            val m3u8Url = link.replace("/o1/v/t2/f2/m366/", "/stream/m3u8/").substringBefore("?")
-                             callback(
-                                ExtractorLink(
-                                    this.name,
-                                    finalName,
-                                    m3u8Url,
-                                    mainUrl,
-                                    Qualities.Unknown.value,
-                                    type = ExtractorLinkType.M3U8
-                                )
-                            )
-                        }
-                        "LINK8" -> { // Helvid extractor
-                            if(link.contains("helvid.net")) {
-                                val helvidPage = app.get(link).text
-                                val m3u8Path = Regex("""file:\s*"(.*?)"""").find(helvidPage)?.groupValues?.get(1)
-                                if (m3u8Path != null) {
-                                    val baseUrl = URI(link).let { "${it.scheme}://${it.host}" }
-                                    val m3u8Link = if (m3u8Path.startsWith("http")) m3u8Path else baseUrl + m3u8Path
+
+                            when (serverName.uppercase()) {
+                                "HD+" -> {
                                     callback(
                                         ExtractorLink(
-                                            this.name,
+                                            this@Yanhh3dProvider.name,
                                             finalName,
-                                            m3u8Link,
-                                            baseUrl,
-                                            Qualities.P1080.value,
+                                            link,
+                                            "",
+                                            Qualities.Unknown.value,
+                                            type = ExtractorLinkType.VIDEO
+                                        )
+                                    )
+                                }
+                                "HD" -> {
+                                     if (link.contains("/play-fb-v")) {
+                                        val playerDoc = app.get(link, referer = url).document
+                                        var finalUrl = playerDoc.selectFirst("#player")?.attr("data-stream-url")
+                                        if (finalUrl.isNullOrBlank()) {
+                                            finalUrl = Regex("""var cccc = "([^"]+)""").find(playerDoc.html())?.groupValues?.get(1)
+                                        }
+                                        if (!finalUrl.isNullOrBlank()) {
+                                           loadExtractor(finalUrl, mainUrl, subtitleCallback, callback)
+                                        }
+                                    }
+                                }
+                                "1080", "4K" -> {
+                                    val m3u8Url = link.replace("/o1/v/t2/f2/m366/", "/stream/m3u8/").substringBefore("?")
+                                     callback(
+                                        ExtractorLink(
+                                            this@Yanhh3dProvider.name,
+                                            finalName,
+                                            m3u8Url,
+                                            mainUrl,
+                                            Qualities.Unknown.value,
                                             type = ExtractorLinkType.M3U8
                                         )
                                     )
                                 }
+                                "LINK8" -> {
+                                    if(link.contains("helvid.net")) {
+                                        val helvidPage = app.get(link).text
+                                        val m3u8Path = Regex("""file:\s*"(.*?)"""").find(helvidPage)?.groupValues?.get(1)
+                                        if (m3u8Path != null) {
+                                            val baseUrl = URI(link).let { "${it.scheme}://${it.host}" }
+                                            val m3u8Link = if (m3u8Path.startsWith("http")) m3u8Path else baseUrl + m3u8Path
+                                            callback(
+                                                ExtractorLink(
+                                                    this@Yanhh3dProvider.name,
+                                                    finalName,
+                                                    m3u8Link,
+                                                    baseUrl,
+                                                    Qualities.P1080.value,
+                                                    type = ExtractorLinkType.M3U8
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+                                else -> {
+                                    loadExtractor(link, mainUrl, subtitleCallback, callback)
+                                }
                             }
-                        }
-                        else -> { // Default handler for Dailymotion, etc.
-                            loadExtractor(link, mainUrl, subtitleCallback, callback)
+                        } catch (e: Exception) {
+                            e.printStackTrace()
                         }
                     }
-                } catch (e: Exception) {
-                    e.printStackTrace()
                 }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
         }
     }
 
@@ -237,8 +237,6 @@ class Yanhh3dProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Path logic is different now, sometimes it contains /sever2, sometimes not.
-        // We can build both URLs and check which one is valid or just try both.
         val path = try {
             URI(data).path.replace("/sever2", "")
         } catch (e: Exception) {
@@ -250,7 +248,6 @@ class Yanhh3dProvider : MainAPI() {
         val subUrl = "$mainUrl/sever2$path"
 
         coroutineScope {
-            // Check both TM and VS links concurrently
             launch { extractVideoLinks(dubUrl, "TM", subtitleCallback, callback) }
             launch { extractVideoLinks(subUrl, "VS", subtitleCallback, callback) }
         }
