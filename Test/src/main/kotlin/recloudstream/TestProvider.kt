@@ -3,7 +3,9 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
+import org.jsoup.nodes.Document
 import com.lagradost.cloudstream3.network.CloudflareKiller
+import kotlinx.coroutines.withTimeoutOrNull
 import android.util.Log
 
 class JavmostProvider : MainAPI() {
@@ -17,6 +19,12 @@ class JavmostProvider : MainAPI() {
     )
 
     private val interceptor = CloudflareKiller()
+
+    // FIX 1: Chuyển TAG vào companion object
+    companion object {
+        private const val TAG = "JavmostProvider"
+    }
+
     override val mainPage = mainPageOf(
         "category/all" to "Latest",
         "topview" to "Most Viewed",
@@ -45,12 +53,52 @@ class JavmostProvider : MainAPI() {
             this.posterUrl = posterUrl
         }
     }
+    
+    private fun parseDetailPageAsSearchResult(document: Document, url: String): SearchResponse? {
+        val title = document.selectFirst("h1.page-header")?.text()?.trim()
+        if (title.isNullOrBlank()) return null
+
+        val poster = document.selectFirst("div.card.bg-black img.lazyload")?.let {
+             it.parent()?.selectFirst("source")?.attr("data-srcset")
+        }
+
+        return newMovieSearchResponse(title, url, TvType.NSFW) {
+            this.posterUrl = poster
+        }
+    }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/search/$query/"
-        val document = app.get(searchUrl, interceptor = interceptor).document
-        return document.select("div.col-md-4.col-sm-6").mapNotNull {
-            it.toSearchResult()
+        Log.d(TAG, "Searching with URL: $searchUrl")
+
+        val response = withTimeoutOrNull(15000) {
+            app.get(searchUrl, interceptor = interceptor)
+        }
+
+        if (response == null) {
+            Log.e(TAG, "Search request timed out or failed for query: $query")
+            return emptyList()
+        }
+
+        val document = response.document
+
+        if (!response.url.contains("/search/")) {
+            Log.d(TAG, "Search redirected to a single result page: ${response.url}")
+            
+            val singleResult = parseDetailPageAsSearchResult(document, response.url)
+            
+            return if (singleResult != null) {
+                Log.d(TAG, "Successfully parsed single result page.")
+                listOf(singleResult)
+            } else {
+                Log.w(TAG, "Failed to parse single result page. It might be blank or has a different structure.")
+                emptyList()
+            }
+        } else {
+            Log.d(TAG, "Search returned a standard list page.")
+            return document.select("div.col-md-4.col-sm-6").mapNotNull {
+                it.toSearchResult()
+            }
         }
     }
 
@@ -88,11 +136,15 @@ class JavmostProvider : MainAPI() {
         }
     }
 
-    
-    // Dữ liệu chỉ cần part và serverId từ nút bấm
     private data class ServerButtonData(
         val part: String,
         val serverId: String,
+    )
+
+    data class VideoResponse(
+        val status: String,
+        val msg: String?,
+        val data: List<String>
     )
 
     override suspend fun loadLinks(
@@ -108,6 +160,7 @@ class JavmostProvider : MainAPI() {
         } catch (e: Exception) {
             callback.invoke(
                 ExtractorLink(
+                    source = name, // FIX 2: Thêm `source`
                     name = "$name - Lỗi Mạng: Không tải được trang",
                     url = "https://example.com/error.m3u8",
                     referer = data,
@@ -121,6 +174,7 @@ class JavmostProvider : MainAPI() {
         if (document.body().html().isBlank()) {
             callback.invoke(
                 ExtractorLink(
+                    source = name, // FIX 2: Thêm `source`
                     name = "$name - Lỗi: Server trả về trang rỗng",
                     url = "https://example.com/error.m3u8",
                     referer = data,
@@ -168,11 +222,10 @@ class JavmostProvider : MainAPI() {
                             val intermediateUrl = res.data.first()
                             Log.d(TAG, "Got intermediate URL: $intermediateUrl, passing to loadExtractor")
                             
-                            // SỬ DỤNG loadExtractor ĐỂ XỬ LÝ TỰ ĐỘNG
                             if (loadExtractor(intermediateUrl, data, subtitleCallback, callback)) {
                                 Log.d(TAG, "loadExtractor successfully handled the link.")
                                 foundLink = true
-                                return@loop // Thoát khỏi vòng lặp khi tìm thấy link
+                                return@loop
                             } else {
                                 errorMessages.add("S${serverId}P${part}: loadExtractor thất bại")
                             }
@@ -188,6 +241,7 @@ class JavmostProvider : MainAPI() {
             val errorMsg = "$name - Lỗi Parse: ${e.message}"
             callback.invoke(
                 ExtractorLink(
+                    source = name, // FIX 2: Thêm `source`
                     name = errorMsg,
                     url = "https://example.com/error.m3u8",
                     referer = data,
@@ -202,6 +256,7 @@ class JavmostProvider : MainAPI() {
             val finalErrorMessage = "$name - Lỗi: Tất cả server thất bại (${errorMessages.joinToString(", ")})"
             callback.invoke(
                 ExtractorLink(
+                    source = name, // FIX 2: Thêm `source`
                     name = finalErrorMessage,
                     url = "https://example.com/error.m3u8",
                     referer = data,
@@ -213,10 +268,4 @@ class JavmostProvider : MainAPI() {
         
         return true
     }
-
-    data class VideoResponse(
-    val status: String,
-    val msg: String?, // Thêm dòng này
-    val data: List<String>
-  )
 }
