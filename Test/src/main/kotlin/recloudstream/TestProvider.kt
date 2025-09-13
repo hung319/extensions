@@ -199,6 +199,7 @@ class Yanhh3dProvider : MainAPI() {
             "yanhh3d.vip/play-fb-v" in url -> handleIframePlayer(url, name, callback)
             "fbcdn.cloud/" in url -> handleFbCdnLink(url, name, callback)
             "short-cdn.ink/video/" in url -> handleShortCdnLink(url, name, callback)
+            "cloudbeta.win/" in url -> handleCloudBetaLink(url, name, callback)
             "helvid.net/" in url -> handleHelvidLink(url, name, callback)
             "dailymotion.com/" in url -> handleDailymotion(url, name, subtitleCallback, callback)
             else -> handleDirectLink(url, name, callback)
@@ -223,9 +224,9 @@ class Yanhh3dProvider : MainAPI() {
             val iframeDoc = app.get(url).document
             val script = iframeDoc.selectFirst("script:containsData(eval), script:containsData(var cccc)")?.data() ?: return@runCatching
             
-            // Ưu tiên tìm 'var cccc', nếu không có mới tìm trong 'eval'
-            val videoUrl = Regex("""var\s*cccc\s*=\s*'([^']+)';""").find(script)?.groupValues?.get(1)
-                ?: Regex("""'file':"([^"]+)"""").find(script)?.groupValues?.get(1)?.replace("\\/", "/")
+            // Tìm 'var cccc' trước, nếu không có mới tìm trong 'eval' bằng regex linh hoạt hơn
+            val videoUrl = Regex("""var\s*cccc\s*=\s*"([^"]+)";""").find(script)?.groupValues?.get(1)
+                ?: Regex("""(https:\\/\\/[^"]+?)"""").find(script)?.groupValues?.get(1)?.replace("\\/", "/")
 
             if (!videoUrl.isNullOrBlank()) {
                 callback(
@@ -260,6 +261,20 @@ class Yanhh3dProvider : MainAPI() {
             }
         )
     }
+
+    private suspend fun handleCloudBetaLink(url: String, name: String, callback: (ExtractorLink) -> Unit) {
+        runCatching {
+            val streamUrl = url
+                .replace("player.cloudbeta.win/", "play.cloudbeta.win/file/play/")
+                .plus(".m3u8")
+
+            callback(
+                newExtractorLink(this.name, name, streamUrl, type = ExtractorLinkType.M3U8) {
+                    this.referer = url // Referer là trang player gốc
+                }
+            )
+        }
+    }
     
     private suspend fun handleHelvidLink(url: String, name: String, callback: (ExtractorLink) -> Unit) {
         runCatching {
@@ -277,38 +292,46 @@ class Yanhh3dProvider : MainAPI() {
         }.onFailure { it.printStackTrace() }
     }
 
-    private suspend fun handleDailymotion(
+    private fun getQualityFromString(name: String): Int {
+    // Trích xuất số (ví dụ: 1080, 720) từ tên để so sánh chất lượng
+    return Regex("""(\d{3,4})p""").find(name)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+}
+
+private suspend fun handleDailymotion(
     url: String,
     name: String,
     subtitleCallback: (SubtitleFile) -> Unit,
     callback: (ExtractorLink) -> Unit
 ) {
     val dailymotionLinks = mutableListOf<ExtractorLink>()
-    // Thu thập tất cả các link mà loadExtractor tìm được
     loadExtractor(url, mainUrl, subtitleCallback) { link ->
         dailymotionLinks.add(link)
     }
 
     if (dailymotionLinks.isNotEmpty()) {
-        // Lựa chọn link tốt nhất từ danh sách
+        // Ưu tiên 1: Tìm link có tên "Dailymotion" (thường là link tổng hợp/auto)
         val preferredLink = dailymotionLinks.find { it.name.equals("Dailymotion", ignoreCase = true) }
-        val bestQualityLink = dailymotionLinks.maxByOrNull { it.quality }
+        
+        // Ưu tiên 2: Nếu không có, tìm link có chất lượng cao nhất dựa trên tên
+        val bestQualityLink = dailymotionLinks.maxByOrNull { getQualityFromString(it.name) }
+
+        // Chọn link cuối cùng
         val chosenLink = preferredLink ?: bestQualityLink ?: dailymotionLinks.first()
         
-        // Tạo một đối tượng ExtractorLink MỚI, sao chép các thuộc tính từ link đã chọn
-        // và ghi đè lại thuộc tính 'name' (vì 'name' là val và không thể thay đổi trực tiếp).
+        // === SỬA LỖI TẠI ĐÂY ===
+        // Tạo một đối tượng ExtractorLink mới hoàn toàn dựa trên cấu trúc bạn cung cấp
+        // vì không thể dùng .copy() hay gán lại chosenLink.name
         val finalLink = ExtractorLink(
             source = chosenLink.source,
-            name = name, // <-- Ghi đè tên mới
+            name = name, // Ghi đè bằng tên từ website
             url = chosenLink.url,
             referer = chosenLink.referer,
             quality = chosenLink.quality,
             headers = chosenLink.headers,
-            extractorData = chosenLink.extractorData, // <-- Thêm thuộc tính này cho khớp với class
+            extractorData = chosenLink.extractorData,
             type = chosenLink.type
         )
         
-        // Gửi đi link cuối cùng đã được xử lý
         callback(finalLink)
     }
   }
