@@ -158,31 +158,17 @@ class JavmostProvider : MainAPI() {
         val document = try {
             app.get(data, interceptor = interceptor).document
         } catch (e: Exception) {
-            callback.invoke(
-                ExtractorLink(
-                    source = name, // FIX 2: Thêm `source`
-                    name = "$name - Lỗi Mạng: Không tải được trang",
-                    url = "https://live.143b.ch/cam/flux/ts:abr.m3u8",
-                    referer = data,
-                    quality = Qualities.Unknown.value,
-                    type = ExtractorLinkType.M3U8
-                )
-            )
-            return true
+            // CHUYỂN SANG LOG.E VÀ THROW
+            val errorMsg = "Lỗi Mạng: Không tải được trang chi tiết."
+            Log.e(TAG, "$errorMsg URL: $data", e)
+            throw ErrorLoadingException(errorMsg)
         }
 
         if (document.body().html().isBlank()) {
-            callback.invoke(
-                ExtractorLink(
-                    source = name, // FIX 2: Thêm `source`
-                    name = "$name - Lỗi: Server trả về trang rỗng",
-                    url = "https://live.143b.ch/cam/flux/ts:abr.m3u8",
-                    referer = data,
-                    quality = Qualities.Unknown.value,
-                    type = ExtractorLinkType.M3U8
-                )
-            )
-            return true
+            // CHUYỂN SANG LOG.E VÀ THROW
+            val errorMsg = "Lỗi: Server trả về trang rỗng."
+            Log.e(TAG, "$errorMsg URL: $data")
+            throw ErrorLoadingException(errorMsg)
         }
 
         val errorMessages = mutableListOf<String>()
@@ -233,37 +219,23 @@ class JavmostProvider : MainAPI() {
                             errorMessages.add("S${serverId}P${part}: API lỗi")
                         }
                     } catch (e: Exception) {
+                        Log.e(TAG, "Error processing server S${serverId}P${part}", e)
                         errorMessages.add("S${serverId}P${part}: Exception")
                     }
                 }
             }
         } catch (e: Exception) {
-            val errorMsg = "$name - Lỗi Parse: ${e.message}"
-            callback.invoke(
-                ExtractorLink(
-                    source = name, // FIX 2: Thêm `source`
-                    name = errorMsg,
-                    url = "https://live.143b.ch/cam/flux/ts:abr.m3u8",
-                    referer = data,
-                    quality = Qualities.Unknown.value,
-                    type = ExtractorLinkType.M3U8
-                )
-            )
-            return true
+            // CHUYỂN SANG LOG.E VÀ THROW
+            val errorMsg = "Lỗi Parse: ${e.message}"
+            Log.e(TAG, errorMsg, e)
+            throw ErrorLoadingException(errorMsg)
         }
 
         if (!foundLink) {
-            val finalErrorMessage = "$name - Lỗi: Tất cả server thất bại (${errorMessages.joinToString(", ")})"
-            callback.invoke(
-                ExtractorLink(
-                    source = name, // FIX 2: Thêm `source`
-                    name = finalErrorMessage,
-                    url = "https://live.143b.ch/cam/flux/ts:abr.m3u8",
-                    referer = data,
-                    quality = Qualities.Unknown.value,
-                    type = ExtractorLinkType.M3U8
-                )
-            )
+            // CHUYỂN SANG LOG.E VÀ THROW
+            val finalErrorMessage = "Tất cả server đều thất bại. (${errorMessages.joinToString(", ")})"
+            Log.e(TAG, finalErrorMessage)
+            throw ErrorLoadingException(finalErrorMessage)
         }
         
         return true
