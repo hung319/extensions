@@ -278,28 +278,36 @@ class Yanhh3dProvider : MainAPI() {
     }
 
     private suspend fun handleDailymotion(
-        url: String,
-        name: String,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ) {
-        val dailymotionLinks = mutableListOf<ExtractorLink>()
-        loadExtractor(url, mainUrl, subtitleCallback) { link ->
-            dailymotionLinks.add(link)
-        }
-
-        if (dailymotionLinks.isNotEmpty()) {
-            // Ưu tiên 1: Tìm link có tên "Dailymotion" (thường là link tổng hợp/auto)
-            val preferredLink = dailymotionLinks.find { it.name.equals("Dailymotion", ignoreCase = true) }
-            
-            // Ưu tiên 2: Nếu không có link tổng, tìm link có chất lượng cao nhất
-            val bestQualityLink = dailymotionLinks.maxByOrNull { it.quality }
-
-            val chosenLink = preferredLink ?: bestQualityLink ?: dailymotionLinks.first()
-            
-            // Ghi đè tên của link được chọn bằng tên từ website
-            val finalLink = chosenLink.copy(name = name)
-            callback(finalLink)
-        }
+    url: String,
+    name: String,
+    subtitleCallback: (SubtitleFile) -> Unit,
+    callback: (ExtractorLink) -> Unit
+) {
+    val dailymotionLinks = mutableListOf<ExtractorLink>()
+    loadExtractor(url, mainUrl, subtitleCallback) { link ->
+        dailymotionLinks.add(link)
     }
+
+    if (dailymotionLinks.isNotEmpty()) {
+        val preferredLink = dailymotionLinks.find { it.name.equals("Dailymotion", ignoreCase = true) }
+        val bestQualityLink = dailymotionLinks.maxByOrNull { it.quality }
+        val chosenLink = preferredLink ?: bestQualityLink ?: dailymotionLinks.first()
+        
+        // === SỬA LỖI TẠI ĐÂY ===
+        // Vì ExtractorLink là class thường, ta phải tạo một đối tượng mới
+        // và sao chép thủ công các thuộc tính từ đối tượng cũ.
+        val finalLink = ExtractorLink(
+            source = chosenLink.source,
+            name = name, // Ghi đè tên mới vào đây
+            url = chosenLink.url,
+            referer = chosenLink.referer,
+            quality = chosenLink.quality,
+            type = chosenLink.type,
+            headers = chosenLink.headers,
+            isM3u8 = chosenLink.isM3u8
+        )
+        
+        callback(finalLink)
+    }
+  }
 }
