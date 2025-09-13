@@ -4,6 +4,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.network.CloudflareKiller
+import android.util.Log
 
 class JavmostProvider : MainAPI() {
     override var mainUrl = "https://www5.javmost.com"
@@ -87,6 +88,8 @@ class JavmostProvider : MainAPI() {
         }
     }
 
+    private val TAG = "JavmostProvider" // Tag để lọc log cho dễ
+
     // Dữ liệu chỉ cần part và serverId từ nút bấm
     private data class ServerButtonData(
         val part: String,
@@ -99,24 +102,36 @@ class JavmostProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        Log.d(TAG, "--- Bắt đầu loadLinks cho url: $data ---")
+
         val document = app.get(data, interceptor = interceptor).document
+        Log.d(TAG, "Đã tải xong document HTML.")
 
         // Bước 1: Trích xuất các mã cần thiết từ khối script toàn cục
+        Log.d(TAG, "Bước 1: Bắt đầu trích xuất mã từ script...")
         val scriptContent = document.select("script").find { it.data().contains("var YWRzMQo") }?.data()
-            ?: throw ErrorLoadingException("Bước 1/3 THẤT BẠI: Không tìm thấy khối script chứa mã.")
+            ?: throw ErrorLoadingException("Bước 1 THẤT BẠI: Không tìm thấy khối script chứa mã.")
+        // Log.d(TAG, "Nội dung script tìm thấy: $scriptContent") // Bỏ comment nếu muốn xem toàn bộ script
 
-        // Regex để trích xuất giá trị của từng biến JS
         val valueCode = Regex("""var\s+YWRzMQo\s*=\s*'([^']+)';""").find(scriptContent)?.groupValues?.get(1)
-            ?: throw ErrorLoadingException("Bước 1/3 THẤT BẠI: Không trích xuất được 'valueCode'.")
+            ?: throw ErrorLoadingException("Bước 1 THẤT BẠI: Không trích xuất được 'valueCode'.")
+        Log.d(TAG, "-> valueCode (YWRzMQo): $valueCode")
+
         val code1 = Regex("""var\s+YWRzNA\s*=\s*'([^']+)';""").find(scriptContent)?.groupValues?.get(1)
-            ?: throw ErrorLoadingException("Bước 1/3 THẤT BẠI: Không trích xuất được 'code1'.")
+            ?: throw ErrorLoadingException("Bước 1 THẤT BẠI: Không trích xuất được 'code1' (YWRzNA).")
+        Log.d(TAG, "-> code1 (YWRzNA): $code1")
+
         val code2 = Regex("""var\s+YWRzNQ\s*=\s*'([^']+)';""").find(scriptContent)?.groupValues?.get(1)
-            ?: throw ErrorLoadingException("Bước 1/3 THẤT BẠI: Không trích xuất được 'code2'.")
+            ?: throw ErrorLoadingException("Bước 1 THẤT BẠI: Không trích xuất được 'code2' (YWRzNQ).")
+        Log.d(TAG, "-> code2 (YWRzNQ): $code2")
+
         val code3 = Regex("""var\s+YWRzNg\s*=\s*'([^']+)';""").find(scriptContent)?.groupValues?.get(1)
-            ?: throw ErrorLoadingException("Bước 1/3 THẤT BẠI: Không trích xuất được 'code3'.")
+            ?: throw ErrorLoadingException("Bước 1 THẤT BẠI: Không trích xuất được 'code3' (YWRzNg).")
+        Log.d(TAG, "-> code3 (YWRzNg): $code3")
+        Log.d(TAG, "Bước 1: Trích xuất mã thành công.")
 
         // Bước 2: Trích xuất thông tin part và serverId từ các nút bấm
-        // Ta chỉ cần 2 giá trị đầu tiên, các mã code trong onclick giờ đã lỗi thời
+        Log.d(TAG, "Bước 2: Bắt đầu tìm và phân tích các nút server...")
         val servers = document.select("ul.nav-tabs-inverse li button[onclick], span.partlist button[onclick]").mapNotNull {
             val onclick = it.attr("onclick")
             val regex = Regex("""select_part\('([^']+)','([^']+)'.*?\)""")
@@ -127,30 +142,36 @@ class JavmostProvider : MainAPI() {
             } else {
                 null
             }
-        }.distinct() // Sử dụng distinct để loại bỏ các nút bấm trùng lặp
+        }.distinct()
 
         if (servers.isEmpty()) {
-            throw ErrorLoadingException("Bước 2/3 THẤT BẠI: Không tìm thấy nút chọn server.")
+            throw ErrorLoadingException("Bước 2 THẤT BẠI: Không tìm thấy nút chọn server nào.")
         }
+        Log.d(TAG, "Bước 2: Tìm thấy ${servers.size} server/part duy nhất: $servers")
 
         val ajaxUrl = "$mainUrl/ri3123o235r/"
         val errorMessages = mutableListOf<String>()
 
+        Log.d(TAG, "Bước 3: Bắt đầu lặp qua các server để lấy link video...")
         // Bước 3: Gửi AJAX request với các mã đã được cập nhật
         for (server in servers) {
-            var responseText = "" // Biến để lưu trữ nội dung response thô
+            var responseText = ""
+            Log.d(TAG, "--- Đang thử Server: ${server.serverId}, Part: ${server.part} ---")
             try {
+                val postData = mapOf(
+                    "group" to server.serverId,
+                    "part" to server.part,
+                    "code" to code1,
+                    "code2" to code2,
+                    "code3" to code3,
+                    "value" to valueCode,
+                    "sound" to "av"
+                )
+                Log.d(TAG, "Payload gửi đi: $postData")
+
                 val response = app.post(
                     ajaxUrl,
-                    data = mapOf(
-                        "group" to server.serverId,
-                        "part" to server.part,
-                        "code" to code1,       // Sử dụng code1 từ script
-                        "code2" to code2,      // Sử dụng code2 từ script
-                        "code3" to code3,      // Sử dụng code3 từ script
-                        "value" to valueCode,  // Sử dụng valueCode từ script
-                        "sound" to "av"
-                    ),
+                    data = postData,
                     headers = mapOf(
                         "Referer" to data,
                         "Origin" to mainUrl,
@@ -162,28 +183,37 @@ class JavmostProvider : MainAPI() {
                 )
                 
                 responseText = response.text
+                Log.d(TAG, "Response (thô) từ server: $responseText")
+
                 val res = response.parsed<VideoResponse>()
 
                 if (res.status == "success" && res.data.isNotEmpty()) {
                     val videoUrl = res.data.first()
-                    // Load extractor và trả về true nếu thành công
+                    Log.d(TAG, "API trả về thành công! URL video: $videoUrl")
+                    Log.d(TAG, "Bắt đầu gọi loadExtractor...")
                     if (loadExtractor(videoUrl, data, subtitleCallback, callback)) {
+                        Log.d(TAG, "--- loadLinks THÀNH CÔNG! Đã tìm thấy link. ---")
                         return true 
                     } else {
-                        errorMessages.add("Server ${server.serverId} (Part ${server.part}): Extractor thất bại với URL $videoUrl")
+                        val errorMsg = "Server ${server.serverId} (Part ${server.part}): Extractor thất bại với URL $videoUrl"
+                        Log.w(TAG, errorMsg)
+                        errorMessages.add(errorMsg)
                     }
                 } else {
-                     errorMessages.add("Server ${server.serverId} (Part ${server.part}): API không thành công. Response: $responseText")
+                     val errorMsg = "Server ${server.serverId} (Part ${server.part}): API không thành công. Status: ${res.status}, Message: ${res.msg}, Response: $responseText"
+                     Log.w(TAG, errorMsg)
+                     errorMessages.add(errorMsg)
                 }
             } catch (e: Exception) {
-                val detailedError = "Server ${server.serverId} (Part ${server.part}) gặp lỗi: ${e.message}\nAJAX Response (thô): $responseText"
-                errorMessages.add(detailedError)
-                e.printStackTrace()
+                val detailedError = "Server ${server.serverId} (Part ${server.part}) gặp lỗi Exception: ${e::class.simpleName} -> ${e.message}"
+                Log.e(TAG, detailedError, e) // In cả stacktrace của lỗi
+                errorMessages.add("$detailedError\nAJAX Response (thô): $responseText")
             }
         }
 
-        // Nếu tất cả server đều lỗi, ném ra Exception tổng hợp
-        throw ErrorLoadingException("Bước 3/3 THẤT BẠI: Tất cả các server đều thất bại. Chi tiết:\n\n${errorMessages.joinToString("\n\n")}")
+        val finalErrorMessage = "Bước 3/3 THẤT BẠI: Tất cả các server đều thất bại. Chi tiết:\n\n${errorMessages.joinToString("\n\n")}"
+        Log.e(TAG, finalErrorMessage)
+        throw ErrorLoadingException(finalErrorMessage)
     }
 
     data class VideoResponse(
