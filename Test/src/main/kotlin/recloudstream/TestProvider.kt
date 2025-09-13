@@ -176,23 +176,29 @@ class Yanhh3dProvider : MainAPI() {
                 if (link.isBlank()) return@forEach
 
                 val serverId = varName.removePrefix("check").uppercase()
-                
-                if (serverId == "LINK10") return@forEach
-
                 val serverDisplayName = serverNames[serverId] ?: serverId
                 val finalName = "$prefix - $serverDisplayName"
                 
-                when (serverId) {
-                    "FBO" -> handleDirectLink(link, finalName, callback)
-                    "LINK1" -> handleIframeCCCC(link, finalName, callback)
-                    // Gộp LINK2 và LINK4 vào hàm xử lý chung
-                    "LINK2", "LINK4" -> handleFbCdnLink(link, finalName, callback)
-                    "LINK7" -> loadExtractor(link, mainUrl, subtitleCallback, callback)
-                    "LINK8" -> handleHelvidLink(link, finalName, callback)
-                    else -> handleDirectLink(link, finalName, callback)
-                }
+                routeLinkBasedOnUrl(link, finalName, subtitleCallback, callback)
             }
         }.onFailure { it.printStackTrace() }
+    }
+
+    private suspend fun routeLinkBasedOnUrl(
+        url: String,
+        name: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        when {
+            // Thay đổi 1: Linh hoạt hóa link iframe
+            "yanhh3d.vip/play-fb-v" in url -> handleIframeCCCC(url, name, callback)
+            "fbcdn.cloud/" in url -> handleFbCdnLink(url, name, callback)
+            "helvid.net/" in url -> handleHelvidLink(url, name, callback)
+            "dailymotion.com/" in url -> loadExtractor(url, mainUrl, subtitleCallback, callback)
+            // Thay đổi 2: "short.icu/" đã được loại bỏ
+            else -> handleDirectLink(url, name, callback)
+        }
     }
 
     private fun getLinkType(url: String): ExtractorLinkType {
@@ -224,21 +230,13 @@ class Yanhh3dProvider : MainAPI() {
         }.onFailure { it.printStackTrace() }
     }
 
-    // Hàm mới, "thông minh" hơn để xử lý cả 2 định dạng của fbcdn
     private suspend fun handleFbCdnLink(url: String, name: String, callback: (ExtractorLink) -> Unit) {
-        // Dùng `when` để kiểm tra và biến đổi URL một cách linh hoạt
         val streamUrl = when {
-            // Trường hợp 1: .../video/... -> nối /master.m3u8
             url.contains("fbcdn.cloud/video/") -> "$url/master.m3u8"
-            // Trường hợp 2: .../o1/v/t2/f2/m366/... -> thay thế chuỗi
             url.contains("/o1/v/t2/f2/m366/") -> url.replace("/o1/v/t2/f2/m366/", "/stream/m3u8/")
-            // Mặc định, nếu không khớp mẫu nào, trả về url gốc
             else -> url
         }
-
-        // Chỉ callback nếu link thực sự là m3u8 để tránh lỗi
         if (!streamUrl.contains(".m3u8")) return
-
         callback(
             newExtractorLink(this.name, name, streamUrl, type = ExtractorLinkType.M3U8) {
                 this.referer = mainUrl
