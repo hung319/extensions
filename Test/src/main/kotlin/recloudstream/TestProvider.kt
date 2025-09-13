@@ -217,7 +217,8 @@ class JavmostProvider : MainAPI() {
     }
 
     data class VideoResponse(
-        val status: String,
-        val data: List<String>
-    )
+    val status: String,
+    val msg: String?, // Thêm dòng này
+    val data: List<String>
+  )
 }
