@@ -88,8 +88,7 @@ class JavmostProvider : MainAPI() {
         }
     }
 
-    private val TAG = "JavmostProvider" // Tag để lọc log cho dễ
-
+    
     // Dữ liệu chỉ cần part và serverId từ nút bấm
     private data class ServerButtonData(
         val part: String,
@@ -104,116 +103,115 @@ class JavmostProvider : MainAPI() {
     ): Boolean {
         Log.d(TAG, "--- Bắt đầu loadLinks cho url: $data ---")
 
-        val document = app.get(data, interceptor = interceptor).document
-        Log.d(TAG, "Đã tải xong document HTML.")
-
-        // Bước 1: Trích xuất các mã cần thiết từ khối script toàn cục
-        Log.d(TAG, "Bước 1: Bắt đầu trích xuất mã từ script...")
-        val scriptContent = document.select("script").find { it.data().contains("var YWRzMQo") }?.data()
-            ?: throw ErrorLoadingException("Bước 1 THẤT BẠI: Không tìm thấy khối script chứa mã.")
-        // Log.d(TAG, "Nội dung script tìm thấy: $scriptContent") // Bỏ comment nếu muốn xem toàn bộ script
-
-        val valueCode = Regex("""var\s+YWRzMQo\s*=\s*'([^']+)';""").find(scriptContent)?.groupValues?.get(1)
-            ?: throw ErrorLoadingException("Bước 1 THẤT BẠI: Không trích xuất được 'valueCode'.")
-        Log.d(TAG, "-> valueCode (YWRzMQo): $valueCode")
-
-        val code1 = Regex("""var\s+YWRzNA\s*=\s*'([^']+)';""").find(scriptContent)?.groupValues?.get(1)
-            ?: throw ErrorLoadingException("Bước 1 THẤT BẠI: Không trích xuất được 'code1' (YWRzNA).")
-        Log.d(TAG, "-> code1 (YWRzNA): $code1")
-
-        val code2 = Regex("""var\s+YWRzNQ\s*=\s*'([^']+)';""").find(scriptContent)?.groupValues?.get(1)
-            ?: throw ErrorLoadingException("Bước 1 THẤT BẠI: Không trích xuất được 'code2' (YWRzNQ).")
-        Log.d(TAG, "-> code2 (YWRzNQ): $code2")
-
-        val code3 = Regex("""var\s+YWRzNg\s*=\s*'([^']+)';""").find(scriptContent)?.groupValues?.get(1)
-            ?: throw ErrorLoadingException("Bước 1 THẤT BẠI: Không trích xuất được 'code3' (YWRzNg).")
-        Log.d(TAG, "-> code3 (YWRzNg): $code3")
-        Log.d(TAG, "Bước 1: Trích xuất mã thành công.")
-
-        // Bước 2: Trích xuất thông tin part và serverId từ các nút bấm
-        Log.d(TAG, "Bước 2: Bắt đầu tìm và phân tích các nút server...")
-        val servers = document.select("ul.nav-tabs-inverse li button[onclick], span.partlist button[onclick]").mapNotNull {
-            val onclick = it.attr("onclick")
-            val regex = Regex("""select_part\('([^']+)','([^']+)'.*?\)""")
-            val match = regex.find(onclick)
-            if (match != null) {
-                val (part, serverId) = match.destructured
-                ServerButtonData(part, serverId)
-            } else {
-                null
-            }
-        }.distinct()
-
-        if (servers.isEmpty()) {
-            throw ErrorLoadingException("Bước 2 THẤT BẠI: Không tìm thấy nút chọn server nào.")
+        val document = try {
+            app.get(data, interceptor = interceptor).document
+        } catch (e: Exception) {
+            callback.invoke(
+                ExtractorLink(
+                    name = "$name - Lỗi Mạng: Không tải được trang",
+                    url = "https://example.com/error.m3u8",
+                    referer = data,
+                    quality = Qualities.Unknown.value,
+                    type = ExtractorLinkType.M3U8
+                )
+            )
+            return true
         }
-        Log.d(TAG, "Bước 2: Tìm thấy ${servers.size} server/part duy nhất: $servers")
 
-        val ajaxUrl = "$mainUrl/ri3123o235r/"
+        if (document.body().html().isBlank()) {
+            callback.invoke(
+                ExtractorLink(
+                    name = "$name - Lỗi: Server trả về trang rỗng",
+                    url = "https://example.com/error.m3u8",
+                    referer = data,
+                    quality = Qualities.Unknown.value,
+                    type = ExtractorLinkType.M3U8
+                )
+            )
+            return true
+        }
+
         val errorMessages = mutableListOf<String>()
+        var foundLink = false
 
-        Log.d(TAG, "Bước 3: Bắt đầu lặp qua các server để lấy link video...")
-        // Bước 3: Gửi AJAX request với các mã đã được cập nhật
-        for (server in servers) {
-            var responseText = ""
-            Log.d(TAG, "--- Đang thử Server: ${server.serverId}, Part: ${server.part} ---")
-            try {
-                val postData = mapOf(
-                    "group" to server.serverId,
-                    "part" to server.part,
-                    "code" to code1,
-                    "code2" to code2,
-                    "code3" to code3,
-                    "value" to valueCode,
-                    "sound" to "av"
-                )
-                Log.d(TAG, "Payload gửi đi: $postData")
+        try {
+            val scriptContent = document.select("script:containsData(var YWRzMQo)").first()?.data()
+                ?: throw ErrorLoadingException("Không tìm thấy script chứa mã")
 
-                val response = app.post(
-                    ajaxUrl,
-                    data = postData,
-                    headers = mapOf(
-                        "Referer" to data,
-                        "Origin" to mainUrl,
-                        "X-Requested-With" to "XMLHttpRequest",
-                        "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8",
-                        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36"
-                    ),
-                    interceptor = interceptor
-                )
-                
-                responseText = response.text
-                Log.d(TAG, "Response (thô) từ server: $responseText")
+            val valueCode = Regex("""var\s+YWRzMQo\s*=\s*'([^']+)';""").find(scriptContent)?.groupValues?.get(1)
+                ?: throw ErrorLoadingException("Không lấy được 'valueCode'")
+            val code1 = Regex("""var\s+YWRzNA\s*=\s*'([^']+)';""").find(scriptContent)?.groupValues?.get(1)
+                ?: throw ErrorLoadingException("Không lấy được 'code1'")
+            val code2 = Regex("""var\s+YWRzNQ\s*=\s*'([^']+)';""").find(scriptContent)?.groupValues?.get(1)
+                ?: throw ErrorLoadingException("Không lấy được 'code2'")
+            val code3 = Regex("""var\s+YWRzNg\s*=\s*'([^']+)';""").find(scriptContent)?.groupValues?.get(1)
+                ?: throw ErrorLoadingException("Không lấy được 'code3'")
 
-                val res = response.parsed<VideoResponse>()
+            val servers = document.select("ul.nav-tabs-inverse li button[onclick], span.partlist button[onclick]").mapNotNull {
+                Regex("""select_part\('([^']+)','([^']+)'.*?\)""").find(it.attr("onclick"))?.destructured
+            }.distinct()
 
-                if (res.status == "success" && res.data.isNotEmpty()) {
-                    val videoUrl = res.data.first()
-                    Log.d(TAG, "API trả về thành công! URL video: $videoUrl")
-                    Log.d(TAG, "Bắt đầu gọi loadExtractor...")
-                    if (loadExtractor(videoUrl, data, subtitleCallback, callback)) {
-                        Log.d(TAG, "--- loadLinks THÀNH CÔNG! Đã tìm thấy link. ---")
-                        return true 
-                    } else {
-                        val errorMsg = "Server ${server.serverId} (Part ${server.part}): Extractor thất bại với URL $videoUrl"
-                        Log.w(TAG, errorMsg)
-                        errorMessages.add(errorMsg)
+            if (servers.isEmpty()) throw ErrorLoadingException("Không tìm thấy nút chọn server")
+
+            val ajaxUrl = "$mainUrl/ri3123o235r/"
+            
+            run loop@{
+                servers.forEach { (part, serverId) ->
+                    try {
+                        val postData = mapOf(
+                            "group" to serverId, "part" to part, "code" to code1,
+                            "code2" to code2, "code3" to code3, "value" to valueCode, "sound" to "av"
+                        )
+                        val res = app.post(ajaxUrl, data = postData, headers = mapOf("Referer" to data, "X-Requested-With" to "XMLHttpRequest")).parsed<VideoResponse>()
+
+                        if (res.status == "success" && res.data.isNotEmpty()) {
+                            val intermediateUrl = res.data.first()
+                            Log.d(TAG, "Got intermediate URL: $intermediateUrl, passing to loadExtractor")
+                            
+                            // SỬ DỤNG loadExtractor ĐỂ XỬ LÝ TỰ ĐỘNG
+                            if (loadExtractor(intermediateUrl, data, subtitleCallback, callback)) {
+                                Log.d(TAG, "loadExtractor successfully handled the link.")
+                                foundLink = true
+                                return@loop // Thoát khỏi vòng lặp khi tìm thấy link
+                            } else {
+                                errorMessages.add("S${serverId}P${part}: loadExtractor thất bại")
+                            }
+                        } else {
+                            errorMessages.add("S${serverId}P${part}: API lỗi")
+                        }
+                    } catch (e: Exception) {
+                        errorMessages.add("S${serverId}P${part}: Exception")
                     }
-                } else {
-                     val errorMsg = "Server ${server.serverId} (Part ${server.part}): API không thành công. Status: ${res.status}, Message: ${res.msg}, Response: $responseText"
-                     Log.w(TAG, errorMsg)
-                     errorMessages.add(errorMsg)
                 }
-            } catch (e: Exception) {
-                val detailedError = "Server ${server.serverId} (Part ${server.part}) gặp lỗi Exception: ${e::class.simpleName} -> ${e.message}"
-                Log.e(TAG, detailedError, e) // In cả stacktrace của lỗi
-                errorMessages.add("$detailedError\nAJAX Response (thô): $responseText")
             }
+        } catch (e: Exception) {
+            val errorMsg = "$name - Lỗi Parse: ${e.message}"
+            callback.invoke(
+                ExtractorLink(
+                    name = errorMsg,
+                    url = "https://example.com/error.m3u8",
+                    referer = data,
+                    quality = Qualities.Unknown.value,
+                    type = ExtractorLinkType.M3U8
+                )
+            )
+            return true
         }
 
-        val finalErrorMessage = "Bước 3/3 THẤT BẠI: Tất cả các server đều thất bại. Chi tiết:\n\n${errorMessages.joinToString("\n\n")}"
-        Log.e(TAG, finalErrorMessage)
-        throw ErrorLoadingException(finalErrorMessage)
+        if (!foundLink) {
+            val finalErrorMessage = "$name - Lỗi: Tất cả server thất bại (${errorMessages.joinToString(", ")})"
+            callback.invoke(
+                ExtractorLink(
+                    name = finalErrorMessage,
+                    url = "https://example.com/error.m3u8",
+                    referer = data,
+                    quality = Qualities.Unknown.value,
+                    type = ExtractorLinkType.M3U8
+                )
+            )
+        }
+        
+        return true
     }
 
     data class VideoResponse(
