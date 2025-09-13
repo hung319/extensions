@@ -134,85 +134,104 @@ class Yanhh3dProvider : MainAPI() {
     }
 
     private suspend fun extractLinksFromPage(
-        url: String,
-        prefix: String,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ) {
-        try {
-            val document = app.get(url, timeout = 10L).document
-            val script = document.select("script").find {
-                val data = it.data()
-                data.contains("checkLink") || data.contains("checkFbo")
-            }?.data() ?: return
+    url: String,
+    prefix: String,
+    subtitleCallback: (SubtitleFile) -> Unit,
+    callback: (ExtractorLink) -> Unit
+) {
+    try {
+        val document = app.get(url, timeout L).document
+        val script = document.select("script").find {
+            val data = it.data()
+            data.contains("checkLink") || data.contains("checkFbo")
+        }?.data() ?: return
 
-            val servers = document.select("a.btn3dsv").associate {
-                it.attr("name").uppercase() to it.text()
-            }
-            val linkRegex = Regex("""var\s*\${'$'}check(\w+)\s*=\s*['"](.*?)['"];""")
+        val servers = document.select("a.btn3dsv").associate {
+            it.attr("name").uppercase() to it.text().trim()
+        }
+        val linkRegex = Regex("""var\s*\${'$'}check(\w+)\s*=\s*['"](.*?)['"];""")
 
-            linkRegex.findAll(script).forEach { match ->
-                try {
-                    val id = match.groupValues[1].uppercase()
-                    var link = match.groupValues[2]
-                    
-                    val serverName = servers[id]
-                    val ignoredServers = setOf("HD", "Link10", "HYD", "NC")
-                    if (serverName.isNullOrBlank() || serverName in ignoredServers) return@forEach
+        linkRegex.findAll(script).forEach { match ->
+            try {
+                val serverId = match.groupValues[1].uppercase()
+                var link = match.groupValues[2]
+                
+                val serverName = servers[serverId] ?: return@forEach
+                if (link.isBlank()) return@forEach
 
-                    if (link.isNotBlank()) {
-                        val finalName = "$prefix - $serverName"
+                val finalName = "$prefix - $serverName"
 
-                        if (link.contains("short.icu")) {
-                            link = app.get(link, allowRedirects = false).headers["location"] ?: return@forEach
-                        }
-                        
-                        val finalUrl = fixUrl(link)
-                        
-                        // =================================================================
-                        // BẮT ĐẦU LOGIC CẬP NHẬT CHO helvid.net (Link8)
-                        // =================================================================
-                        if (finalUrl.contains("helvid.net")) {
-                            val helvidDoc = app.get(finalUrl).document
-                            val playerScript = helvidDoc.selectFirst("script:containsData('playerInstance.setup')")?.data()
-                            
-                            // Regex để tìm file video trong script của JW Player
-                            val fileRegex = Regex("""file:\s*"(.*?)"""")
-                            val videoPath = fileRegex.find(playerScript ?: "")?.groupValues?.get(1)
-
-                            if (videoPath != null) {
-                                // Helvid trả về một đường dẫn tương đối, cần phải nối với domain
-                                val videoUrl = "https://helvid.net$videoPath"
-                                callback(
-                                    newExtractorLink(
-                                        this.name,
-                                        finalName,
-                                        videoUrl,
-                                        "https://helvid.net/", // Referer quan trọng
-                                        type = ExtractorLinkType.M3U8 // Định dạng video là HLS
-                                    )
-                                )
+                if (link.contains("short.icu")) {
+                    link = app.get(link, allowRedirects = false).headers["location"] ?: return@forEach
+                }
+                
+                val finalUrl = fixUrl(link)
+                
+                // ÁP DỤNG CÁC QUY TẮC XỬ LÝ LINK (ĐÃ BỔ SUNG LINK8)
+                when {
+                    serverName == "HD+" -> {
+                        callback(
+                            newExtractorLink(this.name, finalName, finalUrl, referer = mainUrl, type = ExtractorLinkType.MP4) {
+                                quality = Qualities.P720.value
                             }
-                        // =================================================================
-                        // KẾT THÚC LOGIC CẬP NHẬT
-                        // =================================================================
-                        } else if (app.head(finalUrl).isSuccessful) {
-                            if (finalUrl.contains("abyss-cdn.ink")) {
-                                callback(newExtractorLink(this.name, finalName, "$finalUrl/master.m3u8", type = ExtractorLinkType.M3U8))
-                            } else {
-                                // Xử lý các server khác như cũ
-                                loadExtractor(finalUrl, mainUrl, subtitleCallback, callback)
-                            }
+                        )
+                    }
+                    serverName == "1080" || serverName == "4K" -> {
+                        if (finalUrl.contains(".m3u8")) {
+                            val m3u8Url = finalUrl.replace("/o1/v/t2/f2/m366/", "/stream/m3u8/")
+                            callback(
+                                newExtractorLink(this.name, finalName, m3u8Url, referer = mainUrl, type = ExtractorLinkType.M3U8) {
+                                    quality = if (serverName == "4K") Qualities.P2160.value else Qualities.P1080.value
+                                }
+                            )
                         }
                     }
-                } catch (e: Exception) {
-                    e.printStackTrace()
+                    serverName == "HD" && finalUrl.contains("/play-fb-v") -> {
+                        var scrapedUrl: String?
+                        val playerDocument = app.get(finalUrl, referer = url).document
+                        scrapedUrl = playerDocument.selectFirst("#player")?.attr("data-stream-url")
+                        if (scrapedUrl.isNullOrBlank()) {
+                            scrapedUrl = Regex("""var cccc = "([^"]+)""").find(playerDocument.html())?.groupValues?.get(1)
+                        }
+                        if (!scrapedUrl.isNullOrBlank()) {
+                            loadExtractor(scrapedUrl, mainUrl, subtitleCallback, callback)
+                        }
+                    }
+                    // =================================================================
+                    // LOGIC CHO LINK8 ĐÃ ĐƯỢC THÊM LẠI
+                    // =================================================================
+                    serverName == "Link8" && finalUrl.contains("helvid.net") -> {
+                        val helvidDoc = app.get(finalUrl).document
+                        val playerScript = helvidDoc.selectFirst("script:containsData('playerInstance.setup')")?.data()
+                        
+                        val fileRegex = Regex("""file:\s*"(.*?)"""")
+                        val videoPath = fileRegex.find(playerScript ?: "")?.groupValues?.get(1)
+
+                        if (videoPath != null) {
+                            val videoUrl = "https://helvid.net$videoPath"
+                            callback(
+                                newExtractorLink(
+                                    this.name,
+                                    finalName,
+                                    videoUrl,
+                                    referer = "https://helvid.net/",
+                                    type = ExtractorLinkType.M3U8
+                                )
+                            )
+                        }
+                    }
+                    else -> { // Logic mặc định cho 2K và các server iframe khác
+                        loadExtractor(finalUrl, mainUrl, subtitleCallback, callback)
+                    }
                 }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
         }
+    } catch (e: Exception) {
+        e.printStackTrace()
     }
+}
 
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
         // Logic này giữ nguyên như file gốc, không dùng API AJAX nữa
