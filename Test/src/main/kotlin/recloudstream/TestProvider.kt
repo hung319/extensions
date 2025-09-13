@@ -134,77 +134,48 @@ class Yanhh3dProvider : MainAPI() {
     }
 
     private suspend fun extractLinksFromPage(
-    url: String,
-    prefix: String,
-    subtitleCallback: (SubtitleFile) -> Unit,
-    callback: (ExtractorLink) -> Unit
-) {
-    try {
-        val document = app.get(url).document
-        val scriptData = document.select("script").find {
-            val data = it.data()
-            data.contains("checkLink") || data.contains("checkFbo")
-        }?.data() ?: return
+        url: String,
+        prefix: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        try {
+            val document = app.get(url).document
+            val scriptData = document.select("script:containsData(checkLink)").html()
 
-        // DÙNG SELECTOR ĐÃ ĐƯỢC XÁC NHẬN LÀ ĐÚNG
-        val serverElements = document.select("div#list_sv a")
+            // Dùng selector CSS ổn định nhất để lấy danh sách server
+            val servers = document.select("div#list_sv a").associate {
+                it.attr("name") to it.text().trim()
+            }
+            
+            val linkRegex = Regex("""var\s*\${'$'}check(\w+)\s*=\s*"([^"]+)"""")
 
-        // Phần code còn lại không đổi
-        val servers = serverElements.associate {
-            it.attr("name").uppercase() to it.text().trim()
-        }
-        val linkRegex = Regex("""var\s*\${'$'}check(\w+)\s*=\s*['"](.*?)['"];""")
+            coroutineScope {
+                linkRegex.findAll(scriptData).forEach { match ->
+                    launch {
+                        try {
+                            val serverId = match.groupValues.getOrNull(1) ?: return@launch
+                            var link = match.groupValues.getOrNull(2) ?: return@launch
+                            
+                            // Lấy tên server, nếu không có thì dùng ID làm tên
+                            val serverName = servers[serverId] ?: serverId 
+                            if (link.isBlank()) return@launch
 
-        coroutineScope {
-            linkRegex.findAll(scriptData).forEach { match ->
-                launch {
-                    try {
-                        val serverId = match.groupValues.getOrNull(1)?.uppercase() ?: return@launch
-                        var link = match.groupValues.getOrNull(2) ?: return@launch
-                        
-                        val serverName = servers[serverId] ?: return@launch
-                        if (link.isBlank()) return@launch
-
-                        if (link.contains("short.icu")) {
-                            link = app.get(link, allowRedirects = false).headers["location"] ?: return@launch
-                        }
-                        
-                        val finalUrl = fixUrl(link)
-                        if (finalUrl.isBlank()) return@launch
-
-                        val finalName = "$prefix - $serverName"
-
-                        when (serverName) {
-                            "HD+" -> {
-                                callback(
-                                    newExtractorLink(this@Yanhh3dProvider.name, finalName, finalUrl, type = ExtractorLinkType.VIDEO) {
-                                        this.referer = mainUrl
-                                    }
-                                )
+                            if (link.contains("short.icu")) {
+                                link = app.get(link, allowRedirects = false).headers["location"] ?: return@launch
                             }
-                            "1080", "4K" -> {
-                                if (finalUrl.contains(".m3u8")) {
-                                    val m3u8Url = finalUrl.replace("/o1/v/t2/f2/m366/", "/stream/m3u8/")
-                                    callback(
-                                        newExtractorLink(this@Yanhh3dProvider.name, finalName, m3u8Url, type = ExtractorLinkType.M3U8) {
-                                            this.referer = mainUrl
-                                        }
-                                    )
-                                }
-                            }
-                            "HD" -> {
-                                if (finalUrl.contains("/play-fb-v")) {
-                                    val playerDocument = app.get(finalUrl, referer = url).document
-                                    val scrapedUrl = playerDocument.selectFirst("#player")?.attr("data-stream-url")
-                                        ?: Regex("""var cccc = "([^"]+)""").find(playerDocument.html())?.groupValues?.get(1)
+                            
+                            val finalUrl = fixUrl(link)
+                            if (finalUrl.isBlank()) return@launch
 
-                                    if (scrapedUrl?.isNotBlank() == true) {
-                                        loadExtractor(scrapedUrl, mainUrl, subtitleCallback, callback)
-                                    }
-                                }
-                            }
-                            "Link8" -> {
-                                if (finalUrl.contains("helvid.net")) {
+                            val finalName = "$prefix - $serverName"
+
+                            // =================================================================
+                            // LOGIC MỚI: DỰA VÀO CẤU TRÚC URL, GỌN GÀNG VÀ ỔN ĐỊNH HƠN
+                            // =================================================================
+                            when {
+                                // Nhóm 1: Các link cần bóc tách đặc biệt
+                                finalUrl.contains("helvid.net") -> {
                                     val helvidDoc = app.get(finalUrl).document
                                     val playerScript = helvidDoc.selectFirst("script:containsData('playerInstance.setup')")?.data()
                                     val videoPath = Regex("""file:\s*"(.*?)"""").find(playerScript ?: "")?.groupValues?.get(1)
@@ -218,21 +189,49 @@ class Yanhh3dProvider : MainAPI() {
                                         )
                                     }
                                 }
+                                finalUrl.contains("/play-fb-v") -> {
+                                    val playerDocument = app.get(finalUrl, referer = url).document
+                                    val scrapedUrl = playerDocument.selectFirst("#player")?.attr("data-stream-url")
+                                        ?: Regex("""var cccc = "([^"]+)""").find(playerDocument.html())?.groupValues?.get(1)
+
+                                    if (scrapedUrl?.isNotBlank() == true) {
+                                        loadExtractor(scrapedUrl, mainUrl, subtitleCallback, callback)
+                                    }
+                                }
+
+                                // Nhóm 2: Các link từ CDN của Facebook
+                                finalUrl.contains("fbcdn.") -> {
+                                    if (finalUrl.contains(".m3u8")) {
+                                        val m3u8Url = finalUrl.replace("/o1/v/t2/f2/m366/", "/stream/m3u8/")
+                                        callback(
+                                            newExtractorLink(this@Yanhh3dProvider.name, finalName, m3u8Url, type = ExtractorLinkType.M3U8) {
+                                                this.referer = mainUrl
+                                            }
+                                        )
+                                    } else {
+                                        callback(
+                                            newExtractorLink(this@Yanhh3dProvider.name, finalName, finalUrl, type = ExtractorLinkType.VIDEO) {
+                                                this.referer = mainUrl
+                                            }
+                                        )
+                                    }
+                                }
+
+                                // Nhóm 3: Các trường hợp còn lại
+                                else -> {
+                                    loadExtractor(finalUrl, mainUrl, subtitleCallback, callback)
+                                }
                             }
-                            else -> {
-                                loadExtractor(finalUrl, mainUrl, subtitleCallback, callback)
-                            }
+                        } catch (e: Exception) {
+                            e.printStackTrace()
                         }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
                     }
                 }
             }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
-    } catch (e: Exception) {
-        e.printStackTrace()
     }
-}
 
     override suspend fun loadLinks(
         data: String,
