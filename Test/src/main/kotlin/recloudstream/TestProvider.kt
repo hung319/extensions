@@ -162,7 +162,7 @@ class JavmostProvider : MainAPI() {
                 ExtractorLink(
                     source = name, // FIX 2: Thêm `source`
                     name = "$name - Lỗi Mạng: Không tải được trang",
-                    url = "https://example.com/error.m3u8",
+                    url = "https://live.143b.ch/cam/flux/ts:abr.m3u8",
                     referer = data,
                     quality = Qualities.Unknown.value,
                     type = ExtractorLinkType.M3U8
@@ -176,7 +176,7 @@ class JavmostProvider : MainAPI() {
                 ExtractorLink(
                     source = name, // FIX 2: Thêm `source`
                     name = "$name - Lỗi: Server trả về trang rỗng",
-                    url = "https://example.com/error.m3u8",
+                    url = "https://live.143b.ch/cam/flux/ts:abr.m3u8",
                     referer = data,
                     quality = Qualities.Unknown.value,
                     type = ExtractorLinkType.M3U8
@@ -243,7 +243,7 @@ class JavmostProvider : MainAPI() {
                 ExtractorLink(
                     source = name, // FIX 2: Thêm `source`
                     name = errorMsg,
-                    url = "https://example.com/error.m3u8",
+                    url = "https://live.143b.ch/cam/flux/ts:abr.m3u8",
                     referer = data,
                     quality = Qualities.Unknown.value,
                     type = ExtractorLinkType.M3U8
@@ -258,7 +258,7 @@ class JavmostProvider : MainAPI() {
                 ExtractorLink(
                     source = name, // FIX 2: Thêm `source`
                     name = finalErrorMessage,
-                    url = "https://example.com/error.m3u8",
+                    url = "https://live.143b.ch/cam/flux/ts:abr.m3u8",
                     referer = data,
                     quality = Qualities.Unknown.value,
                     type = ExtractorLinkType.M3U8
