@@ -233,4 +233,28 @@ class Yanhh3dProvider : MainAPI() {
         e.printStackTrace()
     }
 }
+
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        // Giữ nguyên cấu trúc gốc xử lý TM/VS
+        val path = try {
+            URI(data).path.removePrefix("/sever2")
+        } catch (e: Exception) {
+            return false
+        }
+        if (path.isBlank()) return false
+        
+        val dubUrl = "$mainUrl$path"
+        val subUrl = "$mainUrl/sever2$path"
+
+        coroutineScope {
+            launch { extractLinksFromPage(dubUrl, "TM", subtitleCallback, callback) }
+            launch { extractLinksFromPage(subUrl, "VS", subtitleCallback, callback) }
+        }
+        return true
+    }
 }
