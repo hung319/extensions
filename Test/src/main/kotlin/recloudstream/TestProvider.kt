@@ -221,12 +221,15 @@ class Yanhh3dProvider : MainAPI() {
 
     private suspend fun handleIframePlayer(url: String, name: String, callback: (ExtractorLink) -> Unit) {
         runCatching {
-            val iframeDoc = app.get(url).document
-            val script = iframeDoc.selectFirst("script:containsData(eval), script:containsData(var cccc)")?.data() ?: return@runCatching
+            val playerDocument = app.get(url, referer = mainUrl).document
             
-            // Tìm 'var cccc' trước, nếu không có mới tìm trong 'eval' bằng regex linh hoạt hơn
-            val videoUrl = Regex("""var\s*cccc\s*=\s*"([^"]+)";""").find(script)?.groupValues?.get(1)
-                ?: Regex("""(https:\\/\\/[^"]+?)"""").find(script)?.groupValues?.get(1)?.replace("\\/", "/")
+            // Cách 1 (Ưu tiên): Tìm link trong thuộc tính data-stream-url
+            var videoUrl = playerDocument.selectFirst("#player")?.attr("data-stream-url")
+            
+            // Cách 2 (Dự phòng): Nếu không có, tìm trong biến 'var cccc'
+            if (videoUrl.isNullOrBlank()) {
+                videoUrl = Regex("""var cccc = "([^"]+)""").find(playerDocument.html())?.groupValues?.get(1)
+            }
 
             if (!videoUrl.isNullOrBlank()) {
                 callback(
@@ -270,7 +273,7 @@ class Yanhh3dProvider : MainAPI() {
 
             callback(
                 newExtractorLink(this.name, name, streamUrl, type = ExtractorLinkType.M3U8) {
-                    this.referer = url // Referer là trang player gốc
+                    this.referer = url
                 }
             )
         }
@@ -292,47 +295,41 @@ class Yanhh3dProvider : MainAPI() {
         }.onFailure { it.printStackTrace() }
     }
 
+    // Cải thiện: Regex linh hoạt hơn để lấy chất lượng
     private fun getQualityFromString(name: String): Int {
-    // Trích xuất số (ví dụ: 1080, 720) từ tên để so sánh chất lượng
-    return Regex("""(\d{3,4})p""").find(name)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-}
-
-private suspend fun handleDailymotion(
-    url: String,
-    name: String,
-    subtitleCallback: (SubtitleFile) -> Unit,
-    callback: (ExtractorLink) -> Unit
-) {
-    val dailymotionLinks = mutableListOf<ExtractorLink>()
-    loadExtractor(url, mainUrl, subtitleCallback) { link ->
-        dailymotionLinks.add(link)
+        return Regex("""(\d{3,4})""").find(name)?.groupValues?.get(1)?.toIntOrNull() ?: 0
     }
+    
+    private suspend fun handleDailymotion(
+        url: String,
+        name: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        val dailymotionLinks = mutableListOf<ExtractorLink>()
+        loadExtractor(url, mainUrl, subtitleCallback) { link ->
+            dailymotionLinks.add(link)
+        }
 
-    if (dailymotionLinks.isNotEmpty()) {
-        // Ưu tiên 1: Tìm link có tên "Dailymotion" (thường là link tổng hợp/auto)
-        val preferredLink = dailymotionLinks.find { it.name.equals("Dailymotion", ignoreCase = true) }
-        
-        // Ưu tiên 2: Nếu không có, tìm link có chất lượng cao nhất dựa trên tên
-        val bestQualityLink = dailymotionLinks.maxByOrNull { getQualityFromString(it.name) }
+        if (dailymotionLinks.isNotEmpty()) {
+            val preferredLink = dailymotionLinks.find { it.name.equals("Dailymotion", ignoreCase = true) }
+            
+            // Cải thiện: Tìm chất lượng cao nhất bằng Regex linh hoạt hơn
+            val bestQualityLink = dailymotionLinks.maxByOrNull { getQualityFromString(it.name) }
 
-        // Chọn link cuối cùng
-        val chosenLink = preferredLink ?: bestQualityLink ?: dailymotionLinks.first()
-        
-        // === SỬA LỖI TẠI ĐÂY ===
-        // Tạo một đối tượng ExtractorLink mới hoàn toàn dựa trên cấu trúc bạn cung cấp
-        // vì không thể dùng .copy() hay gán lại chosenLink.name
-        val finalLink = ExtractorLink(
-            source = chosenLink.source,
-            name = name, // Ghi đè bằng tên từ website
-            url = chosenLink.url,
-            referer = chosenLink.referer,
-            quality = chosenLink.quality,
-            headers = chosenLink.headers,
-            extractorData = chosenLink.extractorData,
-            type = chosenLink.type
-        )
-        
-        callback(finalLink)
+            val chosenLink = preferredLink ?: bestQualityLink ?: dailymotionLinks.first()
+            
+            val finalLink = ExtractorLink(
+                source = chosenLink.source,
+                name = name,
+                url = chosenLink.url,
+                referer = chosenLink.referer,
+                quality = chosenLink.quality,
+                headers = chosenLink.headers,
+                extractorData = chosenLink.extractorData,
+                type = chosenLink.type
+            )
+            callback(finalLink)
+        }
     }
-  }
 }
