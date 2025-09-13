@@ -136,7 +136,7 @@ class Yanhh3dProvider : MainAPI() {
 
     private suspend fun extractLinksFromPage(
         url: String,
-        prefix: String, // Tham số "tag" (TM hoặc VS)
+        prefix: String,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
@@ -194,7 +194,12 @@ class Yanhh3dProvider : MainAPI() {
                                     if (videoPath?.isNotBlank() == true) {
                                         val videoUrl = "https://helvid.net$videoPath"
                                         Log.d(TAG, "[$prefix] -> Server '$serverName': Bóc tách thành công: $videoUrl")
-                                        callback(/*...*/) // Giữ nguyên callback của bạn
+                                        // SỬA: Điền lại callback hoàn chỉnh
+                                        callback(
+                                            newExtractorLink(this@Yanhh3dProvider.name, finalName, videoUrl, type = ExtractorLinkType.M3U8) {
+                                                this.referer = "https://helvid.net/"
+                                            }
+                                        )
                                         Log.i(TAG, "[$prefix] -> Server '$serverName': SUCCESS")
                                     } else {
                                         throw Exception("Không bóc tách được videoPath từ Helvid cho server '$serverName'")
@@ -217,18 +222,34 @@ class Yanhh3dProvider : MainAPI() {
                                 finalUrl.contains("fbcdn.cloud/video/") -> {
                                     val m3u8Url = "$finalUrl/master.m3u8"
                                     Log.d(TAG, "[$prefix] -> Server '$serverName': Logic FBCDN Video, URL cuối: $m3u8Url")
-                                    callback(/*...*/) // Giữ nguyên callback của bạn
+                                    // SỬA: Điền lại callback hoàn chỉnh
+                                    callback(
+                                        newExtractorLink(this@Yanhh3dProvider.name, finalName, m3u8Url, type = ExtractorLinkType.M3U8) {
+                                            this.referer = mainUrl
+                                        }
+                                    )
                                     Log.i(TAG, "[$prefix] -> Server '$serverName': SUCCESS")
                                 }
                                 finalUrl.contains("fbcdn.") -> {
                                     Log.d(TAG, "[$prefix] -> Server '$serverName': Logic FBCDN, URL: $finalUrl")
                                     if (finalUrl.contains(".m3u8")) {
-                                        val m3u8Url = finalUrl.replace("/o1/v/t2/f2/m3m3u8/")
+                                        // SỬA: Sửa lại hàm replace bị lỗi cú pháp
+                                        val m3u8Url = finalUrl.replace("/o1/v/t2/f2/m366/", "/stream/m3u8/")
                                         Log.d(TAG, "[$prefix] -> Server '$serverName': Biến đổi thành M3U8: $m3u8Url")
-                                        callback(/*...*/) // Giữ nguyên callback của bạn
+                                        // SỬA: Điền lại callback hoàn chỉnh
+                                        callback(
+                                            newExtractorLink(this@Yanhh3dProvider.name, finalName, m3u8Url, type = ExtractorLinkType.M3U8) {
+                                                this.referer = mainUrl
+                                            }
+                                        )
                                     } else {
                                         Log.d(TAG, "[$prefix] -> Server '$serverName': Xử lý như link video trực tiếp.")
-                                        callback(/*...*/) // Giữ nguyên callback của bạn
+                                        // SỬA: Điền lại callback hoàn chỉnh
+                                        callback(
+                                            newExtractorLink(this@Yanhh3dProvider.name, finalName, finalUrl, type = ExtractorLinkType.VIDEO) {
+                                                this.referer = mainUrl
+                                            }
+                                        )
                                     }
                                     Log.i(TAG, "[$prefix] -> Server '$serverName': SUCCESS")
                                 }
@@ -245,7 +266,7 @@ class Yanhh3dProvider : MainAPI() {
             }
         } catch (e: Exception) {
             Log.e(TAG, "### LỖI NGHIÊM TRỌNG ### trong extractLinksFromPage cho URL: $url. Message: ${e.message}", e)
-            throw e // Ném lại lỗi để Cloudstream biết và xử lý
+            throw e
         }
     }
 
