@@ -9,9 +9,12 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
+import android.util.Log
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerialName
 
 class Phevkl : MainAPI() {
-    override var mainUrl = "https://phevkl.fit"
+    override var mainUrl = "https://phevkl.gg"
     override var name = "Phevkl"
     override val hasMainPage = true
     override var lang = "vi"
@@ -20,6 +23,30 @@ class Phevkl : MainAPI() {
     override val supportedTypes = setOf(
         TvType.NSFW
     )
+
+    override suspend fun onInit() {
+        // Hàm này chỉ chạy 1 lần khi provider khởi động
+        try {
+            // Gửi request với allowRedirects = false để bắt header "Location"
+            val response = app.get(mainUrl, allowRedirects = false, timeout = 10) 
+            
+            // Kiểm tra nếu status code là 3xx (redirect)
+            if (response.code in 300..399) {
+                // Lấy URL mới từ header "Location"
+                response.headers["Location"]?.let { newUrl ->
+                    if (newUrl.isNotBlank()) {
+                        // Cập nhật lại mainUrl bằng URL mới nhất
+                        // .removeSuffix("/") để xóa dấu / ở cuối nếu có
+                        mainUrl = newUrl.removeSuffix("/")
+                        Log.d(name, "Domain đã được cập nhật thành: $mainUrl")
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            // Nếu có lỗi (VD: mất mạng, domain chết hẳn), bỏ qua và dùng URL cũ
+            Log.e(name, "Không thể kiểm tra redirect cho domain. Lỗi: ${e.message}")
+        }
+    }
 
     override val mainPage = mainPageOf(
         "$mainUrl/page/%d/" to "Mới cập nhật",
@@ -92,9 +119,16 @@ class Phevkl : MainAPI() {
     
     private data class AjaxResponse(val type: String?, val player: String?)
 
-    // Thêm 2 data class này vào bên trong class Phevkl
-private data class BloggerStream(val play_url: String?, val format_id: Int?)
-private data class BloggerConfig(val streams: List<BloggerStream>?)
+    @Serializable
+private data class BloggerStream(
+    @SerialName("play_url") val playUrl: String?,
+    @SerialName("format_id") val formatId: Int?
+)
+
+@Serializable
+private data class BloggerConfig(
+    @SerialName("streams") val streams: List<BloggerStream>?
+)
 
 override suspend fun loadLinks(
     data: String,
@@ -103,12 +137,10 @@ override suspend fun loadLinks(
     callback: (ExtractorLink) -> Unit
 ): Boolean {
     val doc = app.get(data).document
-    // Id của player vẫn lấy như cũ
     val postId = doc.selectFirst("#haun-player")?.attr("data-id") ?: return false
     val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
     var foundLinks = false
 
-    // Lặp qua các server (thường là 2)
     for (server in 1..2) {
         try {
             val response = app.post(
@@ -116,7 +148,7 @@ override suspend fun loadLinks(
                 headers = mapOf(
                     "Referer" to data,
                     "X-Requested-With" to "XMLHttpRequest",
-                    "Origin" to mainUrl // Thêm Origin header để an toàn hơn
+                    "Origin" to mainUrl
                 ),
                 data = mapOf(
                     "action" to "load_server",
@@ -125,25 +157,22 @@ override suspend fun loadLinks(
                 )
             ).parsedSafe<AjaxResponse>()
 
-            // Lấy src của iframe từ response
             val iframeSrc = response?.player?.let {
                 Jsoup.parse(it).selectFirst("iframe")?.attr("src")
             } ?: continue
 
-            // ==================================================================
-            // LOGIC MỚI: Xử lý nguồn từ Blogger/Blogspot
-            // ==================================================================
             if (iframeSrc.contains("blogger.com") || iframeSrc.contains("blogspot.com")) {
                 val iframeContent = app.get(iframeSrc, referer = data).text
-                // Dùng Regex để lấy JSON config từ trong script
                 val videoConfigJson = Regex("""var VIDEO_CONFIG = (\{.*?\})""").find(iframeContent)?.groupValues?.get(1)
                 
                 if (videoConfigJson != null) {
+                    // SỬA LỖI Ở ĐÂY: Thêm "app." vào trước parseJson
                     val config = app.parseJson<BloggerConfig>(videoConfigJson)
+
+                    // Sử dụng các thuộc tính đã được đổi tên thành camelCase
                     config.streams?.forEach { stream ->
-                        val videoUrl = stream.play_url ?: return@forEach
-                        // Xác định chất lượng dựa trên format_id
-                        val quality = when (stream.format_id) {
+                        val videoUrl = stream.playUrl ?: return@forEach // Sửa: play_url -> playUrl
+                        val quality = when (stream.formatId) { // Sửa: format_id -> formatId
                             18 -> "SD - 360p"
                             22 -> "HD - 720p"
                             else -> "Unknown"
@@ -154,17 +183,14 @@ override suspend fun loadLinks(
                                 source = "Blogger - $quality",
                                 url = videoUrl,
                                 referer = "https://www.blogger.com/",
-                                quality = Qualities.Unknown.value, // Hoặc có thể parse quality string
-                                type = ExtractorLinkType.VIDEO
+                                quality = Qualities.Unknown.value,
+                                type = ExtractorLinkType.MP4
                             )
                         )
                         foundLinks = true
                     }
                 }
             } 
-            // ==================================================================
-            // LOGIC CŨ: Vẫn giữ lại cho cnd-videosvn.online
-            // ==================================================================
             else if (iframeSrc.contains("cnd-videosvn.online")) {
                 val videoId = iframeSrc.substringAfterLast('/')
                 val m3u8Url = "https://oss1.dlhls.xyz/videos/$videoId/main.m3u8"
@@ -182,7 +208,7 @@ override suspend fun loadLinks(
             }
 
         } catch (e: Exception) {
-            // Bỏ qua lỗi và thử server tiếp theo
+            // Ignore and try next server
         }
     }
     return foundLinks
