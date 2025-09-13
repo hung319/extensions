@@ -284,29 +284,31 @@ class Yanhh3dProvider : MainAPI() {
     callback: (ExtractorLink) -> Unit
 ) {
     val dailymotionLinks = mutableListOf<ExtractorLink>()
+    // Thu thập tất cả các link mà loadExtractor tìm được
     loadExtractor(url, mainUrl, subtitleCallback) { link ->
         dailymotionLinks.add(link)
     }
 
     if (dailymotionLinks.isNotEmpty()) {
+        // Lựa chọn link tốt nhất từ danh sách
         val preferredLink = dailymotionLinks.find { it.name.equals("Dailymotion", ignoreCase = true) }
         val bestQualityLink = dailymotionLinks.maxByOrNull { it.quality }
         val chosenLink = preferredLink ?: bestQualityLink ?: dailymotionLinks.first()
         
-        // === SỬA LỖI TẠI ĐÂY ===
-        // Vì ExtractorLink là class thường, ta phải tạo một đối tượng mới
-        // và sao chép thủ công các thuộc tính từ đối tượng cũ.
+        // Tạo một đối tượng ExtractorLink MỚI, sao chép các thuộc tính từ link đã chọn
+        // và ghi đè lại thuộc tính 'name' (vì 'name' là val và không thể thay đổi trực tiếp).
         val finalLink = ExtractorLink(
             source = chosenLink.source,
-            name = name, // Ghi đè tên mới vào đây
+            name = name, // <-- Ghi đè tên mới
             url = chosenLink.url,
             referer = chosenLink.referer,
             quality = chosenLink.quality,
-            type = chosenLink.type,
             headers = chosenLink.headers,
-            isM3u8 = chosenLink.isM3u8
+            extractorData = chosenLink.extractorData, // <-- Thêm thuộc tính này cho khớp với class
+            type = chosenLink.type
         )
         
+        // Gửi đi link cuối cùng đã được xử lý
         callback(finalLink)
     }
   }
