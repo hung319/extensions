@@ -159,34 +159,24 @@ class Phevkl : MainAPI() {
                 } ?: continue
 
                 if (iframeSrc.contains("blogger.com") || iframeSrc.contains("blogspot.com")) {
-                    val iframeContent = app.get(iframeSrc, referer = data).text
-                    val videoConfigJson = Regex("""var VIDEO_CONFIG = (\{.*?\})""").find(iframeContent)?.groupValues?.get(1)
-                    
-                    if (videoConfigJson != null) {
-                        // SỬA LỖI CUỐI CÙNG: Gọi qua AppUtils
-                        val config = AppUtils.parseJson<BloggerConfig>(videoConfigJson)
-                        config.streams?.forEach { stream ->
-                            val videoUrl = stream.playUrl ?: return@forEach
-                            val quality = when (stream.formatId) {
-                                18 -> "SD - 360p"
-                                22 -> "HD - 720p"
-                                else -> "Unknown"
-                            }
-                            callback.invoke(
-                                ExtractorLink(
-                                    name = this.name,
-                                    source = "Blogger - $quality",
-                                    url = videoUrl,
-                                    referer = "https://www.blogger.com/",
-                                    quality = Qualities.Unknown.value,
-                                    type = ExtractorLinkType.VIDEO
-                                )
-                            )
-                            foundLinks = true
-                        }
-                    }
+                    // ==================================================================
+                    // THAY ĐỔI THEO YÊU CẦU:
+                    // Đưa thẳng link iframe cho player tự xử lý
+                    // ==================================================================
+                    callback.invoke(
+                        ExtractorLink(
+                            name = this.name,
+                            source = "Server 1", // Tên server
+                            url = iframeSrc,               // Link iframe cần giải mã
+                            referer = data,                // Trang web chứa iframe
+                            quality = Qualities.Unknown.value,
+                            type = ExtractorLinkType.VIDEO // Báo cho player biết cần dùng extractor
+                        )
+                    )
+                    foundLinks = true
                 } 
                 else if (iframeSrc.contains("cnd-videosvn.online")) {
+                    // Server 2 giữ nguyên vì đã là link trực tiếp
                     val videoId = iframeSrc.substringAfterLast('/')
                     val m3u8Url = "https://oss1.dlhls.xyz/videos/$videoId/main.m3u8"
                     callback.invoke(
@@ -202,7 +192,7 @@ class Phevkl : MainAPI() {
                     foundLinks = true
                 }
             } catch (e: Exception) {
-                // Bỏ qua lỗi và thử server tiếp theo
+                // Bỏ qua và thử server tiếp theo
             }
         }
         return foundLinks
