@@ -116,6 +116,12 @@ class JAVtifulProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // == FIX ==
+        // Bước 1: "Làm ấm" session bằng cách truy cập trang chủ trước.
+        // Điều này đảm bảo chúng ta có cookie hợp lệ trước khi thực hiện các request quan trọng.
+        app.get(mainUrl, referer = mainUrl)
+
+        // Bước 2: Lấy HTML của trang video để lấy token. Cookie từ bước 1 sẽ tự động được gửi kèm.
         val document = app.get(data).document
 
         val videoId = Regex("""/video/(\d+)/""").find(data)?.groupValues?.get(1) ?: return false
@@ -130,16 +136,15 @@ class JAVtifulProvider : MainAPI() {
             .addFormDataPart("token", token)
             .build()
 
-        // CHANGE: Add more headers to avoid "Access Denied"
         val headers = mapOf(
             "Referer" to data,
             "Origin" to mainUrl,
             "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36",
             "X-Requested-With" to "XMLHttpRequest"
         )
-
+        
+        // Bước 3: Gửi request POST. Cookie hợp lệ sẽ tiếp tục được gửi kèm.
         val ajaxResponse = app.post(postUrl, headers = headers, requestBody = requestBody).text
-        // This line will no longer fail if the request is successful
         val cdnResponse = parseJson<CdnResponse>(ajaxResponse)
         val videoUrl = cdnResponse.playlists ?: return false
 
