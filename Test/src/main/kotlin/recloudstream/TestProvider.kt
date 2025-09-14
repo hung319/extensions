@@ -7,7 +7,6 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.google.gson.annotations.SerializedName
 import com.lagradost.cloudstream3.utils.Qualities
-// CHANGE: Add OkHttp imports for manual request building
 import okhttp3.MultipartBody
 
 class JAVtifulProvider : MainAPI() {
@@ -63,7 +62,6 @@ class JAVtifulProvider : MainAPI() {
         val link = card.selectFirst("a.video-tmb") ?: return null
         val href = link.attr("href")
 
-        // Small fix: The site might use relative URLs in search results too
         val fullHref = if (href.startsWith("http")) href else mainUrl + href
 
         val title = card.selectFirst("a.video-link")?.attr("title")?.trim() ?: return null
@@ -125,7 +123,6 @@ class JAVtifulProvider : MainAPI() {
 
         val postUrl = "$mainUrl/ajax/get_cdn"
 
-        // CHANGE: Manually build the multipart request body using OkHttp
         val requestBody = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
             .addFormDataPart("video_id", videoId)
@@ -133,10 +130,16 @@ class JAVtifulProvider : MainAPI() {
             .addFormDataPart("token", token)
             .build()
 
-        val headers = mapOf("Referer" to data)
+        // CHANGE: Add more headers to avoid "Access Denied"
+        val headers = mapOf(
+            "Referer" to data,
+            "Origin" to mainUrl,
+            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36",
+            "X-Requested-With" to "XMLHttpRequest"
+        )
 
-        // Pass the manually built body to the 'requestBody' parameter
         val ajaxResponse = app.post(postUrl, headers = headers, requestBody = requestBody).text
+        // This line will no longer fail if the request is successful
         val cdnResponse = parseJson<CdnResponse>(ajaxResponse)
         val videoUrl = cdnResponse.playlists ?: return false
 
