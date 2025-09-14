@@ -140,6 +140,8 @@ class Phevkl : MainAPI() {
 
         for (server in 1..2) {
             try {
+                Log.d(name, "Đang thử server: $server")
+
                 val response = app.post(
                     ajaxUrl,
                     headers = mapOf(
@@ -158,25 +160,23 @@ class Phevkl : MainAPI() {
                     Jsoup.parse(it).selectFirst("iframe")?.attr("src")
                 } ?: continue
 
+                Log.d(name, "Server $server - Iframe SRC: $iframeSrc")
+
                 if (iframeSrc.contains("blogger.com") || iframeSrc.contains("blogspot.com")) {
                     // ==================================================================
-                    // THAY ĐỔI THEO YÊU CẦU:
-                    // Đưa thẳng link iframe cho player tự xử lý
+                    // THAY ĐỔI LỚN Ở ĐÂY
+                    // Thay vì cào trang, ta dùng thẳng extractor của CloudStream
                     // ==================================================================
-                    callback.invoke(
-                        ExtractorLink(
-                            name = this.name,
-                            source = "Server 1", // Tên server
-                            url = iframeSrc,               // Link iframe cần giải mã
-                            referer = data,                // Trang web chứa iframe
-                            quality = Qualities.Unknown.value,
-                            type = ExtractorLinkType.VIDEO // Báo cho player biết cần dùng extractor
-                        )
-                    )
-                    foundLinks = true
+                    val found = loadExtractor(iframeSrc, data, subtitleCallback, callback)
+                    if (found) {
+                        Log.d(name, "Server 1: loadExtractor thành công.")
+                        foundLinks = true
+                    } else {
+                        Log.e(name, "Server 1 LỖI: loadExtractor thất bại cho URL: $iframeSrc")
+                    }
                 } 
                 else if (iframeSrc.contains("cnd-videosvn.online")) {
-                    // Server 2 giữ nguyên vì đã là link trực tiếp
+                    // Server 2 vẫn hoạt động tốt, giữ nguyên
                     val videoId = iframeSrc.substringAfterLast('/')
                     val m3u8Url = "https://oss1.dlhls.xyz/videos/$videoId/main.m3u8"
                     callback.invoke(
@@ -192,7 +192,7 @@ class Phevkl : MainAPI() {
                     foundLinks = true
                 }
             } catch (e: Exception) {
-                // Bỏ qua và thử server tiếp theo
+                Log.e(name, "Lỗi khi xử lý server $server: ${e.message}")
             }
         }
         return foundLinks
