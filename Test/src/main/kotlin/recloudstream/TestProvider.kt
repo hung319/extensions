@@ -116,11 +116,15 @@ class JAVtifulProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Lấy HTML của trang video để lấy token, request này cũng giúp thiết lập cookie cần thiết.
-        val document = app.get(data).document
+        // == FIX ==
+        // Lấy nội dung trang dưới dạng Text thô để xử lý nhanh nhất có thể.
+        val responseText = app.get(data).text
 
+        // Dùng Regex để trích xuất token ngay lập tức, nhanh hơn nhiều so với Jsoup.
+        val token = Regex("""id="token_full"\s+data-csrf-token="([^"]+)"""").find(responseText)?.groupValues?.get(1) ?: return false
+
+        // videoId vẫn có thể lấy bằng Regex từ URL `data`
         val videoId = Regex("""/video/(\d+)/""").find(data)?.groupValues?.get(1) ?: return false
-        val token = document.selectFirst("#token_full")?.attr("data-csrf-token") ?: return false
 
         val postUrl = "$mainUrl/ajax/get_cdn"
 
@@ -131,8 +135,6 @@ class JAVtifulProvider : MainAPI() {
             .addFormDataPart("token", token)
             .build()
             
-        // == FIX ==
-        // Cung cấp bộ headers đầy đủ để vượt qua kiểm tra của server
         val headers = mapOf(
             "Accept" to "*/*",
             "Accept-Language" to "vi-VN,vi;q=0.9",
