@@ -1,7 +1,7 @@
 // Info: Plugin for phevkl.gg
 // Author: Coder
 // Date: 2025-07-26
-// Version: 3.1 (Final API-specific fixes)
+// Version: 4.0 (Definitive fix based on API documentation)
 
 package recloudstream
 
@@ -14,7 +14,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
 
 class Phevkl : MainAPI() {
-    override var mainUrl = "https://phevkl.gg" // URL gốc, sẽ được tự động cập nhật
+    override var mainUrl = "https://phevkl.gg"
     override var name = "Phevkl"
     override val hasMainPage = true
     override var lang = "vi"
@@ -23,7 +23,6 @@ class Phevkl : MainAPI() {
         TvType.NSFW
     )
 
-    // Cơ chế tự động cập nhật URL, chỉ chạy một lần
     private var urlChecked = false
 
     private suspend fun checkUrlRedirect() {
@@ -107,7 +106,6 @@ class Phevkl : MainAPI() {
             it.toSearchResult()
         }
         
-        // SỬA LỖI: Thêm lại tham số dataUrl
         return newMovieLoadResponse(title, url, TvType.NSFW, dataUrl = url) {
             this.posterUrl = poster
             this.plot = description
@@ -165,8 +163,8 @@ class Phevkl : MainAPI() {
                     val videoConfigJson = Regex("""var VIDEO_CONFIG = (\{.*?\})""").find(iframeContent)?.groupValues?.get(1)
                     
                     if (videoConfigJson != null) {
-                        // SỬA LỖI: Thêm "app." vào trước parseJson
-                        val config = app.parseJson<BloggerConfig>(videoConfigJson)
+                        // SỬA LỖI CUỐI CÙNG: Gọi qua AppUtils
+                        val config = AppUtils.parseJson<BloggerConfig>(videoConfigJson)
                         config.streams?.forEach { stream ->
                             val videoUrl = stream.playUrl ?: return@forEach
                             val quality = when (stream.formatId) {
