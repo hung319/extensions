@@ -1,7 +1,7 @@
 // Info: Plugin for phevkl.gg
 // Author: Coder
 // Date: 2025-07-26
-// Version: 3.0 (Added redirect handler & fixed link extractors)
+// Version: 3.1 (Final API-specific fixes)
 
 package recloudstream
 
@@ -29,14 +29,10 @@ class Phevkl : MainAPI() {
     private suspend fun checkUrlRedirect() {
         if (urlChecked) return
         try {
-            // Gửi request với allowRedirects = false để bắt header "Location"
             val response = app.get(this.mainUrl, allowRedirects = false, timeout = 10)
-            
-            // Kiểm tra nếu status code là 3xx (redirect)
             if (response.code in 300..399) {
                 response.headers["Location"]?.let { newUrl ->
                     if (newUrl.isNotBlank()) {
-                        // Cập nhật lại mainUrl bằng URL mới nhất
                         this.mainUrl = newUrl.removeSuffix("/")
                         Log.d(name, "Domain đã được cập nhật thành: ${this.mainUrl}")
                     }
@@ -45,7 +41,7 @@ class Phevkl : MainAPI() {
         } catch (e: Exception) {
             Log.e(name, "Không thể kiểm tra redirect. Lỗi: ${e.message}")
         } finally {
-            urlChecked = true // Đánh dấu đã check, dù thành công hay thất bại
+            urlChecked = true
         }
     }
 
@@ -62,7 +58,7 @@ class Phevkl : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        checkUrlRedirect() // Tự động kiểm tra và cập nhật URL
+        checkUrlRedirect()
         val url = if (request.data.contains("%d")) {
             request.data.format(page)
         } else {
@@ -92,7 +88,7 @@ class Phevkl : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        checkUrlRedirect() // Tự động kiểm tra và cập nhật URL
+        checkUrlRedirect()
         val searchUrl = "$mainUrl/?s=$query"
         val document = app.get(searchUrl).document
         return document.select("div#video-list div.video-item").mapNotNull {
@@ -101,7 +97,7 @@ class Phevkl : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        checkUrlRedirect() // Tự động kiểm tra và cập nhật URL
+        checkUrlRedirect()
         val document = app.get(url).document
         val title = document.selectFirst("h1#page-title")?.text()?.trim() ?: return null
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
@@ -111,8 +107,8 @@ class Phevkl : MainAPI() {
             it.toSearchResult()
         }
         
-        // Chữ ký hàm đã được sửa lại (xóa tham số thứ tư)
-        return newMovieLoadResponse(title, url, TvType.NSFW) {
+        // SỬA LỖI: Thêm lại tham số dataUrl
+        return newMovieLoadResponse(title, url, TvType.NSFW, dataUrl = url) {
             this.posterUrl = poster
             this.plot = description
             this.tags = tags
@@ -120,7 +116,6 @@ class Phevkl : MainAPI() {
         }
     }
     
-    // Các data class cần thiết cho việc parse JSON
     private data class AjaxResponse(val type: String?, val player: String?)
 
     @Serializable
@@ -170,6 +165,7 @@ class Phevkl : MainAPI() {
                     val videoConfigJson = Regex("""var VIDEO_CONFIG = (\{.*?\})""").find(iframeContent)?.groupValues?.get(1)
                     
                     if (videoConfigJson != null) {
+                        // SỬA LỖI: Thêm "app." vào trước parseJson
                         val config = app.parseJson<BloggerConfig>(videoConfigJson)
                         config.streams?.forEach { stream ->
                             val videoUrl = stream.playUrl ?: return@forEach
