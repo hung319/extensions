@@ -116,12 +116,7 @@ class JAVtifulProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // == FIX ==
-        // Bước 1: "Làm ấm" session bằng cách truy cập trang chủ trước.
-        // Điều này đảm bảo chúng ta có cookie hợp lệ trước khi thực hiện các request quan trọng.
-        app.get(mainUrl, referer = mainUrl)
-
-        // Bước 2: Lấy HTML của trang video để lấy token. Cookie từ bước 1 sẽ tự động được gửi kèm.
+        // Lấy HTML của trang video để lấy token, request này cũng giúp thiết lập cookie cần thiết.
         val document = app.get(data).document
 
         val videoId = Regex("""/video/(\d+)/""").find(data)?.groupValues?.get(1) ?: return false
@@ -135,15 +130,24 @@ class JAVtifulProvider : MainAPI() {
             .addFormDataPart("pid_c", "")
             .addFormDataPart("token", token)
             .build()
-
+            
+        // == FIX ==
+        // Cung cấp bộ headers đầy đủ để vượt qua kiểm tra của server
         val headers = mapOf(
-            "Referer" to data,
+            "Accept" to "*/*",
+            "Accept-Language" to "vi-VN,vi;q=0.9",
             "Origin" to mainUrl,
-            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36",
+            "Referer" to data,
+            "Sec-Ch-Ua" to "\"Chromium\";v=\"127\", \"Not)A;Brand\";v=\"99\", \"Microsoft Edge Simulate\";v=\"127\", \"Lemur\";v=\"127\"",
+            "Sec-Ch-Ua-Mobile" to "?1",
+            "Sec-Ch-Ua-Platform" to "\"Android\"",
+            "Sec-Fetch-Dest" to "empty",
+            "Sec-Fetch-Mode" to "cors",
+            "Sec-Fetch-Site" to "same-origin",
+            "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36",
             "X-Requested-With" to "XMLHttpRequest"
         )
         
-        // Bước 3: Gửi request POST. Cookie hợp lệ sẽ tiếp tục được gửi kèm.
         val ajaxResponse = app.post(postUrl, headers = headers, requestBody = requestBody).text
         val cdnResponse = parseJson<CdnResponse>(ajaxResponse)
         val videoUrl = cdnResponse.playlists ?: return false
