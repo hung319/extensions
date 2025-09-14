@@ -1,42 +1,51 @@
-package recloudstream
-
 // Info: Plugin for phevkl.gg
 // Author: Coder
 // Date: 2025-07-26
-// Version: 2.7 (Added Recommendations & Reordered Main Page)
+// Version: 3.0 (Added redirect handler & fixed link extractors)
 
+package recloudstream
+
+import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
-import android.util.Log
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
 
 class Phevkl : MainAPI() {
-    override var mainUrl = "https://phevkl.gg"
+    override var mainUrl = "https://phevkl.gg" // URL gốc, sẽ được tự động cập nhật
     override var name = "Phevkl"
     override val hasMainPage = true
     override var lang = "vi"
     override val hasDownloadSupport = true
-    
     override val supportedTypes = setOf(
         TvType.NSFW
     )
 
-    override suspend fun init() {
+    // Cơ chế tự động cập nhật URL, chỉ chạy một lần
+    private var urlChecked = false
+
+    private suspend fun checkUrlRedirect() {
+        if (urlChecked) return
         try {
-            val response = app.get(mainUrl, allowRedirects = false, timeout = 10)
+            // Gửi request với allowRedirects = false để bắt header "Location"
+            val response = app.get(this.mainUrl, allowRedirects = false, timeout = 10)
+            
+            // Kiểm tra nếu status code là 3xx (redirect)
             if (response.code in 300..399) {
                 response.headers["Location"]?.let { newUrl ->
                     if (newUrl.isNotBlank()) {
-                        mainUrl = newUrl.removeSuffix("/")
-                        Log.d(name, "Domain đã được cập nhật thành: $mainUrl")
+                        // Cập nhật lại mainUrl bằng URL mới nhất
+                        this.mainUrl = newUrl.removeSuffix("/")
+                        Log.d(name, "Domain đã được cập nhật thành: ${this.mainUrl}")
                     }
                 }
             }
         } catch (e: Exception) {
-            Log.e(name, "Không thể kiểm tra redirect cho domain. Lỗi: ${e.message}")
+            Log.e(name, "Không thể kiểm tra redirect. Lỗi: ${e.message}")
+        } finally {
+            urlChecked = true // Đánh dấu đã check, dù thành công hay thất bại
         }
     }
 
@@ -53,6 +62,7 @@ class Phevkl : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
+        checkUrlRedirect() // Tự động kiểm tra và cập nhật URL
         val url = if (request.data.contains("%d")) {
             request.data.format(page)
         } else {
@@ -82,6 +92,7 @@ class Phevkl : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
+        checkUrlRedirect() // Tự động kiểm tra và cập nhật URL
         val searchUrl = "$mainUrl/?s=$query"
         val document = app.get(searchUrl).document
         return document.select("div#video-list div.video-item").mapNotNull {
@@ -90,18 +101,18 @@ class Phevkl : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        checkUrlRedirect() // Tự động kiểm tra và cập nhật URL
         val document = app.get(url).document
         val title = document.selectFirst("h1#page-title")?.text()?.trim() ?: return null
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         val description = document.selectFirst("div.video-description")?.text()?.trim()
         val tags = document.select("div.actress-tag a").map { it.text() }
-        
-        // Extract recommendations from the "Phim sex liên quan" section
         val recommendations = document.select("div#video-list div.video-item").mapNotNull {
             it.toSearchResult()
         }
         
-        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
+        // Chữ ký hàm đã được sửa lại (xóa tham số thứ tư)
+        return newMovieLoadResponse(title, url, TvType.NSFW) {
             this.posterUrl = poster
             this.plot = description
             this.tags = tags
@@ -109,26 +120,26 @@ class Phevkl : MainAPI() {
         }
     }
     
+    // Các data class cần thiết cho việc parse JSON
     private data class AjaxResponse(val type: String?, val player: String?)
 
     @Serializable
-private data class BloggerStream(
-    @SerialName("play_url") val playUrl: String?,
-    @SerialName("format_id") val formatId: Int?
-)
+    private data class BloggerStream(
+        @SerialName("play_url") val playUrl: String?,
+        @SerialName("format_id") val formatId: Int?
+    )
 
-@Serializable
-private data class BloggerConfig(
-    @SerialName("streams") val streams: List<BloggerStream>?
-)
+    @Serializable
+    private data class BloggerConfig(
+        @SerialName("streams") val streams: List<BloggerStream>?
+    )
 
-override suspend fun loadLinks(
+    override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // ... (phần code lấy postId vẫn giữ nguyên)
         val doc = app.get(data).document
         val postId = doc.selectFirst("#haun-player")?.attr("data-id") ?: return false
         val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
@@ -137,7 +148,17 @@ override suspend fun loadLinks(
         for (server in 1..2) {
             try {
                 val response = app.post(
-                    // ... (phần post request giữ nguyên)
+                    ajaxUrl,
+                    headers = mapOf(
+                        "Referer" to data,
+                        "X-Requested-With" to "XMLHttpRequest",
+                        "Origin" to mainUrl
+                    ),
+                    data = mapOf(
+                        "action" to "load_server",
+                        "id" to postId,
+                        "server" to server.toString()
+                    )
                 ).parsedSafe<AjaxResponse>()
 
                 val iframeSrc = response?.player?.let {
@@ -149,9 +170,7 @@ override suspend fun loadLinks(
                     val videoConfigJson = Regex("""var VIDEO_CONFIG = (\{.*?\})""").find(iframeContent)?.groupValues?.get(1)
                     
                     if (videoConfigJson != null) {
-                        // SỬA LỖI 2: Thêm "app." vào trước parseJson
                         val config = app.parseJson<BloggerConfig>(videoConfigJson)
-
                         config.streams?.forEach { stream ->
                             val videoUrl = stream.playUrl ?: return@forEach
                             val quality = when (stream.formatId) {
@@ -166,8 +185,7 @@ override suspend fun loadLinks(
                                     url = videoUrl,
                                     referer = "https://www.blogger.com/",
                                     quality = Qualities.Unknown.value,
-                                    // SỬA LỖI 3: Dùng .VIDEO thay vì .MP4
-                                    type = ExtractorLinkType.VIDEO 
+                                    type = ExtractorLinkType.VIDEO
                                 )
                             )
                             foundLinks = true
@@ -175,11 +193,22 @@ override suspend fun loadLinks(
                     }
                 } 
                 else if (iframeSrc.contains("cnd-videosvn.online")) {
-                    // ... (phần code này đã đúng, giữ nguyên)
+                    val videoId = iframeSrc.substringAfterLast('/')
+                    val m3u8Url = "https://oss1.dlhls.xyz/videos/$videoId/main.m3u8"
+                    callback.invoke(
+                        ExtractorLink(
+                            this.name,
+                            "Server 2",
+                            m3u8Url,
+                            mainUrl,
+                            Qualities.Unknown.value,
+                            type = ExtractorLinkType.M3U8
+                        )
+                    )
+                    foundLinks = true
                 }
-
             } catch (e: Exception) {
-                // Ignore and try next server
+                // Bỏ qua lỗi và thử server tiếp theo
             }
         }
         return foundLinks
