@@ -7,13 +7,15 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.google.gson.annotations.SerializedName
 import com.lagradost.cloudstream3.utils.Qualities
+// CHANGE: Add OkHttp imports for manual request building
+import okhttp3.MultipartBody
 
 class JAVtifulProvider : MainAPI() {
     override var mainUrl = "https://javtiful.com"
     override var name = "JAVtiful"
     override val hasMainPage = true
     override var lang = "vi"
-    
+
     override val supportedTypes = setOf(
         TvType.NSFW
     )
@@ -36,14 +38,14 @@ class JAVtifulProvider : MainAPI() {
             "${mainUrl}${request.data}"
         }
         val document = app.get(url).document
-        
+
         val home = document.select("div.col.pb-3").mapNotNull {
             it.toSearchResult()
         }
 
         return newHomePageResponse(request.name, home, hasNext = home.isNotEmpty())
     }
-    
+
     private fun getSearchQuality(qualityString: String?): SearchQuality? {
         return when (qualityString?.uppercase()) {
             "HD", "FHD" -> SearchQuality.HD
@@ -53,7 +55,7 @@ class JAVtifulProvider : MainAPI() {
 
     private fun Element.toSearchResult(): SearchResponse? {
         val card = this.selectFirst("div.card") ?: return null
-        
+
         if (card.selectFirst("span.badge:contains(SPONSOR)") != null) {
             return null
         }
@@ -61,16 +63,15 @@ class JAVtifulProvider : MainAPI() {
         val link = card.selectFirst("a.video-tmb") ?: return null
         val href = link.attr("href")
 
-        if (!href.contains("javtiful.com")) return null
-
-        val fullHref = if (href.startsWith("http")) href else "$mainUrl$href"
+        // Small fix: The site might use relative URLs in search results too
+        val fullHref = if (href.startsWith("http")) href else mainUrl + href
 
         val title = card.selectFirst("a.video-link")?.attr("title")?.trim() ?: return null
         var posterUrl = card.selectFirst("img.lazy")?.attr("data-src")
         if (posterUrl?.startsWith("/") == true) {
             posterUrl = "$mainUrl$posterUrl"
         }
-        
+
         val qualityString = card.selectFirst("span.label-hd")?.text()?.trim()
 
         return newMovieSearchResponse(title, fullHref, TvType.NSFW) {
@@ -82,7 +83,7 @@ class JAVtifulProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/search/videos?search_query=$query"
         val document = app.get(url).document
-        
+
         return document.select("div.col.pb-3").mapNotNull {
             it.toSearchResult()
         }
@@ -93,7 +94,6 @@ class JAVtifulProvider : MainAPI() {
 
         val title = document.selectFirst("h1.video-title")?.text()?.trim() ?: return null
 
-        // IMPROVEMENT: Lấy poster trực tiếp từ videoId, ổn định hơn là parse từ meta tag
         val videoId = Regex("""/video/(\d+)/""").find(url)?.groupValues?.get(1)
         val posterUrl = videoId?.let { "$mainUrl/media/videos/tmb1/$it/1.jpg" }
 
@@ -107,7 +107,7 @@ class JAVtifulProvider : MainAPI() {
             this.recommendations = recommendations
         }
     }
-    
+
     private data class CdnResponse(
         @SerializedName("playlists") val playlists: String?
     )
@@ -124,32 +124,33 @@ class JAVtifulProvider : MainAPI() {
         val token = document.selectFirst("#token_full")?.attr("data-csrf-token") ?: return false
 
         val postUrl = "$mainUrl/ajax/get_cdn"
-        
-        // CHANGE: Chuyển sang multipart/form-data để khớp với yêu cầu mới của trang web
-        val files = listOf(
-            FileContainer("video_id", videoId),
-            FileContainer("pid_c", ""),
-            FileContainer("token", token)
-        )
-        
+
+        // CHANGE: Manually build the multipart request body using OkHttp
+        val requestBody = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("video_id", videoId)
+            .addFormDataPart("pid_c", "")
+            .addFormDataPart("token", token)
+            .build()
+
         val headers = mapOf("Referer" to data)
 
-        // Thay đổi key 'data' thành 'files' để gửi request multipart
-        val ajaxResponse = app.post(postUrl, headers = headers, files = files).text
+        // Pass the manually built body to the 'requestBody' parameter
+        val ajaxResponse = app.post(postUrl, headers = headers, requestBody = requestBody).text
         val cdnResponse = parseJson<CdnResponse>(ajaxResponse)
         val videoUrl = cdnResponse.playlists ?: return false
 
         callback.invoke(
             ExtractorLink(
                 source = this.name,
-                name = "Javtiful S3 CDN", // Tên nguồn rõ ràng hơn
+                name = "Javtiful S3 CDN",
                 url = videoUrl,
                 referer = mainUrl,
                 quality = Qualities.Unknown.value,
-                type = ExtractorLinkType.VIDEO // Link là MP4 trực tiếp
+                type = ExtractorLinkType.VIDEO
             )
         )
-        
+
         return true
     }
 }
