@@ -1,170 +1,307 @@
-package recloudstream
+package recloudstream 
 
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import org.jsoup.nodes.Element
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import com.google.gson.annotations.SerializedName
 import com.lagradost.cloudstream3.utils.Qualities
-import okhttp3.MultipartBody
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import org.jsoup.Jsoup
+import com.lagradost.cloudstream3.newEpisode
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 
-class JAVtifulProvider : MainAPI() {
-    override var mainUrl = "https://javtiful.com"
-    override var name = "JAVtiful"
-    override val hasMainPage = true
+// =================== V1 API DATA CLASSES ===================
+
+// Dùng chung cho Homepage và Search
+data class OphimApiV1ListResponse(
+    @JsonProperty("data") val data: OphimApiV1ListData
+)
+
+data class OphimApiV1ListData(
+    @JsonProperty("items") val items: List<OphimApiV1Item>,
+    @JsonProperty("APP_DOMAIN_CDN_IMAGE") val appDomainCdnImage: String?
+)
+
+data class OphimApiV1Item(
+    @JsonProperty("name") val name: String,
+    @JsonProperty("slug") val slug: String,
+    @JsonProperty("poster_url") val posterUrl: String?,
+    @JsonProperty("thumb_url") val thumbUrl: String?,
+    @JsonProperty("year") val year: Int?,
+    @JsonProperty("type") val type: String?, // "single", "series", "hoathinh"
+    @JsonProperty("tmdb") val tmdb: TmdbInfoV1?
+)
+
+data class TmdbInfoV1(
+    @JsonProperty("type") val type: String? // "movie", "tv"
+)
+
+// Dùng cho trang chi tiết (Load)
+data class OphimDetailV1Response(
+    @JsonProperty("data") val data: OphimDetailV1Data
+)
+
+data class OphimDetailV1Data(
+    @JsonProperty("item") val item: OphimDetailV1Item,
+    @JsonProperty("APP_DOMAIN_CDN_IMAGE") val appDomainCdnImage: String?
+)
+
+data class OphimDetailV1Item(
+    @JsonProperty("name") val name: String,
+    @JsonProperty("content") val content: String?,
+    @JsonProperty("poster_url") val posterUrl: String?,
+    @JsonProperty("thumb_url") val thumbUrl: String?,
+    @JsonProperty("year") val year: Int?,
+    @JsonProperty("actor") val actor: List<String>?,
+    @JsonProperty("category") val category: List<CategoryV1>?,
+    @JsonProperty("country") val country: List<CountryV1>?,
+    @JsonProperty("type") val type: String,
+    @JsonProperty("episodes") val episodes: List<EpisodeServerV1>?
+)
+
+data class CategoryV1(
+    @JsonProperty("name") val name: String
+)
+
+data class CountryV1(
+    @JsonProperty("name") val name: String
+)
+
+data class EpisodeServerV1(
+    @JsonProperty("server_name") val serverName: String,
+    @JsonProperty("server_data") val serverData: List<EpisodeDataV1>
+)
+
+data class EpisodeDataV1(
+    @JsonProperty("name") val name: String,
+    @JsonProperty("slug") val slug: String,
+    @JsonProperty("link_m3u8") val linkM3u8: String
+)
+
+// =================== PROVIDER CLASS ===================
+
+class OphimProvider : MainAPI() {
+    override var mainUrl = "https://ophim1.com"
+    override var name = "Ophim"
     override var lang = "vi"
+    override val hasMainPage = true
+    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime)
 
-    override val supportedTypes = setOf(
-        TvType.NSFW
-    )
+    private fun getUrl(path: String): String {
+        return if (path.startsWith("http")) path else "$mainUrl/$path"
+    }
+    
+    private fun getTvTypeV1(item: OphimApiV1Item): TvType {
+        return when (item.type) {
+            "hoathinh" -> TvType.Anime
+            "series" -> TvType.TvSeries
+            "single" -> TvType.Movie
+            else -> {
+                if (item.tmdb?.type == "tv") TvType.TvSeries else TvType.Movie
+            }
+        }
+    }
 
     override val mainPage = mainPageOf(
-        "/censored" to "Censored Mới Nhất",
-        "/uncensored" to "Uncensored Mới Nhất",
-        "/trending" to "Thịnh Hành",
-        "/videos/sort=most_viewed" to "Xem Nhiều Nhất",
-        "/videos/sort=top_rated" to "Xếp Hạng Cao",
+        "/v1/api/danh-sach/phim-moi?page=" to "Phim Mới Cập Nhật",
+        "/v1/api/danh-sach/phim-bo?page=" to "Phim Bộ",
+        "/v1/api/danh-sach/phim-le?page=" to "Phim Lẻ",
     )
 
-    override suspend fun getMainPage(
-        page: Int,
-        request: MainPageRequest
-    ): HomePageResponse {
-        val url = if (page > 1) {
-            "${mainUrl}${request.data}?page=$page"
-        } else {
-            "${mainUrl}${request.data}"
-        }
-        val document = app.get(url).document
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val url = getUrl(request.data + page)
+        val response = app.get(url).text
+        val apiResponse = parseJson<OphimApiV1ListResponse>(response)
+        
+        val imageBasePath = apiResponse.data.appDomainCdnImage ?: "https://img.ophim.live"
 
-        val home = document.select("div.col.pb-3").mapNotNull {
-            it.toSearchResult()
+        val results = apiResponse.data.items.mapNotNull { item ->
+            val imageUrl = if (item.thumbUrl.isNullOrBlank()) item.posterUrl else item.thumbUrl
+            
+            newMovieSearchResponse(
+                name = item.name,
+                url = getUrl("phim/${item.slug}"),
+                type = getTvTypeV1(item),
+            ) {
+                this.posterUrl = "$imageBasePath/${imageUrl?.trim()}"
+                this.year = item.year
+            }
         }
-
-        return newHomePageResponse(request.name, home, hasNext = home.isNotEmpty())
+        return newHomePageResponse(request.name, results, hasNext = results.isNotEmpty())
     }
-
-    private fun getSearchQuality(qualityString: String?): SearchQuality? {
-        return when (qualityString?.uppercase()) {
-            "HD", "FHD" -> SearchQuality.HD
-            else -> null
-        }
-    }
-
-    private fun Element.toSearchResult(): SearchResponse? {
-        val card = this.selectFirst("div.card") ?: return null
-
-        if (card.selectFirst("span.badge:contains(SPONSOR)") != null) {
-            return null
-        }
-
-        val link = card.selectFirst("a.video-tmb") ?: return null
-        val href = link.attr("href")
-
-        val fullHref = if (href.startsWith("http")) href else mainUrl + href
-
-        val title = card.selectFirst("a.video-link")?.attr("title")?.trim() ?: return null
-        var posterUrl = card.selectFirst("img.lazy")?.attr("data-src")
-        if (posterUrl?.startsWith("/") == true) {
-            posterUrl = "$mainUrl$posterUrl"
-        }
-
-        val qualityString = card.selectFirst("span.label-hd")?.text()?.trim()
-
-        return newMovieSearchResponse(title, fullHref, TvType.NSFW) {
-            this.posterUrl = posterUrl
-            this.quality = getSearchQuality(qualityString)
-        }
-    }
-
+    
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$mainUrl/search/videos?search_query=$query"
-        val document = app.get(url).document
+        val searchUrl = "$mainUrl/v1/api/tim-kiem?keyword=$query"
+        
+        return try {
+            val response = app.get(searchUrl).text
+            val apiResponse = parseJson<OphimApiV1ListResponse>(response)
+            
+            val imageBasePath = apiResponse.data.appDomainCdnImage ?: "https://img.ophim.live"
 
-        return document.select("div.col.pb-3").mapNotNull {
-            it.toSearchResult()
+            apiResponse.data.items.map { item ->
+                val imageUrl = if (item.posterUrl.isNullOrBlank()) item.thumbUrl else item.posterUrl
+                
+                newMovieSearchResponse(
+                    name = item.name,
+                    url = getUrl("phim/${item.slug}"),
+                    type = getTvTypeV1(item)
+                ) {
+                    this.posterUrl = "$imageBasePath/${imageUrl?.trim()}"
+                    this.year = item.year
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            emptyList()
         }
     }
 
-    override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url).document
+    // [CHANGED] Viết lại hoàn toàn hàm load để dùng API V1
+    override suspend fun load(url: String): LoadResponse {
+        // Lấy slug từ url đầu vào (ví dụ: "https://ophim1.com/phim/avengers-hoi-ket" -> "avengers-hoi-ket")
+        val slug = url.substringAfterLast("/").trim()
+        val apiUrl = "$mainUrl/v1/api/phim/$slug"
+        
+        val response = app.get(apiUrl).text
+        val apiResponse = parseJson<OphimDetailV1Response>(response)
+        val movieInfo = apiResponse.data.item
+        val imageBasePath = apiResponse.data.appDomainCdnImage ?: "https://img.ophim.live"
+        
+        val title = movieInfo.name
+        val posterUrl = "$imageBasePath/${movieInfo.posterUrl?.trim()}"
+        val backgroundPosterUrl = "$imageBasePath/${movieInfo.thumbUrl?.trim()}"
+        val year = movieInfo.year
+        val plot = Jsoup.parse(movieInfo.content ?: "").text()
+        val tags = movieInfo.category?.map { it.name }
+        val actors = movieInfo.actor?.mapNotNull { if(it.isNotBlank()) ActorData(Actor(it)) else null }
 
-        val title = document.selectFirst("h1.video-title")?.text()?.trim() ?: return null
+        return when (movieInfo.type) {
+            "hoathinh", "series" -> {
+                val episodes = movieInfo.episodes?.flatMap { server ->
+                    server.serverData.map { episodeData ->
+                        newEpisode(data = episodeData.link_m3u8) {
+                            this.name = episodeData.name.ifBlank { "Tập ${server.serverData.indexOf(episodeData) + 1}" }
+                            this.episode = episodeData.name.filter { it.isDigit() }.toIntOrNull()
+                        }
+                    }
+                } ?: emptyList()
 
-        val videoId = Regex("""/video/(\d+)/""").find(url)?.groupValues?.get(1)
-        val posterUrl = videoId?.let { "$mainUrl/media/videos/tmb1/$it/1.jpg" }
-
-        val tags = document.select(".video-details__item:contains(từ khóa) a").map { it.text() }
-        val recommendations = document.select("#related-actress .splide__slide, .related-videos .col").mapNotNull { it.toSearchResult() }
-
-        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
-            this.posterUrl = posterUrl
-            this.plot = null
-            this.tags = tags
-            this.recommendations = recommendations
+                val tvType = if (movieInfo.type == "hoathinh") TvType.Anime else TvType.TvSeries
+                newTvSeriesLoadResponse(title, url, tvType, episodes) {
+                    this.posterUrl = posterUrl
+                    this.backgroundPosterUrl = backgroundPosterUrl
+                    this.year = year
+                    this.plot = plot
+                    this.tags = tags
+                    this.actors = actors
+                }
+            }
+            // Mặc định là phim lẻ
+            else -> { 
+                newMovieLoadResponse(
+                    title,
+                    url,
+                    TvType.Movie,
+                    // Lấy link m3u8 từ server đầu tiên, tập đầu tiên
+                    movieInfo.episodes?.firstOrNull()?.serverData?.firstOrNull()?.link_m3u8
+                ) {
+                    this.posterUrl = posterUrl
+                    this.backgroundPosterUrl = backgroundPosterUrl
+                    this.year = year
+                    this.plot = plot
+                    this.tags = tags
+                    this.actors = actors
+                }
+            }
         }
     }
-
-    private data class CdnResponse(
-        @SerializedName("playlists") val playlists: String?
-    )
-
+    
+    // Giữ nguyên hàm loadLinks vì logic xử lý M3U8 không phụ thuộc vào API
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // == FIX ==
-        // Lấy nội dung trang dưới dạng Text thô để xử lý nhanh nhất có thể.
-        val responseText = app.get(data).text
+        if (!data.startsWith("http")) return false
 
-        // Dùng Regex để trích xuất token ngay lập tức, nhanh hơn nhiều so với Jsoup.
-        val token = Regex("""id="token_full"\s+data-csrf-token="([^"]+)"""").find(responseText)?.groupValues?.get(1) ?: return false
+        try {
+            val headers = mapOf("Referer" to mainUrl)
 
-        // videoId vẫn có thể lấy bằng Regex từ URL `data`
-        val videoId = Regex("""/video/(\d+)/""").find(data)?.groupValues?.get(1) ?: return false
+            // BƯỚC 1: LẤY URL FILE CON TỪ FILE MASTER
+            val masterM3u8Url = data
+            val masterM3u8Content = app.get(masterM3u8Url, headers = headers).text
+            val variantPath = masterM3u8Content.lines().lastOrNull { it.isNotBlank() && !it.startsWith("#") }
+                ?: throw Exception("Không tìm thấy luồng M3U8 con")
+            val masterPathBase = masterM3u8Url.substringBeforeLast("/")
+            val variantM3u8Url = if (variantPath.startsWith("http")) variantPath else "$masterPathBase/$variantPath"
 
-        val postUrl = "$mainUrl/ajax/get_cdn"
+            // BƯỚC 2: TẢI FILE CON, LỌC QUẢNG CÁO VÀ TẠO LINK TUYỆT ĐỐI
+            val finalPlaylistContent = app.get(variantM3u8Url, headers = headers).text
+            val variantPathBase = variantM3u8Url.substringBeforeLast("/")
 
-        val requestBody = MultipartBody.Builder()
-            .setType(MultipartBody.FORM)
-            .addFormDataPart("video_id", videoId)
-            .addFormDataPart("pid_c", "")
-            .addFormDataPart("token", token)
-            .build()
+            val cleanedLines = mutableListOf<String>()
+            val lines = finalPlaylistContent.lines()
+            var i = 0
+            while (i < lines.size) {
+                val line = lines[i].trim()
+                if (line == "#EXT-X-DISCONTINUITY") {
+                    val nextInfoLine = lines.getOrNull(i + 1)?.trim()
+                    val isAdPattern = nextInfoLine != null && (
+                            nextInfoLine.startsWith("#EXTINF:3.92") || 
+                            nextInfoLine.startsWith("#EXTINF:0.76")
+                        )
+                    if (isAdPattern) {
+                        var adBlockEndIndex = i
+                        for (j in (i + 1) until lines.size) {
+                            if (lines[j].trim() == "#EXT-X-DISCONTINUITY") {
+                                adBlockEndIndex = j
+                                break
+                            }
+                            adBlockEndIndex = j 
+                        }
+                        i = adBlockEndIndex + 1
+                        continue 
+                    }
+                }
+                if (line.isNotEmpty()) {
+                    if (!line.startsWith("#")) {
+                        cleanedLines.add("$variantPathBase/$line")
+                    } else {
+                        cleanedLines.add(line)
+                    }
+                }
+                i++
+            }
+            val cleanedM3u8 = cleanedLines.joinToString("\n")
+
+            // BƯỚC 3: UPLOAD VÀ TRẢ VỀ LINK
+            val requestBody = cleanedM3u8.toRequestBody("application/vnd.apple.mpegurl".toMediaType())
+            val finalUrl = app.post(
+                "https://pacebin.onrender.com/ophim.m3u8",
+                requestBody = requestBody
+            ).text.trim()
+
+            if (!finalUrl.startsWith("http")) throw Exception("Tải M3U8 lên dịch vụ paste thất bại")
             
-        val headers = mapOf(
-            "Accept" to "*/*",
-            "Accept-Language" to "vi-VN,vi;q=0.9",
-            "Origin" to mainUrl,
-            "Referer" to data,
-            "Sec-Ch-Ua" to "\"Chromium\";v=\"127\", \"Not)A;Brand\";v=\"99\", \"Microsoft Edge Simulate\";v=\"127\", \"Lemur\";v=\"127\"",
-            "Sec-Ch-Ua-Mobile" to "?1",
-            "Sec-Ch-Ua-Platform" to "\"Android\"",
-            "Sec-Fetch-Dest" to "empty",
-            "Sec-Fetch-Mode" to "cors",
-            "Sec-Fetch-Site" to "same-origin",
-            "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36",
-            "X-Requested-With" to "XMLHttpRequest"
-        )
-        
-        val ajaxResponse = app.post(postUrl, headers = headers, requestBody = requestBody).text
-        val cdnResponse = parseJson<CdnResponse>(ajaxResponse)
-        val videoUrl = cdnResponse.playlists ?: return false
-
-        callback.invoke(
-            ExtractorLink(
-                source = this.name,
-                name = "Javtiful S3 CDN",
-                url = videoUrl,
-                referer = mainUrl,
-                quality = Qualities.Unknown.value,
-                type = ExtractorLinkType.VIDEO
+            callback.invoke(
+                newExtractorLink(
+                    source = this.name,
+                    name = this.name,
+                    url = finalUrl,
+                    type = ExtractorLinkType.M3U8,
+                ) {
+                    this.referer = mainUrl
+                    this.quality = Qualities.Unknown.value
+                }
             )
-        )
-
-        return true
+            return true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return false
+        }
     }
 }
