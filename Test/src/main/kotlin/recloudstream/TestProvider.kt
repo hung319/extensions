@@ -159,9 +159,7 @@ class OphimProvider : MainAPI() {
         }
     }
 
-    // [CHANGED] Viết lại hoàn toàn hàm load để dùng API V1
     override suspend fun load(url: String): LoadResponse {
-        // Lấy slug từ url đầu vào (ví dụ: "https://ophim1.com/phim/avengers-hoi-ket" -> "avengers-hoi-ket")
         val slug = url.substringAfterLast("/").trim()
         val apiUrl = "$mainUrl/v1/api/phim/$slug"
         
@@ -182,7 +180,8 @@ class OphimProvider : MainAPI() {
             "hoathinh", "series" -> {
                 val episodes = movieInfo.episodes?.flatMap { server ->
                     server.serverData.map { episodeData ->
-                        newEpisode(data = episodeData.link_m3u8) {
+                        // [FIXED] Sửa link_m3u8 -> linkM3u8
+                        newEpisode(data = episodeData.linkM3u8) {
                             this.name = episodeData.name.ifBlank { "Tập ${server.serverData.indexOf(episodeData) + 1}" }
                             this.episode = episodeData.name.filter { it.isDigit() }.toIntOrNull()
                         }
@@ -199,14 +198,13 @@ class OphimProvider : MainAPI() {
                     this.actors = actors
                 }
             }
-            // Mặc định là phim lẻ
             else -> { 
                 newMovieLoadResponse(
                     title,
                     url,
                     TvType.Movie,
-                    // Lấy link m3u8 từ server đầu tiên, tập đầu tiên
-                    movieInfo.episodes?.firstOrNull()?.serverData?.firstOrNull()?.link_m3u8
+                    // [FIXED] Sửa link_m3u8 -> linkM3u8
+                    movieInfo.episodes?.firstOrNull()?.serverData?.firstOrNull()?.linkM3u8
                 ) {
                     this.posterUrl = posterUrl
                     this.backgroundPosterUrl = backgroundPosterUrl
@@ -219,7 +217,6 @@ class OphimProvider : MainAPI() {
         }
     }
     
-    // Giữ nguyên hàm loadLinks vì logic xử lý M3U8 không phụ thuộc vào API
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -230,16 +227,14 @@ class OphimProvider : MainAPI() {
 
         try {
             val headers = mapOf("Referer" to mainUrl)
-
-            // BƯỚC 1: LẤY URL FILE CON TỪ FILE MASTER
+            
             val masterM3u8Url = data
             val masterM3u8Content = app.get(masterM3u8Url, headers = headers).text
             val variantPath = masterM3u8Content.lines().lastOrNull { it.isNotBlank() && !it.startsWith("#") }
                 ?: throw Exception("Không tìm thấy luồng M3U8 con")
             val masterPathBase = masterM3u8Url.substringBeforeLast("/")
             val variantM3u8Url = if (variantPath.startsWith("http")) variantPath else "$masterPathBase/$variantPath"
-
-            // BƯỚC 2: TẢI FILE CON, LỌC QUẢNG CÁO VÀ TẠO LINK TUYỆT ĐỐI
+            
             val finalPlaylistContent = app.get(variantM3u8Url, headers = headers).text
             val variantPathBase = variantM3u8Url.substringBeforeLast("/")
 
@@ -277,8 +272,7 @@ class OphimProvider : MainAPI() {
                 i++
             }
             val cleanedM3u8 = cleanedLines.joinToString("\n")
-
-            // BƯỚC 3: UPLOAD VÀ TRẢ VỀ LINK
+            
             val requestBody = cleanedM3u8.toRequestBody("application/vnd.apple.mpegurl".toMediaType())
             val finalUrl = app.post(
                 "https://pacebin.onrender.com/ophim.m3u8",
