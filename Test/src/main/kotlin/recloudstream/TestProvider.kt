@@ -92,7 +92,7 @@ class OphimProvider : MainAPI() {
     private fun getUrl(path: String): String {
         return if (path.startsWith("http")) path else "$mainUrl/$path"
     }
-    
+
     private fun getTvTypeV1(item: OphimApiV1Item): TvType {
         return when (item.type) {
             "hoathinh" -> TvType.Anime
@@ -114,12 +114,13 @@ class OphimProvider : MainAPI() {
         val url = getUrl(request.data + page)
         val response = app.get(url).text
         val apiResponse = parseJson<OphimApiV1ListResponse>(response)
-        
-        val imageBasePath = apiResponse.data.appDomainCdnImage ?: "https://img.ophim.live"
+
+        // [FIXED] Bổ sung /uploads/movies/ vào đường dẫn ảnh
+        val imageBasePath = (apiResponse.data.appDomainCdnImage ?: "https://img.ophim.live") + "/uploads/movies"
 
         val results = apiResponse.data.items.mapNotNull { item ->
             val imageUrl = if (item.thumbUrl.isNullOrBlank()) item.posterUrl else item.thumbUrl
-            
+
             newMovieSearchResponse(
                 name = item.name,
                 url = getUrl("phim/${item.slug}"),
@@ -131,19 +132,20 @@ class OphimProvider : MainAPI() {
         }
         return newHomePageResponse(request.name, results, hasNext = results.isNotEmpty())
     }
-    
+
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/v1/api/tim-kiem?keyword=$query"
-        
+
         return try {
             val response = app.get(searchUrl).text
             val apiResponse = parseJson<OphimApiV1ListResponse>(response)
-            
-            val imageBasePath = apiResponse.data.appDomainCdnImage ?: "https://img.ophim.live"
+
+            // [FIXED] Bổ sung /uploads/movies/ vào đường dẫn ảnh
+            val imageBasePath = (apiResponse.data.appDomainCdnImage ?: "https://img.ophim.live") + "/uploads/movies"
 
             apiResponse.data.items.map { item ->
                 val imageUrl = if (item.posterUrl.isNullOrBlank()) item.thumbUrl else item.posterUrl
-                
+
                 newMovieSearchResponse(
                     name = item.name,
                     url = getUrl("phim/${item.slug}"),
@@ -162,12 +164,14 @@ class OphimProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse {
         val slug = url.substringAfterLast("/").trim()
         val apiUrl = "$mainUrl/v1/api/phim/$slug"
-        
+
         val response = app.get(apiUrl).text
         val apiResponse = parseJson<OphimDetailV1Response>(response)
         val movieInfo = apiResponse.data.item
-        val imageBasePath = apiResponse.data.appDomainCdnImage ?: "https://img.ophim.live"
-        
+
+        // [FIXED] Bổ sung /uploads/movies/ vào đường dẫn ảnh
+        val imageBasePath = (apiResponse.data.appDomainCdnImage ?: "https://img.ophim.live") + "/uploads/movies"
+
         val title = movieInfo.name
         val posterUrl = "$imageBasePath/${movieInfo.posterUrl?.trim()}"
         val backgroundPosterUrl = "$imageBasePath/${movieInfo.thumbUrl?.trim()}"
@@ -180,10 +184,16 @@ class OphimProvider : MainAPI() {
             "hoathinh", "series" -> {
                 val episodes = movieInfo.episodes?.flatMap { server ->
                     server.serverData.map { episodeData ->
-                        // [FIXED] Sửa link_m3u8 -> linkM3u8
                         newEpisode(data = episodeData.linkM3u8) {
-                            this.name = episodeData.name.ifBlank { "Tập ${server.serverData.indexOf(episodeData) + 1}" }
-                            this.episode = episodeData.name.filter { it.isDigit() }.toIntOrNull()
+                            val rawName = episodeData.name.trim()
+                            
+                            // [CHANGED] Thêm logic định dạng tên tập
+                            this.name = if (rawName.toIntOrNull() != null) {
+                                "Tập $rawName"
+                            } else {
+                                rawName
+                            }
+                            this.episode = rawName.filter { it.isDigit() }.toIntOrNull()
                         }
                     }
                 } ?: emptyList()
@@ -198,12 +208,11 @@ class OphimProvider : MainAPI() {
                     this.actors = actors
                 }
             }
-            else -> { 
+            else -> {
                 newMovieLoadResponse(
                     title,
                     url,
                     TvType.Movie,
-                    // [FIXED] Sửa link_m3u8 -> linkM3u8
                     movieInfo.episodes?.firstOrNull()?.serverData?.firstOrNull()?.linkM3u8
                 ) {
                     this.posterUrl = posterUrl
@@ -216,7 +225,7 @@ class OphimProvider : MainAPI() {
             }
         }
     }
-    
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -227,14 +236,14 @@ class OphimProvider : MainAPI() {
 
         try {
             val headers = mapOf("Referer" to mainUrl)
-            
+
             val masterM3u8Url = data
             val masterM3u8Content = app.get(masterM3u8Url, headers = headers).text
             val variantPath = masterM3u8Content.lines().lastOrNull { it.isNotBlank() && !it.startsWith("#") }
                 ?: throw Exception("Không tìm thấy luồng M3U8 con")
             val masterPathBase = masterM3u8Url.substringBeforeLast("/")
             val variantM3u8Url = if (variantPath.startsWith("http")) variantPath else "$masterPathBase/$variantPath"
-            
+
             val finalPlaylistContent = app.get(variantM3u8Url, headers = headers).text
             val variantPathBase = variantM3u8Url.substringBeforeLast("/")
 
@@ -246,7 +255,7 @@ class OphimProvider : MainAPI() {
                 if (line == "#EXT-X-DISCONTINUITY") {
                     val nextInfoLine = lines.getOrNull(i + 1)?.trim()
                     val isAdPattern = nextInfoLine != null && (
-                            nextInfoLine.startsWith("#EXTINF:3.92") || 
+                            nextInfoLine.startsWith("#EXTINF:3.92") ||
                             nextInfoLine.startsWith("#EXTINF:0.76")
                         )
                     if (isAdPattern) {
@@ -256,10 +265,10 @@ class OphimProvider : MainAPI() {
                                 adBlockEndIndex = j
                                 break
                             }
-                            adBlockEndIndex = j 
+                            adBlockEndIndex = j
                         }
                         i = adBlockEndIndex + 1
-                        continue 
+                        continue
                     }
                 }
                 if (line.isNotEmpty()) {
@@ -272,7 +281,7 @@ class OphimProvider : MainAPI() {
                 i++
             }
             val cleanedM3u8 = cleanedLines.joinToString("\n")
-            
+
             val requestBody = cleanedM3u8.toRequestBody("application/vnd.apple.mpegurl".toMediaType())
             val finalUrl = app.post(
                 "https://pacebin.onrender.com/ophim.m3u8",
@@ -280,7 +289,7 @@ class OphimProvider : MainAPI() {
             ).text.trim()
 
             if (!finalUrl.startsWith("http")) throw Exception("Tải M3U8 lên dịch vụ paste thất bại")
-            
+
             callback.invoke(
                 newExtractorLink(
                     source = this.name,
