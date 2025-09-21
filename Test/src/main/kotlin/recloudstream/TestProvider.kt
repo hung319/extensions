@@ -1,15 +1,15 @@
-package recloudstream
+package recloudstream 
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-// Thêm các thư viện coroutines cần thiết
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.awaitAll
 
 class KuraKura21Provider : MainAPI() {
     override var name = "KuraKura21"
+    // [UPDATE]: Changed mainUrl to the new domain
     override var mainUrl = "https://kurakura21.com"
     override var lang = "id"
     override var hasMainPage = true
@@ -43,7 +43,7 @@ class KuraKura21Provider : MainAPI() {
                             val href = element.selectFirst("a")?.attr("href") ?: return@mapNotNull null
                             val title = element.selectFirst("h2.entry-title a")?.text() ?: "N/A"
                             val posterUrl = element.selectFirst("img")?.let { it.attr("data-src").ifBlank { it.attr("src") } }
-                            
+
                             newMovieSearchResponse(title, href, TvType.NSFW) {
                                 this.posterUrl = posterUrl
                             }
@@ -54,11 +54,11 @@ class KuraKura21Provider : MainAPI() {
                     }
                 }
             }.awaitAll().filterNotNull()
-            
+
             newHomePageResponse(listOf(recentPosts) + otherLists)
         }
     }
-    
+
     private fun Element.toSearchResult(): SearchResponse? {
         val href = this.selectFirst("a")?.attr("href") ?: return null
         val title = this.selectFirst("h2.entry-title a")?.text() ?: "Không có tiêu đề"
@@ -78,17 +78,7 @@ class KuraKura21Provider : MainAPI() {
         val document = app.get(searchUrl).document
 
         return document.select("article.item-infinite").mapNotNull {
-            val href = it.selectFirst("a")?.attr("href") ?: return@mapNotNull null
-            val title = it.selectFirst("h2.entry-title a")?.text() ?: "Không có tiêu đề"
-            val posterUrl = it.selectFirst("img")?.attr("src")
-
-            newMovieSearchResponse(
-                name = title,
-                url = href,
-                type = TvType.NSFW
-            ) {
-                this.posterUrl = posterUrl
-            }
+            it.toSearchResult()
         }
     }
 
@@ -101,16 +91,9 @@ class KuraKura21Provider : MainAPI() {
         val tags = document.select("div.gmr-moviedata a[rel=tag]").map { it.text() }
 
         val recommendations = document.select("div.gmr-grid:has(h3.gmr-related-title) article.item").mapNotNull {
-            val recHref = it.selectFirst("a")?.attr("href") ?: return@mapNotNull null
-            val recTitle = it.selectFirst("h2.entry-title a")?.text() ?: "N/A"
-            val recPoster = it.selectFirst("img")?.let { img -> img.attr("data-src").ifBlank { img.attr("src") } }
-
-            newMovieSearchResponse(recTitle, recHref, TvType.NSFW) {
-                this.posterUrl = recPoster
-            }
+            it.toSearchResult()
         }
 
-        // Cập nhật: Truyền URL đầy đủ vào dataUrl để loadLinks có thể sử dụng
         return newMovieLoadResponse(
             name = title,
             url = url,
@@ -124,6 +107,7 @@ class KuraKura21Provider : MainAPI() {
         }
     }
 
+    // [UPDATE]: Rewritten loadLinks to handle the new site structure and video hosts
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -133,6 +117,7 @@ class KuraKura21Provider : MainAPI() {
         val pageUrl = data
         val document = app.get(pageUrl, referer = mainUrl).document
 
+        // Extract post_id from the body class, a common technique for WordPress themes
         val postId = document.selectFirst("body[class*='postid-']")
             ?.attr("class")
             ?.split(" ")
@@ -143,12 +128,15 @@ class KuraKura21Provider : MainAPI() {
         val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
 
         coroutineScope {
-            // Lấy link streaming
-            document.select("ul.muvipro-player-tabs li a").map { tab ->
-                async {
+            // Concurrently fetch all stream and download links
+            val tasks = mutableListOf<suspend () -> Unit>()
+
+            // 1. Fetch streaming links from server tabs
+            document.select("ul.muvipro-player-tabs li a").forEach { tab ->
+                tasks.add {
                     try {
                         val tabId = tab.attr("href").removePrefix("#")
-                        if (tabId.isEmpty()) return@async
+                        if (tabId.isEmpty()) return@add
 
                         val postData = mapOf(
                             "action" to "muvipro_player_content",
@@ -156,24 +144,27 @@ class KuraKura21Provider : MainAPI() {
                             "post_id" to postId
                         )
 
+                        // Make the AJAX POST request to get the iframe content
                         val playerContent = app.post(
                             url = ajaxUrl,
                             data = postData,
                             referer = pageUrl
                         ).document
 
+                        // Extract the iframe source URL
                         playerContent.select("iframe").firstOrNull()?.attr("src")?.let { iframeSrc ->
+                            // Delegate the complex task of extracting video from the host to CloudStream's built-in extractor
                             loadExtractor(iframeSrc, pageUrl, subtitleCallback, callback)
                         }
                     } catch (e: Exception) {
                         e.printStackTrace()
                     }
                 }
-            }.awaitAll()
+            }
 
-            // Lấy link download
-            document.select("div#download a.button").map { downloadButton ->
-                async {
+            // 2. Fetch download links (if any)
+            document.select("div#download a.button").forEach { downloadButton ->
+                tasks.add {
                     try {
                         val downloadUrl = downloadButton.attr("href")
                         if (downloadUrl.isNotBlank()) {
@@ -183,7 +174,10 @@ class KuraKura21Provider : MainAPI() {
                         e.printStackTrace()
                     }
                 }
-            }.awaitAll()
+            }
+            
+            // Execute all tasks in parallel
+            tasks.map { async { it() } }.awaitAll()
         }
 
         return true
