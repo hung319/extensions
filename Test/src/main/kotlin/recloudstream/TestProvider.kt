@@ -10,7 +10,7 @@ import kotlinx.coroutines.awaitAll
 
 class KuraKura21Provider : MainAPI() {
     override var name = "KuraKura21"
-    override var mainUrl = "https://kurakura21.it.com"
+    override var mainUrl = "https://kurakura21.com"
     override var lang = "id"
     override var hasMainPage = true
 
