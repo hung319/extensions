@@ -1,4 +1,4 @@
-package recloudstream 
+package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
@@ -6,10 +6,10 @@ import org.jsoup.nodes.Element
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.awaitAll
+import java.math.BigInteger
 
 class KuraKura21Provider : MainAPI() {
     override var name = "KuraKura21"
-    // [UPDATE]: Changed mainUrl to the new domain
     override var mainUrl = "https://kurakura21.com"
     override var lang = "id"
     override var hasMainPage = true
@@ -17,6 +17,37 @@ class KuraKura21Provider : MainAPI() {
     override val supportedTypes = setOf(
         TvType.NSFW
     )
+
+    // Helper function to de-obfuscate P.A.C.K.E.R. protected JavaScript.
+    // This is crucial for Server 2.
+    private fun unpackJsAndGetM3u8(script: String): String? {
+        try {
+            val regex = Regex("""eval\(function\(p,a,c,k,e,d\)\{.*?\}\((.*?),(\d+),(\d+),'(.*?)'\.split\('\|'\)\)\)""")
+            val match = regex.find(script) ?: return null
+
+            var payload = match.groupValues[1]
+            val radix = match.groupValues[2].toInt()
+            var count = match.groupValues[3].toInt()
+            val dictionary = match.groupValues[4].split("|")
+
+            fun toBase(n: Int): String {
+                return BigInteger.valueOf(n.toLong()).toString(radix)
+            }
+            
+            while (count-- > 0) {
+                if (count < dictionary.size && dictionary[count].isNotEmpty()) {
+                    val key = toBase(count)
+                    payload = payload.replace(Regex("\\b$key\\b"), dictionary[count])
+                }
+            }
+            
+            val m3u8Regex = Regex("""(https?://[^\s'"]+master\.m3u8[^\s'"]*)""")
+            return m3u8Regex.find(payload)?.groupValues?.get(1)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return null
+        }
+    }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val pages = listOf(
@@ -106,8 +137,7 @@ class KuraKura21Provider : MainAPI() {
             this.recommendations = recommendations
         }
     }
-
-    // [UPDATE]: Rewritten loadLinks to handle the new site structure and video hosts
+    
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -117,7 +147,6 @@ class KuraKura21Provider : MainAPI() {
         val pageUrl = data
         val document = app.get(pageUrl, referer = mainUrl).document
 
-        // Extract post_id from the body class, a common technique for WordPress themes
         val postId = document.selectFirst("body[class*='postid-']")
             ?.attr("class")
             ?.split(" ")
@@ -126,60 +155,44 @@ class KuraKura21Provider : MainAPI() {
             ?: return false
 
         val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
+        val serverTabId = "p2" 
 
-        coroutineScope {
-            // Concurrently fetch all stream and download links
-            val tasks = mutableListOf<suspend () -> Unit>()
-
-            // 1. Fetch streaming links from server tabs
-            document.select("ul.muvipro-player-tabs li a").forEach { tab ->
-                tasks.add {
-                    try {
-                        val tabId = tab.attr("href").removePrefix("#")
-                        if (tabId.isEmpty()) return@add
-
-                        val postData = mapOf(
-                            "action" to "muvipro_player_content",
-                            "tab" to tabId,
-                            "post_id" to postId
-                        )
-
-                        // Make the AJAX POST request to get the iframe content
-                        val playerContent = app.post(
-                            url = ajaxUrl,
-                            data = postData,
-                            referer = pageUrl
-                        ).document
-
-                        // Extract the iframe source URL
-                        playerContent.select("iframe").firstOrNull()?.attr("src")?.let { iframeSrc ->
-                            // Delegate the complex task of extracting video from the host to CloudStream's built-in extractor
-                            loadExtractor(iframeSrc, pageUrl, subtitleCallback, callback)
-                        }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
-                }
-            }
-
-            // 2. Fetch download links (if any)
-            document.select("div#download a.button").forEach { downloadButton ->
-                tasks.add {
-                    try {
-                        val downloadUrl = downloadButton.attr("href")
-                        if (downloadUrl.isNotBlank()) {
-                            loadExtractor(downloadUrl, pageUrl, subtitleCallback, callback)
-                        }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
-                }
-            }
+        try {
+            val postData = mapOf(
+                "action" to "muvipro_player_content",
+                "tab" to serverTabId,
+                "post_id" to postId
+            )
             
-            // Execute all tasks in parallel
-            tasks.map { async { it() } }.awaitAll()
-        }
+            val playerContent = app.post(
+                url = ajaxUrl,
+                data = postData,
+                referer = pageUrl
+            ).document
 
+            val iframeSrc = playerContent.select("iframe").firstOrNull()?.attr("src") ?: return true
+            
+            val iframeHtml = app.get(iframeSrc, referer = pageUrl).text
+            
+            val m3u8Url = unpackJsAndGetM3u8(iframeHtml)
+            
+            if (m3u8Url != null) {
+                // [UPDATE]: Using the new ExtractorLink structure with ExtractorLinkType
+                callback.invoke(
+                    ExtractorLink(
+                        source = this.name,
+                        name = "Server 2",
+                        url = m3u8Url,
+                        referer = iframeSrc,
+                        quality = Qualities.Unknown.value,
+                        type = ExtractorLinkType.M3U8
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        
         return true
     }
 }
