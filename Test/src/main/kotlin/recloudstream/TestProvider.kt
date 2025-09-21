@@ -19,7 +19,7 @@ class KuraKura21Provider : MainAPI() {
     )
 
     // Helper function to de-obfuscate P.A.C.K.E.R. protected JavaScript.
-    // This is crucial for Server 2.
+    // This works for both Server 1 (FileMoon) and Server 2 (Go-TV).
     private fun unpackJsAndGetM3u8(script: String): String? {
         try {
             val regex = Regex("""eval\(function\(p,a,c,k,e,d\)\{.*?\}\((.*?),(\d+),(\d+),'(.*?)'\.split\('\|'\)\)\)""")
@@ -138,6 +138,7 @@ class KuraKura21Provider : MainAPI() {
         }
     }
     
+    // [UPDATE]: Re-implemented to handle multiple servers concurrently, including the nested iframe pattern of Server 1.
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -155,42 +156,66 @@ class KuraKura21Provider : MainAPI() {
             ?: return false
 
         val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
-        val serverTabId = "p2" 
 
-        try {
-            val postData = mapOf(
-                "action" to "muvipro_player_content",
-                "tab" to serverTabId,
-                "post_id" to postId
-            )
-            
-            val playerContent = app.post(
-                url = ajaxUrl,
-                data = postData,
-                referer = pageUrl
-            ).document
+        coroutineScope {
+            document.select("ul.muvipro-player-tabs li a").map { tab ->
+                async {
+                    try {
+                        val tabId = tab.attr("href").removePrefix("#")
+                        if (tabId.isEmpty()) return@async
 
-            val iframeSrc = playerContent.select("iframe").firstOrNull()?.attr("src") ?: return true
-            
-            val iframeHtml = app.get(iframeSrc, referer = pageUrl).text
-            
-            val m3u8Url = unpackJsAndGetM3u8(iframeHtml)
-            
-            if (m3u8Url != null) {
-                // [UPDATE]: Using the new ExtractorLink structure with ExtractorLinkType
-                callback.invoke(
-                    ExtractorLink(
-                        source = this.name,
-                        name = "Server 2",
-                        url = m3u8Url,
-                        referer = iframeSrc,
-                        quality = Qualities.Unknown.value,
-                        type = ExtractorLinkType.M3U8
-                    )
-                )
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
+                        val postData = mapOf(
+                            "action" to "muvipro_player_content",
+                            "tab" to tabId,
+                            "post_id" to postId
+                        )
+                        
+                        val playerContent = app.post(
+                            url = ajaxUrl,
+                            data = postData,
+                            referer = pageUrl
+                        ).document
+
+                        val firstIframeSrc = playerContent.selectFirst("iframe")?.attr("src") ?: return@async
+                        
+                        // Fetch the first iframe's content
+                        val firstIframeDoc = app.get(firstIframeSrc, referer = pageUrl).document
+                        
+                        // Check for a nested iframe (like in Server 1)
+                        val nestedIframeSrc = firstIframeDoc.selectFirst("iframe")?.attr("src")
+
+                        val finalHtml: String
+                        val finalReferer: String
+
+                        if (nestedIframeSrc != null) {
+                            // It's a wrapped player (Server 1), follow the nested iframe
+                            finalHtml = app.get(nestedIframeSrc, referer = firstIframeSrc).text
+                            finalReferer = nestedIframeSrc
+                        } else {
+                            // It's a direct player (Server 2), use the first iframe's content
+                            finalHtml = firstIframeDoc.html()
+                            finalReferer = firstIframeSrc
+                        }
+
+                        val m3u8Url = unpackJsAndGetM3u8(finalHtml)
+                        
+                        if (m3u8Url != null) {
+                            callback.invoke(
+                                ExtractorLink(
+                                    source = this.name,
+                                    name = tab.text(), // Use the tab text as server name
+                                    url = m3u8Url,
+                                    referer = finalReferer,
+                                    quality = Qualities.Unknown.value,
+                                    type = ExtractorLinkType.M3U8
+                                )
+                            )
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+            }.awaitAll()
         }
         
         return true
