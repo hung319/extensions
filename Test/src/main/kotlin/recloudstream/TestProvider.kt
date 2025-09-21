@@ -19,7 +19,6 @@ class KuraKura21Provider : MainAPI() {
     )
 
     // Helper function to de-obfuscate P.A.C.K.E.R. protected JavaScript.
-    // This works for both Server 1 (FileMoon) and Server 2 (Go-TV).
     private fun unpackJsAndGetM3u8(script: String): String? {
         try {
             val regex = Regex("""eval\(function\(p,a,c,k,e,d\)\{.*?\}\((.*?),(\d+),(\d+),'(.*?)'\.split\('\|'\)\)\)""")
@@ -138,7 +137,6 @@ class KuraKura21Provider : MainAPI() {
         }
     }
     
-    // [UPDATE]: Re-implemented to handle multiple servers concurrently, including the nested iframe pattern of Server 1.
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -178,21 +176,17 @@ class KuraKura21Provider : MainAPI() {
 
                         val firstIframeSrc = playerContent.selectFirst("iframe")?.attr("src") ?: return@async
                         
-                        // Fetch the first iframe's content
                         val firstIframeDoc = app.get(firstIframeSrc, referer = pageUrl).document
                         
-                        // Check for a nested iframe (like in Server 1)
                         val nestedIframeSrc = firstIframeDoc.selectFirst("iframe")?.attr("src")
 
                         val finalHtml: String
                         val finalReferer: String
 
                         if (nestedIframeSrc != null) {
-                            // It's a wrapped player (Server 1), follow the nested iframe
                             finalHtml = app.get(nestedIframeSrc, referer = firstIframeSrc).text
                             finalReferer = nestedIframeSrc
                         } else {
-                            // It's a direct player (Server 2), use the first iframe's content
                             finalHtml = firstIframeDoc.html()
                             finalReferer = firstIframeSrc
                         }
@@ -202,8 +196,9 @@ class KuraKura21Provider : MainAPI() {
                         if (m3u8Url != null) {
                             callback.invoke(
                                 ExtractorLink(
-                                    source = this.name,
-                                    name = tab.text(), // Use the tab text as server name
+                                    // [FIX]: Changed `this.name` to `name` to resolve the correct class property
+                                    source = name,
+                                    name = tab.text(),
                                     url = m3u8Url,
                                     referer = finalReferer,
                                     quality = Qualities.Unknown.value,
