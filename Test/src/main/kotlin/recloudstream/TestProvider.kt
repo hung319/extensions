@@ -9,10 +9,10 @@ import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.fasterxml.jackson.annotation.JsonProperty
 
 // =================== DATA CLASSES ===================
+// Không thay đổi
 data class OnflixApiResponse(
     val data: List<OnflixMovie>?
 )
-
 data class OnflixMovie(
     val name: String?,
     val slug: String?,
@@ -22,26 +22,21 @@ data class OnflixMovie(
     @JsonProperty("created_at") val createdAt: String?,
     @JsonProperty("loai_phim") val movieType: String?
 )
-
 data class OnflixDetailResponse(
     val episodes: List<OnflixServerGroup>?
 )
-
 data class OnflixServerGroup(
     @JsonProperty("server_name") val serverName: String?,
     val items: List<OnflixServerItem>?
 )
-
 data class OnflixServerItem(
     val name: String?,
     @JsonProperty("name_get_sub") val nameGetSub: String?,
     @JsonProperty("m3u8") val m3u8Url: String?
 )
-
 data class OnflixSubtitleResponse(
     val subtitles: List<OnflixSubtitleItem>?
 )
-
 data class OnflixSubtitleItem(
     val language: String?,
     @JsonProperty("subtitle_file") val subtitleFile: String?
@@ -69,16 +64,25 @@ class OnflixProvider : MainAPI() {
 
         val homeList = response.mapNotNull { movie ->
             val year = movie.createdAt?.take(4)?.toIntOrNull()
-            val movieType = if (movie.movieType == "Phim bộ") TvType.TvSeries else TvType.Movie
             
-            // SỬA LỖI: Chuyển sang dùng newMovieSearchResponse để đảm bảo tương thích
-            newMovieSearchResponse(
-                name = movie.name ?: return@mapNotNull null,
-                url = movie.toJson(), // SỬA LỖI: Dùng movie.toJson() thay vì toJson(movie)
-                type = movieType, // SỬA LỖI: Truyền `type` trực tiếp
-                posterUrl = movie.imgurPoster ?: movie.imgurThumb,
-                year = year
-            )
+            // SỬA LỖI: Gọi helper theo đúng signature và gán thuộc tính trong lambda
+            if (movie.movieType == "Phim bộ") {
+                newTvSeriesSearchResponse(
+                    name = movie.name ?: return@mapNotNull null,
+                    url = movie.toJson()
+                ) { // initializer lambda
+                    this.posterUrl = movie.imgurPoster ?: movie.imgurThumb
+                    this.year = year
+                }
+            } else {
+                newMovieSearchResponse(
+                    name = movie.name ?: return@mapNotNull null,
+                    url = movie.toJson()
+                ) { // initializer lambda
+                    this.posterUrl = movie.imgurPoster ?: movie.imgurThumb
+                    this.year = year
+                }
+            }
         }
         
         return newHomePageResponse(request.name, homeList)
@@ -97,31 +101,32 @@ class OnflixProvider : MainAPI() {
         val poster = movieData.imgurPoster ?: movieData.imgurThumb
         val year = movieData.createdAt?.take(4)?.toIntOrNull()
 
-        // SỬA LỖI: Dùng ?.toJson() để an toàn hơn
-        val episodesData = detailResponse?.episodes?.toJson()
+        val episodesData = detailResponse?.episodes?.toJson() ?: return null
 
         return if (movieData.movieType == "Phim bộ") {
+            val episodes = listOf(Episode(data = episodesData, name = "Xem Phim"))
+            // SỬA LỖI: Gọi helper theo đúng signature và gán thuộc tính trong lambda
             newTvSeriesLoadResponse(
                 name = movieData.name ?: "N/A",
                 url = url,
-                type = TvType.TvSeries, // SỬA LỖI: Thêm tham số `type` bị thiếu
-                posterUrl = poster,
-                year = year,
-                plot = movieData.content
-            ) {
-                // Lambda builder vẫn hoạt động khi các tham số bắt buộc đã đủ
-                addEpisode("Xem Phim", episodesData)
+                type = TvType.TvSeries,
+                episodes = episodes
+            ) { // initializer lambda
+                this.posterUrl = poster
+                this.year = year
+                this.plot = movieData.content
             }
         } else {
+            // SỬA LỖI: Gọi helper theo đúng signature và gán thuộc tính trong lambda
             newMovieLoadResponse(
                 name = movieData.name ?: "N/A",
                 url = url,
-                type = TvType.Movie, // SỬA LỖI: Thêm tham số `type` bị thiếu
-                posterUrl = poster,
-                year = year,
-                plot = movieData.content
-            ) {
-                this.dataUrl = episodesData
+                type = TvType.Movie,
+                dataUrl = episodesData
+            ) { // initializer lambda
+                this.posterUrl = poster
+                this.year = year
+                this.plot = movieData.content
             }
         }
     }
@@ -132,7 +137,6 @@ class OnflixProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Data có thể null từ hàm load, cần kiểm tra
         if (data.isBlank() || data == "null") return false
 
         val serverGroups = parseJson<List<OnflixServerGroup>>(data)
