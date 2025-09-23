@@ -65,12 +65,11 @@ class OnflixProvider : MainAPI() {
         val homeList = response.mapNotNull { movie ->
             val year = movie.createdAt?.take(4)?.toIntOrNull()
             
-            // SỬA LỖI: Gọi helper theo đúng signature và gán thuộc tính trong lambda
             if (movie.movieType == "Phim bộ") {
                 newTvSeriesSearchResponse(
                     name = movie.name ?: return@mapNotNull null,
                     url = movie.toJson()
-                ) { // initializer lambda
+                ) {
                     this.posterUrl = movie.imgurPoster ?: movie.imgurThumb
                     this.year = year
                 }
@@ -78,7 +77,7 @@ class OnflixProvider : MainAPI() {
                 newMovieSearchResponse(
                     name = movie.name ?: return@mapNotNull null,
                     url = movie.toJson()
-                ) { // initializer lambda
+                ) {
                     this.posterUrl = movie.imgurPoster ?: movie.imgurThumb
                     this.year = year
                 }
@@ -104,26 +103,28 @@ class OnflixProvider : MainAPI() {
         val episodesData = detailResponse?.episodes?.toJson() ?: return null
 
         return if (movieData.movieType == "Phim bộ") {
-            val episodes = listOf(Episode(data = episodesData, name = "Xem Phim"))
-            // SỬA LỖI: Gọi helper theo đúng signature và gán thuộc tính trong lambda
+            // SỬA LỖI: Dùng hàm newEpisode thay cho constructor Episode(...) đã lỗi thời
+            val episodes = listOf(newEpisode(episodesData) {
+                this.name = "Xem Phim"
+            })
+            
             newTvSeriesLoadResponse(
                 name = movieData.name ?: "N/A",
                 url = url,
                 type = TvType.TvSeries,
                 episodes = episodes
-            ) { // initializer lambda
+            ) {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = movieData.content
             }
         } else {
-            // SỬA LỖI: Gọi helper theo đúng signature và gán thuộc tính trong lambda
             newMovieLoadResponse(
                 name = movieData.name ?: "N/A",
                 url = url,
                 type = TvType.Movie,
                 dataUrl = episodesData
-            ) { // initializer lambda
+            ) {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = movieData.content
