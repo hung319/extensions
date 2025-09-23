@@ -9,9 +9,6 @@ import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.fasterxml.jackson.annotation.JsonProperty
 
 // =================== DATA CLASSES ===================
-// Các lớp này định nghĩa cấu trúc dữ liệu JSON để parse an toàn
-
-// --- Dành cho API trang chủ (`a_api.php`) ---
 data class OnflixApiResponse(
     val data: List<OnflixMovie>?
 )
@@ -19,14 +16,13 @@ data class OnflixApiResponse(
 data class OnflixMovie(
     val name: String?,
     val slug: String?,
-    val content: String?, // Dùng làm plot/description
+    val content: String?,
     @JsonProperty("imgur_thumb") val imgurThumb: String?,
     @JsonProperty("imgur_poster") val imgurPoster: String?,
     @JsonProperty("created_at") val createdAt: String?,
     @JsonProperty("loai_phim") val movieType: String?
 )
 
-// --- Dành cho API chi tiết (`a_movies.php`) ---
 data class OnflixDetailResponse(
     val episodes: List<OnflixServerGroup>?
 )
@@ -42,7 +38,6 @@ data class OnflixServerItem(
     @JsonProperty("m3u8") val m3u8Url: String?
 )
 
-// --- Dành cho API phụ đề (`a_get_sub.php`) - ĐÃ CẬP NHẬT ---
 data class OnflixSubtitleResponse(
     val subtitles: List<OnflixSubtitleItem>?
 )
@@ -74,22 +69,23 @@ class OnflixProvider : MainAPI() {
 
         val homeList = response.mapNotNull { movie ->
             val year = movie.createdAt?.take(4)?.toIntOrNull()
+            val movieType = if (movie.movieType == "Phim bộ") TvType.TvSeries else TvType.Movie
             
-            newAnimeSearchResponse(
+            // SỬA LỖI: Chuyển sang dùng newMovieSearchResponse để đảm bảo tương thích
+            newMovieSearchResponse(
                 name = movie.name ?: return@mapNotNull null,
-                url = toJson(movie), // Nhúng toàn bộ object movie vào URL
+                url = movie.toJson(), // SỬA LỖI: Dùng movie.toJson() thay vì toJson(movie)
+                type = movieType, // SỬA LỖI: Truyền `type` trực tiếp
                 posterUrl = movie.imgurPoster ?: movie.imgurThumb,
                 year = year
-            ) {
-                this.type = if (movie.movieType == "Phim bộ") TvType.TvSeries else TvType.Movie
-            }
+            )
         }
         
         return newHomePageResponse(request.name, homeList)
     }
 
     override suspend fun search(query: String): List<SearchResponse>? {
-        return null // API không hỗ trợ tìm kiếm
+        return null
     }
 
     override suspend fun load(url: String): LoadResponse? {
@@ -101,25 +97,29 @@ class OnflixProvider : MainAPI() {
         val poster = movieData.imgurPoster ?: movieData.imgurThumb
         val year = movieData.createdAt?.take(4)?.toIntOrNull()
 
-        val episodesData = detailResponse?.episodes.let { toJson(it) }
+        // SỬA LỖI: Dùng ?.toJson() để an toàn hơn
+        val episodesData = detailResponse?.episodes?.toJson()
 
         return if (movieData.movieType == "Phim bộ") {
             newTvSeriesLoadResponse(
                 name = movieData.name ?: "N/A",
                 url = url,
+                type = TvType.TvSeries, // SỬA LỖI: Thêm tham số `type` bị thiếu
                 posterUrl = poster,
                 year = year,
-                plot = movieData.content,
+                plot = movieData.content
             ) {
+                // Lambda builder vẫn hoạt động khi các tham số bắt buộc đã đủ
                 addEpisode("Xem Phim", episodesData)
             }
         } else {
             newMovieLoadResponse(
                 name = movieData.name ?: "N/A",
                 url = url,
+                type = TvType.Movie, // SỬA LỖI: Thêm tham số `type` bị thiếu
                 posterUrl = poster,
                 year = year,
-                plot = movieData.content,
+                plot = movieData.content
             ) {
                 this.dataUrl = episodesData
             }
@@ -132,6 +132,9 @@ class OnflixProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // Data có thể null từ hàm load, cần kiểm tra
+        if (data.isBlank() || data == "null") return false
+
         val serverGroups = parseJson<List<OnflixServerGroup>>(data)
 
         serverGroups.forEach { group ->
@@ -150,13 +153,10 @@ class OnflixProvider : MainAPI() {
                     )
                 }
 
-                // Lấy phụ đề - ĐÃ CẬP NHẬT LOGIC PARSE
                 item.nameGetSub?.let { subKey ->
                     try {
                         val subUrl = "$mainUrl/api/a_get_sub.php?file=$subKey"
-                        // Parse theo cấu trúc object mới
                         app.get(subUrl).parsedSafe<OnflixSubtitleResponse>()?.subtitles?.forEach { sub ->
-                            // Dùng đúng tên trường: subtitleFile và language
                             if (sub.subtitleFile != null && sub.language != null) {
                                 subtitleCallback(SubtitleFile(sub.language, sub.subtitleFile))
                             }
