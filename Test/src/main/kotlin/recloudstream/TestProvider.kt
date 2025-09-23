@@ -9,8 +9,6 @@ import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.fasterxml.jackson.annotation.JsonProperty
 
 // =================== DATA CLASSES ===================
-
-// --- Lớp Data cho API Trang chủ (data-static.onflixcdn.workers.dev) ---
 data class NewOnflixApiResponse(
     val success: Boolean?,
     val data: List<NewOnflixMovieItem>?
@@ -21,24 +19,18 @@ data class NewOnflixMovieItem(
     @JsonProperty("original_name") val originalName: String?,
     val imageUrl: String?
 )
-
-// --- Lớp Data cho API Search (onflix.me) - MỚI ---
 data class OnflixMeSearchResult(
     val name: String?,
     @JsonProperty("original_name") val originalName: String?,
     @JsonProperty("thumb_url") val thumbUrl: String?,
     val slug: String?
 )
-
-// --- Lớp Data trung gian để truyền thông tin giữa các hàm ---
 private data class LoadData(
     val slug: String,
     val name: String,
     val posterUrl: String?,
-    val movieType: String // "phim-le", "phim-bo", hoặc "unknown"
+    val movieType: String
 )
-
-// --- Lớp Data cho API chi tiết/link phim (api_4k.idoyu.com) ---
 data class OnflixDetailResponse(
     val episodes: List<OnflixServerGroup>?
 )
@@ -61,20 +53,23 @@ data class OnflixSubtitleItem(
 // =================== PROVIDER IMPLEMENTATION ===================
 
 class OnflixProvider : MainAPI() {
-    // --- Cấu hình các URL API khác nhau ---
-    override var mainUrl = "https://data-static.onflixcdn.workers.dev" // API chính cho Trang chủ
-    private val searchUrl = "https://onflix.me"                       // API riêng cho Tìm kiếm
-    private val detailUrl = "https://api_4k.idoyu.com"                 // API phụ để lấy link phim
+    override var mainUrl = "https://data-static.onflixcdn.workers.dev"
+    private val searchUrl = "https://onflix.me"
+    private val detailUrl = "https://api_4k.idoyu.com"
 
     override var name = "Onflix"
     override val hasMainPage = true
     override var lang = "vi"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
+    // =================== CẬP NHẬT TRANG CHỦ ===================
     override val mainPage = mainPageOf(
-        "/?type=category&limit=20&category=phim-le" to "Phim Lẻ Mới",
-        "/?type=category&limit=20&category=phim-bo" to "Phim Bộ Mới"
+        "/?type=category&limit=20&category=phim-moi" to "Phim Mới",
+        "/?type=category&limit=20&category=phim-hot" to "Phim Hot",
+        "/?type=category&limit=20&category=phim-le" to "Phim Lẻ",
+        "/?type=category&limit=20&category=phim-bo" to "Phim Bộ"
     )
+    // ==========================================================
 
     override suspend fun getMainPage(
         page: Int,
@@ -82,13 +77,19 @@ class OnflixProvider : MainAPI() {
     ): HomePageResponse? {
         val url = "$mainUrl${request.data}"
         val response = app.get(url).parsedSafe<NewOnflixApiResponse>()?.data ?: return null
-        val movieType = if (request.data.contains("phim-bo")) "phim-bo" else "phim-le"
+        
+        // Xác định loại phim dựa vào URL, mặc định là phim lẻ nếu không rõ
+        val movieType = when {
+            request.data.contains("phim-bo") -> "phim-bo"
+            request.data.contains("phim-le") -> "phim-le"
+            else -> "phim-le" // Mặc định cho phim mới, phim hot
+        }
 
         val homeList = response.mapNotNull { item ->
             val loadData = LoadData(
                 slug = item.slug ?: return@mapNotNull null,
                 name = item.name ?: return@mapNotNull null,
-                posterUrl = item.imageUrl,
+                posterUrl = item.imageUrl?.trim(), // Thêm .trim() để làm sạch URL
                 movieType = movieType
             )
             newMovieSearchResponse(
@@ -101,7 +102,6 @@ class OnflixProvider : MainAPI() {
         return newHomePageResponse(request.name, homeList)
     }
 
-    // =================== HÀM SEARCH ĐÃ ĐƯỢC CẬP NHẬT SANG API ONFLIX.ME ===================
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$searchUrl/search.php?term=$query"
         val response = app.get(url).parsedSafe<List<OnflixMeSearchResult>>() ?: return emptyList()
@@ -110,8 +110,8 @@ class OnflixProvider : MainAPI() {
             val loadData = LoadData(
                 slug = item.slug ?: return@mapNotNull null,
                 name = item.name ?: return@mapNotNull null,
-                posterUrl = item.thumbUrl,
-                movieType = "unknown" // Luôn là "unknown" để hàm `load` tự xác định
+                posterUrl = item.thumbUrl?.trim(), // Thêm .trim() để làm sạch URL
+                movieType = "unknown"
             )
             newMovieSearchResponse(
                 name = loadData.name,
@@ -121,7 +121,6 @@ class OnflixProvider : MainAPI() {
             }
         }
     }
-    // ====================================================================================
 
     override suspend fun load(url: String): LoadResponse? {
         val loadData = parseJson<LoadData>(url)
