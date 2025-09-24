@@ -7,46 +7,53 @@ import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.fasterxml.jackson.annotation.JsonProperty
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 
-// =================== DATA CLASSES (Chỉ cho api_4k.idoyu.com) ===================
+// =================== DATA CLASSES ===================
 
-// --- Lớp Data cho API danh sách (a_api.php) ---
-data class IdoyuApiResponse(
-    val data: List<IdoyuMovieItem>?
+// --- Lớp Data cho API Danh sách & Lọc (bo_loc.php) ---
+data class OnflixApiResponse(
+    val data: List<OnflixMovieItem>?
 )
 
-data class IdoyuMovieItem(
+data class OnflixMovieItem(
+    val slug: String?,
     val name: String?,
     @JsonProperty("original_name") val originalName: String?,
-    val slug: String?,
-    val content: String?,
-    @JsonProperty("imgur_thumb") val imgurThumb: String?,
     @JsonProperty("imgur_poster") val imgurPoster: String?,
-    @JsonProperty("created_at") val createdAt: String?,
-    @JsonProperty("loai_phim") val movieType: String?
+    @JsonProperty("imgur_thumb") val imgurThumb: String?,
+    val casts: String?,
+    val director: String?,
+    @JsonProperty("the_loai") val theLoai: String?,
+    @JsonProperty("loai_phim") val loaiPhim: String?,
+    val nam: String?,
+    val content: String? // Giả sử API có thể trả về content
 )
 
-// --- Lớp Data cho API chi tiết (a_movies.php) ---
-data class IdoyuDetailResponse(
-    val episodes: List<IdoyuServerGroup>?
+// --- Lớp Data cho API Chi tiết/Link phim (a_movies.php) ---
+data class OnflixDetailResponse(
+    val episodes: List<OnflixServerGroup>?
 )
-data class IdoyuServerGroup(
-    val items: List<IdoyuServerItem>?
+data class OnflixServerGroup(
+    val items: List<OnflixServerItem>?
 )
-data class IdoyuServerItem(
+data class OnflixServerItem(
     val name: String?,
     @JsonProperty("name_get_sub") val nameGetSub: String?,
-    @JsonProperty("m3u8") val m3u8Url: String?
+    @JsonProperty("m3u8") val m3u8Url: String?,
+    @JsonProperty("link_embed") val linkEmbed: String?
 )
 
-// --- Lớp Data cho API phụ đề (a_get_sub.php) ---
-data class IdoyuSubtitleResponse(
-    val subtitles: List<IdoyuSubtitleItem>?
+// --- Lớp Data cho API Phụ đề (a_get_sub.php) ---
+data class OnflixSubtitleResponse(
+    val subtitles: List<OnflixSubtitleItem>?
 )
-data class IdoyuSubtitleItem(
+data class OnflixSubtitleItem(
+    val language: String?,
+    @JsonProperty("subtitle_file") val subtitleFile: String?
+)
+
+// --- Lớp Data cho Player (trang embed) ---
+data class PlayerSubtitle(
     val language: String?,
     @JsonProperty("subtitle_file") val subtitleFile: String?
 )
@@ -59,78 +66,68 @@ class OnflixProvider : MainAPI() {
     override val hasMainPage = true
     override var lang = "vi"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
-    
-    // Số trang sẽ tải về để thực hiện tìm kiếm phía client
-    private val CLIENT_SEARCH_PAGE_LIMIT = 5 
 
     override val mainPage = mainPageOf(
-        "/api/a_api.php?per_page=20" to "Phim Mới Cập Nhật",
-        "/api/a_api.php?per_page=20&category=phim-le" to "Phim Lẻ",
-        "/api/a_api.php?per_page=20&category=phim-bo" to "Phim Bộ"
+        "/api/bo_loc.php?action=filter&per_page=20" to "Phim Mới Cập Nhật",
+        "/api/bo_loc.php?action=filter&per_page=20&slug_loai_phim=phim-le" to "Phim Lẻ",
+        "/api/bo_loc.php?action=filter&per_page=20&slug_loai_phim=phim-bo" to "Phim Bộ"
     )
 
-    override suspend fun getMainPage(
-        page: Int,
-        request: MainPageRequest
-    ): HomePageResponse? {
+    // Hàm helper để chuyển đổi OnflixMovieItem -> SearchResponse
+    private fun toSearchResponse(movie: OnflixMovieItem): SearchResponse? {
+        val name = movie.name ?: return null
+        // API trả về `loaiPhim` dạng "Phim bộ,Phim đang chiếu", ta chỉ cần phần đầu
+        val isMovie = movie.loaiPhim?.contains("Phim bộ") != true
+        
+        return if (isMovie) {
+            newMovieSearchResponse(name, movie.toJson()) {
+                this.posterUrl = movie.imgurThumb
+                this.year = movie.nam?.toIntOrNull()
+            }
+        } else {
+            newTvSeriesSearchResponse(name, movie.toJson()) {
+                this.posterUrl = movie.imgurThumb
+                this.year = movie.nam?.toIntOrNull()
+            }
+        }
+    }
+
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = "$mainUrl${request.data}&page=$page"
-        val response = app.get(url).parsedSafe<IdoyuApiResponse>()?.data ?: return null
-        val homeList = response.mapNotNull { movie -> toSearchResponse(movie) }
+        val response = app.get(url).parsedSafe<OnflixApiResponse>()?.data ?: emptyList()
+        val homeList = response.mapNotNull { toSearchResponse(it) }
         return newHomePageResponse(request.name, homeList)
     }
 
-    private fun toSearchResponse(movie: IdoyuMovieItem): SearchResponse? {
-        val year = movie.createdAt?.take(4)?.toIntOrNull()
-        return if (movie.movieType == "Phim bộ") {
-            newTvSeriesSearchResponse(
-                name = movie.name ?: return null,
-                url = movie.toJson() // Truyền toàn bộ thông tin cho `load`
-            ) {
-                this.posterUrl = movie.imgurPoster ?: movie.imgurThumb
-                this.year = year
-            }
-        } else {
-            newMovieSearchResponse(
-                name = movie.name ?: return null,
-                url = movie.toJson()
-            ) {
-                this.posterUrl = movie.imgurPoster ?: movie.imgurThumb
-                this.year = year
-            }
-        }
+    override suspend fun search(query: String): List<SearchResponse> {
+        // ĐÃ CẬP NHẬT: Dùng tham số `search` thay vì `name`
+        val url = "$mainUrl/api/bo_loc.php?action=filter&search=$query"
+        val response = app.get(url).parsedSafe<OnflixApiResponse>()?.data ?: return emptyList()
+        return response.mapNotNull { toSearchResponse(it) }
     }
-    
-    // =================== HÀM SEARCH PHÍA CLIENT ===================
-    // Do API không có endpoint search, ta sẽ tải về một list phim và tự lọc
-    override suspend fun search(query: String): List<SearchResponse> = coroutineScope {
-        // Tải song song nhiều trang kết quả để có danh sách phim lớn
-        val allMovies = (1..CLIENT_SEARCH_PAGE_LIMIT).map { page ->
-            async {
-                app.get("$mainUrl/api/a_api.php?per_page=20&page=$page")
-                    .parsedSafe<IdoyuApiResponse>()?.data
-                    ?: emptyList()
-            }
-        }.awaitAll().flatten()
-
-        // Lọc danh sách phim đã tải về dựa trên query
-        return@coroutineScope allMovies.filter { movie ->
-            val vietnameseNameMatch = movie.name?.contains(query, ignoreCase = true) == true
-            val originalNameMatch = movie.originalName?.contains(query, ignoreCase = true) == true
-            vietnameseNameMatch || originalNameMatch
-        }.mapNotNull { movie ->
-            toSearchResponse(movie)
-        }
-    }
-    // =============================================================
 
     override suspend fun load(url: String): LoadResponse? {
-        val movieData = parseJson<IdoyuMovieItem>(url)
+        val movieData = parseJson<OnflixMovieItem>(url)
         val detailApiUrl = "$mainUrl/api/a_movies.php?slug=${movieData.slug}"
-        val detailResponse = app.get(detailApiUrl).parsedSafe<IdoyuDetailResponse>()
-        val poster = movieData.imgurPoster ?: movieData.imgurThumb
-        val year = movieData.createdAt?.take(4)?.toIntOrNull()
+        val detailResponse = app.get(detailApiUrl).parsedSafe<OnflixDetailResponse>()
+        
+        val isMovie = movieData.loaiPhim?.contains("Phim bộ") != true
 
-        return if (movieData.movieType == "Phim bộ") {
+        return if (isMovie) {
+            val movieItemData = detailResponse?.episodes?.firstOrNull()?.items?.firstOrNull()?.toJson() ?: return null
+            newMovieLoadResponse(
+                name = movieData.name ?: "N/A",
+                url = url,
+                type = TvType.Movie,
+                dataUrl = movieItemData
+            ) {
+                this.posterUrl = movieData.imgurPoster ?: movieData.imgurThumb
+                this.year = movieData.nam?.toIntOrNull()
+                this.plot = movieData.content
+                this.tags = movieData.theLoai?.split(',')
+                this.actors = movieData.casts?.split(',')?.map { ActorData(Actor(it.trim())) }
+            }
+        } else {
             val episodes = mutableListOf<Episode>()
             detailResponse?.episodes?.forEach { server ->
                 server.items?.forEach { item ->
@@ -145,24 +142,17 @@ class OnflixProvider : MainAPI() {
                 type = TvType.TvSeries,
                 episodes = episodes.sortedBy { it.name?.filter { c -> c.isDigit() }?.toIntOrNull() }
             ) {
-                this.posterUrl = poster
-                this.year = year
+                this.posterUrl = movieData.imgurPoster ?: movieData.imgurThumb
+                this.year = movieData.nam?.toIntOrNull()
                 this.plot = movieData.content
-            }
-        } else {
-            val movieItemData = detailResponse?.episodes?.firstOrNull()?.items?.firstOrNull()?.toJson() ?: return null
-            newMovieLoadResponse(
-                name = movieData.name ?: "N/A",
-                url = url,
-                type = TvType.Movie,
-                dataUrl = movieItemData
-            ) {
-                this.posterUrl = poster
-                this.year = year
-                this.plot = movieData.content
+                this.tags = movieData.theLoai?.split(',')
+                this.actors = movieData.casts?.split(',')?.map { ActorData(Actor(it.trim())) }
             }
         }
     }
+    
+    private val videoIdRegex = Regex("""const videoId = '(.*?)'""")
+    private val subtitleDataRegex = Regex("""const subtitleData = (\[.*?\]);""")
 
     override suspend fun loadLinks(
         data: String,
@@ -170,34 +160,39 @@ class OnflixProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        if (data.isBlank() || data == "null") return false
-        val item = parseJson<IdoyuServerItem>(data)
-        
-        val videoUrl = item.m3u8Url
-        if (videoUrl != null) {
+        val item = parseJson<OnflixServerItem>(data)
+
+        if (!item.m3u8Url.isNullOrBlank()) {
             callback(
-                ExtractorLink(
-                    source = this.name,
-                    name = if(item.name == "FULL") "Xem phim" else "Tập ${item.name}",
-                    url = videoUrl,
-                    referer = mainUrl,
-                    quality = Qualities.Unknown.value,
-                    type = ExtractorLinkType.M3U8
-                )
+                ExtractorLink(name, name, item.m3u8Url, mainUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
             )
+            return true
         }
-        item.nameGetSub?.let { subKey ->
+
+        val embedUrl = item.linkEmbed
+        if (!embedUrl.isNullOrBlank()) {
             try {
-                val subUrl = "$mainUrl/api/a_get_sub.php?file=$subKey"
-                app.get(subUrl).parsedSafe<IdoyuSubtitleResponse>()?.subtitles?.forEach { sub ->
-                    if (sub.subtitleFile != null && sub.language != null) {
-                        subtitleCallback(SubtitleFile(sub.language, sub.subtitleFile))
+                val embedHtml = app.get(embedUrl).text
+                
+                videoIdRegex.find(embedHtml)?.groupValues?.get(1)?.let { videoUrl ->
+                    callback(
+                        ExtractorLink("$name (Embed)", "$name (Embed)", videoUrl, embedUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
+                    )
+                }
+
+                subtitleDataRegex.find(embedHtml)?.groupValues?.get(1)?.let { subJson ->
+                    parseJson<List<PlayerSubtitle>>(subJson).forEach { sub ->
+                        if (sub.subtitleFile != null && sub.language != null) {
+                            subtitleCallback(SubtitleFile(sub.language, sub.subtitleFile))
+                        }
                     }
                 }
+                return true
             } catch (e: Exception) {
-                e.printStackTrace()
+                return false
             }
         }
-        return true
+
+        return false
     }
 }
