@@ -11,204 +11,193 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 
-// =================== DATA CLASSES ===================
+// =================== DATA CLASSES (Chỉ cho api_4k.idoyu.com) ===================
 
-data class OnflixMeSearchResult(
+// --- Lớp Data cho API danh sách (a_api.php) ---
+data class IdoyuApiResponse(
+    val data: List<IdoyuMovieItem>?
+)
+
+data class IdoyuMovieItem(
     val name: String?,
+    @JsonProperty("original_name") val originalName: String?,
     val slug: String?,
-    @JsonProperty("thumb_url") val thumbUrl: String?
+    val content: String?,
+    @JsonProperty("imgur_thumb") val imgurThumb: String?,
+    @JsonProperty("imgur_poster") val imgurPoster: String?,
+    @JsonProperty("created_at") val createdAt: String?,
+    @JsonProperty("loai_phim") val movieType: String?
 )
 
-data class GetEpResponse(
-    val vietsubEpisodes: List<EpisodeItem>?,
-    val thuyetMinhEpisodes: List<EpisodeItem>?
+// --- Lớp Data cho API chi tiết (a_movies.php) ---
+data class IdoyuDetailResponse(
+    val episodes: List<IdoyuServerGroup>?
 )
-data class EpisodeItem(
+data class IdoyuServerGroup(
+    val items: List<IdoyuServerItem>?
+)
+data class IdoyuServerItem(
     val name: String?,
-    @JsonProperty("link_m3u8") val linkM3u8: String?,
-    @JsonProperty("link_embed") val linkEmbed: String?
+    @JsonProperty("name_get_sub") val nameGetSub: String?,
+    @JsonProperty("m3u8") val m3u8Url: String?
 )
 
-data class LdJsonData(
-    val name: String?,
-    val description: String?,
-    val image: String?,
-    val genre: String?,
-    val datePublished: String?
+// --- Lớp Data cho API phụ đề (a_get_sub.php) ---
+data class IdoyuSubtitleResponse(
+    val subtitles: List<IdoyuSubtitleItem>?
 )
-
-data class PlayerSubtitle(
+data class IdoyuSubtitleItem(
     val language: String?,
     @JsonProperty("subtitle_file") val subtitleFile: String?
-)
-
-// SỬA LỖI: Dùng lại lớp Data trung gian để truyền thông tin an toàn đến `loadLinks`
-private data class LinkData(
-    val slug: String,
-    val isMovie: Boolean,
-    // Chứa JSON của EpisodeItem, chỉ dùng cho phim bộ
-    val episodeItemJson: String? 
 )
 
 // =================== PROVIDER IMPLEMENTATION ===================
 
 class OnflixProvider : MainAPI() {
-    override var mainUrl = "https://onflix.me"
+    override var mainUrl = "https://api_4k.idoyu.com"
     override var name = "Onflix"
     override val hasMainPage = true
     override var lang = "vi"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
-
-    private val servers = listOf("server1", "server2", "server3", "server5")
+    
+    // Số trang sẽ tải về để thực hiện tìm kiếm phía client
+    private val CLIENT_SEARCH_PAGE_LIMIT = 5 
 
     override val mainPage = mainPageOf(
-        "/phim.php?loai-phim=phim-le" to "Phim Lẻ Mới",
-        "/phim.php?loai-phim=phim-bo" to "Phim Bộ Mới",
-        "/anime" to "Anime Mới"
+        "/api/a_api.php?per_page=20" to "Phim Mới Cập Nhật",
+        "/api/a_api.php?per_page=20&category=phim-le" to "Phim Lẻ",
+        "/api/a_api.php?per_page=20&category=phim-bo" to "Phim Bộ"
     )
 
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get("$mainUrl${request.data}").document
-        val homeList = document.select("div.movie-card").mapNotNull {
-            val linkTag = it.selectFirst("a") ?: return@mapNotNull null
-            newMovieSearchResponse(
-                name = it.selectFirst("h6 a")?.text() ?: return@mapNotNull null,
-                url = linkTag.attr("href")
-            ) {
-                 this.posterUrl = it.selectFirst("img")?.attr("src")
-            }
-        }
+    override suspend fun getMainPage(
+        page: Int,
+        request: MainPageRequest
+    ): HomePageResponse? {
+        val url = "$mainUrl${request.data}&page=$page"
+        val response = app.get(url).parsedSafe<IdoyuApiResponse>()?.data ?: return null
+        val homeList = response.mapNotNull { movie -> toSearchResponse(movie) }
         return newHomePageResponse(request.name, homeList)
     }
 
-    override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$mainUrl/search.php?term=$query"
-        val response = app.get(url).parsedSafe<List<OnflixMeSearchResult>>() ?: return emptyList()
-
-        return response.mapNotNull { item ->
-            val slug = item.slug ?: return@mapNotNull null
-            newMovieSearchResponse(
-                name = item.name ?: return@mapNotNull null,
-                url = "/phim/$slug"
+    private fun toSearchResponse(movie: IdoyuMovieItem): SearchResponse? {
+        val year = movie.createdAt?.take(4)?.toIntOrNull()
+        return if (movie.movieType == "Phim bộ") {
+            newTvSeriesSearchResponse(
+                name = movie.name ?: return null,
+                url = movie.toJson() // Truyền toàn bộ thông tin cho `load`
             ) {
-                this.posterUrl = item.thumbUrl
+                this.posterUrl = movie.imgurPoster ?: movie.imgurThumb
+                this.year = year
             }
-        }
-    }
-
-    override suspend fun load(url: String): LoadResponse? = coroutineScope {
-        val document = app.get(url).document
-        
-        val ldJsonText = document.select("script[type=\"application/ld+json\"]")
-            .find { it.data().contains("\"@type\": \"Movie\"") }?.data()
-        val ldJsonData = ldJsonText?.let { parseJson<LdJsonData>(it) }
-
-        val title = ldJsonData?.name ?: "N/A"
-        val plot = ldJsonData?.description
-        val poster = ldJsonData?.image
-        val year = ldJsonData?.datePublished?.take(4)?.toIntOrNull()
-        val tags = ldJsonData?.genre?.split(',')?.map { it.trim() }
-        val isMovie = ldJsonData?.genre?.contains("Phim bộ") != true
-        
-        val slug = url.substringAfterLast('/')
-        
-        val actorApiUrl = "$mainUrl/function/getactor.php?slug=$slug"
-        val headers = mapOf("Referer" to url)
-        val actorDocument = app.get(actorApiUrl, headers = headers).document
-        val rating = actorDocument.selectFirst("span#ratingValue")?.text()?.toFloatOrNull()?.let { (it * 100).toInt() }
-        val actors = actorDocument.select("div.actor-card").mapNotNull {
-            ActorData(Actor(it.selectFirst("p.actor-name a")?.text() ?: return@mapNotNull null, it.selectFirst("img.actor-image")?.attr("src")))
-        }
-
-        if (isMovie) {
-            val linkData = LinkData(slug = slug, isMovie = true, episodeItemJson = null)
-            return@coroutineScope newMovieLoadResponse(title, url, TvType.Movie, linkData.toJson()) {
-                this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = tags; this.rating = rating; this.actors = actors
+        } else {
+            newMovieSearchResponse(
+                name = movie.name ?: return null,
+                url = movie.toJson()
+            ) {
+                this.posterUrl = movie.imgurPoster ?: movie.imgurThumb
+                this.year = year
             }
-        }
-
-        val deferredEpisodes = servers.map { server ->
-            async {
-                app.get("$mainUrl/function/getep.php?slug=$slug&server=$server", headers = headers)
-                   .parsedSafe<GetEpResponse>()?.let { resp ->
-                        (resp.vietsubEpisodes ?: emptyList()) + (resp.thuyetMinhEpisodes ?: emptyList())
-                   } ?: emptyList()
-            }
-        }
-        
-        val episodes = deferredEpisodes.awaitAll().flatten()
-            .distinctBy { epItem -> epItem.name }
-            .mapNotNull { epItem ->
-                val linkData = LinkData(slug = slug, isMovie = false, episodeItemJson = epItem.toJson())
-                newEpisode(linkData.toJson()) { 
-                    this.name = "Tập ${epItem.name?.replace("Tập ", "")?.padStart(2,'0')}" 
-                }
-            }
-            .sortedBy { ep -> ep.name?.filter { c -> c.isDigit() }?.toIntOrNull() }
-
-        return@coroutineScope newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
-            this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = tags; this.rating = rating; this.actors = actors
         }
     }
     
-    private val videoIdRegex = Regex("""const videoId = '(.*?)'""")
-    private val subtitleDataRegex = Regex("""const subtitleData = (\[.*?\]);""")
+    // =================== HÀM SEARCH PHÍA CLIENT ===================
+    // Do API không có endpoint search, ta sẽ tải về một list phim và tự lọc
+    override suspend fun search(query: String): List<SearchResponse> = coroutineScope {
+        // Tải song song nhiều trang kết quả để có danh sách phim lớn
+        val allMovies = (1..CLIENT_SEARCH_PAGE_LIMIT).map { page ->
+            async {
+                app.get("$mainUrl/api/a_api.php?per_page=20&page=$page")
+                    .parsedSafe<IdoyuApiResponse>()?.data
+                    ?: emptyList()
+            }
+        }.awaitAll().flatten()
+
+        // Lọc danh sách phim đã tải về dựa trên query
+        return@coroutineScope allMovies.filter { movie ->
+            val vietnameseNameMatch = movie.name?.contains(query, ignoreCase = true) == true
+            val originalNameMatch = movie.originalName?.contains(query, ignoreCase = true) == true
+            vietnameseNameMatch || originalNameMatch
+        }.mapNotNull { movie ->
+            toSearchResponse(movie)
+        }
+    }
+    // =============================================================
+
+    override suspend fun load(url: String): LoadResponse? {
+        val movieData = parseJson<IdoyuMovieItem>(url)
+        val detailApiUrl = "$mainUrl/api/a_movies.php?slug=${movieData.slug}"
+        val detailResponse = app.get(detailApiUrl).parsedSafe<IdoyuDetailResponse>()
+        val poster = movieData.imgurPoster ?: movieData.imgurThumb
+        val year = movieData.createdAt?.take(4)?.toIntOrNull()
+
+        return if (movieData.movieType == "Phim bộ") {
+            val episodes = mutableListOf<Episode>()
+            detailResponse?.episodes?.forEach { server ->
+                server.items?.forEach { item ->
+                    episodes.add(newEpisode(item.toJson()) {
+                        this.name = "Tập ${item.name}"
+                    })
+                }
+            }
+            newTvSeriesLoadResponse(
+                name = movieData.name ?: "N/A",
+                url = url,
+                type = TvType.TvSeries,
+                episodes = episodes.sortedBy { it.name?.filter { c -> c.isDigit() }?.toIntOrNull() }
+            ) {
+                this.posterUrl = poster
+                this.year = year
+                this.plot = movieData.content
+            }
+        } else {
+            val movieItemData = detailResponse?.episodes?.firstOrNull()?.items?.firstOrNull()?.toJson() ?: return null
+            newMovieLoadResponse(
+                name = movieData.name ?: "N/A",
+                url = url,
+                type = TvType.Movie,
+                dataUrl = movieItemData
+            ) {
+                this.posterUrl = poster
+                this.year = year
+                this.plot = movieData.content
+            }
+        }
+    }
 
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
-    ): Boolean = coroutineScope {
-        // SỬA LỖI: Giải nén `LinkData` để lấy thông tin cần thiết
-        val linkData = parseJson<LinkData>(data)
-        val slug = linkData.slug
+    ): Boolean {
+        if (data.isBlank() || data == "null") return false
+        val item = parseJson<IdoyuServerItem>(data)
         
-        val episodeItem = if(linkData.isMovie) {
-            val headers = mapOf("Referer" to "$mainUrl/xem-phim/$slug")
-            // Với phim lẻ, gọi song song tất cả các server và lấy link đầu tiên tìm thấy
-            servers.map { server ->
-                async {
-                    app.get("$mainUrl/function/getep.php?slug=$slug&server=$server", headers = headers)
-                        .parsedSafe<GetEpResponse>()?.let { (it.vietsubEpisodes ?: emptyList()) + (it.thuyetMinhEpisodes ?: emptyList()) }
-                        ?.firstOrNull()
-                }
-            }.awaitAll().firstOrNull { it != null }
-        } else {
-             linkData.episodeItemJson?.let { parseJson<EpisodeItem>(it) }
-        }
-
-        if (episodeItem == null) return@coroutineScope false
-
-        val providerName = this@OnflixProvider.name
-
-        if (!episodeItem.linkM3u8.isNullOrBlank()) {
+        val videoUrl = item.m3u8Url
+        if (videoUrl != null) {
             callback(
-                ExtractorLink(providerName, providerName, episodeItem.linkM3u8, mainUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
-            )
-            return@coroutineScope true
-        }
-
-        val embedUrl = episodeItem.linkEmbed
-        if (!embedUrl.isNullOrBlank()) {
-            val embedHtml = app.get(embedUrl).text
-            
-            videoIdRegex.find(embedHtml)?.groupValues?.get(1)?.let { videoUrl ->
-                callback(
-                    ExtractorLink("$providerName (Embed)", "$providerName (Embed)", videoUrl, embedUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
+                ExtractorLink(
+                    source = this.name,
+                    name = if(item.name == "FULL") "Xem phim" else "Tập ${item.name}",
+                    url = videoUrl,
+                    referer = mainUrl,
+                    quality = Qualities.Unknown.value,
+                    type = ExtractorLinkType.M3U8
                 )
-            }
-
-            subtitleDataRegex.find(embedHtml)?.groupValues?.get(1)?.let { subJson ->
-                parseJson<List<PlayerSubtitle>>(subJson).forEach { sub ->
+            )
+        }
+        item.nameGetSub?.let { subKey ->
+            try {
+                val subUrl = "$mainUrl/api/a_get_sub.php?file=$subKey"
+                app.get(subUrl).parsedSafe<IdoyuSubtitleResponse>()?.subtitles?.forEach { sub ->
                     if (sub.subtitleFile != null && sub.language != null) {
                         subtitleCallback(SubtitleFile(sub.language, sub.subtitleFile))
                     }
                 }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
-            return@coroutineScope true
         }
-
-        return@coroutineScope false
+        return true
     }
 }
