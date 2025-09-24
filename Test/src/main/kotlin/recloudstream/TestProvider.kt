@@ -7,45 +7,37 @@ import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.fasterxml.jackson.annotation.JsonProperty
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 
 // =================== DATA CLASSES ===================
-data class NewOnflixApiResponse(
-    val success: Boolean?,
-    val data: List<NewOnflixMovieItem>?
-)
-data class NewOnflixMovieItem(
-    val slug: String?,
-    val name: String?,
-    @JsonProperty("original_name") val originalName: String?,
-    val imageUrl: String?
-)
+
 data class OnflixMeSearchResult(
     val name: String?,
-    @JsonProperty("original_name") val originalName: String?,
-    @JsonProperty("thumb_url") val thumbUrl: String?,
-    val slug: String?
+    val slug: String?,
+    @JsonProperty("thumb_url") val thumbUrl: String?
 )
-private data class LoadData(
-    val slug: String,
-    val name: String,
-    val posterUrl: String?,
-    val movieType: String
+
+data class GetEpResponse(
+    val vietsubEpisodes: List<EpisodeItem>?,
+    val thuyetMinhEpisodes: List<EpisodeItem>?
 )
-data class OnflixDetailResponse(
-    val episodes: List<OnflixServerGroup>?
-)
-data class OnflixServerGroup(
-    val items: List<OnflixServerItem>?
-)
-data class OnflixServerItem(
+data class EpisodeItem(
     val name: String?,
-    @JsonProperty("name_get_sub") val nameGetSub: String?,
-    @JsonProperty("m3u8") val m3u8Url: String?
+    @JsonProperty("link_m3u8") val linkM3u8: String?,
+    @JsonProperty("link_embed") val linkEmbed: String?
 )
-data class OnflixSubtitleResponse(
-    val subtitles: List<OnflixSubtitleItem>?
+
+data class LdJsonData(
+    val name: String?,
+    val description: String?,
+    val image: String?,
+    val genre: String?,
+    val datePublished: String?
 )
-data class OnflixSubtitleItem(
+
+data class PlayerSubtitle(
     val language: String?,
     @JsonProperty("subtitle_file") val subtitleFile: String?
 )
@@ -53,152 +45,169 @@ data class OnflixSubtitleItem(
 // =================== PROVIDER IMPLEMENTATION ===================
 
 class OnflixProvider : MainAPI() {
-    override var mainUrl = "https://data-static.onflixcdn.workers.dev"
-    private val searchUrl = "https://onflix.me"
-    private val detailUrl = "https://api_4k.idoyu.com"
-
+    override var mainUrl = "https://onflix.me"
     override var name = "Onflix"
     override val hasMainPage = true
     override var lang = "vi"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
-    // =================== CẬP NHẬT TRANG CHỦ ===================
+    private val servers = listOf("server1", "server2", "server3", "server5")
+
     override val mainPage = mainPageOf(
-        "/?type=category&limit=20&category=phim-moi" to "Phim Mới",
-        "/?type=category&limit=20&category=phim-hot" to "Phim Hot",
-        "/?type=category&limit=20&category=phim-le" to "Phim Lẻ",
-        "/?type=category&limit=20&category=phim-bo" to "Phim Bộ"
+        "/phim.php?loai-phim=phim-le" to "Phim Lẻ Mới",
+        "/phim.php?loai-phim=phim-bo" to "Phim Bộ Mới",
+        "/anime" to "Anime Mới"
     )
-    // ==========================================================
 
-    override suspend fun getMainPage(
-        page: Int,
-        request: MainPageRequest
-    ): HomePageResponse? {
-        val url = "$mainUrl${request.data}"
-        val response = app.get(url).parsedSafe<NewOnflixApiResponse>()?.data ?: return null
-        
-        // Xác định loại phim dựa vào URL, mặc định là phim lẻ nếu không rõ
-        val movieType = when {
-            request.data.contains("phim-bo") -> "phim-bo"
-            request.data.contains("phim-le") -> "phim-le"
-            else -> "phim-le" // Mặc định cho phim mới, phim hot
-        }
-
-        val homeList = response.mapNotNull { item ->
-            val loadData = LoadData(
-                slug = item.slug ?: return@mapNotNull null,
-                name = item.name ?: return@mapNotNull null,
-                posterUrl = item.imageUrl?.trim(), // Thêm .trim() để làm sạch URL
-                movieType = movieType
-            )
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val document = app.get("$mainUrl${request.data}").document
+        val homeList = document.select("div.movie-card").mapNotNull {
+            val linkTag = it.selectFirst("a") ?: return@mapNotNull null
             newMovieSearchResponse(
-                name = loadData.name,
-                url = loadData.toJson()
-            ) {
-                this.posterUrl = loadData.posterUrl
-            }
+                name = it.selectFirst("h6 a")?.text() ?: return@mapNotNull null,
+                url = linkTag.attr("href"),
+                posterUrl = it.selectFirst("img")?.attr("src")
+            )
         }
         return newHomePageResponse(request.name, homeList)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$searchUrl/search.php?term=$query"
+        val url = "$mainUrl/search.php?term=$query"
         val response = app.get(url).parsedSafe<List<OnflixMeSearchResult>>() ?: return emptyList()
 
         return response.mapNotNull { item ->
-            val loadData = LoadData(
-                slug = item.slug ?: return@mapNotNull null,
-                name = item.name ?: return@mapNotNull null,
-                posterUrl = item.thumbUrl?.trim(), // Thêm .trim() để làm sạch URL
-                movieType = "unknown"
-            )
+            val slug = item.slug ?: return@mapNotNull null
             newMovieSearchResponse(
-                name = loadData.name,
-                url = loadData.toJson()
+                name = item.name ?: return@mapNotNull null,
+                url = "/phim/$slug"
             ) {
-                this.posterUrl = loadData.posterUrl
+                this.posterUrl = item.thumbUrl
             }
         }
     }
 
-    override suspend fun load(url: String): LoadResponse? {
-        val loadData = parseJson<LoadData>(url)
-        val detailApiUrl = "$detailUrl/api/a_movies.php?slug=${loadData.slug}"
-        val detailResponse = app.get(detailApiUrl).parsedSafe<OnflixDetailResponse>()
+    override suspend fun load(url: String): LoadResponse? = coroutineScope {
+        val document = app.get("$mainUrl$url").document
+        
+        val ldJsonText = document.select("script[type=\"application/ld+json\"]")
+            .find { it.data().contains("\"@type\": \"Movie\"") }?.data()
+        val ldJsonData = ldJsonText?.let { parseJson<LdJsonData>(it) }
 
-        val isMovie: Boolean = if (loadData.movieType != "unknown") {
-            (loadData.movieType == "phim-le")
-        } else {
-            detailResponse?.episodes?.firstOrNull()?.items?.let { items ->
-                items.size == 1 && items.first().name == "FULL"
-            } == true
+        val title = ldJsonData?.name ?: "N/A"
+        val plot = ldJsonData?.description
+        val poster = ldJsonData?.image
+        val year = ldJsonData?.datePublished?.take(4)?.toIntOrNull()
+        val tags = ldJsonData?.genre?.split(',')?.map { it.trim() }
+        val isMovie = ldJsonData?.genre?.contains("Phim bộ") != true
+        
+        val slug = url.substringAfterLast('/')
+        
+        val actorApiUrl = "$mainUrl/function/getactor.php?slug=$slug"
+        val headers = mapOf("Referer" to "$mainUrl$url")
+        val actorDocument = app.get(actorApiUrl, headers = headers).document
+        val rating = actorDocument.selectFirst("span#ratingValue")?.text()?.toFloatOrNull()?.let { (it * 100).toInt() }
+        val actors = actorDocument.select("div.actor-card").mapNotNull {
+            ActorData(Actor(it.selectFirst("p.actor-name a")?.text() ?: return@mapNotNull null, it.selectFirst("img.actor-image")?.attr("src")))
         }
 
-        return if (isMovie) {
-            val movieItemData = detailResponse?.episodes?.firstOrNull()?.items?.firstOrNull()?.toJson() ?: return null
-            newMovieLoadResponse(
-                name = loadData.name,
-                url = url,
-                type = TvType.Movie,
-                dataUrl = movieItemData
-            ) {
-                this.posterUrl = loadData.posterUrl
+        if (isMovie) {
+            return@coroutineScope newMovieLoadResponse(title, url, TvType.Movie, slug) {
+                this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = tags; this.rating = rating; this.actors = actors
             }
-        } else {
-            val episodes = mutableListOf<Episode>()
-            detailResponse?.episodes?.forEach { server ->
-                server.items?.forEach { item ->
-                    episodes.add(newEpisode(item.toJson()) {
-                        this.name = "Tập ${item.name}"
-                    })
+        }
+
+        val episodes = servers.map { server ->
+            async {
+                app.get("$mainUrl/function/getep.php?slug=$slug&server=$server", headers = headers)
+                   .parsedSafe<GetEpResponse>()?.let {
+                        (it.vietsubEpisodes ?: emptyList()) + (it.thuyetMinhEpisodes ?: emptyList())
+                   } ?: emptyList()
+            }
+        }.awaitAll().flatten()
+            .distinctBy { it.name }
+            .mapNotNull { epItem ->
+                newEpisode(epItem.toJson()) { 
+                    this.name = "Tập ${epItem.name?.replace("Tập ", "")?.padStart(2,'0')}" 
                 }
             }
-            newTvSeriesLoadResponse(
-                name = loadData.name,
-                url = url,
-                type = TvType.TvSeries,
-                episodes = episodes.sortedBy { it.name?.filter { c -> c.isDigit() }?.toIntOrNull() }
-            ) {
-                this.posterUrl = loadData.posterUrl
-            }
+            .sortedBy { it.name?.filter { c -> c.isDigit() }?.toIntOrNull() }
+
+        return@coroutineScope newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+            this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = tags; this.rating = rating; this.actors = actors
         }
     }
+    
+    private val videoIdRegex = Regex("""const videoId = '(.*?)'""")
+    private val subtitleDataRegex = Regex("""const subtitleData = (\[.*?\]);""")
 
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        if (data.isBlank() || data == "null") return false
-        val item = parseJson<OnflixServerItem>(data)
-        
-        val videoUrl = item.m3u8Url
-        if (videoUrl != null) {
+    ): Boolean = coroutineScope {
+        val slug = this.loadResponse?.url?.substringAfterLast('/') ?: return@coroutineScope false
+        val isMovie = this.loadResponse is MovieLoadResponse
+
+        // Nếu là phim lẻ, data là slug. Ta phải gọi API để lấy link.
+        // Nếu là phim bộ, data là JSON của EpisodeItem.
+        val item = if(isMovie) {
+            val headers = mapOf("Referer" to "$mainUrl/xem-phim/$slug")
+            // Với phim lẻ, chỉ cần gọi 1 server để lấy link
+            app.get("$mainUrl/function/getep.php?slug=$slug&server=server1", headers = headers)
+               .parsedSafe<GetEpResponse>()?.let {
+                    (it.vietsubEpisodes ?: emptyList()) + (it.thuyetMinhEpisodes ?: emptyList())
+               }?.firstOrNull()
+        } else {
+             parseJson(data)
+        }
+
+        if (item == null) return@coroutineScope false
+
+        // Trường hợp 1: Có link m3u8 trực tiếp
+        if (!item.linkM3u8.isNullOrBlank()) {
             callback(
                 ExtractorLink(
-                    source = this.name,
-                    name = if(item.name == "FULL") "Xem phim" else "Tập ${item.name}",
-                    url = videoUrl,
-                    referer = detailUrl,
+                    source = name,
+                    name = name,
+                    url = item.linkM3u8,
+                    referer = mainUrl,
                     quality = Qualities.Unknown.value,
-                    type = ExtractorLinkType.M3U8
+                    type = ExtractorLinkType.M3U8 // SỬA LỖI
                 )
             )
+            return@coroutineScope true
         }
-        item.nameGetSub?.let { subKey ->
-            try {
-                val subUrl = "$detailUrl/api/a_get_sub.php?file=$subKey"
-                app.get(subUrl).parsedSafe<OnflixSubtitleResponse>()?.subtitles?.forEach { sub ->
+
+        // Trường hợp 2: Phải cào link_embed
+        val embedUrl = item.linkEmbed
+        if (!embedUrl.isNullOrBlank()) {
+            val embedHtml = app.get(embedUrl).text
+            
+            videoIdRegex.find(embedHtml)?.groupValues?.get(1)?.let { videoUrl ->
+                callback(
+                    ExtractorLink(
+                        source = "$name (Embed)",
+                        name = "$name (Embed)",
+                        url = videoUrl,
+                        referer = embedUrl,
+                        quality = Qualities.Unknown.value,
+                        type = ExtractorLinkType.M3U8 // SỬA LỖI
+                    )
+                )
+            }
+
+            subtitleDataRegex.find(embedHtml)?.groupValues?.get(1)?.let { subJson ->
+                parseJson<List<PlayerSubtitle>>(subJson).forEach { sub ->
                     if (sub.subtitleFile != null && sub.language != null) {
                         subtitleCallback(SubtitleFile(sub.language, sub.subtitleFile))
                     }
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
             }
+            return@coroutineScope true
         }
-        return true
+
+        return@coroutineScope false
     }
 }
