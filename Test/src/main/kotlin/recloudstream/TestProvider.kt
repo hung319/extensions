@@ -68,10 +68,12 @@ class OnflixProvider : MainAPI() {
     override var lang = "vi"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
+    private val perPage = 20
+
     override val mainPage = mainPageOf(
-        "/api/bo_loc.php?action=filter&per_page=20" to "Phim Mới Cập Nhật",
-        "/api/bo_loc.php?action=filter&per_page=20&slug_loai_phim=phim-le" to "Phim Lẻ",
-        "/api/bo_loc.php?action=filter&per_page=20&slug_loai_phim=phim-bo" to "Phim Bộ"
+        "/api/bo_loc.php?action=filter&per_page=$perPage" to "Phim Mới Cập Nhật",
+        "/api/bo_loc.php?action=filter&per_page=$perPage&slug_loai_phim=phim-le" to "Phim Lẻ",
+        "/api/bo_loc.php?action=filter&per_page=$perPage&slug_loai_phim=phim-bo" to "Phim Bộ"
     )
 
     private fun toSearchResponse(movie: OnflixMovieItem): SearchResponse? {
@@ -92,12 +94,13 @@ class OnflixProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Cấu trúc URL này đã tương thích với API phân trang bạn cung cấp
         val url = "$mainUrl${request.data}&page=$page"
         val response = app.get(url).parsedSafe<OnflixApiResponse>()
 
         val homeList = response?.data?.mapNotNull { toSearchResponse(it) } ?: emptyList()
-        val hasNext = response?.pagination?.hasNext ?: false
+        
+        val apiHasNext = response?.pagination?.hasNext ?: false
+        val hasNext = if (apiHasNext) true else homeList.size >= perPage
 
         return newHomePageResponse(request.name, homeList, hasNext = hasNext)
     }
