@@ -11,8 +11,14 @@ import com.fasterxml.jackson.annotation.JsonProperty
 // =================== DATA CLASSES ===================
 
 // --- Lớp Data cho API Danh sách & Lọc (bo_loc.php) ---
+// CẬP NHẬT: Thêm PaginationData và pagination vào OnflixApiResponse
+data class PaginationData(
+    @JsonProperty("has_next") val hasNext: Boolean?
+)
+
 data class OnflixApiResponse(
-    val data: List<OnflixMovieItem>?
+    val data: List<OnflixMovieItem>?,
+    val pagination: PaginationData?
 )
 
 data class OnflixMovieItem(
@@ -26,7 +32,7 @@ data class OnflixMovieItem(
     @JsonProperty("the_loai") val theLoai: String?,
     @JsonProperty("loai_phim") val loaiPhim: String?,
     val nam: String?,
-    val content: String? // Giả sử API có thể trả về content
+    val content: String?
 )
 
 // --- Lớp Data cho API Chi tiết/Link phim (a_movies.php) ---
@@ -73,10 +79,8 @@ class OnflixProvider : MainAPI() {
         "/api/bo_loc.php?action=filter&per_page=20&slug_loai_phim=phim-bo" to "Phim Bộ"
     )
 
-    // Hàm helper để chuyển đổi OnflixMovieItem -> SearchResponse
     private fun toSearchResponse(movie: OnflixMovieItem): SearchResponse? {
         val name = movie.name ?: return null
-        // API trả về `loaiPhim` dạng "Phim bộ,Phim đang chiếu", ta chỉ cần phần đầu
         val isMovie = movie.loaiPhim?.contains("Phim bộ") != true
         
         return if (isMovie) {
@@ -92,16 +96,23 @@ class OnflixProvider : MainAPI() {
         }
     }
 
+    // CẬP NHẬT: Thêm logic phân trang
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = "$mainUrl${request.data}&page=$page"
-        val response = app.get(url).parsedSafe<OnflixApiResponse>()?.data ?: emptyList()
-        val homeList = response.mapNotNull { toSearchResponse(it) }
-        return newHomePageResponse(request.name, homeList)
+        val response = app.get(url).parsedSafe<OnflixApiResponse>()
+
+        val homeList = response?.data?.mapNotNull { toSearchResponse(it) } ?: emptyList()
+        
+        // Trích xuất giá trị `has_next` từ API
+        val hasNext = response?.pagination?.hasNext ?: false
+
+        // Trả về response kèm theo thông tin `hasNext`
+        return newHomePageResponse(request.name, homeList, hasNext = hasNext)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        // ĐÃ CẬP NHẬT: Dùng tham số `search` thay vì `name`
         val url = "$mainUrl/api/bo_loc.php?action=filter&search=$query"
+        // API search có thể không phân trang, nên ta chỉ lấy kết quả đầu
         val response = app.get(url).parsedSafe<OnflixApiResponse>()?.data ?: return emptyList()
         return response.mapNotNull { toSearchResponse(it) }
     }
