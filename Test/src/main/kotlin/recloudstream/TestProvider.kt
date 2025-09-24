@@ -10,8 +10,6 @@ import com.fasterxml.jackson.annotation.JsonProperty
 
 // =================== DATA CLASSES ===================
 
-// --- Lớp Data cho API Danh sách & Lọc (bo_loc.php) ---
-// CẬP NHẬT: Thêm PaginationData và pagination vào OnflixApiResponse
 data class PaginationData(
     @JsonProperty("has_next") val hasNext: Boolean?
 )
@@ -35,7 +33,6 @@ data class OnflixMovieItem(
     val content: String?
 )
 
-// --- Lớp Data cho API Chi tiết/Link phim (a_movies.php) ---
 data class OnflixDetailResponse(
     val episodes: List<OnflixServerGroup>?
 )
@@ -49,7 +46,6 @@ data class OnflixServerItem(
     @JsonProperty("link_embed") val linkEmbed: String?
 )
 
-// --- Lớp Data cho API Phụ đề (a_get_sub.php) ---
 data class OnflixSubtitleResponse(
     val subtitles: List<OnflixSubtitleItem>?
 )
@@ -58,7 +54,6 @@ data class OnflixSubtitleItem(
     @JsonProperty("subtitle_file") val subtitleFile: String?
 )
 
-// --- Lớp Data cho Player (trang embed) ---
 data class PlayerSubtitle(
     val language: String?,
     @JsonProperty("subtitle_file") val subtitleFile: String?
@@ -96,23 +91,19 @@ class OnflixProvider : MainAPI() {
         }
     }
 
-    // CẬP NHẬT: Thêm logic phân trang
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        // Cấu trúc URL này đã tương thích với API phân trang bạn cung cấp
         val url = "$mainUrl${request.data}&page=$page"
         val response = app.get(url).parsedSafe<OnflixApiResponse>()
 
         val homeList = response?.data?.mapNotNull { toSearchResponse(it) } ?: emptyList()
-        
-        // Trích xuất giá trị `has_next` từ API
         val hasNext = response?.pagination?.hasNext ?: false
 
-        // Trả về response kèm theo thông tin `hasNext`
         return newHomePageResponse(request.name, homeList, hasNext = hasNext)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/api/bo_loc.php?action=filter&search=$query"
-        // API search có thể không phân trang, nên ta chỉ lấy kết quả đầu
         val response = app.get(url).parsedSafe<OnflixApiResponse>()?.data ?: return emptyList()
         return response.mapNotNull { toSearchResponse(it) }
     }
