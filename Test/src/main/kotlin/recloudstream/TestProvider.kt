@@ -7,6 +7,9 @@ import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.fasterxml.jackson.annotation.JsonProperty
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 
 // =================== DATA CLASSES ===================
 
@@ -39,12 +42,11 @@ data class PlayerSubtitle(
     @JsonProperty("subtitle_file") val subtitleFile: String?
 )
 
-// Lớp Data trung gian MỚI để truyền thông tin an toàn đến `loadLinks`
+// SỬA LỖI: Di chuyển LinkData ra ngoài để truy cập được từ nhiều nơi
 private data class LinkData(
     val slug: String,
     val isMovie: Boolean,
-    // Chứa JSON của EpisodeItem, chỉ dùng cho phim bộ
-    val episodeItemJson: String? 
+    val episodeItemJson: String?
 )
 
 // =================== PROVIDER IMPLEMENTATION ===================
@@ -68,12 +70,11 @@ class OnflixProvider : MainAPI() {
         val document = app.get("$mainUrl${request.data}").document
         val homeList = document.select("div.movie-card").mapNotNull {
             val linkTag = it.selectFirst("a") ?: return@mapNotNull null
-            // SỬA LỖI: Gán posterUrl trong initializer
             newMovieSearchResponse(
                 name = it.selectFirst("h6 a")?.text() ?: return@mapNotNull null,
                 url = linkTag.attr("href")
             ) {
-                this.posterUrl = it.selectFirst("img")?.attr("src")
+                 this.posterUrl = it.selectFirst("img")?.attr("src")
             }
         }
         return newHomePageResponse(request.name, homeList)
@@ -119,30 +120,31 @@ class OnflixProvider : MainAPI() {
         }
 
         if (isMovie) {
-            // SỬA LỖI: "Gói" dữ liệu vào LinkData
             val linkData = LinkData(slug = slug, isMovie = true, episodeItemJson = null)
             return@coroutineScope newMovieLoadResponse(title, url, TvType.Movie, linkData.toJson()) {
                 this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = tags; this.rating = rating; this.actors = actors
             }
         }
 
-        val episodes = servers.map { server ->
+        // SỬA LỖI: Thay đổi cách gọi async và awaitAll
+        val deferredEpisodes = servers.map { server ->
             async {
                 app.get("$mainUrl/function/getep.php?slug=$slug&server=$server", headers = headers)
-                   .parsedSafe<GetEpResponse>()?.let {
-                        (it.vietsubEpisodes ?: emptyList()) + (it.thuyetMinhEpisodes ?: emptyList())
+                   .parsedSafe<GetEpResponse>()?.let { resp ->
+                        (resp.vietsubEpisodes ?: emptyList()) + (resp.thuyetMinhEpisodes ?: emptyList())
                    } ?: emptyList()
             }
-        }.awaitAll().flatten()
-            .distinctBy { it.name }
+        }
+        
+        val episodes = deferredEpisodes.awaitAll().flatten()
+            .distinctBy { epItem -> epItem.name }
             .mapNotNull { epItem ->
-                // SỬA LỖI: "Gói" dữ liệu vào LinkData cho từng tập
                 val linkData = LinkData(slug = slug, isMovie = false, episodeItemJson = epItem.toJson())
                 newEpisode(linkData.toJson()) { 
                     this.name = "Tập ${epItem.name?.replace("Tập ", "")?.padStart(2,'0')}" 
                 }
             }
-            .sortedBy { it.name?.filter { c -> c.isDigit() }?.toIntOrNull() }
+            .sortedBy { ep -> ep.name?.filter { c -> c.isDigit() }?.toIntOrNull() }
 
         return@coroutineScope newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
             this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = tags; this.rating = rating; this.actors = actors
@@ -153,18 +155,17 @@ class OnflixProvider : MainAPI() {
     private val subtitleDataRegex = Regex("""const subtitleData = (\[.*?\]);""")
 
     override suspend fun loadLinks(
-        data: String, // `data` bây giờ luôn là JSON của LinkData
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        // SỬA LỖI: Giải nén LinkData để lấy thông tin
+    ): Boolean = coroutineScope { // SỬA LỖI: Thêm coroutineScope
         val linkData = parseJson<LinkData>(data)
         val slug = linkData.slug
-        val isMovie = linkData.isMovie
 
-        val item = if(isMovie) {
+        val item = if(linkData.isMovie) {
             val headers = mapOf("Referer" to "$mainUrl/xem-phim/$slug")
+            // Với phim lẻ, chỉ cần gọi 1 server để lấy link
             app.get("$mainUrl/function/getep.php?slug=$slug&server=server1", headers = headers)
                .parsedSafe<GetEpResponse>()?.let {
                     (it.vietsubEpisodes ?: emptyList()) + (it.thuyetMinhEpisodes ?: emptyList())
@@ -173,13 +174,15 @@ class OnflixProvider : MainAPI() {
              linkData.episodeItemJson?.let { parseJson<EpisodeItem>(it) }
         }
 
-        if (item == null) return false
+        if (item == null) return@coroutineScope false
+
+        val providerName = this@OnflixProvider.name // SỬA LỖI: tham chiếu `name` rõ ràng
 
         if (!item.linkM3u8.isNullOrBlank()) {
             callback(
-                ExtractorLink(name, name, item.linkM3u8, mainUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
+                ExtractorLink(providerName, providerName, item.linkM3u8, mainUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
             )
-            return true
+            return@coroutineScope true
         }
 
         val embedUrl = item.linkEmbed
@@ -188,7 +191,7 @@ class OnflixProvider : MainAPI() {
             
             videoIdRegex.find(embedHtml)?.groupValues?.get(1)?.let { videoUrl ->
                 callback(
-                    ExtractorLink("$name (Embed)", "$name (Embed)", videoUrl, embedUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
+                    ExtractorLink("$providerName (Embed)", "$providerName (Embed)", videoUrl, embedUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
                 )
             }
 
@@ -199,9 +202,9 @@ class OnflixProvider : MainAPI() {
                     }
                 }
             }
-            return true
+            return@coroutineScope true
         }
 
-        return false
+        return@coroutineScope false
     }
 }
