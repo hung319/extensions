@@ -42,13 +42,6 @@ data class PlayerSubtitle(
     @JsonProperty("subtitle_file") val subtitleFile: String?
 )
 
-// SỬA LỖI: Di chuyển LinkData ra ngoài để truy cập được từ nhiều nơi
-private data class LinkData(
-    val slug: String,
-    val isMovie: Boolean,
-    val episodeItemJson: String?
-)
-
 // =================== PROVIDER IMPLEMENTATION ===================
 
 class OnflixProvider : MainAPI() {
@@ -72,7 +65,7 @@ class OnflixProvider : MainAPI() {
             val linkTag = it.selectFirst("a") ?: return@mapNotNull null
             newMovieSearchResponse(
                 name = it.selectFirst("h6 a")?.text() ?: return@mapNotNull null,
-                url = linkTag.attr("href")
+                url = linkTag.attr("href") // Lấy href có thể là link đầy đủ hoặc tương đối
             ) {
                  this.posterUrl = it.selectFirst("img")?.attr("src")
             }
@@ -88,7 +81,7 @@ class OnflixProvider : MainAPI() {
             val slug = item.slug ?: return@mapNotNull null
             newMovieSearchResponse(
                 name = item.name ?: return@mapNotNull null,
-                url = "/phim/$slug"
+                url = "$mainUrl/phim/$slug" // Tạo link đầy đủ để `load` nhận diện
             ) {
                 this.posterUrl = item.thumbUrl
             }
@@ -96,7 +89,8 @@ class OnflixProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? = coroutineScope {
-        val document = app.get("$mainUrl$url").document
+        // SỬA LỖI: Không ghép chuỗi thủ công, để app.get tự xử lý URL tuyệt đối/tương đối
+        val document = app.get(url).document
         
         val ldJsonText = document.select("script[type=\"application/ld+json\"]")
             .find { it.data().contains("\"@type\": \"Movie\"") }?.data()
@@ -112,7 +106,7 @@ class OnflixProvider : MainAPI() {
         val slug = url.substringAfterLast('/')
         
         val actorApiUrl = "$mainUrl/function/getactor.php?slug=$slug"
-        val headers = mapOf("Referer" to "$mainUrl$url")
+        val headers = mapOf("Referer" to url) // Dùng url gốc làm referer
         val actorDocument = app.get(actorApiUrl, headers = headers).document
         val rating = actorDocument.selectFirst("span#ratingValue")?.text()?.toFloatOrNull()?.let { (it * 100).toInt() }
         val actors = actorDocument.select("div.actor-card").mapNotNull {
@@ -120,13 +114,11 @@ class OnflixProvider : MainAPI() {
         }
 
         if (isMovie) {
-            val linkData = LinkData(slug = slug, isMovie = true, episodeItemJson = null)
-            return@coroutineScope newMovieLoadResponse(title, url, TvType.Movie, linkData.toJson()) {
+            return@coroutineScope newMovieLoadResponse(title, url, TvType.Movie, slug) {
                 this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = tags; this.rating = rating; this.actors = actors
             }
         }
 
-        // SỬA LỖI: Thay đổi cách gọi async và awaitAll
         val deferredEpisodes = servers.map { server ->
             async {
                 app.get("$mainUrl/function/getep.php?slug=$slug&server=$server", headers = headers)
@@ -139,8 +131,7 @@ class OnflixProvider : MainAPI() {
         val episodes = deferredEpisodes.awaitAll().flatten()
             .distinctBy { epItem -> epItem.name }
             .mapNotNull { epItem ->
-                val linkData = LinkData(slug = slug, isMovie = false, episodeItemJson = epItem.toJson())
-                newEpisode(linkData.toJson()) { 
+                newEpisode(epItem.toJson()) { 
                     this.name = "Tập ${epItem.name?.replace("Tập ", "")?.padStart(2,'0')}" 
                 }
             }
@@ -159,33 +150,46 @@ class OnflixProvider : MainAPI() {
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
-    ): Boolean = coroutineScope { // SỬA LỖI: Thêm coroutineScope
-        val linkData = parseJson<LinkData>(data)
-        val slug = linkData.slug
+    ): Boolean = coroutineScope {
+        // `data` là slug cho phim lẻ, hoặc JSON của EpisodeItem cho phim bộ
+        val loadResponse = ArchComponent.getCurrentlyLoaded()
 
-        val item = if(linkData.isMovie) {
+        val slug = when(loadResponse) {
+            is MovieLoadResponse -> loadResponse.data
+            is TvSeriesLoadResponse -> parseJson<EpisodeItem>(data).let {
+                // Heuristic: If slug is in the item, use it, else parse from main URL.
+                // This part is complex, let's simplify by parsing from main URL always.
+                loadResponse.url.substringAfterLast('/')
+            }
+            else -> return@coroutineScope false
+        }
+        
+        val isMovie = loadResponse is MovieLoadResponse
+        val episodeItem = if (isMovie) {
             val headers = mapOf("Referer" to "$mainUrl/xem-phim/$slug")
-            // Với phim lẻ, chỉ cần gọi 1 server để lấy link
-            app.get("$mainUrl/function/getep.php?slug=$slug&server=server1", headers = headers)
-               .parsedSafe<GetEpResponse>()?.let {
-                    (it.vietsubEpisodes ?: emptyList()) + (it.thuyetMinhEpisodes ?: emptyList())
-               }?.firstOrNull()
+            servers.map { server ->
+                async {
+                    app.get("$mainUrl/function/getep.php?slug=$slug&server=$server", headers = headers)
+                        .parsedSafe<GetEpResponse>()?.let { (it.vietsubEpisodes ?: emptyList()) + (it.thuyetMinhEpisodes ?: emptyList()) }
+                        ?.firstOrNull { it.name == "FULL" }
+                }
+            }.awaitAll().firstOrNull { it != null }
         } else {
-             linkData.episodeItemJson?.let { parseJson<EpisodeItem>(it) }
+            parseJson<EpisodeItem>(data)
         }
 
-        if (item == null) return@coroutineScope false
+        if (episodeItem == null) return@coroutineScope false
 
-        val providerName = this@OnflixProvider.name // SỬA LỖI: tham chiếu `name` rõ ràng
+        val providerName = this@OnflixProvider.name
 
-        if (!item.linkM3u8.isNullOrBlank()) {
+        if (!episodeItem.linkM3u8.isNullOrBlank()) {
             callback(
-                ExtractorLink(providerName, providerName, item.linkM3u8, mainUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
+                ExtractorLink(providerName, providerName, episodeItem.linkM3u8, mainUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
             )
             return@coroutineScope true
         }
 
-        val embedUrl = item.linkEmbed
+        val embedUrl = episodeItem.linkEmbed
         if (!embedUrl.isNullOrBlank()) {
             val embedHtml = app.get(embedUrl).text
             
