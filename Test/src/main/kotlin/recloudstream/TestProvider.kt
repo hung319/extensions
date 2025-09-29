@@ -2,12 +2,12 @@ package recloudstream
 
 /*
 * @CloudstreamProvider: BokepIndoProvider
-* @Version: 3.5
+* @Version: 3.6
 * @Author: Coder
 * @Language: id
 * @TvType: Nsfw
 * @Url: https://bokepindoh.monster
-* @Info: Provider with hybrid logic and detailed error logging.
+* @Info: Provider with hybrid logic and detailed Android logging.
 */
 
 import com.lagradost.cloudstream3.*
@@ -15,7 +15,7 @@ import com.lagradost.cloudstream3.utils.*
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import org.jsoup.nodes.Element
-import com.lagradost.cloudstream3.utils.logError // THÊM IMPORT CẦN THIẾT
+import android.util.Log // THÊM IMPORT CHO ANDROID LOG
 
 class BokepIndoProvider : MainAPI() {
     override var name = "BokepIndo"
@@ -23,6 +23,9 @@ class BokepIndoProvider : MainAPI() {
     override var supportedTypes = setOf(TvType.NSFW)
     override var hasMainPage = true
     override var hasDownloadSupport = true
+
+    // Định nghĩa TAG để lọc log cho dễ
+    private val TAG = "BokepIndoProvider"
 
     override val mainPage = mainPageOf(
         mainUrl to "Mới Nhất",
@@ -69,29 +72,28 @@ class BokepIndoProvider : MainAPI() {
         }
     }
     
-    // ## ĐÃ THÊM LOG CHI TIẾT ĐỂ GỠ LỖI ##
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        println("BokepIndoProvider: Bắt đầu lấy link cho: $data")
+        Log.d(TAG, "Loading links for: $data")
         val mainDocument = app.get(data).document
         var foundLinks = false
 
         val multiServerScript = mainDocument.selectFirst("script[id=wpst-main-js-extra]")
 
         if (multiServerScript != null) {
-            println("BokepIndoProvider: Phát hiện trang multi-server.")
+            Log.d(TAG, "Multi-server page detected.")
             val scriptContent = multiServerScript.html()
             val oriIframeTag = Regex("""embed_url":"(.*?)"""").find(scriptContent)?.groupValues?.get(1)
             val doodIframeTag = Regex("""video_url":"(.*?)"""").find(scriptContent)?.groupValues?.get(1)
             val srcRegex = Regex("""src=\\"(.*?)\\""")
             val oriUrl = oriIframeTag?.let { srcRegex.find(it)?.groupValues?.get(1) }
             val doodUrl = doodIframeTag?.let { srcRegex.find(it)?.groupValues?.get(1) }
-            println("BokepIndoProvider: Server Ori URL: $oriUrl")
-            println("BokepIndoProvider: Server Dood URL: $doodUrl")
+            Log.d(TAG, "Server Ori URL: $oriUrl")
+            Log.d(TAG, "Server Dood URL: $doodUrl")
 
             coroutineScope {
                 listOfNotNull(
@@ -100,7 +102,7 @@ class BokepIndoProvider : MainAPI() {
                 ).forEach { (url, name) ->
                     launch {
                         try {
-                            println("BokepIndoProvider: Đang xử lý server: $name - URL: $url")
+                            Log.d(TAG, "Processing server: '$name' with URL: $url")
                             if (name == "Server Dood") {
                                 if (loadExtractor(url, data, subtitleCallback, callback)) foundLinks = true
                             } else if (name == "Server Ori") {
@@ -110,7 +112,7 @@ class BokepIndoProvider : MainAPI() {
                                     if (scriptData.contains("eval(function(p,a,c,k,e,d)")) {
                                         val unpacked = getAndUnpack(scriptData)
                                         val videoUrl = Regex("""file:\s*['"](.*?\.mp4)['"]""").find(unpacked)?.groupValues?.get(1)
-                                        println("BokepIndoProvider: Đã giải mã link Server Ori: $videoUrl")
+                                        Log.d(TAG, "Extracted Ori video URL: $videoUrl")
                                         if (videoUrl != null) {
                                             callback(ExtractorLink(this@BokepIndoProvider.name, name, videoUrl, url, Qualities.Unknown.value, type = ExtractorLinkType.VIDEO))
                                             foundLinks = true
@@ -119,37 +121,35 @@ class BokepIndoProvider : MainAPI() {
                                 }
                             }
                         } catch (e: Exception) {
-                            println("BokepIndoProvider: Lỗi khi xử lý server $name")
-                            logError(e) // Ghi lại lỗi chi tiết vào log
+                            Log.e(TAG, "Error processing server '$name'", e)
                         }
                     }
                 }
             }
         } else {
-            println("BokepIndoProvider: Phát hiện trang LuluStream (cũ).")
+            Log.d(TAG, "LuluStream (legacy) page detected.")
             val iframeSrc = mainDocument.selectFirst("div.responsive-player iframe")?.attr("src")
-            println("BokepIndoProvider: LuluStream iframe URL: $iframeSrc")
+            Log.d(TAG, "LuluStream iframe URL: $iframeSrc")
             if (iframeSrc != null) {
                 try {
                     val iframeHtmlContent = app.get(iframeSrc).text
                     val m3u8Regex = Regex("""sources:\s*\[\{file:"([^"]+master\.m3u8[^"]+)"""")
                     val match = m3u8Regex.find(iframeHtmlContent)
                     val m3u8Url = match?.groups?.get(1)?.value
-                    println("BokepIndoProvider: Đã trích xuất link M3U8: $m3u8Url")
+                    Log.d(TAG, "Extracted M3U8 URL: $m3u8Url")
 
                     if (m3u8Url != null) {
                         callback(ExtractorLink(this.name, "LuluStream", m3u8Url, iframeSrc, Qualities.Unknown.value, type = ExtractorLinkType.VIDEO))
                         foundLinks = true
                     }
                 } catch (e: Exception) {
-                    println("BokepIndoProvider: Lỗi khi xử lý LuluStream.")
-                    logError(e) // Ghi lại lỗi chi tiết vào log
+                    Log.e(TAG, "Error processing LuluStream", e)
                 }
             }
         }
 
         if (!foundLinks) {
-            println("BokepIndoProvider: KHÔNG tìm thấy link nào.")
+            Log.w(TAG, "No links were found for $data")
         }
         return foundLinks
     }
