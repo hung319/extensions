@@ -2,7 +2,7 @@ package recloudstream
 
 /*
 * @CloudstreamProvider: BokepIndoProvider
-* @Version: 3.2
+* @Version: 3.3
 * @Author: Coder
 * @Language: id
 * @TvType: Nsfw
@@ -20,7 +20,6 @@ class BokepIndoProvider : MainAPI() {
     override var name = "BokepIndo"
     override var mainUrl = "https://bokepindoh.monster"
     override var supportedTypes = setOf(TvType.NSFW)
-    // `lang` nên được khai báo trong metadata, không cần ở đây
     override var hasMainPage = true
     override var hasDownloadSupport = true
 
@@ -69,7 +68,6 @@ class BokepIndoProvider : MainAPI() {
         }
     }
     
-    // ## ĐÃ SỬA LỖI VÀ TỐI ƯU LOGIC BẤT ĐỒNG BỘ ##
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -82,7 +80,6 @@ class BokepIndoProvider : MainAPI() {
         val multiServerScript = mainDocument.selectFirst("script[id=wpst-main-js-extra]")
 
         if (multiServerScript != null) {
-            // ## LOGIC CHO TRANG MULTI-SERVER (MỚI) ##
             val scriptContent = multiServerScript.html()
             val oriIframeTag = Regex("""embed_url":"(.*?)"""").find(scriptContent)?.groupValues?.get(1)
             val doodIframeTag = Regex("""video_url":"(.*?)"""").find(scriptContent)?.groupValues?.get(1)
@@ -90,13 +87,11 @@ class BokepIndoProvider : MainAPI() {
             val oriUrl = oriIframeTag?.let { srcRegex.find(it)?.groupValues?.get(1) }
             val doodUrl = doodIframeTag?.let { srcRegex.find(it)?.groupValues?.get(1) }
 
-            // Sử dụng coroutineScope để chạy các tác vụ song song
             coroutineScope {
                 listOfNotNull(
                     oriUrl?.let { Pair(it, "Server Ori") },
                     doodUrl?.let { Pair(it, "Server Dood") }
                 ).forEach { (url, name) ->
-                    // launch để mỗi server được xử lý trên một luồng riêng
                     launch {
                         try {
                             if (name == "Server Dood") {
@@ -116,14 +111,13 @@ class BokepIndoProvider : MainAPI() {
                                 }
                             }
                         } catch (e: Exception) {
-                            // Bỏ qua lỗi nếu một trong các server bị hỏng
-                            logError(e)
+                            // SỬA LỖI: Dùng e.printStackTrace() thay cho logError(e)
+                            e.printStackTrace()
                         }
                     }
                 }
             }
         } else {
-            // ## LOGIC CHO TRANG LULUSTREAM (CŨ) ##
             val iframeSrc = mainDocument.selectFirst("div.responsive-player iframe")?.attr("src")
             if (iframeSrc != null) {
                 try {
@@ -137,7 +131,8 @@ class BokepIndoProvider : MainAPI() {
                         foundLinks = true
                     }
                 } catch (e: Exception) {
-                    logError(e)
+                    // SỬA LỖI: Dùng e.printStackTrace() thay cho logError(e)
+                    e.printStackTrace()
                 }
             }
         }
