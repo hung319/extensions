@@ -2,7 +2,7 @@ package recloudstream
 
 /*
 * @CloudstreamProvider: BokepIndoProvider
-* @Version: 3.3
+* @Version: 3.4
 * @Author: Coder
 * @Language: id
 * @TvType: Nsfw
@@ -102,7 +102,8 @@ class BokepIndoProvider : MainAPI() {
                                     val scriptData = script.data()
                                     if (scriptData.contains("eval(function(p,a,c,k,e,d)")) {
                                         val unpacked = getAndUnpack(scriptData)
-                                        val videoUrl = Regex("""file:"(.*?\.mp4)"""").find(unpacked)?.groupValues?.get(1)
+                                        // SỬA LỖI: Regex chấp nhận cả dấu nháy đơn ' và kép "
+                                        val videoUrl = Regex("""file:\s*['"](.*?\.mp4)['"]""").find(unpacked)?.groupValues?.get(1)
                                         if (videoUrl != null) {
                                             callback(ExtractorLink(this@BokepIndoProvider.name, name, videoUrl, url, Qualities.Unknown.value, type = ExtractorLinkType.VIDEO))
                                             foundLinks = true
@@ -111,7 +112,6 @@ class BokepIndoProvider : MainAPI() {
                                 }
                             }
                         } catch (e: Exception) {
-                            // SỬA LỖI: Dùng e.printStackTrace() thay cho logError(e)
                             e.printStackTrace()
                         }
                     }
@@ -127,16 +127,14 @@ class BokepIndoProvider : MainAPI() {
                     val m3u8Url = match?.groups?.get(1)?.value
 
                     if (m3u8Url != null) {
-                        callback(ExtractorLink(this.name, "LuluStream", m3u8Url, iframeSrc, Qualities.Unknown.value, type = ExtractorLinkType.M3U8))
+                        callback(ExtractorLink(this.name, "LuluStream", m3u8Url, iframeSrc, Qualities.Unknown.value, type = ExtractorLinkType.VIDEO))
                         foundLinks = true
                     }
                 } catch (e: Exception) {
-                    // SỬA LỖI: Dùng e.printStackTrace() thay cho logError(e)
                     e.printStackTrace()
                 }
             }
         }
-
         return foundLinks
     }
     
