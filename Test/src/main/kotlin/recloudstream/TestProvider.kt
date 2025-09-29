@@ -2,58 +2,66 @@ package recloudstream
 
 /*
 * @CloudstreamProvider: BokepIndoProvider
-* @Version: 1.3
+* @Version: 2.1
 * @Author: Coder
 * @Language: id
 * @TvType: Nsfw
 * @Url: https://bokepindoh.monster
-* @Info: Provider for Bokepindoh.monster
+* @Info: Provider for Bokepindoh.monster with multiple homepage categories.
 */
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 
-// Định nghĩa provider, kế thừa từ MainAPI của CloudStream
 class BokepIndoProvider : MainAPI() {
-    // ## 1. Thiết lập Provider cơ bản ##
     override var name = "BokepIndo"
     override var mainUrl = "https://bokepindoh.monster"
     override var supportedTypes = setOf(TvType.NSFW)
     override var hasMainPage = true
     override var hasDownloadSupport = true
 
-    // ## 2. Hàm tải trang chính (Homepage) - Đã cập nhật thành getMainPage ##
+    // ## 1. Thêm các danh sách (grid) cho trang chính ##
+    // Sử dụng `mainPageOf` để định nghĩa các mục sẽ hiển thị trên homepage.
+    // Mỗi mục là một cặp (URL, Tên hiển thị).
+    override val mainPage = mainPageOf(
+        mainUrl to "Mới Nhất",
+        "$mainUrl/category/bokep-indo/" to "Bokep Indo",
+        "$mainUrl/category/bokep-viral/" to "Bokep Viral",
+        "$mainUrl/category/bokep-jav/" to "Bokep JAV"
+    )
+
+    // ## 2. Cập nhật getMainPage để xử lý nhiều danh sách ##
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Xử lý phân trang, trang 1 không cần /page/1
-        val url = if (page == 1) mainUrl else "$mainUrl/page/$page/"
+        // `request.data` sẽ chứa URL tương ứng với mục được chọn (VD: https://.../category/bokep-indo/)
+        val url = if (page == 1) {
+            request.data
+        } else {
+            // Xử lý phân trang cho cả trang chủ và các trang thể loại
+            "${request.data.removeSuffix("/")}/page/$page/"
+        }
         val document = app.get(url).document
 
-        // Tìm tất cả các video cards trên trang
         val homePageList = document.select("article.loop-video.thumb-block").mapNotNull {
-            it.toSearchResponse() // Sử dụng hàm helper để chuyển đổi Element thành SearchResponse
+            it.toSearchResponse()
         }
 
-        // Tạo và trả về một danh sách cho homepage
-        // `hasNext` = true để cho phép cuộn vô tận (load more)
+        // `request.name` sẽ là tên bạn đã định nghĩa ở `mainPageOf`
         return newHomePageResponse(
-            HomePageList(request.name, homePageList), // Sử dụng request.name để lấy tên mặc định
+            HomePageList(request.name, homePageList),
             hasNext = true
         )
     }
-
-    // ## 3. Hàm tìm kiếm ##
+    
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/?s=${query.replace(" ", "+")}"
         val document = app.get(searchUrl).document
         
-        // Logic parse kết quả tìm kiếm giống hệt trang chủ
         return document.select("article.loop-video.thumb-block").mapNotNull {
             it.toSearchResponse()
         }
     }
 
-    // ## 4. Hàm tải chi tiết (Metadata) ##
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
@@ -72,23 +80,42 @@ class BokepIndoProvider : MainAPI() {
             this.recommendations = recommendations
         }
     }
-
-    // ## 5. Hàm tải link stream ##
+    
+    // ## 3. Cập nhật loadLinks để dùng constructor ExtractorLink chuẩn ##
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data).document
-        
-        val iframeSrc = document.selectFirst("div.responsive-player iframe")?.attr("src")
+        val mainDocument = app.get(data).document
+        val iframeSrc = mainDocument.selectFirst("div.responsive-player iframe")?.attr("src")
             ?: return false 
 
-        return loadExtractor(iframeSrc, data, subtitleCallback, callback)
-    }
+        val iframeHtmlContent = app.get(iframeSrc).text
 
-    // ## 6. Hàm Helper để parse Video Card ##
+        val m3u8Regex = Regex("""sources:\s*\[\{file:"([^"]+master\.m3u8[^"]+)"""")
+        val match = m3u8Regex.find(iframeHtmlContent)
+        val m3u8Url = match?.groups?.get(1)?.value
+
+        if (m3u8Url != null) {
+            // Sử dụng constructor chuẩn với `type = ExtractorLinkType.M3U8`
+            callback(
+                ExtractorLink(
+                    source = this.name,
+                    name = "LuluStream",
+                    url = m3u8Url,
+                    referer = iframeSrc,
+                    quality = Qualities.Unknown.value,
+                    type = ExtractorLinkType.M3U8 // Thay thế cho isM3u8 = true
+                )
+            )
+            return true
+        }
+
+        return false
+    }
+    
     private fun Element.toSearchResponse(): SearchResponse? {
         val linkTag = this.selectFirst("a") ?: return null
         val href = fixUrl(linkTag.attr("href"))
