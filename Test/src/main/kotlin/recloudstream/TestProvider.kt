@@ -2,12 +2,12 @@ package recloudstream
 
 /*
 * @CloudstreamProvider: BokepIndoProvider
-* @Version: 3.6
+* @Version: 4.0 FINAL
 * @Author: Coder
 * @Language: id
 * @TvType: Nsfw
 * @Url: https://bokepindoh.monster
-* @Info: Provider with hybrid logic and detailed Android logging.
+* @Info: Provider with hybrid logic and custom extractors for all servers.
 */
 
 import com.lagradost.cloudstream3.*
@@ -15,7 +15,7 @@ import com.lagradost.cloudstream3.utils.*
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import org.jsoup.nodes.Element
-import android.util.Log // THÊM IMPORT CHO ANDROID LOG
+import android.util.Log
 
 class BokepIndoProvider : MainAPI() {
     override var name = "BokepIndo"
@@ -24,7 +24,6 @@ class BokepIndoProvider : MainAPI() {
     override var hasMainPage = true
     override var hasDownloadSupport = true
 
-    // Định nghĩa TAG để lọc log cho dễ
     private val TAG = "BokepIndoProvider"
 
     override val mainPage = mainPageOf(
@@ -72,6 +71,7 @@ class BokepIndoProvider : MainAPI() {
         }
     }
     
+    // ## LOGIC LẤY LINK HOÀN CHỈNH ##
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -104,7 +104,18 @@ class BokepIndoProvider : MainAPI() {
                         try {
                             Log.d(TAG, "Processing server: '$name' with URL: $url")
                             if (name == "Server Dood") {
-                                if (loadExtractor(url, data, subtitleCallback, callback)) foundLinks = true
+                                // Logic giải mã DoodStream thủ công
+                                val doodDoc = app.get(url, referer = data).text
+                                val md5 = doodDoc.substringAfter("'/pass_md5/").substringBefore("'")
+                                val token = doodDoc.substringAfter("?token=").substringBefore("'")
+                                val expiry = doodDoc.substringAfter("&expiry=").substringBefore("'")
+                                val randomChars = getRandomString(10)
+                                
+                                val masterUrl = app.get("https://${url.toUri().host}/pass_md5/$md5", referer = url).text
+                                val finalUrl = "$masterUrl$randomChars?token=$token&expiry=$expiry"
+                                
+                                callback(ExtractorLink(this@BokepIndoProvider.name, name, finalUrl, "https://${url.toUri().host}/", Qualities.Unknown.value, type = ExtractorLinkType.VIDEO))
+                                foundLinks = true
                             } else if (name == "Server Ori") {
                                 val doc = app.get(url).document
                                 doc.select("script").mapNotNull { script ->
@@ -114,7 +125,9 @@ class BokepIndoProvider : MainAPI() {
                                         val videoUrl = Regex("""file:\s*['"](.*?\.mp4)['"]""").find(unpacked)?.groupValues?.get(1)
                                         Log.d(TAG, "Extracted Ori video URL: $videoUrl")
                                         if (videoUrl != null) {
-                                            callback(ExtractorLink(this@BokepIndoProvider.name, name, videoUrl, url, Qualities.Unknown.value, type = ExtractorLinkType.VIDEO))
+                                            // Sửa lỗi tiền tố 'E:'
+                                            val fixedUrl = "https:${videoUrl.substringAfter(":")}"
+                                            callback(ExtractorLink(this@BokepIndoProvider.name, name, fixedUrl, url, Qualities.Unknown.value, type = ExtractorLinkType.VIDEO))
                                             foundLinks = true
                                         }
                                     }
@@ -165,5 +178,12 @@ class BokepIndoProvider : MainAPI() {
         return newMovieSearchResponse(title, href) {
             this.posterUrl = posterUrl
         }
+    }
+
+    private fun getRandomString(length: Int): String {
+        val allowedChars = ('A'..'Z') + ('a'..'z') + ('0'..'9')
+        return (1..length)
+            .map { allowedChars.random() }
+            .joinToString("")
     }
 }
