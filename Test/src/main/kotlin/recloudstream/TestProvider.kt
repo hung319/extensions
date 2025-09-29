@@ -2,7 +2,7 @@ package recloudstream
 
 /*
 * @CloudstreamProvider: BokepIndoProvider
-* @Version: 4.0 FINAL
+* @Version: 4.1
 * @Author: Coder
 * @Language: id
 * @TvType: Nsfw
@@ -16,6 +16,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import org.jsoup.nodes.Element
 import android.util.Log
+import java.net.URI // THÊM IMPORT CẦN THIẾT
 
 class BokepIndoProvider : MainAPI() {
     override var name = "BokepIndo"
@@ -71,7 +72,6 @@ class BokepIndoProvider : MainAPI() {
         }
     }
     
-    // ## LOGIC LẤY LINK HOÀN CHỈNH ##
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -104,17 +104,19 @@ class BokepIndoProvider : MainAPI() {
                         try {
                             Log.d(TAG, "Processing server: '$name' with URL: $url")
                             if (name == "Server Dood") {
-                                // Logic giải mã DoodStream thủ công
+                                // SỬA LỖI: Dùng java.net.URI để lấy host
+                                val host = URI(url).host
                                 val doodDoc = app.get(url, referer = data).text
                                 val md5 = doodDoc.substringAfter("'/pass_md5/").substringBefore("'")
                                 val token = doodDoc.substringAfter("?token=").substringBefore("'")
                                 val expiry = doodDoc.substringAfter("&expiry=").substringBefore("'")
                                 val randomChars = getRandomString(10)
                                 
-                                val masterUrl = app.get("https://${url.toUri().host}/pass_md5/$md5", referer = url).text
+                                val masterUrl = app.get("https://$host/pass_md5/$md5", referer = url).text
                                 val finalUrl = "$masterUrl$randomChars?token=$token&expiry=$expiry"
                                 
-                                callback(ExtractorLink(this@BokepIndoProvider.name, name, finalUrl, "https://${url.toUri().host}/", Qualities.Unknown.value, type = ExtractorLinkType.VIDEO))
+                                // SỬA LỖI: Dùng java.net.URI để lấy host cho referer
+                                callback(ExtractorLink(this@BokepIndoProvider.name, name, finalUrl, "https://$host/", Qualities.Unknown.value, type = ExtractorLinkType.VIDEO))
                                 foundLinks = true
                             } else if (name == "Server Ori") {
                                 val doc = app.get(url).document
@@ -125,7 +127,6 @@ class BokepIndoProvider : MainAPI() {
                                         val videoUrl = Regex("""file:\s*['"](.*?\.mp4)['"]""").find(unpacked)?.groupValues?.get(1)
                                         Log.d(TAG, "Extracted Ori video URL: $videoUrl")
                                         if (videoUrl != null) {
-                                            // Sửa lỗi tiền tố 'E:'
                                             val fixedUrl = "https:${videoUrl.substringAfter(":")}"
                                             callback(ExtractorLink(this@BokepIndoProvider.name, name, fixedUrl, url, Qualities.Unknown.value, type = ExtractorLinkType.VIDEO))
                                             foundLinks = true
