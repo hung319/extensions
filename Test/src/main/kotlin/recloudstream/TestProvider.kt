@@ -2,7 +2,7 @@ package recloudstream
 
 /*
 * @CloudstreamProvider: BokepIndoProvider
-* @Version: 3.1
+* @Version: 3.2
 * @Author: Coder
 * @Language: id
 * @TvType: Nsfw
@@ -12,18 +12,20 @@ package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import org.jsoup.nodes.Element
 
 class BokepIndoProvider : MainAPI() {
     override var name = "BokepIndo"
     override var mainUrl = "https://bokepindoh.monster"
     override var supportedTypes = setOf(TvType.NSFW)
-    override var lang = "id"
+    // `lang` nên được khai báo trong metadata, không cần ở đây
     override var hasMainPage = true
     override var hasDownloadSupport = true
 
     override val mainPage = mainPageOf(
-        mainUrl to "Latest",
+        mainUrl to "Mới Nhất",
         "$mainUrl/category/bokep-indo/" to "Bokep Indo",
         "$mainUrl/category/bokep-viral/" to "Bokep Viral",
         "$mainUrl/category/bokep-jav/" to "Bokep JAV"
@@ -67,7 +69,7 @@ class BokepIndoProvider : MainAPI() {
         }
     }
     
-    // ## ĐÃ CẬP NHẬT ĐỂ XỬ LÝ CẢ 2 LOẠI TRANG ##
+    // ## ĐÃ SỬA LỖI VÀ TỐI ƯU LOGIC BẤT ĐỒNG BỘ ##
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -77,7 +79,6 @@ class BokepIndoProvider : MainAPI() {
         val mainDocument = app.get(data).document
         var foundLinks = false
 
-        // 1. KIỂM TRA XEM ĐÂY LÀ TRANG MULTI-SERVER HAY TRANG LULUSTREAM CŨ
         val multiServerScript = mainDocument.selectFirst("script[id=wpst-main-js-extra]")
 
         if (multiServerScript != null) {
@@ -89,25 +90,34 @@ class BokepIndoProvider : MainAPI() {
             val oriUrl = oriIframeTag?.let { srcRegex.find(it)?.groupValues?.get(1) }
             val doodUrl = doodIframeTag?.let { srcRegex.find(it)?.groupValues?.get(1) }
 
-            listOfNotNull(
-                oriUrl?.let { Pair(it, "Server Ori") },
-                doodUrl?.let { Pair(it, "Server Dood") }
-            ).apmap { (url, name) ->
-                safeApiCall {
-                    if (name == "Server Dood") {
-                        if (loadExtractor(url, data, subtitleCallback, callback)) foundLinks = true
-                    } else if (name == "Server Ori") {
-                        val doc = app.get(url).document
-                        doc.select("script").mapNotNull { script ->
-                            val scriptData = script.data()
-                            if (scriptData.contains("eval(function(p,a,c,k,e,d)")) {
-                                val unpacked = getAndUnpack(scriptData)
-                                val videoUrl = Regex("""file:"(.*?\.mp4)"""").find(unpacked)?.groupValues?.get(1)
-                                if (videoUrl != null) {
-                                    callback(ExtractorLink(this.name, name, videoUrl, url, Qualities.Unknown.value, type = ExtractorLinkType.MP4))
-                                    foundLinks = true
+            // Sử dụng coroutineScope để chạy các tác vụ song song
+            coroutineScope {
+                listOfNotNull(
+                    oriUrl?.let { Pair(it, "Server Ori") },
+                    doodUrl?.let { Pair(it, "Server Dood") }
+                ).forEach { (url, name) ->
+                    // launch để mỗi server được xử lý trên một luồng riêng
+                    launch {
+                        try {
+                            if (name == "Server Dood") {
+                                if (loadExtractor(url, data, subtitleCallback, callback)) foundLinks = true
+                            } else if (name == "Server Ori") {
+                                val doc = app.get(url).document
+                                doc.select("script").mapNotNull { script ->
+                                    val scriptData = script.data()
+                                    if (scriptData.contains("eval(function(p,a,c,k,e,d)")) {
+                                        val unpacked = getAndUnpack(scriptData)
+                                        val videoUrl = Regex("""file:"(.*?\.mp4)"""").find(unpacked)?.groupValues?.get(1)
+                                        if (videoUrl != null) {
+                                            callback(ExtractorLink(this@BokepIndoProvider.name, name, videoUrl, url, Qualities.Unknown.value, type = ExtractorLinkType.VIDEO))
+                                            foundLinks = true
+                                        }
+                                    }
                                 }
                             }
+                        } catch (e: Exception) {
+                            // Bỏ qua lỗi nếu một trong các server bị hỏng
+                            logError(e)
                         }
                     }
                 }
@@ -116,16 +126,18 @@ class BokepIndoProvider : MainAPI() {
             // ## LOGIC CHO TRANG LULUSTREAM (CŨ) ##
             val iframeSrc = mainDocument.selectFirst("div.responsive-player iframe")?.attr("src")
             if (iframeSrc != null) {
-                val iframeHtmlContent = app.get(iframeSrc).text
-                val m3u8Regex = Regex("""sources:\s*\[\{file:"([^"]+master\.m3u8[^"]+)"""")
-                val match = m3u8Regex.find(iframeHtmlContent)
-                val m3u8Url = match?.groups?.get(1)?.value
+                try {
+                    val iframeHtmlContent = app.get(iframeSrc).text
+                    val m3u8Regex = Regex("""sources:\s*\[\{file:"([^"]+master\.m3u8[^"]+)"""")
+                    val match = m3u8Regex.find(iframeHtmlContent)
+                    val m3u8Url = match?.groups?.get(1)?.value
 
-                if (m3u8Url != null) {
-                    callback(
-                        ExtractorLink(this.name, "LuluStream", m3u8Url, iframeSrc, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
-                    )
-                    foundLinks = true
+                    if (m3u8Url != null) {
+                        callback(ExtractorLink(this.name, "LuluStream", m3u8Url, iframeSrc, Qualities.Unknown.value, type = ExtractorLinkType.M3U8))
+                        foundLinks = true
+                    }
+                } catch (e: Exception) {
+                    logError(e)
                 }
             }
         }
