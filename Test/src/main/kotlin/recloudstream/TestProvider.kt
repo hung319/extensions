@@ -2,12 +2,12 @@ package recloudstream
 
 /*
 * @CloudstreamProvider: BokepIndoProvider
-* @Version: 3.4
+* @Version: 3.5
 * @Author: Coder
 * @Language: id
 * @TvType: Nsfw
 * @Url: https://bokepindoh.monster
-* @Info: Provider with hybrid logic for both multi-server and single-server pages.
+* @Info: Provider with hybrid logic and detailed error logging.
 */
 
 import com.lagradost.cloudstream3.*
@@ -15,6 +15,7 @@ import com.lagradost.cloudstream3.utils.*
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import org.jsoup.nodes.Element
+import com.lagradost.cloudstream3.utils.logError // THÊM IMPORT CẦN THIẾT
 
 class BokepIndoProvider : MainAPI() {
     override var name = "BokepIndo"
@@ -68,24 +69,29 @@ class BokepIndoProvider : MainAPI() {
         }
     }
     
+    // ## ĐÃ THÊM LOG CHI TIẾT ĐỂ GỠ LỖI ##
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        println("BokepIndoProvider: Bắt đầu lấy link cho: $data")
         val mainDocument = app.get(data).document
         var foundLinks = false
 
         val multiServerScript = mainDocument.selectFirst("script[id=wpst-main-js-extra]")
 
         if (multiServerScript != null) {
+            println("BokepIndoProvider: Phát hiện trang multi-server.")
             val scriptContent = multiServerScript.html()
             val oriIframeTag = Regex("""embed_url":"(.*?)"""").find(scriptContent)?.groupValues?.get(1)
             val doodIframeTag = Regex("""video_url":"(.*?)"""").find(scriptContent)?.groupValues?.get(1)
             val srcRegex = Regex("""src=\\"(.*?)\\""")
             val oriUrl = oriIframeTag?.let { srcRegex.find(it)?.groupValues?.get(1) }
             val doodUrl = doodIframeTag?.let { srcRegex.find(it)?.groupValues?.get(1) }
+            println("BokepIndoProvider: Server Ori URL: $oriUrl")
+            println("BokepIndoProvider: Server Dood URL: $doodUrl")
 
             coroutineScope {
                 listOfNotNull(
@@ -94,6 +100,7 @@ class BokepIndoProvider : MainAPI() {
                 ).forEach { (url, name) ->
                     launch {
                         try {
+                            println("BokepIndoProvider: Đang xử lý server: $name - URL: $url")
                             if (name == "Server Dood") {
                                 if (loadExtractor(url, data, subtitleCallback, callback)) foundLinks = true
                             } else if (name == "Server Ori") {
@@ -102,8 +109,8 @@ class BokepIndoProvider : MainAPI() {
                                     val scriptData = script.data()
                                     if (scriptData.contains("eval(function(p,a,c,k,e,d)")) {
                                         val unpacked = getAndUnpack(scriptData)
-                                        // SỬA LỖI: Regex chấp nhận cả dấu nháy đơn ' và kép "
                                         val videoUrl = Regex("""file:\s*['"](.*?\.mp4)['"]""").find(unpacked)?.groupValues?.get(1)
+                                        println("BokepIndoProvider: Đã giải mã link Server Ori: $videoUrl")
                                         if (videoUrl != null) {
                                             callback(ExtractorLink(this@BokepIndoProvider.name, name, videoUrl, url, Qualities.Unknown.value, type = ExtractorLinkType.VIDEO))
                                             foundLinks = true
@@ -112,28 +119,37 @@ class BokepIndoProvider : MainAPI() {
                                 }
                             }
                         } catch (e: Exception) {
-                            e.printStackTrace()
+                            println("BokepIndoProvider: Lỗi khi xử lý server $name")
+                            logError(e) // Ghi lại lỗi chi tiết vào log
                         }
                     }
                 }
             }
         } else {
+            println("BokepIndoProvider: Phát hiện trang LuluStream (cũ).")
             val iframeSrc = mainDocument.selectFirst("div.responsive-player iframe")?.attr("src")
+            println("BokepIndoProvider: LuluStream iframe URL: $iframeSrc")
             if (iframeSrc != null) {
                 try {
                     val iframeHtmlContent = app.get(iframeSrc).text
                     val m3u8Regex = Regex("""sources:\s*\[\{file:"([^"]+master\.m3u8[^"]+)"""")
                     val match = m3u8Regex.find(iframeHtmlContent)
                     val m3u8Url = match?.groups?.get(1)?.value
+                    println("BokepIndoProvider: Đã trích xuất link M3U8: $m3u8Url")
 
                     if (m3u8Url != null) {
                         callback(ExtractorLink(this.name, "LuluStream", m3u8Url, iframeSrc, Qualities.Unknown.value, type = ExtractorLinkType.VIDEO))
                         foundLinks = true
                     }
                 } catch (e: Exception) {
-                    e.printStackTrace()
+                    println("BokepIndoProvider: Lỗi khi xử lý LuluStream.")
+                    logError(e) // Ghi lại lỗi chi tiết vào log
                 }
             }
+        }
+
+        if (!foundLinks) {
+            println("BokepIndoProvider: KHÔNG tìm thấy link nào.")
         }
         return foundLinks
     }
