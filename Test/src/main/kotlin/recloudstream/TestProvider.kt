@@ -2,12 +2,12 @@ package recloudstream
 
 /*
 * @CloudstreamProvider: BokepIndoProvider
-* @Version: 2.2
+* @Version: 2.4
 * @Author: Coder
 * @Language: id
 * @TvType: Nsfw
 * @Url: https://bokepindoh.monster
-* @Info: Provider for Bokepindoh.monster with multiple homepage categories and multi-server support.
+* @Info: Provider for Bokepindoh.monster. Handles Ori (Packed), LuluStream (M3U8), and DoodStream servers.
 */
 
 import com.lagradost.cloudstream3.*
@@ -44,8 +44,7 @@ class BokepIndoProvider : MainAPI() {
         val homePageList = document.select("article.loop-video.thumb-block").mapNotNull {
             it.toSearchResponse()
         }
-        
-        // Cải tiến: Kiểm tra nếu không có kết quả thì không hiển thị trang tiếp theo
+
         return newHomePageResponse(
             HomePageList(request.name, homePageList),
             hasNext = homePageList.isNotEmpty()
@@ -80,7 +79,6 @@ class BokepIndoProvider : MainAPI() {
         }
     }
 
-    // ## Cập nhật loadLinks để xử lý nhiều server ##
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -90,42 +88,37 @@ class BokepIndoProvider : MainAPI() {
         val document = app.get(data).document
         val servers = mutableListOf<Pair<String, String>>()
 
-        // Trích xuất iframe từ biến JavaScript `wpst_ajax_var`
+        // Lấy server từ biến JS
         val scriptContent = document.select("script").firstOrNull { it.data().contains("wpst_ajax_var") }?.data() ?: ""
         
-        // Regex để lấy URL từ các key `embed_url` và `video_url`
         val embedUrlRegex = Regex("""["']embed_url["']:\s*["']<iframe src=\\"(.*?)\\"""")
         val videoUrlRegex = Regex("""["']video_url["']:\s*["']<iframe.*?src=\\"(.*?)\\"""")
 
-        embedUrlRegex.find(scriptContent)?.groupValues?.get(1)?.let {
-            servers.add("Server Ori" to it)
-        }
-        videoUrlRegex.find(scriptContent)?.groupValues?.get(1)?.let {
-            servers.add("Server Dood" to it)
-        }
+        embedUrlRegex.find(scriptContent)?.groupValues?.get(1)?.let { servers.add("Server Ori" to it) }
+        videoUrlRegex.find(scriptContent)?.groupValues?.get(1)?.let { servers.add("Server Dood" to it) }
         
-        // Nếu không tìm thấy server nào từ script, thử fallback về logic cũ
+        // Logic fallback để tìm các iframe khác nếu có
         if (servers.isEmpty()) {
-             document.selectFirst("div.responsive-player iframe")?.attr("src")?.let {
-                servers.add("Server" to it)
+             document.select("div.responsive-player iframe").forEach {
+                servers.add(it.attr("src").toUrlHost() to it.attr("src"))
             }
         }
         
         if (servers.isEmpty()) return false
 
-        // Xử lý song song các server để tăng tốc độ
         coroutineScope {
             servers.map { (serverName, serverUrl) ->
                 async {
                     when {
-                        // Nhận diện DoodStream qua tên miền
-                        serverUrl.contains("dsvplay.com") || serverUrl.contains("dood") -> {
+                        // DoodStream
+                        serverUrl.contains("dood") || serverUrl.contains("dsvplay") ->
                             extractDoodStreamLink(serverUrl, serverName, callback)
-                        }
-                        // Server còn lại mặc định là LuluStream
-                        else -> {
-                            extractLuluStreamLink(serverUrl, serverName, callback)
-                        }
+                        // LuluStream (M3U8, không obfuscate)
+                        serverUrl.contains("lulustream") ->
+                            extractLuluStreamM3U8(serverUrl, serverName, callback)
+                        // Server Ori (Packed/obfuscated JW Player)
+                        else ->
+                            extractPackedJwPlayerLink(serverUrl, serverName, callback)
                     }
                 }
             }.awaitAll()
@@ -134,12 +127,12 @@ class BokepIndoProvider : MainAPI() {
         return true
     }
 
-    // Hàm riêng để xử lý link LuluStream (Server Ori)
-    private suspend fun extractLuluStreamLink(url: String, sourceName: String, callback: (ExtractorLink) -> Unit) {
+    // MỚI: Hàm xử lý LuluStream (M3U8, script rõ ràng)
+    private suspend fun extractLuluStreamM3U8(url: String, sourceName: String, callback: (ExtractorLink) -> Unit) {
         try {
-            val iframeHtmlContent = app.get(url, referer = mainUrl).text
-            val m3u8Regex = Regex("""sources:\s*\[\{file:"([^"]+master\.m3u8[^"]+)"""")
-            m3u8Regex.find(iframeHtmlContent)?.groupValues?.get(1)?.let { m3u8Url ->
+            val doc = app.get(url, referer = mainUrl).text
+            val m3u8Regex = Regex("""sources:\s*\[\{file:"([^"]+)"""")
+            m3u8Regex.find(doc)?.groupValues?.get(1)?.let { m3u8Url ->
                 callback(
                     ExtractorLink(
                         source = sourceName,
@@ -151,27 +144,75 @@ class BokepIndoProvider : MainAPI() {
                     )
                 )
             }
-        } catch (e: Exception) {
-            // Lỗi khi lấy link, bỏ qua
-        }
+        } catch (e: Exception) { /* Bỏ qua lỗi */ }
     }
 
-    // Hàm riêng để xử lý link DoodStream
+    // ĐÃ SỬA: Hàm xử lý Server Ori (Packed JW Player -> MP4)
+    private suspend fun extractPackedJwPlayerLink(url: String, sourceName: String, callback: (ExtractorLink) -> Unit) {
+        try {
+            val doc = app.get(url, referer = mainUrl).text
+
+            val packerRegex = Regex("""eval\(function\(p,a,c,k,e,d\)\{.*?\}\((.*)\)\)""")
+            val argsMatch = packerRegex.find(doc)?.groupValues?.get(1) ?: return
+
+            // Tách các tham số từ hàm eval một cách an toàn hơn
+            val args = argsMatch.split(",'").let {
+                val p = it[0].removePrefix("'")
+                val a = it.getOrNull(1)?.substringBefore("',")
+                val c = it.getOrNull(2)?.substringBefore(",'")
+                val k = it.getOrNull(3)?.substringBefore("'.split")?.removeSuffix("'")
+                listOf(p, a, c, k)
+            }
+
+            var packedCode = args[0] ?: return
+            val radix = args[1]?.toIntOrNull() ?: return
+            var count = args[2]?.toIntOrNull() ?: return
+            val dictionary = args[3]?.split("|") ?: return
+
+            // Hàm giải mã Packer
+            fun toBase(num: Int, base: Int): String {
+                val baseChars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                if (num < 0) return ""
+                var n = num
+                var result = ""
+                while (n > 0) {
+                    result = baseChars[n % base] + result
+                    n /= base
+                }
+                return result.ifEmpty { "0" }
+            }
+
+            while (count-- > 0) {
+                val key = toBase(count, radix)
+                val value = if (dictionary.getOrNull(count)?.isNotEmpty() == true) dictionary[count] else key
+                packedCode = packedCode.replace(Regex("\\b$key\\b"), value)
+            }
+
+            // Tìm link file video (SỬA LẠI TYPE THÀNH VIDEO)
+            val fileRegex = Regex("""sources:\s*\[\s*\{\s*.*?file['"]\s*:\s*['"]([^'"]+)""")
+            fileRegex.find(packedCode)?.groupValues?.get(1)?.let { videoUrl ->
+                callback(
+                    ExtractorLink(
+                        source = sourceName,
+                        name = "Server Ori",
+                        url = videoUrl,
+                        referer = url,
+                        quality = Qualities.Unknown.value,
+                        type = ExtractorLinkType.VIDEO // <-- Đã sửa
+                    )
+                )
+            }
+        } catch (e: Exception) { /* Bỏ qua lỗi */ }
+    }
+    
+    // Giữ nguyên: Hàm xử lý DoodStream
     private suspend fun extractDoodStreamLink(url: String, sourceName: String, callback: (ExtractorLink) -> Unit) {
         try {
             val doc = app.get(url, referer = mainUrl).text
-            // DoodStream dùng một API pass_md5 để lấy link thật
             val md5UrlPath = Regex("""/pass_md5/([^'"]+)""").find(doc)?.value ?: return
-            
-            // Lấy base URL từ URL của iframe
             val baseUrl = url.substringBefore("/e/")
+            val finalUrlContent = app.get("$baseUrl$md5UrlPath", referer = url).text
 
-            val finalUrlContent = app.get(
-                "$baseUrl$md5UrlPath",
-                referer = url
-            ).text
-
-            // Link video nằm trong response của API pass_md5
             if (finalUrlContent.isNotBlank()) {
                  callback(
                     ExtractorLink(
@@ -180,25 +221,19 @@ class BokepIndoProvider : MainAPI() {
                         url = finalUrlContent,
                         referer = baseUrl,
                         quality = Qualities.Unknown.value,
-                        type = ExtractorLinkType.VIDEO // DoodStream thường trả về MP4
+                        type = ExtractorLinkType.VIDEO // <-- Đã sửa
                     )
                 )
             }
-        } catch (e: Exception) {
-             // Lỗi khi lấy link, bỏ qua
-        }
+        } catch (e: Exception) { /* Bỏ qua lỗi */ }
     }
 
     private fun Element.toSearchResponse(): SearchResponse? {
         val linkTag = this.selectFirst("a") ?: return null
         val href = fixUrl(linkTag.attr("href"))
         if (href.isBlank()) return null
-
         val title = linkTag.selectFirst("header.entry-header span")?.text() ?: return null
         val posterUrl = fixUrlNull(linkTag.selectFirst("div.post-thumbnail-container img")?.attr("data-src"))
-
-        return newMovieSearchResponse(title, href) {
-            this.posterUrl = posterUrl
-        }
+        return newMovieSearchResponse(title, href) { this.posterUrl = posterUrl }
     }
 }
