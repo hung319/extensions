@@ -209,15 +209,16 @@ class HHKungfuProvider : MainAPI() {
             async {
                 try {
                     val watchPageDoc = app.get(info.url, referer = mainUrl).document
-                    val activeEpisode = watchPage_doc.selectFirst(".halim-episode.active a") ?: return@async
-                    val postId = watchPage_doc.selectFirst("main.watch-page")?.attr("data-id") ?: return@async
+                    val activeEpisode = watchPageDoc.selectFirst(".halim-episode.active a") ?: return@async
+                    val postId = watchPageDoc.selectFirst("main.watch-page")?.attr("data-id") ?: return@async
                     val chapterSt = activeEpisode.attr("data-ep") ?: return@async
                     val sv = activeEpisode.attr("data-sv") ?: return@async
 
                     val langPrefix = "${info.serverLabel} "
 
-                    val serverButtons = watchPage_doc.select("#halim-ajax-list-server .get-eps")
-                    serverButtons.forEach { button ->
+                    val serverButtons = watchPageDoc.select("#halim-ajax-list-server .get-eps")
+                    // SỬA LỖI: Dùng vòng lặp for thay cho forEach để có thể gọi suspend function
+                    for (button in serverButtons) {
                         try {
                             val type = button.attr("data-type")
                             val serverName = button.text()
@@ -236,7 +237,7 @@ class HHKungfuProvider : MainAPI() {
                                 referer = info.url
                             ).document
 
-                            val iframeSrc = ajaxResponse.selectFirst("iframe")?.attr("src") ?: return@forEach
+                            val iframeSrc = ajaxResponse.selectFirst("iframe")?.attr("src") ?: continue
 
                             // Tải nội dung trang iframe từ streamfree.vip
                             val extractorPage = app.get(iframeSrc, referer = info.url).document
