@@ -17,8 +17,9 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import java.net.URI // Thêm import cần thiết
 
-class BokepIndoProvider : MainAPI() {
+class TestProvider : MainAPI() {
     override var name = "BokepIndo"
     override var mainUrl = "https://bokepindoh.monster"
     override var supportedTypes = setOf(TvType.NSFW)
@@ -99,8 +100,11 @@ class BokepIndoProvider : MainAPI() {
         
         // Logic fallback để tìm các iframe khác nếu có
         if (servers.isEmpty()) {
-             document.select("div.responsive-player iframe").forEach {
-                servers.add(it.attr("src").toUrlHost() to it.attr("src"))
+             document.select("div.responsive-player iframe").forEach { element ->
+                val url = element.attr("src")
+                // SỬA LỖI: Dùng URI để lấy host thay cho toUrlHost()
+                val host = (URI(url).host ?: url).removePrefix("www.")
+                servers.add(host to url)
             }
         }
         
@@ -127,7 +131,6 @@ class BokepIndoProvider : MainAPI() {
         return true
     }
 
-    // MỚI: Hàm xử lý LuluStream (M3U8, script rõ ràng)
     private suspend fun extractLuluStreamM3U8(url: String, sourceName: String, callback: (ExtractorLink) -> Unit) {
         try {
             val doc = app.get(url, referer = mainUrl).text
@@ -147,7 +150,6 @@ class BokepIndoProvider : MainAPI() {
         } catch (e: Exception) { /* Bỏ qua lỗi */ }
     }
 
-    // ĐÃ SỬA: Hàm xử lý Server Ori (Packed JW Player -> MP4)
     private suspend fun extractPackedJwPlayerLink(url: String, sourceName: String, callback: (ExtractorLink) -> Unit) {
         try {
             val doc = app.get(url, referer = mainUrl).text
@@ -155,7 +157,6 @@ class BokepIndoProvider : MainAPI() {
             val packerRegex = Regex("""eval\(function\(p,a,c,k,e,d\)\{.*?\}\((.*)\)\)""")
             val argsMatch = packerRegex.find(doc)?.groupValues?.get(1) ?: return
 
-            // Tách các tham số từ hàm eval một cách an toàn hơn
             val args = argsMatch.split(",'").let {
                 val p = it[0].removePrefix("'")
                 val a = it.getOrNull(1)?.substringBefore("',")
@@ -169,7 +170,6 @@ class BokepIndoProvider : MainAPI() {
             var count = args[2]?.toIntOrNull() ?: return
             val dictionary = args[3]?.split("|") ?: return
 
-            // Hàm giải mã Packer
             fun toBase(num: Int, base: Int): String {
                 val baseChars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
                 if (num < 0) return ""
@@ -188,7 +188,6 @@ class BokepIndoProvider : MainAPI() {
                 packedCode = packedCode.replace(Regex("\\b$key\\b"), value)
             }
 
-            // Tìm link file video (SỬA LẠI TYPE THÀNH VIDEO)
             val fileRegex = Regex("""sources:\s*\[\s*\{\s*.*?file['"]\s*:\s*['"]([^'"]+)""")
             fileRegex.find(packedCode)?.groupValues?.get(1)?.let { videoUrl ->
                 callback(
@@ -198,14 +197,13 @@ class BokepIndoProvider : MainAPI() {
                         url = videoUrl,
                         referer = url,
                         quality = Qualities.Unknown.value,
-                        type = ExtractorLinkType.VIDEO // <-- Đã sửa
+                        type = ExtractorLinkType.VIDEO
                     )
                 )
             }
         } catch (e: Exception) { /* Bỏ qua lỗi */ }
     }
     
-    // Giữ nguyên: Hàm xử lý DoodStream
     private suspend fun extractDoodStreamLink(url: String, sourceName: String, callback: (ExtractorLink) -> Unit) {
         try {
             val doc = app.get(url, referer = mainUrl).text
@@ -221,7 +219,7 @@ class BokepIndoProvider : MainAPI() {
                         url = finalUrlContent,
                         referer = baseUrl,
                         quality = Qualities.Unknown.value,
-                        type = ExtractorLinkType.VIDEO // <-- Đã sửa
+                        type = ExtractorLinkType.VIDEO
                     )
                 )
             }
