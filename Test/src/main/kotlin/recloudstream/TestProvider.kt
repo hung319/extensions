@@ -19,7 +19,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import java.net.URI // Thêm import cần thiết
 
-class TestProvider : MainAPI() {
+class BokepIndoProvider : MainAPI() {
     override var name = "BokepIndo"
     override var mainUrl = "https://bokepindoh.monster"
     override var supportedTypes = setOf(TvType.NSFW)
