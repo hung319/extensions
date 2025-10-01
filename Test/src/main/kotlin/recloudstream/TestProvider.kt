@@ -170,11 +170,15 @@ class HHKungfuProvider : MainAPI() {
         return Base64.decode(a + b, Base64.DEFAULT)
     }
 
+    // Hàm giải mã RC4 (phiên bản sửa lỗi)
     private fun rc4(key: ByteArray, data: ByteArray): ByteArray {
         val s = IntArray(256) { it }
         var j = 0
         for (i in 0..255) {
-            j = (j + s[i] + key[i % key.size].toInt() and 0xff) and 0xff
+            // SỬA LỖI: Chuyển đổi byte sang Int một cách an toàn để tránh giá trị âm
+            val keyByte = key[i % key.size].toInt() and 0xFF
+            j = (j + s[i] + keyByte) and 0xFF
+            
             val temp = s[i]
             s[i] = s[j]
             s[j] = temp
@@ -184,12 +188,15 @@ class HHKungfuProvider : MainAPI() {
         j = 0
         val result = ByteArray(data.size)
         for (index in data.indices) {
-            i = (i + 1) and 0xff
-            j = (j + s[i]) and 0xff
+            i = (i + 1) and 0xFF
+            j = (j + s[i]) and 0xFF
+            
             val temp = s[i]
             s[i] = s[j]
             s[j] = temp
-            result[index] = (data[index].toInt() xor s[(s[i] + s[j]) and 0xff]).toByte()
+            
+            val k = s[(s[i] + s[j]) and 0xFF]
+            result[index] = (data[index].toInt() xor k).toByte()
         }
         return result
     }
