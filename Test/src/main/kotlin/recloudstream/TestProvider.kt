@@ -4,14 +4,16 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.awaitAll
 
 /**
  * Senior Software Engineer's Note:
  * This is an updated provider for hhkungfu.click.
- * Version 10 Changelog:
- * - FIXED: Build errors by strictly adhering to the provided data class definitions.
- * - REMOVED: Assignment to `latestEpisodeName` as it does not exist in the user's TvSeriesSearchResponse class.
- * - IMPLEMENTED: `hasNext` logic in `getMainPage` to correctly use the `HomePageResponse(items, hasNext)` constructor.
+ * Version 12 Changelog:
+ * - MODIFIED: Limited supported TvType to only `Cartoon` as requested.
+ * - Updated response helpers to use TvType.Cartoon for consistency.
  */
 class HoatHinhKungfuProvider : MainAPI() {
     override var mainUrl = "https://hhkungfu.click"
@@ -20,13 +22,11 @@ class HoatHinhKungfuProvider : MainAPI() {
     override var lang = "vi"
     override val hasDownloadSupport = true
 
+    // ĐÃ SỬA: Chỉ giữ lại TvType.Cartoon
     override val supportedTypes = setOf(
-        TvType.Anime,
-        TvType.TvSeries,
         TvType.Cartoon
     )
 
-    // ĐÃ SỬA: Loại bỏ `latestEpisodeName`
     private fun Element.toSearchResponse(): SearchResponse? {
         val title = this.selectFirst("h2.entry-title")?.text() ?: return null
         val href = this.selectFirst("a.halim-thumb")?.attr("href") ?: return null
@@ -34,13 +34,12 @@ class HoatHinhKungfuProvider : MainAPI() {
             it.attr("data-src").ifBlank { it.attr("src") }
         }
 
-        return newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
+        // ĐÃ SỬA: Sử dụng TvType.Cartoon
+        return newTvSeriesSearchResponse(title, href, TvType.Cartoon) {
             this.posterUrl = posterUrl
-            // Không gán `latestEpisodeName` nữa vì nó không tồn tại
         }
     }
 
-    // ĐÃ SỬA: Sử dụng đúng constructor HomePageResponse(items, hasNext)
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page <= 1) mainUrl else "$mainUrl/latest-movie/page/$page/"
         val document = app.get(url).document
@@ -55,13 +54,10 @@ class HoatHinhKungfuProvider : MainAPI() {
             it.toSearchResponse()
         }
 
-        // Kiểm tra xem có trang tiếp theo không
         val hasNext = document.selectFirst("a.next.page-numbers") != null
-
         val items = listOf(HomePageList("Mới Cập Nhật", homePageList))
         
-        // Trả về theo đúng cấu trúc data class
-        return HomePageResponse(items, hasNext)
+        return newHomePageResponse(items, hasNext)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -95,7 +91,8 @@ class HoatHinhKungfuProvider : MainAPI() {
             }
         }.reversed()
 
-        return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+        // ĐÃ SỬA: Sử dụng TvType.Cartoon
+        return newTvSeriesLoadResponse(title, url, TvType.Cartoon, episodes) {
             this.posterUrl = posterUrl
             this.plot = plot
             this.tags = tags
@@ -121,52 +118,56 @@ class HoatHinhKungfuProvider : MainAPI() {
             }
         }
 
-        sources.apmap { sourceUrl ->
-            if ("viupload.net" in sourceUrl) {
-                try {
-                    val embedContent = app.get(sourceUrl, referer = mainUrl).text
-                    val m3u8Regex = Regex("""sources:\s*\[\{file:"([^"]+)""")
-                    m3u8Regex.find(embedContent)?.groupValues?.get(1)?.let { m3u8Link ->
-                        callback.invoke(
-                            ExtractorLink("ViUpload", "ViUpload", m3u8Link, sourceUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
-                        )
-                    }
-                } catch (e: Exception) { /* Bỏ qua lỗi */ }
-            } 
-            else if ("ssplay.net" in sourceUrl) {
-                try {
-                    val embedDocument = app.get(sourceUrl, referer = mainUrl).document
-                    val scriptContent = embedDocument.select("script").firstOrNull { 
-                        it.data().contains("sources:") 
-                    }?.data()
-
-                    if (scriptContent != null) {
-                        val fileRegex = Regex("""file:\s*"(.*?)"""")
-                        var m3u8Url = fileRegex.find(scriptContent)?.groupValues?.get(1)
-
-                        if (m3u8Url != null) {
-                            if (m3u8Url.startsWith("/")) {
-                                m3u8Url = "https://ssplay.net$m3u8Url"
+        coroutineScope {
+            sources.map { sourceUrl ->
+                async {
+                    if ("viupload.net" in sourceUrl) {
+                        try {
+                            val embedContent = app.get(sourceUrl, referer = mainUrl).text
+                            val m3u8Regex = Regex("""sources:\s*\[\{file:"([^"]+)""")
+                            m3u8Regex.find(embedContent)?.groupValues?.get(1)?.let { m3u8Link ->
+                                callback.invoke(
+                                    ExtractorLink("ViUpload", "ViUpload", m3u8Link, sourceUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
+                                )
                             }
-                            callback.invoke(
-                                ExtractorLink("SSPlay", "SSPlay", m3u8Url, sourceUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
-                            )
-                        }
+                        } catch (e: Exception) { /* Bỏ qua lỗi */ }
+                    } 
+                    else if ("ssplay.net" in sourceUrl) {
+                        try {
+                            val embedDocument = app.get(sourceUrl, referer = mainUrl).document
+                            val scriptContent = embedDocument.select("script").firstOrNull { 
+                                it.data().contains("sources:") 
+                            }?.data()
+
+                            if (scriptContent != null) {
+                                val fileRegex = Regex("""file:\s*"(.*?)"""")
+                                var m3u8Url = fileRegex.find(scriptContent)?.groupValues?.get(1)
+
+                                if (m3u8Url != null) {
+                                    if (m3u8Url.startsWith("/")) {
+                                        m3u8Url = "https://ssplay.net$m3u8Url"
+                                    }
+                                    callback.invoke(
+                                        ExtractorLink("SSPlay", "SSPlay", m3u8Url, sourceUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
+                                    )
+                                }
+                            }
+                        } catch (e: Exception) { /* Bỏ qua lỗi */ }
                     }
-                } catch (e: Exception) { /* Bỏ qua lỗi */ }
-            }
-            else if ("player.cloudbeta.win" in sourceUrl) {
-                try {
-                    val uuid = sourceUrl.substringAfterLast('/')
-                    val m3u8Link = "https://play.cloudbeta.win/file/play/$uuid.m3u8"
-                    callback.invoke(
-                        ExtractorLink("CloudBeta", "CloudBeta", m3u8Link, sourceUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
-                    )
-                } catch (e: Exception) { /* Bỏ qua lỗi */ }
-            }
-            else {
-                loadExtractor(sourceUrl, mainUrl, subtitleCallback, callback)
-            }
+                    else if ("player.cloudbeta.win" in sourceUrl) {
+                        try {
+                            val uuid = sourceUrl.substringAfterLast('/')
+                            val m3u8Link = "https://play.cloudbeta.win/file/play/$uuid.m3u8"
+                            callback.invoke(
+                                ExtractorLink("CloudBeta", "CloudBeta", m3u8Link, sourceUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
+                            )
+                        } catch (e: Exception) { /* Bỏ qua lỗi */ }
+                    }
+                    else {
+                        loadExtractor(sourceUrl, mainUrl, subtitleCallback, callback)
+                    }
+                }
+            }.awaitAll()
         }
 
         return sources.isNotEmpty()
