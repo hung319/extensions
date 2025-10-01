@@ -1,210 +1,110 @@
+// Tên file: HoatHinhKungfuProvider.kt
 package recloudstream
 
-import com.google.gson.reflect.TypeToken
-import com.lagradost.cloudstream3.plugins.Plugin
-import android.content.Context
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import com.lagradost.cloudstream3.utils.AppUtils.toJson
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-import java.net.URI
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
-import com.lagradost.cloudstream3.CommonActivity.showToast
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import android.widget.Toast
-import javax.crypto.Cipher
-import javax.crypto.spec.IvParameterSpec
-import javax.crypto.spec.SecretKeySpec
-import android.util.Base64
-import android.util.Log // THÊM IMPORT NÀY
 
-class HHKungfuProvider : MainAPI() {
-    override var name = "HHKungfu"
-    override var mainUrl = "https://hhkungfu.ee"
-    override var lang = "vi"
+/**
+ * Senior Software Engineer's Note:
+ * This is an updated provider for hhkungfu.click.
+ * Version 8 Changelog:
+ * - Optimized `player.cloudbeta.win` extractor to build m3u8 link directly, removing an HTTP request for faster link loading.
+ * - Added custom extractor for `ssplay.net` to handle dynamic source URLs.
+ * - Switched to using the `newEpisode` helper function.
+ * - Implemented pagination for the main page.
+ * - Added a custom internal extractor for `viupload.net`.
+ */
+class HoatHinhKungfuProvider : MainAPI() {
+    override var mainUrl = "https://hhkungfu.click"
+    override var name = "Hoạt Hình Kungfu"
     override val hasMainPage = true
+    override var lang = "vi"
+    override val hasDownloadSupport = true
+
     override val supportedTypes = setOf(
+        TvType.Anime,
+        TvType.TvSeries,
         TvType.Cartoon
     )
 
-    // Thêm TAG để lọc log cho dễ
-    private val TAG = "HHKungfuProvider"
-
-    override val mainPage = mainPageOf(
-        "moi-cap-nhat/page/" to "Mới cập nhật",
-        "top-xem-nhieu/page/" to "Top Xem Nhiều",
-        "hoan-thanh/page/" to "Hoàn Thành",
-    )
-
-    override suspend fun getMainPage(
-        page: Int,
-        request: MainPageRequest
-    ): HomePageResponse {
-        withContext(Dispatchers.Main) {
-            CommonActivity.activity?.let { activity ->
-                showToast(activity, "Free Repo From H4RS", Toast.LENGTH_LONG)
-            }
+    private fun Element.toSearchResponse(): SearchResponse? {
+        val title = this.selectFirst("h2.entry-title")?.text() ?: return null
+        val href = this.selectFirst("a.halim-thumb")?.attr("href") ?: return null
+        val posterUrl = this.selectFirst("figure > img")?.let {
+            it.attr("data-src").ifBlank { it.attr("src") }
         }
-        val url = "$mainUrl/${request.data}$page"
-        val document = app.get(url).document
 
-        val home = document.select("div.halim_box article.thumb").mapNotNull {
+        return newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
+            this.posterUrl = posterUrl
+            this.latestEpisode = this@toSearchResponse.selectFirst("span.episode")?.text()
+        }
+    }
+
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val document = app.get(mainUrl).document
+        val homePageList = mutableListOf<HomePageList>()
+
+        val latestUpdatesItems = document.select("section#halim-advanced-widget-3 article.grid-item").mapNotNull {
             it.toSearchResponse()
         }
         
-        val hasNext = document.selectFirst("a.next.page-numbers") != null
-
-        return newHomePageResponse(
-            list = HomePageList(
-                name = request.name,
-                list = home
-            ),
-            hasNext = hasNext
-        )
+        homePageList.add(HomePageList("Mới Cập Nhật", latestUpdatesItems, url = "$mainUrl/latest-movie/page/"))
+        
+        return HomePageResponse(homePageList)
     }
 
-    private fun Element.toSearchResponse(): SearchResponse? {
-        val a = this.selectFirst("a.halim-thumb, a.thumbnail-link") ?: return null
-        val href = a.attr("href")
-        val title = this.selectFirst("h2.entry-title, h3.title")?.text() ?: return null
-        val posterUrl = this.selectFirst("img.wp-post-image")?.attr("src")
-        val episodeText = this.selectFirst("span.episode")?.text()
+    override suspend fun loadPage(url: String): LoadPageResponse {
+        val document = app.get(url).document
 
-        return newTvSeriesSearchResponse(title, href, TvType.Cartoon) {
-            this.posterUrl = posterUrl ?: ""
+        val items = document.select("main#main-contents div.halim_box article").mapNotNull {
+            it.toSearchResponse()
+        }
 
-            if (episodeText != null) {
-                val episodeRegex = Regex("""\d+""")
-                episodeRegex.find(episodeText)?.value?.toIntOrNull()?.let {
-                    this.episodes = it
-                }
-                
-                this.quality = when {
-                    episodeText.contains("4K", true) -> SearchQuality.FourK
-                    episodeText.contains("FULL HD", true) -> SearchQuality.HD
-                    episodeText.contains("HD", true) -> SearchQuality.HD
-                    else -> null
-                }
-            }
+        val nextUrl = document.selectFirst("a.next.page-numbers")?.attr("href")
+
+        return newTvSeriesLoadPageResponse(url, items) {
+            this.nextUrl = nextUrl
         }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/?s=$query"
         val document = app.get(searchUrl).document
-        return document.select("#loop-content article.thumb").mapNotNull {
+
+        return document.select("div.halim_box article.thumb").mapNotNull {
             it.toSearchResponse()
         }
     }
 
-    private data class EpisodeInfo(val url: String, val serverLabel: String)
-
-    override suspend fun load(url: String): LoadResponse? {
+    override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
-        val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: return null
-        val poster = document.selectFirst(".movie-poster img")?.attr("src")
-        val plot = document.selectFirst(".entry-content p")?.text()?.trim()
-        val tags = document.select(".list_cate a").map { it.text() }
+        val title = document.selectFirst("h1.entry-title")?.text()?.trim()
+            ?: throw RuntimeException("Không tìm thấy tiêu đề")
 
-        val episodeMap = mutableMapOf<String, MutableList<EpisodeInfo>>()
-        val serverBlocks = document.select(".halim-server")
-        
-        serverBlocks.forEach { server ->
-            val serverName = server.selectFirst(".halim-server-name")?.text()
-            val serverLabel = when {
-                serverName?.contains("Vietsub", true) == true -> "VS"
-                serverName?.contains("Thuyết Minh", true) == true -> "TM"
-                else -> "RAW"
-            }
+        val posterUrl = document.selectFirst("img.movie-thumb")?.attr("src")
+        val plot = document.select("div.video-item.halim-entry-box article p").joinToString("\n\n") { it.text() }
+        val tags = document.select("p.category a").map { it.text() }
 
-            server.select("ul.halim-list-eps li a").forEach { ep ->
-                val epName = ep.selectFirst("span")?.text()?.trim() ?: ep.text().trim()
-                val epUrl = ep.attr("href")
-                
-                episodeMap.getOrPut(epName) { mutableListOf() }.add(EpisodeInfo(epUrl, serverLabel))
-            }
-        }
-        
-        val numberRegex = Regex("""\d+""")
-        val episodes = episodeMap.entries
-            .map { (epName, infoList) ->
-                val sortKey = numberRegex.find(epName)?.value?.toIntOrNull() ?: 0
-                Triple(sortKey, epName, infoList)
-            }
-            .sortedBy { it.first }
-            .map { (_, epName, infoList) ->
-                val data = infoList.toJson()
-                val serverTags = infoList.joinToString(separator = "+") { it.serverLabel }.let { "($it)" }
-                
-                newEpisode(data) {
-                    this.name = "$epName $serverTags"
+        val episodes = document.select("ul.halim-list-eps li a").mapNotNull {
+            val href = it.attr("href")
+            val name = it.text().trim()
+            if (href.isNotBlank() && name.isNotBlank()) {
+                newEpisode(href) {
+                    this.name = "Tập $name"
                 }
+            } else {
+                null
             }
+        }.reversed()
 
-        val recommendations = document.select("aside#sidebar .popular-post .item").mapNotNull {
-            it.toSearchResponse()
-        }
-
-        return newTvSeriesLoadResponse(title, url, TvType.Cartoon, episodes) {
-            this.posterUrl = poster ?: ""
+        return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+            this.posterUrl = posterUrl
             this.plot = plot
             this.tags = tags
-            this.recommendations = recommendations
         }
     }
-
-    private fun base64UrlDecode(input: String): ByteArray {
-        val a = input.replace('-', '+').replace('_', '/')
-        val b = when (a.length % 4) {
-            0 -> ""
-            2 -> "=="
-            3 -> "="
-            else -> throw IllegalArgumentException("Illegal base64url string!")
-        }
-        return Base64.decode(a + b, Base64.DEFAULT)
-    }
-
-    // Hàm giải mã RC4 (phiên bản cuối cùng)
-private fun rc4(key: ByteArray, data: ByteArray): ByteArray {
-    val s = IntArray(256) { it }
-    var j = 0
-    // Key-scheduling algorithm (KSA)
-    for (i in 0..255) {
-        // SỬA LỖI: Chuyển đổi byte sang Int một cách an toàn để tránh giá trị âm
-        val keyByte = key[i % key.size].toInt() and 0xFF
-        j = (j + s[i] + keyByte) and 0xFF
-        
-        // Hoán đổi (swap)
-        val temp = s[i]
-        s[i] = s[j]
-        s[j] = temp
-    }
-
-    // Pseudo-random generation algorithm (PRGA)
-    var i = 0
-    j = 0
-    val result = ByteArray(data.size)
-    for (index in data.indices) {
-        i = (i + 1) and 0xFF
-        j = (j + s[i]) and 0xFF
-        
-        // Hoán đổi (swap)
-        val temp = s[i]
-        s[i] = s[j]
-        s[j] = temp
-        
-        // XOR với keystream để giải mã
-        val k = s[(s[i] + s[j]) and 0xFF]
-        result[index] = (data[index].toInt() xor k).toByte()
-    }
-    return result
-}
 
     override suspend fun loadLinks(
         data: String,
@@ -212,102 +112,77 @@ private fun rc4(key: ByteArray, data: ByteArray): ByteArray {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d(TAG, "loadLinks called with data: $data")
-        val listType = object : TypeToken<List<EpisodeInfo>>() {}.type
-        val infoList = parseJson<List<EpisodeInfo>>(data)
-        Log.d(TAG, "Parsed infoList: $infoList")
+        val document = app.get(data).document
+        val sources = mutableListOf<String>()
 
-        coroutineScope {
-            infoList.forEach { info ->
-                async {
-                    Log.d(TAG, "Processing server: ${info.serverLabel} with URL: ${info.url}")
-                    try {
-                        val watchPageDoc = app.get(info.url, referer = mainUrl).document
-                        Log.d(TAG, "Successfully fetched watch page for ${info.url}")
-                        val activeEpisode = watchPageDoc.selectFirst(".halim-episode.active a") ?: return@async
-                        val postId = watchPageDoc.selectFirst("main.watch-page")?.attr("data-id") ?: return@async
-                        val chapterSt = activeEpisode.attr("data-ep") ?: return@async
-                        val sv = activeEpisode.attr("data-sv") ?: return@async
-                        Log.d(TAG, "Parsed params: postId=$postId, chapterSt=$chapterSt, sv=$sv")
+        // 1. Nguồn chính
+        document.selectFirst("div#ajax-player iframe")?.let {
+            it.attr("data-src").ifBlank { it.attr("src") }
+        }?.let { sources.add(it) }
 
-                        val langPrefix = "${info.serverLabel} "
-
-                        val serverButtons = watchPageDoc.select("#halim-ajax-list-server .get-eps")
-                        for (button in serverButtons) {
-                            // SỬA LỖI: Khai báo serverName ở ngoài để catch có thể truy cập
-                            var serverName = "Unknown"
-                            try {
-                                val type = button.attr("data-type")
-                                serverName = button.text() // Gán giá trị ở đây
-                                Log.d(TAG, "Attempting to get link from server button: $serverName (type=$type)")
-                                val playerAjaxUrl = "$mainUrl/player/player.php"
-
-                                val ajaxResponse = app.get(
-                                    playerAjaxUrl,
-                                    params = mapOf(
-                                        "action" to "dox_ajax_player",
-                                        "post_id" to postId,
-                                        "chapter_st" to chapterSt,
-                                        "type" to type,
-                                        "sv" to sv
-                                    ),
-                                    headers = mapOf("X-Requested-With" to "XMLHttpRequest"),
-                                    referer = info.url
-                                ).document
-
-                                val iframeSrc = ajaxResponse.selectFirst("iframe")?.attr("src") ?: continue
-                                Log.d(TAG, "Found iframeSrc: $iframeSrc")
-
-                                val extractorPage = app.get(iframeSrc, referer = info.url).document
-                                Log.d(TAG, "Successfully fetched iframe page.")
-
-                                val hrmPlayer = extractorPage.selectFirst("div#hrm-player")
-                                val dataId = hrmPlayer?.attr("data-id")
-                                val dataNonce = hrmPlayer?.attr("data-nonce")
-                                val bytecode = extractorPage.selectFirst("meta[name=bytecode]")?.attr("content")
-                                Log.d(TAG, "dataId: $dataId")
-                                Log.d(TAG, "dataNonce: $dataNonce")
-                                Log.d(TAG, "bytecode: $bytecode")
-
-                                if (dataId != null && dataNonce != null && bytecode != null) {
-                                    val encryptedData = base64UrlDecode(dataNonce)
-                                    val key = dataId.toByteArray(Charsets.UTF_8)
-                                    
-                                    val decryptedData = rc4(key, encryptedData)
-                                    val decryptedJson = String(decryptedData)
-                                    Log.d(TAG, "Decrypted JSON: $decryptedJson")
-
-                                    val fileUrl = parseJson<Map<String, Any>>(decryptedJson)["file"] as? String
-
-                                    if (fileUrl != null) {
-                                        Log.d(TAG, "SUCCESS! Extracted fileUrl: $fileUrl")
-                                        callback.invoke(
-                                            ExtractorLink(
-                                                source = this@HHKungfuProvider.name,
-                                                name = "$langPrefix$serverName",
-                                                url = fileUrl,
-                                                referer = iframeSrc,
-                                                quality = Qualities.Unknown.value,
-                                                type = ExtractorLinkType.M3U8
-                                            )
-                                        )
-                                    } else {
-                                        Log.w(TAG, "Decryption successful but 'file' key not found in JSON.")
-                                    }
-                                } else {
-                                    Log.w(TAG, "One or more crypto parameters are null. Skipping this server button.")
-                                }
-                            } catch (e: Exception) {
-                                // Giờ đây 'serverName' đã có thể được truy cập ở đây
-                                Log.e(TAG, "Error processing server button '$serverName'", e)
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error processing main server '${info.serverLabel}'", e)
-                    }
-                }
+        // 2. Các nguồn dự phòng
+        document.select("div#halim-ajax-list-serverX span.get-eps").forEach {
+            it.attr("data-link")?.let { link ->
+                if (link.isNotBlank()) sources.add(link)
             }
         }
-        return true
+
+        // Xử lý song song các nguồn link
+        sources.apmap { sourceUrl ->
+            // Custom extractor cho viupload.net
+            if ("viupload.net" in sourceUrl) {
+                try {
+                    val embedContent = app.get(sourceUrl, referer = mainUrl).text
+                    val m3u8Regex = Regex("""sources:\s*\[\{file:"([^"]+)""")
+                    m3u8Regex.find(embedContent)?.groupValues?.get(1)?.let { m3u8Link ->
+                        callback.invoke(
+                            ExtractorLink("ViUpload", "ViUpload", m3u8Link, sourceUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
+                        )
+                    }
+                } catch (e: Exception) { /* Bỏ qua lỗi */ }
+            } 
+            // Custom extractor cho ssplay.net
+            else if ("ssplay.net" in sourceUrl) {
+                try {
+                    val embedDocument = app.get(sourceUrl, referer = mainUrl).document
+                    val scriptContent = embedDocument.select("script").firstOrNull { 
+                        it.data().contains("sources:") 
+                    }?.data()
+
+                    if (scriptContent != null) {
+                        val fileRegex = Regex("""file:\s*"(.*?)"""")
+                        var m3u8Url = fileRegex.find(scriptContent)?.groupValues?.get(1)
+
+                        if (m3u8Url != null) {
+                            if (m3u8Url.startsWith("/")) {
+                                m3u8Url = "https://ssplay.net$m3u8Url"
+                            }
+                            callback.invoke(
+                                ExtractorLink("SSPlay", "SSPlay", m3u8Url, sourceUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
+                            )
+                        }
+                    }
+                } catch (e: Exception) { /* Bỏ qua lỗi */ }
+            }
+            // Tối ưu: Custom extractor cho cloudbeta.win
+            else if ("player.cloudbeta.win" in sourceUrl) {
+                try {
+                    // Lấy UUID từ cuối URL embed
+                    val uuid = sourceUrl.substringAfterLast('/')
+                    // Xây dựng trực tiếp link .m3u8 mà không cần request thêm
+                    val m3u8Link = "https://play.cloudbeta.win/file/play/$uuid.m3u8"
+                    
+                    callback.invoke(
+                        ExtractorLink("CloudBeta", "CloudBeta", m3u8Link, sourceUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
+                    )
+                } catch (e: Exception) { /* Bỏ qua lỗi */ }
+            }
+            else {
+                // Sử dụng extractor mặc định cho các host khác
+                loadExtractor(sourceUrl, mainUrl, subtitleCallback, callback)
+            }
+        }
+
+        return sources.isNotEmpty()
     }
 }
