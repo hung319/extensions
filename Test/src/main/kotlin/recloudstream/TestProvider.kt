@@ -11,7 +11,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
 import java.net.URI
-import kotlinx.coroutines.async // Thêm import này
+import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import com.lagradost.cloudstream3.CommonActivity.showToast
 import kotlinx.coroutines.Dispatchers
@@ -21,6 +21,7 @@ import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import android.util.Base64
+import android.util.Log // THÊM IMPORT NÀY
 
 class HHKungfuProvider : MainAPI() {
     override var name = "HHKungfu"
@@ -30,6 +31,9 @@ class HHKungfuProvider : MainAPI() {
     override val supportedTypes = setOf(
         TvType.Cartoon
     )
+
+    // Thêm TAG để lọc log cho dễ
+    private val TAG = "HHKungfuProvider"
 
     override val mainPage = mainPageOf(
         "moi-cap-nhat/page/" to "Mới cập nhật",
@@ -120,11 +124,9 @@ class HHKungfuProvider : MainAPI() {
             }
 
             server.select("ul.halim-list-eps li a").forEach { ep ->
-                // Lấy tên tập phim gốc từ web, ví dụ: "Tập 1-6"
                 val epName = ep.selectFirst("span")?.text()?.trim() ?: ep.text().trim()
                 val epUrl = ep.attr("href")
                 
-                // Dùng tên gốc này làm key để gộp
                 episodeMap.getOrPut(epName) { mutableListOf() }.add(EpisodeInfo(epUrl, serverLabel))
             }
         }
@@ -132,11 +134,10 @@ class HHKungfuProvider : MainAPI() {
         val numberRegex = Regex("""\d+""")
         val episodes = episodeMap.entries
             .map { (epName, infoList) ->
-                // Lấy số đầu tiên trong tên tập để sắp xếp
                 val sortKey = numberRegex.find(epName)?.value?.toIntOrNull() ?: 0
                 Triple(sortKey, epName, infoList)
             }
-            .sortedBy { it.first } // Sắp xếp theo thứ tự tăng dần
+            .sortedBy { it.first }
             .map { (_, epName, infoList) ->
                 val data = infoList.toJson()
                 val serverTags = infoList.joinToString(separator = "+") { it.serverLabel }.let { "($it)" }
@@ -158,7 +159,6 @@ class HHKungfuProvider : MainAPI() {
         }
     }
 
-    // Hàm decode chuỗi Base64Url thành ByteArray
     private fun base64UrlDecode(input: String): ByteArray {
         val a = input.replace('-', '+').replace('_', '/')
         val b = when (a.length % 4) {
@@ -170,7 +170,6 @@ class HHKungfuProvider : MainAPI() {
         return Base64.decode(a + b, Base64.DEFAULT)
     }
 
-    // Hàm giải mã RC4
     private fun rc4(key: ByteArray, data: ByteArray): ByteArray {
         val s = IntArray(256) { it }
         var j = 0
@@ -196,93 +195,105 @@ class HHKungfuProvider : MainAPI() {
     }
 
     override suspend fun loadLinks(
-    data: String,
-    isCasting: Boolean,
-    subtitleCallback: (SubtitleFile) -> Unit,
-    callback: (ExtractorLink) -> Unit
-): Boolean {
-    val listType = object : TypeToken<List<EpisodeInfo>>() {}.type
-    val infoList = parseJson<List<EpisodeInfo>>(data)
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        Log.d(TAG, "loadLinks called with data: $data")
+        val listType = object : TypeToken<List<EpisodeInfo>>() {}.type
+        val infoList = parseJson<List<EpisodeInfo>>(data)
+        Log.d(TAG, "Parsed infoList: $infoList")
 
-    coroutineScope {
-        infoList.forEach { info ->
-            async {
-                try {
-                    val watchPageDoc = app.get(info.url, referer = mainUrl).document
-                    val activeEpisode = watchPageDoc.selectFirst(".halim-episode.active a") ?: return@async
-                    val postId = watchPageDoc.selectFirst("main.watch-page")?.attr("data-id") ?: return@async
-                    val chapterSt = activeEpisode.attr("data-ep") ?: return@async
-                    val sv = activeEpisode.attr("data-sv") ?: return@async
+        coroutineScope {
+            infoList.forEach { info ->
+                async {
+                    Log.d(TAG, "Processing server: ${info.serverLabel} with URL: ${info.url}")
+                    try {
+                        val watchPageDoc = app.get(info.url, referer = mainUrl).document
+                        Log.d(TAG, "Successfully fetched watch page for ${info.url}")
+                        val activeEpisode = watchPageDoc.selectFirst(".halim-episode.active a") ?: return@async
+                        val postId = watchPageDoc.selectFirst("main.watch-page")?.attr("data-id") ?: return@async
+                        val chapterSt = activeEpisode.attr("data-ep") ?: return@async
+                        val sv = activeEpisode.attr("data-sv") ?: return@async
+                        Log.d(TAG, "Parsed params: postId=$postId, chapterSt=$chapterSt, sv=$sv")
 
-                    val langPrefix = "${info.serverLabel} "
+                        val langPrefix = "${info.serverLabel} "
 
-                    val serverButtons = watchPageDoc.select("#halim-ajax-list-server .get-eps")
-                    // SỬA LỖI: Dùng vòng lặp for thay cho forEach để có thể gọi suspend function
-                    for (button in serverButtons) {
-                        try {
-                            val type = button.attr("data-type")
-                            val serverName = button.text()
-                            val playerAjaxUrl = "$mainUrl/player/player.php"
+                        val serverButtons = watchPageDoc.select("#halim-ajax-list-server .get-eps")
+                        for (button in serverButtons) {
+                            try {
+                                val type = button.attr("data-type")
+                                val serverName = button.text()
+                                Log.d(TAG, "Attempting to get link from server button: $serverName (type=$type)")
+                                val playerAjaxUrl = "$mainUrl/player/player.php"
 
-                            val ajaxResponse = app.get(
-                                playerAjaxUrl,
-                                params = mapOf(
-                                    "action" to "dox_ajax_player",
-                                    "post_id" to postId,
-                                    "chapter_st" to chapterSt,
-                                    "type" to type,
-                                    "sv" to sv
-                                ),
-                                headers = mapOf("X-Requested-With" to "XMLHttpRequest"),
-                                referer = info.url
-                            ).document
+                                val ajaxResponse = app.get(
+                                    playerAjaxUrl,
+                                    params = mapOf(
+                                        "action" to "dox_ajax_player",
+                                        "post_id" to postId,
+                                        "chapter_st" to chapterSt,
+                                        "type" to type,
+                                        "sv" to sv
+                                    ),
+                                    headers = mapOf("X-Requested-With" to "XMLHttpRequest"),
+                                    referer = info.url
+                                ).document
 
-                            val iframeSrc = ajaxResponse.selectFirst("iframe")?.attr("src") ?: continue
+                                val iframeSrc = ajaxResponse.selectFirst("iframe")?.attr("src") ?: continue
+                                Log.d(TAG, "Found iframeSrc: $iframeSrc")
 
-                            // Tải nội dung trang iframe từ streamfree.vip
-                            val extractorPage = app.get(iframeSrc, referer = info.url).document
+                                val extractorPage = app.get(iframeSrc, referer = info.url).document
+                                Log.d(TAG, "Successfully fetched iframe page.")
 
-                            // 1. Lấy các thành phần cần thiết
-                            val hrmPlayer = extractorPage.selectFirst("div#hrm-player")
-                            val dataId = hrmPlayer?.attr("data-id")
-                            val dataNonce = hrmPlayer?.attr("data-nonce")
-                            val bytecode = extractorPage.selectFirst("meta[name=bytecode]")?.attr("content")
+                                val hrmPlayer = extractorPage.selectFirst("div#hrm-player")
+                                val dataId = hrmPlayer?.attr("data-id")
+                                val dataNonce = hrmPlayer?.attr("data-nonce")
+                                val bytecode = extractorPage.selectFirst("meta[name=bytecode]")?.attr("content")
+                                Log.d(TAG, "dataId: $dataId")
+                                Log.d(TAG, "dataNonce: $dataNonce")
+                                Log.d(TAG, "bytecode: $bytecode")
 
-                            if (dataId != null && dataNonce != null && bytecode != null) {
-                                // 2. Decode nonce và chuyển key thành byte array
-                                val encryptedData = base64UrlDecode(dataNonce)
-                                val key = bytecode.toByteArray(Charsets.UTF_8)
-                                
-                                // 3. Giải mã RC4
-                                val decryptedData = rc4(key, encryptedData)
-                                val decryptedJson = String(decryptedData)
 
-                                // 4. Parse JSON để lấy link file
-                                val fileUrl = parseJson<Map<String, Any>>(decryptedJson)["file"] as? String
+                                if (dataId != null && dataNonce != null && bytecode != null) {
+                                    val encryptedData = base64UrlDecode(dataNonce)
+                                    val key = bytecode.toByteArray(Charsets.UTF_8)
+                                    
+                                    val decryptedData = rc4(key, encryptedData)
+                                    val decryptedJson = String(decryptedData)
+                                    Log.d(TAG, "Decrypted JSON: $decryptedJson")
 
-                                if (fileUrl != null) {
-                                    callback.invoke(
-                                        ExtractorLink(
-                                            source = this@HHKungfuProvider.name,
-                                            name = "$langPrefix$serverName",
-                                            url = fileUrl,
-                                            referer = iframeSrc,
-                                            quality = Qualities.Unknown.value,
-                                            type = ExtractorLinkType.M3U8
+                                    val fileUrl = parseJson<Map<String, Any>>(decryptedJson)["file"] as? String
+
+                                    if (fileUrl != null) {
+                                        Log.d(TAG, "SUCCESS! Extracted fileUrl: $fileUrl")
+                                        callback.invoke(
+                                            ExtractorLink(
+                                                source = this@HHKungfuProvider.name,
+                                                name = "$langPrefix$serverName",
+                                                url = fileUrl,
+                                                referer = iframeSrc,
+                                                quality = Qualities.Unknown.value,
+                                                type = ExtractorLinkType.M3U8
+                                            )
                                         )
-                                    )
+                                    } else {
+                                        Log.w(TAG, "Decryption successful but 'file' key not found in JSON.")
+                                    }
+                                } else {
+                                    Log.w(TAG, "One or more crypto parameters are null. Skipping this server button.")
                                 }
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error processing server button '$serverName'", e)
                             }
-                        } catch (e: Exception) {
-                            // Bỏ qua lỗi server con
                         }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error processing main server '${info.serverLabel}'", e)
                     }
-                } catch (e: Exception) {
-                    // Bỏ qua lỗi server chính
                 }
             }
         }
+        return true
     }
-    return true
-}
 }
