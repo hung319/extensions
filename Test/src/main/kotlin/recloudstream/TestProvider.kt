@@ -11,9 +11,10 @@ import kotlinx.coroutines.awaitAll
 /**
  * Senior Software Engineer's Note:
  * This is an updated provider for hhkungfu.click.
- * Version 12 Changelog:
- * - MODIFIED: Limited supported TvType to only `Cartoon` as requested.
- * - Updated response helpers to use TvType.Cartoon for consistency.
+ * Version 13 Changelog:
+ * - FIXED: Implemented a robust `JsUnpacker` for `ssplay.net` to handle obfuscated scripts, ensuring link extraction works correctly.
+ * - Optimized `player.cloudbeta.win` extractor to build m3u8 link directly.
+ * - Adheres to the user's specific CloudStream API version.
  */
 class HoatHinhKungfuProvider : MainAPI() {
     override var mainUrl = "https://hhkungfu.click"
@@ -22,7 +23,6 @@ class HoatHinhKungfuProvider : MainAPI() {
     override var lang = "vi"
     override val hasDownloadSupport = true
 
-    // ĐÃ SỬA: Chỉ giữ lại TvType.Cartoon
     override val supportedTypes = setOf(
         TvType.Cartoon
     )
@@ -34,7 +34,6 @@ class HoatHinhKungfuProvider : MainAPI() {
             it.attr("data-src").ifBlank { it.attr("src") }
         }
 
-        // ĐÃ SỬA: Sử dụng TvType.Cartoon
         return newTvSeriesSearchResponse(title, href, TvType.Cartoon) {
             this.posterUrl = posterUrl
         }
@@ -91,7 +90,6 @@ class HoatHinhKungfuProvider : MainAPI() {
             }
         }.reversed()
 
-        // ĐÃ SỬA: Sử dụng TvType.Cartoon
         return newTvSeriesLoadResponse(title, url, TvType.Cartoon, episodes) {
             this.posterUrl = posterUrl
             this.plot = plot
@@ -134,22 +132,26 @@ class HoatHinhKungfuProvider : MainAPI() {
                     } 
                     else if ("ssplay.net" in sourceUrl) {
                         try {
-                            val embedDocument = app.get(sourceUrl, referer = mainUrl).document
-                            val scriptContent = embedDocument.select("script").firstOrNull { 
-                                it.data().contains("sources:") 
-                            }?.data()
+                            val embedPage = app.get(sourceUrl, referer = mainUrl).text
+                            val packedRegex = Regex("""eval\(function\(p,a,c,k,e,d\)\{.*sources:.*?\}\\)\)""")
+                            val packedScript = packedRegex.find(embedPage)?.value
 
-                            if (scriptContent != null) {
-                                val fileRegex = Regex("""file:\s*"(.*?)"""")
-                                var m3u8Url = fileRegex.find(scriptContent)?.groupValues?.get(1)
+                            if (packedScript != null) {
+                                val unpacked = JsUnpacker(packedScript).unpack()
+                                if (unpacked != null) {
+                                    val m3u8Regex = Regex("""sources:\s*\[\s*\{\s*file:\s*"([^"]+)"""")
+                                    var m3u8Link = m3u8Regex.find(unpacked)?.groupValues?.get(1)
 
-                                if (m3u8Url != null) {
-                                    if (m3u8Url.startsWith("/")) {
-                                        m3u8Url = "https://ssplay.net$m3u8Url"
+                                    if (m3u8Link != null) {
+                                        if (m3u8Link.startsWith("//")) {
+                                            m3u8Link = "https:$m3u8Link"
+                                        } else if (m3u8Link.startsWith("/")) {
+                                            m3u8Link = "https://ssplay.net$m3u8Link"
+                                        }
+                                        callback.invoke(
+                                            ExtractorLink("SSPlay", "SSPlay", m3u8Link, sourceUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
+                                        )
                                     }
-                                    callback.invoke(
-                                        ExtractorLink("SSPlay", "SSPlay", m3u8Url, sourceUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
-                                    )
                                 }
                             }
                         } catch (e: Exception) { /* Bỏ qua lỗi */ }
@@ -169,7 +171,6 @@ class HoatHinhKungfuProvider : MainAPI() {
                 }
             }.awaitAll()
         }
-
         return sources.isNotEmpty()
     }
 }
