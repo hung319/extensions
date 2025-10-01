@@ -8,12 +8,10 @@ import org.jsoup.nodes.Element
 /**
  * Senior Software Engineer's Note:
  * This is an updated provider for hhkungfu.click.
- * Version 8 Changelog:
- * - Optimized `player.cloudbeta.win` extractor to build m3u8 link directly, removing an HTTP request for faster link loading.
- * - Added custom extractor for `ssplay.net` to handle dynamic source URLs.
- * - Switched to using the `newEpisode` helper function.
- * - Implemented pagination for the main page.
- * - Added a custom internal extractor for `viupload.net`.
+ * Version 10 Changelog:
+ * - FIXED: Build errors by strictly adhering to the provided data class definitions.
+ * - REMOVED: Assignment to `latestEpisodeName` as it does not exist in the user's TvSeriesSearchResponse class.
+ * - IMPLEMENTED: `hasNext` logic in `getMainPage` to correctly use the `HomePageResponse(items, hasNext)` constructor.
  */
 class HoatHinhKungfuProvider : MainAPI() {
     override var mainUrl = "https://hhkungfu.click"
@@ -28,6 +26,7 @@ class HoatHinhKungfuProvider : MainAPI() {
         TvType.Cartoon
     )
 
+    // ĐÃ SỬA: Loại bỏ `latestEpisodeName`
     private fun Element.toSearchResponse(): SearchResponse? {
         val title = this.selectFirst("h2.entry-title")?.text() ?: return null
         val href = this.selectFirst("a.halim-thumb")?.attr("href") ?: return null
@@ -37,35 +36,32 @@ class HoatHinhKungfuProvider : MainAPI() {
 
         return newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
             this.posterUrl = posterUrl
-            this.latestEpisode = this@toSearchResponse.selectFirst("span.episode")?.text()
+            // Không gán `latestEpisodeName` nữa vì nó không tồn tại
         }
     }
 
+    // ĐÃ SỬA: Sử dụng đúng constructor HomePageResponse(items, hasNext)
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get(mainUrl).document
-        val homePageList = mutableListOf<HomePageList>()
-
-        val latestUpdatesItems = document.select("section#halim-advanced-widget-3 article.grid-item").mapNotNull {
-            it.toSearchResponse()
-        }
-        
-        homePageList.add(HomePageList("Mới Cập Nhật", latestUpdatesItems, url = "$mainUrl/latest-movie/page/"))
-        
-        return HomePageResponse(homePageList)
-    }
-
-    override suspend fun loadPage(url: String): LoadPageResponse {
+        val url = if (page <= 1) mainUrl else "$mainUrl/latest-movie/page/$page/"
         val document = app.get(url).document
 
-        val items = document.select("main#main-contents div.halim_box article").mapNotNull {
+        val articles = if (page <= 1) {
+            document.select("section#halim-advanced-widget-3 article.grid-item")
+        } else {
+            document.select("main#main-contents div.halim_box article")
+        }
+        
+        val homePageList = articles.mapNotNull {
             it.toSearchResponse()
         }
 
-        val nextUrl = document.selectFirst("a.next.page-numbers")?.attr("href")
+        // Kiểm tra xem có trang tiếp theo không
+        val hasNext = document.selectFirst("a.next.page-numbers") != null
 
-        return newTvSeriesLoadPageResponse(url, items) {
-            this.nextUrl = nextUrl
-        }
+        val items = listOf(HomePageList("Mới Cập Nhật", homePageList))
+        
+        // Trả về theo đúng cấu trúc data class
+        return HomePageResponse(items, hasNext)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -115,21 +111,17 @@ class HoatHinhKungfuProvider : MainAPI() {
         val document = app.get(data).document
         val sources = mutableListOf<String>()
 
-        // 1. Nguồn chính
         document.selectFirst("div#ajax-player iframe")?.let {
             it.attr("data-src").ifBlank { it.attr("src") }
         }?.let { sources.add(it) }
 
-        // 2. Các nguồn dự phòng
         document.select("div#halim-ajax-list-serverX span.get-eps").forEach {
             it.attr("data-link")?.let { link ->
                 if (link.isNotBlank()) sources.add(link)
             }
         }
 
-        // Xử lý song song các nguồn link
         sources.apmap { sourceUrl ->
-            // Custom extractor cho viupload.net
             if ("viupload.net" in sourceUrl) {
                 try {
                     val embedContent = app.get(sourceUrl, referer = mainUrl).text
@@ -141,7 +133,6 @@ class HoatHinhKungfuProvider : MainAPI() {
                     }
                 } catch (e: Exception) { /* Bỏ qua lỗi */ }
             } 
-            // Custom extractor cho ssplay.net
             else if ("ssplay.net" in sourceUrl) {
                 try {
                     val embedDocument = app.get(sourceUrl, referer = mainUrl).document
@@ -164,21 +155,16 @@ class HoatHinhKungfuProvider : MainAPI() {
                     }
                 } catch (e: Exception) { /* Bỏ qua lỗi */ }
             }
-            // Tối ưu: Custom extractor cho cloudbeta.win
             else if ("player.cloudbeta.win" in sourceUrl) {
                 try {
-                    // Lấy UUID từ cuối URL embed
                     val uuid = sourceUrl.substringAfterLast('/')
-                    // Xây dựng trực tiếp link .m3u8 mà không cần request thêm
                     val m3u8Link = "https://play.cloudbeta.win/file/play/$uuid.m3u8"
-                    
                     callback.invoke(
                         ExtractorLink("CloudBeta", "CloudBeta", m3u8Link, sourceUrl, Qualities.Unknown.value, type = ExtractorLinkType.M3U8)
                     )
                 } catch (e: Exception) { /* Bỏ qua lỗi */ }
             }
             else {
-                // Sử dụng extractor mặc định cho các host khác
                 loadExtractor(sourceUrl, mainUrl, subtitleCallback, callback)
             }
         }
