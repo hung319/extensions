@@ -12,10 +12,10 @@ import java.util.regex.Pattern
 /**
  * Senior Software Engineer's Note:
  * This is an updated provider for hhkungfu.click.
- * Version 14 Changelog:
- * - FIXED: Pagination logic by using a unified and more robust selector for all pages.
- * - FIXED: `ssplay.net` extractor by embedding the `JsUnpacker` utility directly into the provider. This makes it self-contained and resolves previous runtime issues.
- * - Maintained all other optimizations and fixes from previous versions.
+ * Version 15 Changelog:
+ * - CRITICAL FIX: Corrected a major bug in the homepage/pagination selector that caused `getMainPage` and `search` to fail.
+ * - Unified selectors for `getMainPage` and `search` for better stability.
+ * - All other features and optimizations remain intact.
  */
 class HoatHinhKungfuProvider : MainAPI() {
     override var mainUrl = "https://hhkungfu.click"
@@ -29,6 +29,7 @@ class HoatHinhKungfuProvider : MainAPI() {
     )
 
     private fun Element.toSearchResponse(): SearchResponse? {
+        // Selector bên trong hàm này đã đúng, không cần thay đổi
         val title = this.selectFirst("h2.entry-title")?.text() ?: return null
         val href = this.selectFirst("a.halim-thumb")?.attr("href") ?: return null
         val posterUrl = this.selectFirst("figure > img")?.let {
@@ -39,14 +40,14 @@ class HoatHinhKungfuProvider : MainAPI() {
             this.posterUrl = posterUrl
         }
     }
-    
-    // ĐÃ SỬA: Logic phân trang ổn định hơn
+
+    // ĐÃ SỬA LỖI: Sử dụng selector chính xác
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page <= 1) mainUrl else "$mainUrl/latest-movie/page/$page/"
         val document = app.get(url).document
 
-        // Sử dụng selector chung cho tất cả các trang để đảm bảo tính nhất quán
-        val articles = document.select("div.halim_box article.halim-item")
+        // Sử dụng selector `div.halim_box article.thumb` chung và chính xác
+        val articles = document.select("div.halim_box article.thumb")
         
         val homePageList = articles.mapNotNull {
             it.toSearchResponse()
@@ -58,7 +59,7 @@ class HoatHinhKungfuProvider : MainAPI() {
         return newHomePageResponse(items, hasNext)
     }
 
-
+    // ĐÃ SỬA LỖI: Đồng bộ selector với getMainPage để đảm bảo hoạt động
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/?s=$query"
         val document = app.get(searchUrl).document
@@ -130,7 +131,6 @@ class HoatHinhKungfuProvider : MainAPI() {
                             }
                         } catch (e: Exception) { /* Bỏ qua lỗi */ }
                     } 
-                    // ĐÃ SỬA: Logic ssplay.net mới, sử dụng JsUnpacker nhúng sẵn
                     else if ("ssplay.net" in sourceUrl) {
                         try {
                             val embedPage = app.get(sourceUrl, referer = mainUrl).text
@@ -174,66 +174,58 @@ class HoatHinhKungfuProvider : MainAPI() {
     }
 }
 
-// BỘ GIẢI MÃ JAVASCRIPT ĐƯỢC NHÚNG VÀO ĐỂ ĐẢM BẢO TƯƠNG THÍCH
 private class JsUnpacker(private val packedJS: String) {
     fun unpack(): String? {
         var js = packedJS
-        var p: String
-        var a: Int
-        var c: Int
-        var k: Array<String>
-        var e: Int
-        var d: Int
         try {
             val matcher = Pattern.compile("eval\\(function\\(p,a,c,k,e,d\\)(.*)\\)").matcher(js)
             if (matcher.find()) {
                 js = matcher.group(0)
             }
-            val p_a_c_k_e_d =
-                js.replaceFirst("eval(function(p,a,c,k,e,d)".toRegex(), "").dropLast(1)
+            val p_a_c_k_e_d = js.replaceFirst("eval(function(p,a,c,k,e,d)".toRegex(), "").dropLast(1)
             val all = p_a_c_k_e_d.replace("'.split('|'))".toRegex(), "####")
             val payload = all.substringBefore("####").substringBeforeLast(",'")
             val dict = all.substringBefore("####").substringAfterLast(",'").split("|")
             val base = all.substringAfter("####").substringAfter(",").substringBefore(",")
-            k = dict.toTypedArray()
-            p = payload.drop(1)
-            a = base.toInt()
-            c = k.size
-            e = 1
-            d = 1
-        } catch (e: Exception) {
-            return null
-        }
-        fun getAlpha(value: Int): String {
-            return when {
-                value < a -> value.toString(a)
-                else -> (value / a).let {
-                    getAlpha(it) + (value % a).let {
-                        if (it > 35) (it + 29).toChar() else it.toString(36)
-                    }.toString()
-                }
-            }
-        }
-        val pMatcher = Pattern.compile("\\b\\w+\\b").matcher(p)
-        val decoded = StringBuilder(p)
-        var offset = 0
-        while (pMatcher.find()) {
-            val word = pMatcher.group(0)
-            val value = word.toIntOrNull(a)
-            if (value != null) {
-                if (value < c) {
-                    val replacement = k[value]
-                    if (replacement.isNotEmpty()) {
-                        decoded.replace(
-                            pMatcher.start() + offset,
-                            pMatcher.end() + offset,
-                            replacement
-                        )
-                        offset += replacement.length - word.length
+            val k = dict.toTypedArray()
+            val p = payload.drop(1)
+            val a = base.toInt()
+            val c = k.size
+
+            fun getAlpha(value: Int): String {
+                return when {
+                    value < a -> value.toString(a)
+                    else -> (value / a).let {
+                        getAlpha(it) + (value % a).let {
+                            if (it > 35) (it + 29).toChar() else it.toString(36)
+                        }.toString()
                     }
                 }
             }
+
+            val pMatcher = Pattern.compile("\\b\\w+\\b").matcher(p)
+            val decoded = StringBuilder(p)
+            var offset = 0
+            while (pMatcher.find()) {
+                val word = pMatcher.group(0)
+                val value = word.toIntOrNull(a)
+                if (value != null) {
+                    if (value < c) {
+                        val replacement = k[value]
+                        if (replacement.isNotEmpty()) {
+                            decoded.replace(
+                                pMatcher.start() + offset,
+                                pMatcher.end() + offset,
+                                replacement
+                            )
+                            offset += replacement.length - word.length
+                        }
+                    }
+                }
+            }
+            return decoded.toString()
+        } catch (e: Exception) {
+            return null
         }
-        return decoded.toString()
     }
 }
