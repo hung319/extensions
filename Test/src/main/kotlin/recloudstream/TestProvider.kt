@@ -222,9 +222,11 @@ class HHKungfuProvider : MainAPI() {
 
                         val serverButtons = watchPageDoc.select("#halim-ajax-list-server .get-eps")
                         for (button in serverButtons) {
+                            // SỬA LỖI: Khai báo serverName ở ngoài để catch có thể truy cập
+                            var serverName = "Unknown"
                             try {
                                 val type = button.attr("data-type")
-                                val serverName = button.text()
+                                serverName = button.text() // Gán giá trị ở đây
                                 Log.d(TAG, "Attempting to get link from server button: $serverName (type=$type)")
                                 val playerAjaxUrl = "$mainUrl/player/player.php"
 
@@ -255,7 +257,6 @@ class HHKungfuProvider : MainAPI() {
                                 Log.d(TAG, "dataNonce: $dataNonce")
                                 Log.d(TAG, "bytecode: $bytecode")
 
-
                                 if (dataId != null && dataNonce != null && bytecode != null) {
                                     val encryptedData = base64UrlDecode(dataNonce)
                                     val key = bytecode.toByteArray(Charsets.UTF_8)
@@ -285,6 +286,7 @@ class HHKungfuProvider : MainAPI() {
                                     Log.w(TAG, "One or more crypto parameters are null. Skipping this server button.")
                                 }
                             } catch (e: Exception) {
+                                // Giờ đây 'serverName' đã có thể được truy cập ở đây
                                 Log.e(TAG, "Error processing server button '$serverName'", e)
                             }
                         }
