@@ -271,7 +271,7 @@ private fun rc4(key: ByteArray, data: ByteArray): ByteArray {
 
                                 if (dataId != null && dataNonce != null && bytecode != null) {
                                     val encryptedData = base64UrlDecode(dataNonce)
-                                    val key = bytecode.toByteArray(Charsets.UTF_8)
+                                    val key = dataId.toByteArray(Charsets.UTF_8)
                                     
                                     val decryptedData = rc4(key, encryptedData)
                                     val decryptedJson = String(decryptedData)
