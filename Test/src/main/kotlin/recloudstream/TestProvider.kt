@@ -170,36 +170,41 @@ class HHKungfuProvider : MainAPI() {
         return Base64.decode(a + b, Base64.DEFAULT)
     }
 
-    // Hàm giải mã RC4 (phiên bản sửa lỗi)
-    private fun rc4(key: ByteArray, data: ByteArray): ByteArray {
-        val s = IntArray(256) { it }
-        var j = 0
-        for (i in 0..255) {
-            // SỬA LỖI: Chuyển đổi byte sang Int một cách an toàn để tránh giá trị âm
-            val keyByte = key[i % key.size].toInt() and 0xFF
-            j = (j + s[i] + keyByte) and 0xFF
-            
-            val temp = s[i]
-            s[i] = s[j]
-            s[j] = temp
-        }
-
-        var i = 0
-        j = 0
-        val result = ByteArray(data.size)
-        for (index in data.indices) {
-            i = (i + 1) and 0xFF
-            j = (j + s[i]) and 0xFF
-            
-            val temp = s[i]
-            s[i] = s[j]
-            s[j] = temp
-            
-            val k = s[(s[i] + s[j]) and 0xFF]
-            result[index] = (data[index].toInt() xor k).toByte()
-        }
-        return result
+    // Hàm giải mã RC4 (phiên bản cuối cùng)
+private fun rc4(key: ByteArray, data: ByteArray): ByteArray {
+    val s = IntArray(256) { it }
+    var j = 0
+    // Key-scheduling algorithm (KSA)
+    for (i in 0..255) {
+        // SỬA LỖI: Chuyển đổi byte sang Int một cách an toàn để tránh giá trị âm
+        val keyByte = key[i % key.size].toInt() and 0xFF
+        j = (j + s[i] + keyByte) and 0xFF
+        
+        // Hoán đổi (swap)
+        val temp = s[i]
+        s[i] = s[j]
+        s[j] = temp
     }
+
+    // Pseudo-random generation algorithm (PRGA)
+    var i = 0
+    j = 0
+    val result = ByteArray(data.size)
+    for (index in data.indices) {
+        i = (i + 1) and 0xFF
+        j = (j + s[i]) and 0xFF
+        
+        // Hoán đổi (swap)
+        val temp = s[i]
+        s[i] = s[j]
+        s[j] = temp
+        
+        // XOR với keystream để giải mã
+        val k = s[(s[i] + s[j]) and 0xFF]
+        result[index] = (data[index].toInt() xor k).toByte()
+    }
+    return result
+}
 
     override suspend fun loadLinks(
         data: String,
