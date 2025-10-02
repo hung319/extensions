@@ -2,18 +2,17 @@ package recloudstream
 
 /*
 * @CloudstreamProvider: BokepIndoProvider
-* @Version: 2.8
+* @Version: 3.0
 * @Author: Coder
 * @Language: id
 * @TvType: Nsfw
 * @Url: https://bokepindoh.monster
-* @Info: Provider for Bokepindoh.monster. Final fix for DoodStream API logic.
+* @Info: Refactored to use loadExtractor for better maintainability.
 */
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -62,131 +61,50 @@ class BokepIndoProvider : MainAPI() {
         }
     }
 
+    // ## loadLinks được đơn giản hoá bằng cách dùng loadExtractor ##
     override suspend fun loadLinks(
-        data: String,
+        data: String, // 'data' là URL của trang xem video chính
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val document = app.get(data).document
-        val servers = mutableListOf<Pair<String, String>>()
+        val servers = mutableListOf<String>()
 
+        // Trích xuất URL của các iframe từ biến JavaScript
         val scriptContent = document.select("script").firstOrNull { it.data().contains("wpst_ajax_var") }?.data() ?: ""
         val embedUrlRegex = Regex("""["']embed_url["']:\s*["']<iframe src=\\"(.*?)\\"""")
         val videoUrlRegex = Regex("""["']video_url["']:\s*["']<iframe.*?src=\\"(.*?)\\"""")
 
-        embedUrlRegex.find(scriptContent)?.groupValues?.get(1)?.let { servers.add("Server Ori" to it) }
-        videoUrlRegex.find(scriptContent)?.groupValues?.get(1)?.let { servers.add("Server Dood" to it) }
+        embedUrlRegex.find(scriptContent)?.groupValues?.get(1)?.let { servers.add(it) }
+        videoUrlRegex.find(scriptContent)?.groupValues?.get(1)?.let { servers.add(it) }
 
+        // Logic fallback nếu không tìm thấy biến JS
         if (servers.isEmpty()) {
              document.select("div.responsive-player iframe").forEach { element ->
-                val url = element.attr("src")
-                val host = (URI(url).host ?: url).removePrefix("www.")
-                servers.add(host to url)
+                servers.add(element.attr("src"))
             }
         }
 
         if (servers.isEmpty()) return false
 
+        // Chạy loadExtractor song song cho tất cả các server tìm được
         coroutineScope {
-            servers.map { (serverName, serverUrl) ->
+            servers.map { serverUrl ->
                 async {
-                    if (serverUrl.contains("dood") || serverUrl.contains("dsvplay")) {
-                        extractDoodStreamLink(serverUrl, serverName, callback)
-                    } else {
-                        extractLuluBasedServer(serverUrl, serverName, callback)
-                    }
+                    // Để loadExtractor tự động tìm bộ giải mã phù hợp (DoodStream, LuluStream, etc.)
+                    // Cần truyền 'data' làm referer để request hợp lệ
+                    loadExtractor(serverUrl, data, subtitleCallback, callback)
                 }
             }.awaitAll()
         }
+
         return true
     }
     
-    private suspend fun extractLuluBasedServer(url: String, sourceName: String, callback: (ExtractorLink) -> Unit) {
-        try {
-            val doc = app.get(url, referer = mainUrl).text
-            if (doc.contains("eval(function(p,a,c,k,e,d)")) {
-                val packerRegex = Regex("""eval\(function\(p,a,c,k,e,d\).*?'(.*?)\',(\d+),(\d+),'(.*?)'\.split""")
-                val match = packerRegex.find(doc)
-                if (match != null) {
-                    val (p, a, c, k) = match.destructured
-                    var packedCode = p
-                    val radix = a.toInt()
-                    var count = c.toInt()
-                    val dictionary = k.split("|")
-                    fun toBase(num: Int, base: Int): String {
-                        val baseChars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                        if (num < 0) return ""
-                        var n = num
-                        var result = ""
-                        while (n > 0) {
-                            result = baseChars[n % base] + result
-                            n /= base
-                        }
-                        return result.ifEmpty { "0" }
-                    }
-                    while (count-- > 0) {
-                        val key = toBase(count, radix)
-                        val value = if (dictionary.getOrNull(count)?.isNotEmpty() == true) dictionary[count] else key
-                        packedCode = packedCode.replace(Regex("\\b$key\\b"), value)
-                    }
-                    val fileRegex = Regex("""sources:\s*\[\s*\{\s*.*?file['"]\s*:\s*['"]([^'"]+)""")
-                    fileRegex.find(packedCode)?.groupValues?.get(1)?.let { videoUrl ->
-                        callback(ExtractorLink(sourceName, "Server Ori", videoUrl, url, Qualities.Unknown.value, type = ExtractorLinkType.VIDEO))
-                        return
-                    }
-                }
-            }
-            val m3u8Regex = Regex("""sources:\s*\[\{file:"([^"]+)""")
-            m3u8Regex.find(doc)?.groupValues?.get(1)?.let { m3u8Url ->
-                if (m3u8Url.contains(".m3u8")) {
-                     callback(ExtractorLink(sourceName, "LuluStream", m3u8Url, url, Qualities.Unknown.value, type = ExtractorLinkType.M3U8))
-                }
-            }
-        } catch (e: Exception) { /* Bỏ qua lỗi */ }
-    }
-    
-    // ĐÃ SỬA: Logic DoodStream cuối cùng
-    private suspend fun extractDoodStreamLink(url: String, sourceName: String, callback: (ExtractorLink) -> Unit) {
-        try {
-            val doc = app.get(url, referer = mainUrl).document.html()
-
-            // Lấy MD5 path và token
-            val md5Path = Regex("""/pass_md5/([^'"]+)""").find(doc)?.value ?: return
-            val token = Regex("""makePlay\(\)\s*\{.*?return.*?token=([^&'"]+)""").find(doc)?.groupValues?.get(1) ?: return
-            
-            val baseUrl = url.substringBefore("/e/")
-            val md5Url = "$baseUrl$md5Path"
-            
-            val headers = mapOf(
-                "Referer" to url,
-                "X-Requested-With" to "XMLHttpRequest",
-                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
-            )
-
-            // API `pass_md5` sẽ trả về link video gần như hoàn chỉnh
-            val videoUrlFromApi = app.get(md5Url, headers = headers).text
-
-            // Tạo expiry và gắn token vào cuối link
-            val expiry = System.currentTimeMillis()
-            val finalUrl = "$videoUrlFromApi?token=$token&expiry=$expiry"
-
-            if (finalUrl.startsWith("http")) {
-                callback(
-                    ExtractorLink(
-                        source = sourceName,
-                        name = "DoodStream",
-                        url = finalUrl,
-                        referer = baseUrl,
-                        quality = Qualities.Unknown.value,
-                        type = ExtractorLinkType.VIDEO
-                    )
-                )
-            }
-        } catch (e: Exception) { 
-            // Bỏ qua lỗi
-        }
-    }
+    //
+    // CÁC HÀM extractDoodStreamLink VÀ extractLuluBasedServer ĐÃ ĐƯỢC XOÁ HOÀN TOÀN
+    //
 
     private fun Element.toSearchResponse(): SearchResponse? {
         val linkTag = this.selectFirst("a") ?: return null
@@ -194,6 +112,6 @@ class BokepIndoProvider : MainAPI() {
         if (href.isBlank()) return null
         val title = linkTag.selectFirst("header.entry-header span")?.text() ?: return null
         val posterUrl = fixUrlNull(linkTag.selectFirst("div.post-thumbnail-container img")?.attr("data-src"))
-        return newMovieSearchResponse(title, href) { this.posterUrl = posterUrl }
+        return newMovieLoadResponse(title, href) { this.posterUrl = posterUrl }
     }
 }
