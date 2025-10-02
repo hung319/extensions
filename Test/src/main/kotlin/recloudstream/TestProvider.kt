@@ -2,12 +2,12 @@ package recloudstream
 
 /*
 * @CloudstreamProvider: BokepIndoProvider
-* @Version: 2.7
+* @Version: 2.8
 * @Author: Coder
 * @Language: id
 * @TvType: Nsfw
 * @Url: https://bokepindoh.monster
-* @Info: Provider for Bokepindoh.monster. Fixed DoodStream extraction with proper headers.
+* @Info: Provider for Bokepindoh.monster. Final fix for DoodStream API logic.
 */
 
 import com.lagradost.cloudstream3.*
@@ -146,31 +146,31 @@ class BokepIndoProvider : MainAPI() {
         } catch (e: Exception) { /* Bỏ qua lỗi */ }
     }
     
-    // ĐÃ SỬA: Thêm header cần thiết để gọi API DoodStream thành công
+    // ĐÃ SỬA: Logic DoodStream cuối cùng
     private suspend fun extractDoodStreamLink(url: String, sourceName: String, callback: (ExtractorLink) -> Unit) {
         try {
             val doc = app.get(url, referer = mainUrl).document.html()
 
+            // Lấy MD5 path và token
             val md5Path = Regex("""/pass_md5/([^'"]+)""").find(doc)?.value ?: return
+            val token = Regex("""makePlay\(\)\s*\{.*?return.*?token=([^&'"]+)""").find(doc)?.groupValues?.get(1) ?: return
             
             val baseUrl = url.substringBefore("/e/")
             val md5Url = "$baseUrl$md5Path"
             
-            // DoodStream yêu cầu các header này để xác thực request
             val headers = mapOf(
                 "Referer" to url,
                 "X-Requested-With" to "XMLHttpRequest",
                 "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
             )
 
-            // API sẽ trả về một phần của link video
-            val videoUrlPart = app.get(md5Url, headers = headers).text
+            // API `pass_md5` sẽ trả về link video gần như hoàn chỉnh
+            val videoUrlFromApi = app.get(md5Url, headers = headers).text
 
-            // Ghép với phần còn lại để tạo link cuối cùng
-            val makePlayToken = (1..10).map { "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".random() }.joinToString("")
-            val finalUrl = videoUrlPart + makePlayToken
+            // Tạo expiry và gắn token vào cuối link
+            val expiry = System.currentTimeMillis()
+            val finalUrl = "$videoUrlFromApi?token=$token&expiry=$expiry"
 
-            // Kiểm tra nếu link trả về là một URL hợp lệ
             if (finalUrl.startsWith("http")) {
                 callback(
                     ExtractorLink(
