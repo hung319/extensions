@@ -2,12 +2,12 @@ package recloudstream
 
 /*
 * @CloudstreamProvider: BokepIndoProvider
-* @Version: 2.6
+* @Version: 2.7
 * @Author: Coder
 * @Language: id
 * @TvType: Nsfw
 * @Url: https://bokepindoh.monster
-* @Info: Provider for Bokepindoh.monster. Fixed DoodStream extraction logic.
+* @Info: Provider for Bokepindoh.monster. Fixed DoodStream extraction with proper headers.
 */
 
 import com.lagradost.cloudstream3.*
@@ -146,44 +146,45 @@ class BokepIndoProvider : MainAPI() {
         } catch (e: Exception) { /* Bỏ qua lỗi */ }
     }
     
-    // ĐÃ SỬA: Hàm xử lý DoodStream hoàn chỉnh
+    // ĐÃ SỬA: Thêm header cần thiết để gọi API DoodStream thành công
     private suspend fun extractDoodStreamLink(url: String, sourceName: String, callback: (ExtractorLink) -> Unit) {
         try {
             val doc = app.get(url, referer = mainUrl).document.html()
 
-            // Bước 1: Trích xuất MD5 path và token từ script của trang iframe
             val md5Path = Regex("""/pass_md5/([^'"]+)""").find(doc)?.value ?: return
-            val token = Regex("""makePlay\(\)\s*\{.*?token=([^&'"]+)""").find(doc)?.groupValues?.get(1) ?: return
             
             val baseUrl = url.substringBefore("/e/")
             val md5Url = "$baseUrl$md5Path"
             
-            // Thêm Header để request trông giống trình duyệt thật hơn
-            val headers = mapOf("Referer" to url)
-
-            // Bước 2: Gọi API pass_md5 để lấy phần đầu của link video
-            val videoUrlBase = app.get(md5Url, headers = headers).text
-            
-            // Bước 3: Tái tạo lại logic của hàm makePlay()
-            val randomChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-            val randomString = (1..10).map { randomChars.random() }.joinToString("")
-            val expiry = System.currentTimeMillis()
-            
-            // Bước 4: Ghép lại thành URL hoàn chỉnh
-            val finalUrl = "$videoUrlBase$randomString?token=$token&expiry=$expiry"
-
-            callback(
-                ExtractorLink(
-                    source = sourceName,
-                    name = "DoodStream",
-                    url = finalUrl,
-                    referer = baseUrl,
-                    quality = Qualities.Unknown.value,
-                    type = ExtractorLinkType.VIDEO
-                )
+            // DoodStream yêu cầu các header này để xác thực request
+            val headers = mapOf(
+                "Referer" to url,
+                "X-Requested-With" to "XMLHttpRequest",
+                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
             )
+
+            // API sẽ trả về một phần của link video
+            val videoUrlPart = app.get(md5Url, headers = headers).text
+
+            // Ghép với phần còn lại để tạo link cuối cùng
+            val makePlayToken = (1..10).map { "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".random() }.joinToString("")
+            val finalUrl = videoUrlPart + makePlayToken
+
+            // Kiểm tra nếu link trả về là một URL hợp lệ
+            if (finalUrl.startsWith("http")) {
+                callback(
+                    ExtractorLink(
+                        source = sourceName,
+                        name = "DoodStream",
+                        url = finalUrl,
+                        referer = baseUrl,
+                        quality = Qualities.Unknown.value,
+                        type = ExtractorLinkType.VIDEO
+                    )
+                )
+            }
         } catch (e: Exception) { 
-            // e.printStackTrace() // Bật dòng này nếu cần debug
+            // Bỏ qua lỗi
         }
     }
 
