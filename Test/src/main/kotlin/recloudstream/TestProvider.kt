@@ -2,12 +2,12 @@ package recloudstream
 
 /*
 * @CloudstreamProvider: BokepIndoProvider
-* @Version: 3.0
+* @Version: 3.1
 * @Author: Coder
 * @Language: id
 * @TvType: Nsfw
 * @Url: https://bokepindoh.monster
-* @Info: Refactored to use loadExtractor for better maintainability.
+* @Info: Fixed compilation error in toSearchResponse.
 */
 
 import com.lagradost.cloudstream3.*
@@ -18,7 +18,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import java.net.URI
 
-class BokepIndoProvider : MainAPI() {
+class TestProvider : MainAPI() {
     override var name = "BokepIndo"
     override var mainUrl = "https://bokepindoh.monster"
     override var supportedTypes = setOf(TvType.NSFW)
@@ -61,9 +61,8 @@ class BokepIndoProvider : MainAPI() {
         }
     }
 
-    // ## loadLinks được đơn giản hoá bằng cách dùng loadExtractor ##
     override suspend fun loadLinks(
-        data: String, // 'data' là URL của trang xem video chính
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
@@ -71,7 +70,6 @@ class BokepIndoProvider : MainAPI() {
         val document = app.get(data).document
         val servers = mutableListOf<String>()
 
-        // Trích xuất URL của các iframe từ biến JavaScript
         val scriptContent = document.select("script").firstOrNull { it.data().contains("wpst_ajax_var") }?.data() ?: ""
         val embedUrlRegex = Regex("""["']embed_url["']:\s*["']<iframe src=\\"(.*?)\\"""")
         val videoUrlRegex = Regex("""["']video_url["']:\s*["']<iframe.*?src=\\"(.*?)\\"""")
@@ -79,7 +77,6 @@ class BokepIndoProvider : MainAPI() {
         embedUrlRegex.find(scriptContent)?.groupValues?.get(1)?.let { servers.add(it) }
         videoUrlRegex.find(scriptContent)?.groupValues?.get(1)?.let { servers.add(it) }
 
-        // Logic fallback nếu không tìm thấy biến JS
         if (servers.isEmpty()) {
              document.select("div.responsive-player iframe").forEach { element ->
                 servers.add(element.attr("src"))
@@ -88,12 +85,9 @@ class BokepIndoProvider : MainAPI() {
 
         if (servers.isEmpty()) return false
 
-        // Chạy loadExtractor song song cho tất cả các server tìm được
         coroutineScope {
             servers.map { serverUrl ->
                 async {
-                    // Để loadExtractor tự động tìm bộ giải mã phù hợp (DoodStream, LuluStream, etc.)
-                    // Cần truyền 'data' làm referer để request hợp lệ
                     loadExtractor(serverUrl, data, subtitleCallback, callback)
                 }
             }.awaitAll()
@@ -101,10 +95,6 @@ class BokepIndoProvider : MainAPI() {
 
         return true
     }
-    
-    //
-    // CÁC HÀM extractDoodStreamLink VÀ extractLuluBasedServer ĐÃ ĐƯỢC XOÁ HOÀN TOÀN
-    //
 
     private fun Element.toSearchResponse(): SearchResponse? {
         val linkTag = this.selectFirst("a") ?: return null
@@ -112,6 +102,10 @@ class BokepIndoProvider : MainAPI() {
         if (href.isBlank()) return null
         val title = linkTag.selectFirst("header.entry-header span")?.text() ?: return null
         val posterUrl = fixUrlNull(linkTag.selectFirst("div.post-thumbnail-container img")?.attr("data-src"))
-        return newMovieLoadResponse(title, href) { this.posterUrl = posterUrl }
+        
+        // SỬA LỖI TẠI ĐÂY: Dùng newMovieSearchResponse thay vì newMovieLoadResponse
+        return newMovieSearchResponse(title, href) { 
+            this.posterUrl = posterUrl 
+        }
     }
 }
