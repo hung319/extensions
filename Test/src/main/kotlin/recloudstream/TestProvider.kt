@@ -98,7 +98,7 @@ class NguonCProvider : MainAPI() {
     override val hasMainPage = true
     private val apiUrl = "$mainUrl/api"
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
-    private val headers = mapOf("User-Agent" to userAgent, "Referer" to "https://phim.nguonc.com")
+    private val defaultHeaders = mapOf("User-Agent" to userAgent, "Referer" to "$mainUrl/")
 
     override val mainPage = mainPageOf(
         "phim-moi-cap-nhat" to "Phim Mới Cập Nhật",
@@ -145,21 +145,21 @@ class NguonCProvider : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = "$apiUrl/films/${request.data}?page=$page"
-        val response = app.get(url, headers = headers).parsedSafe<NguonCListResponse>() ?: return newHomePageResponse(request.name, emptyList())
+        val response = app.get(url, headers = defaultHeaders).parsedSafe<NguonCListResponse>() ?: return newHomePageResponse(request.name, emptyList())
         val items = response.items.mapNotNull { it.toSearchResponse() }
         return newHomePageResponse(request.name, items, hasNext = response.paginate.currentPage < response.paginate.totalPage)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$apiUrl/films/search?keyword=$query"
-        return app.get(url, headers = headers).parsedSafe<NguonCListResponse>()?.items?.mapNotNull {
+        return app.get(url, headers = defaultHeaders).parsedSafe<NguonCListResponse>()?.items?.mapNotNull {
             it.toSearchResponse()
         } ?: emptyList()
     }
 
     override suspend fun load(url: String): LoadResponse {
         val slug = url.substringAfterLast('/')
-        val res = app.get("$apiUrl/film/$slug", headers = headers).parsedSafe<NguonCDetailResponse>()
+        val res = app.get("$apiUrl/film/$slug", headers = defaultHeaders).parsedSafe<NguonCDetailResponse>()
             ?: return newMovieLoadResponse(url.substringAfterLast("-"), url, TvType.Movie, url)
 
         val movie = res.movie
@@ -178,7 +178,7 @@ class NguonCProvider : MainAPI() {
         for (genreName in genres) {
             runCatching {
                 val genreSlug = genreName.toUrlSlug()
-                app.get("$apiUrl/films/the-loai/$genreSlug?page=1", headers = headers).parsedSafe<NguonCListResponse>()
+                app.get("$apiUrl/films/the-loai/$genreSlug?page=1", headers = defaultHeaders).parsedSafe<NguonCListResponse>()
                     ?.items?.let { recItems ->
                         if (recItems.isNotEmpty()) {
                             recommendations.addAll(
@@ -243,7 +243,7 @@ class NguonCProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val loadData = parseJson<NguonCLoadData>(data)
-        val movie = app.get("$apiUrl/film/${loadData.slug}", headers = headers)
+        val movie = app.get("$apiUrl/film/${loadData.slug}", headers = defaultHeaders)
             .parsedSafe<NguonCDetailResponse>()?.movie ?: return false
 
         coroutineScope {
@@ -259,30 +259,31 @@ class NguonCProvider : MainAPI() {
                         val embedUrl = episodeItem?.embed
                         if (embedUrl.isNullOrBlank()) return@async
 
-                        val embedPageContent = app.get(embedUrl, headers = headers).text
+                        val embedOrigin = URI(embedUrl).let { "${it.scheme}://${it.host}" }
+                        
+                        // ================= LOGIC MỚI =================
+                        // Xây dựng bộ header đầy đủ để dùng cho CẢ hai yêu cầu
+                        val fullHeaders = mapOf(
+                            "accept" to "*/*",
+                            "accept-language" to "vi-VN,vi;q=0.9",
+                            "Origin" to embedOrigin,
+                            "Referer" to embedUrl,
+                            "sec-ch-ua" to "\"Chromium\";v=\"137\", \"Not/A)Brand\";v=\"24\"",
+                            "sec-ch-ua-mobile" to "?1",
+                            "sec-ch-ua-platform" to "\"Android\"",
+                            "sec-fetch-dest" to "empty",
+                            "sec-fetch-mode" to "cors",
+                            "sec-fetch-site" to "same-origin",
+                            "User-Agent" to userAgent
+                        )
+                        // =============================================
+
+                        val embedPageContent = app.get(embedUrl, headers = fullHeaders).text
                         val doc = Jsoup.parse(embedPageContent)
                         val obfuscatedString = doc.selectFirst("#player")?.attr("data-obf")
 
                         if (!obfuscatedString.isNullOrBlank()) {
-                            val embedOrigin = URI(embedUrl).let { "${it.scheme}://${it.host}" }
                             val finalM3u8Url = "$embedOrigin/$obfuscatedString.m3u8"
-
-                            // ================= LOGIC MỚI =================
-                            // Xây dựng bộ header đầy đủ giống như curl
-                            val playerHeaders = mapOf(
-                                "accept" to "*/*",
-                                "accept-language" to "vi-VN,vi;q=0.9",
-                                "Origin" to embedOrigin,
-                                "Referer" to embedUrl,
-                                "sec-ch-ua" to "\"Chromium\";v=\"137\", \"Not/A)Brand\";v=\"24\"",
-                                "sec-ch-ua-mobile" to "?1",
-                                "sec-ch-ua-platform" to "\"Android\"",
-                                "sec-fetch-dest" to "empty",
-                                "sec-fetch-mode" to "cors",
-                                "sec-fetch-site" to "same-origin",
-                                "User-Agent" to userAgent
-                            )
-                            // =============================================
 
                             callback(
                                 ExtractorLink(
@@ -292,7 +293,7 @@ class NguonCProvider : MainAPI() {
                                     referer = embedUrl,
                                     quality = Qualities.Unknown.value,
                                     type = ExtractorLinkType.M3U8,
-                                    headers = playerHeaders
+                                    headers = fullHeaders // Dùng lại bộ header đầy đủ cho player
                                 )
                             )
                         }
