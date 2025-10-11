@@ -6,7 +6,6 @@ import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import org.jsoup.Jsoup
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.mvvm.suspendSafeApiCall
 import java.net.URI
 import java.text.Normalizer
 import java.util.Base64
@@ -101,6 +100,7 @@ data class NguonCDetailResponse(
     @JsonProperty("movie") val movie: NguonCDetailMovie
 )
 
+// Data class để parse JSON lớp 1, lấy ra payload Base64 lớp 2
 private data class StreamData(
     @JsonProperty("sUb") val streamUrlBase: String
 )
@@ -115,8 +115,9 @@ class NguonCProvider : MainAPI() {
     override var lang = "vi"
     override val hasMainPage = true
     private val apiUrl = "$mainUrl/api"
-    private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
-    private val headers = mapOf("User-Agent" to userAgent, "Referer" to "https://phim.nguonc.com")
+    // User-Agent đã được xác thực là hoạt động
+    private val userAgent = "Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Mobile Safari/537.36"
+    private val headers = mapOf("User-Agent" to userAgent, "Referer" to mainUrl)
 
     override val mainPage = mainPageOf(
         "phim-moi-cap-nhat" to "Phim Mới Cập Nhật",
@@ -136,12 +137,11 @@ class NguonCProvider : MainAPI() {
     private fun NguonCItem.toSearchResponse(): SearchResponse? {
         val year = this.created?.substringBefore("-")?.toIntOrNull()
 
-        // Kiểm tra và làm sạch URL ảnh
         val poster = this.posterUrl?.takeIf { it.endsWith(".jpg") || it.endsWith(".png") || it.endsWith(".jpeg") } 
             ?: (this.thumbUrl as? String)?.takeIf { it.endsWith(".jpg") || it.endsWith(".png") || it.endsWith(".jpeg") }
 
-        if (this.totalEpisodes <= 1) {
-            return newMovieSearchResponse(
+        return if (this.totalEpisodes <= 1) {
+            newMovieSearchResponse(
                 name = this.name,
                 url = "$mainUrl/phim/${this.slug}",
                 type = TvType.Movie
@@ -150,7 +150,7 @@ class NguonCProvider : MainAPI() {
                 this.year = year
             }
         } else {
-            return newTvSeriesSearchResponse(
+            newTvSeriesSearchResponse(
                 name = this.name,
                 url = "$mainUrl/phim/${this.slug}",
                 type = TvType.TvSeries
@@ -213,9 +213,9 @@ class NguonCProvider : MainAPI() {
             if (recommendations.isNotEmpty()) break
         }
         
-        if (movie.totalEpisodes <= 1) {
+        return if (movie.totalEpisodes <= 1) {
             val loadData = NguonCLoadData(slug = slug, episodeNum = 1).toJson()
-            return newMovieLoadResponse(title, url, type, loadData) {
+            newMovieLoadResponse(title, url, type, loadData) {
                 this.posterUrl = poster
                 this.plot = plot
                 this.tags = genres
@@ -250,7 +250,7 @@ class NguonCProvider : MainAPI() {
                 }
                 .sortedBy { it.episode }
 
-            return newTvSeriesLoadResponse(title, url, type, episodes) {
+            newTvSeriesLoadResponse(title, url, type, episodes) {
                 this.posterUrl = poster
                 this.plot = plot
                 this.tags = genres
@@ -282,29 +282,38 @@ class NguonCProvider : MainAPI() {
                         val embedUrl = episodeItem?.embed
                         if (embedUrl.isNullOrBlank() || !embedUrl.contains("streamc.xyz")) return@async false
 
-                        // BƯỚC 1: Lấy nội dung trang embed
-                        val embedPageContent = app.get(embedUrl, headers = mapOf("Referer" to mainUrl)).text
+                        val embedHeaders = mapOf(
+                            "Referer" to mainUrl,
+                            "User-Agent" to userAgent
+                        )
+
+                        // BƯỚC 1 & 2: Lấy nội dung trang và trích xuất data-obf
+                        val embedPageContent = app.get(embedUrl, headers = embedHeaders).text
                         val doc = Jsoup.parse(embedPageContent)
-
-                        // BƯỚC 2: Trích xuất chuỗi mã hóa từ data-obf
                         val obfuscatedString = doc.selectFirst("div#player")?.attr("data-obf")
-                        if (obfuscatedString.isNullOrBlank()) return@async false
+                        if (obfuscatedString.isNullOrBlank()) {
+                            println("[$name] Không tìm thấy data-obf trong HTML từ $embedUrl")
+                            return@async false
+                        }
 
-                        // BƯỚC 3 & 4: Giải mã Base64 và parse JSON
+                        // BƯỚC 3: Giải mã Base64 lần đầu để lấy JSON
                         val decodedJson = String(Base64.getDecoder().decode(obfuscatedString))
                         val streamData = parseJson<StreamData>(decodedJson)
+
+                        // BƯỚC 4: Lấy chuỗi Base64 thứ hai từ trường "sUb"
+                        val secondBase64Payload = streamData.streamUrlBase
                         
-                        // BƯỚC 5: Xây dựng URL M3U9 cuối cùng
-                        val finalM3u8Url = "${streamData.streamUrlBase}.m3u9"
-                        
+                        // BƯỚC 5: Xây dựng URL cuối cùng bằng cách ghép nối
                         val embedOrigin = URI(embedUrl).let { "${it.scheme}://${it.host}" }
+                        val finalM3u8Url = "$embedOrigin/${secondBase64Payload}.m3u9"
+                        
                         val playerHeaders = mapOf(
                             "Origin" to embedOrigin,
                             "Referer" to "$embedOrigin/",
                             "User-Agent" to userAgent
                         )
 
-                        // Các bước re-host M3U8 vẫn giữ nguyên để đảm bảo tương thích
+                        // Các bước re-host M3U8 vẫn giữ nguyên
                         val m3u8Content = app.get(finalM3u8Url, headers = playerHeaders).text
                         val uploadApi = "https://pacebin.onrender.com/nguonc.m3u8"
                         val requestBodyUpload = m3u8Content.toRequestBody("text/plain".toMediaType())
@@ -321,10 +330,10 @@ class NguonCProvider : MainAPI() {
                                 headers = playerHeaders
                             )
                         )
-                        true // Trả về true nếu thành công
+                        true
                     } catch (e: Exception) {
                         e.printStackTrace()
-                        false // Trả về false nếu có lỗi
+                        false
                     }
                 }
             }.awaitAll()
