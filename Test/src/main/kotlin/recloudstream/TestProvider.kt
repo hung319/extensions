@@ -312,18 +312,12 @@ class NguonCProvider : MainAPI() {
                             "Referer" to "$embedOrigin/",
                             "User-Agent" to userAgent
                         )
-
-                        // Các bước re-host M3U8 vẫn giữ nguyên
-                        val m3u8Content = app.get(finalM3u8Url, headers = playerHeaders).text
-                        val uploadApi = "https://pacebin.onrender.com/nguonc.m3u8"
-                        val requestBodyUpload = m3u8Content.toRequestBody("text/plain".toMediaType())
-                        val uploadedUrl = app.post(uploadApi, requestBody = requestBodyUpload).text
                         
                         callback(
                             ExtractorLink(
                                 source = this@NguonCProvider.name,
                                 name = server.serverName,
-                                url = uploadedUrl,
+                                url = finalM3u8Url, // SỬ DỤNG TRỰC TIẾP LINK GỐC
                                 referer = embedUrl,
                                 quality = Qualities.Unknown.value,
                                 type = ExtractorLinkType.M3U8,
