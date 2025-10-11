@@ -6,24 +6,15 @@ import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import org.jsoup.Jsoup
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.mvvm.suspendSafeApiCall
 import java.net.URI
 import java.text.Normalizer
-import java.util.Base64
-
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import okhttp3.Interceptor
 import okhttp3.Response
 import okhttp3.ResponseBody
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.ResponseBody.Companion.toResponseBody
-import com.lagradost.cloudstream3.CommonActivity.showToast
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import android.widget.Toast
 
 // Data class để truyền dữ liệu từ load() -> loadLinks()
 data class NguonCLoadData(
@@ -131,8 +122,8 @@ class NguonCProvider : MainAPI() {
         val poster = this.posterUrl?.takeIf { it.endsWith(".jpg") || it.endsWith(".png") || it.endsWith(".jpeg") }
             ?: (this.thumbUrl as? String)?.takeIf { it.endsWith(".jpg") || it.endsWith(".png") || it.endsWith(".jpeg") }
 
-        if (this.totalEpisodes <= 1) {
-            return newMovieSearchResponse(
+        return if (this.totalEpisodes <= 1) {
+            newMovieSearchResponse(
                 name = this.name,
                 url = "$mainUrl/phim/${this.slug}",
                 type = TvType.Movie
@@ -141,7 +132,7 @@ class NguonCProvider : MainAPI() {
                 this.year = year
             }
         } else {
-            return newTvSeriesSearchResponse(
+            newTvSeriesSearchResponse(
                 name = this.name,
                 url = "$mainUrl/phim/${this.slug}",
                 type = TvType.TvSeries
@@ -276,31 +267,34 @@ class NguonCProvider : MainAPI() {
                             val embedOrigin = URI(embedUrl).let { "${it.scheme}://${it.host}" }
                             val finalM3u8Url = "$embedOrigin/$obfuscatedString.m3u8"
 
+                            // ================= LOGIC MỚI =================
+                            // Xây dựng bộ header đầy đủ giống như curl
                             val playerHeaders = mapOf(
+                                "accept" to "*/*",
+                                "accept-language" to "vi-VN,vi;q=0.9",
                                 "Origin" to embedOrigin,
                                 "Referer" to embedUrl,
+                                "sec-ch-ua" to "\"Chromium\";v=\"137\", \"Not/A)Brand\";v=\"24\"",
+                                "sec-ch-ua-mobile" to "?1",
+                                "sec-ch-ua-platform" to "\"Android\"",
+                                "sec-fetch-dest" to "empty",
+                                "sec-fetch-mode" to "cors",
+                                "sec-fetch-site" to "same-origin",
                                 "User-Agent" to userAgent
                             )
-
-                            // ================= LOGIC QUAY LẠI =================
-                            // Tải nội dung M3U8, đăng lên onrender và dùng link trả về
-                            val m3u8Content = app.get(finalM3u8Url, headers = playerHeaders).text
-                            val uploadApi = "https://pacebin.onrender.com/nguonc.m3u8"
-                            val requestBodyUpload = m3u8Content.toRequestBody("text/plain".toMediaType())
-                            val uploadedUrl = app.post(uploadApi, requestBody = requestBodyUpload).text
+                            // =============================================
 
                             callback(
                                 ExtractorLink(
                                     source = this@NguonCProvider.name,
                                     name = server.serverName,
-                                    url = uploadedUrl, // Sử dụng link từ onrender
+                                    url = finalM3u8Url,
                                     referer = embedUrl,
                                     quality = Qualities.Unknown.value,
                                     type = ExtractorLinkType.M3U8,
                                     headers = playerHeaders
                                 )
                             )
-                            // =================================================
                         }
                     } catch (e: Exception) {
                         e.printStackTrace()
