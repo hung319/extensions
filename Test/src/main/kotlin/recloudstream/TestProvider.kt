@@ -6,20 +6,35 @@ import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import org.jsoup.Jsoup
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.mvvm.suspendSafeApiCall
 import java.net.URI
 import java.text.Normalizer
+import java.util.Base64
+
+// Thêm các import cần thiết
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import okhttp3.Interceptor
 import okhttp3.Response
 import okhttp3.ResponseBody
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.ResponseBody.Companion.toResponseBody
+import com.lagradost.cloudstream3.CommonActivity.showToast
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import android.widget.Toast
 
 // Data class để truyền dữ liệu từ load() -> loadLinks()
 data class NguonCLoadData(
     @JsonProperty("slug") val slug: String,
     @JsonProperty("episodeNum") val episodeNum: Int
+)
+
+// Data class cho phản hồi từ API của server embed
+data class StreamApiResponse(
+    @JsonProperty("streamUrl") val streamUrl: String?
 )
 
 data class NguonCItem(
@@ -86,6 +101,9 @@ data class NguonCDetailResponse(
     @JsonProperty("movie") val movie: NguonCDetailMovie
 )
 
+private data class StreamData(
+    @JsonProperty("sUb") val streamUrlBase: String
+)
 
 // Lớp chính của Plugin
 // ====================
@@ -98,7 +116,7 @@ class NguonCProvider : MainAPI() {
     override val hasMainPage = true
     private val apiUrl = "$mainUrl/api"
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
-    private val defaultHeaders = mapOf("User-Agent" to userAgent, "Referer" to "$mainUrl/")
+    private val headers = mapOf("User-Agent" to userAgent, "Referer" to "https://phim.nguonc.com")
 
     override val mainPage = mainPageOf(
         "phim-moi-cap-nhat" to "Phim Mới Cập Nhật",
@@ -119,11 +137,11 @@ class NguonCProvider : MainAPI() {
         val year = this.created?.substringBefore("-")?.toIntOrNull()
 
         // Kiểm tra và làm sạch URL ảnh
-        val poster = this.posterUrl?.takeIf { it.endsWith(".jpg") || it.endsWith(".png") || it.endsWith(".jpeg") }
+        val poster = this.posterUrl?.takeIf { it.endsWith(".jpg") || it.endsWith(".png") || it.endsWith(".jpeg") } 
             ?: (this.thumbUrl as? String)?.takeIf { it.endsWith(".jpg") || it.endsWith(".png") || it.endsWith(".jpeg") }
 
-        return if (this.totalEpisodes <= 1) {
-            newMovieSearchResponse(
+        if (this.totalEpisodes <= 1) {
+            return newMovieSearchResponse(
                 name = this.name,
                 url = "$mainUrl/phim/${this.slug}",
                 type = TvType.Movie
@@ -132,7 +150,7 @@ class NguonCProvider : MainAPI() {
                 this.year = year
             }
         } else {
-            newTvSeriesSearchResponse(
+            return newTvSeriesSearchResponse(
                 name = this.name,
                 url = "$mainUrl/phim/${this.slug}",
                 type = TvType.TvSeries
@@ -144,29 +162,34 @@ class NguonCProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        withContext(Dispatchers.Main) {
+            CommonActivity.activity?.let { activity ->
+                showToast(activity, "Free Repo From H4RS", Toast.LENGTH_LONG)
+            }
+        }
         val url = "$apiUrl/films/${request.data}?page=$page"
-        val response = app.get(url, headers = defaultHeaders).parsedSafe<NguonCListResponse>() ?: return newHomePageResponse(request.name, emptyList())
+        val response = app.get(url, headers = headers).parsedSafe<NguonCListResponse>() ?: return newHomePageResponse(request.name, emptyList())
         val items = response.items.mapNotNull { it.toSearchResponse() }
         return newHomePageResponse(request.name, items, hasNext = response.paginate.currentPage < response.paginate.totalPage)
     }
-
+    
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$apiUrl/films/search?keyword=$query"
-        return app.get(url, headers = defaultHeaders).parsedSafe<NguonCListResponse>()?.items?.mapNotNull {
+        return app.get(url, headers = headers).parsedSafe<NguonCListResponse>()?.items?.mapNotNull {
             it.toSearchResponse()
         } ?: emptyList()
     }
 
     override suspend fun load(url: String): LoadResponse {
         val slug = url.substringAfterLast('/')
-        val res = app.get("$apiUrl/film/$slug", headers = defaultHeaders).parsedSafe<NguonCDetailResponse>()
+        val res = app.get("$apiUrl/film/$slug", headers = headers).parsedSafe<NguonCDetailResponse>()
             ?: return newMovieLoadResponse(url.substringAfterLast("-"), url, TvType.Movie, url)
 
         val movie = res.movie
         val title = movie.name
         val poster = movie.posterUrl ?: movie.thumbUrl
         val plot = movie.description?.let { Jsoup.parse(it).text() }
-        val genres = movie.category?.values?.flatMap { it.list ?: emptyList() }?.map { it.name } ?: emptyList()
+        val genres = movie.category?.values?.flatMap { it.list ?: emptyList() }?.map { it.name } ?: emptyList()        
         val isAnime = genres.any { it.equals("Hoạt Hình", ignoreCase = true) }
         val type = if (isAnime) {
             if (movie.totalEpisodes <= 1) TvType.AnimeMovie else TvType.Anime
@@ -178,7 +201,7 @@ class NguonCProvider : MainAPI() {
         for (genreName in genres) {
             runCatching {
                 val genreSlug = genreName.toUrlSlug()
-                app.get("$apiUrl/films/the-loai/$genreSlug?page=1", headers = defaultHeaders).parsedSafe<NguonCListResponse>()
+                app.get("$apiUrl/films/the-loai/$genreSlug?page=1", headers = headers).parsedSafe<NguonCListResponse>()
                     ?.items?.let { recItems ->
                         if (recItems.isNotEmpty()) {
                             recommendations.addAll(
@@ -189,7 +212,7 @@ class NguonCProvider : MainAPI() {
             }
             if (recommendations.isNotEmpty()) break
         }
-
+        
         if (movie.totalEpisodes <= 1) {
             val loadData = NguonCLoadData(slug = slug, episodeNum = 1).toJson()
             return newMovieLoadResponse(title, url, type, loadData) {
@@ -243,10 +266,10 @@ class NguonCProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val loadData = parseJson<NguonCLoadData>(data)
-        val movie = app.get("$apiUrl/film/${loadData.slug}", headers = defaultHeaders)
+        val movie = app.get("$apiUrl/film/${loadData.slug}", headers = headers)
             .parsedSafe<NguonCDetailResponse>()?.movie ?: return false
-
-        coroutineScope {
+        
+        val results = coroutineScope {
             movie.episodes.map { server ->
                 async {
                     try {
@@ -255,56 +278,59 @@ class NguonCProvider : MainAPI() {
                         } else {
                             server.items?.find { it.name.toIntOrNull() == loadData.episodeNum }
                         }
-
-                        val embedUrl = episodeItem?.embed
-                        if (embedUrl.isNullOrBlank()) return@async
-
-                        val embedOrigin = URI(embedUrl).let { "${it.scheme}://${it.host}" }
                         
-                        // ================= LOGIC MỚI =================
-                        // Xây dựng bộ header đầy đủ để dùng cho CẢ hai yêu cầu
-                        val fullHeaders = mapOf(
-                            "accept" to "*/*",
-                            "accept-language" to "vi-VN,vi;q=0.9",
+                        val embedUrl = episodeItem?.embed
+                        if (embedUrl.isNullOrBlank() || !embedUrl.contains("streamc.xyz")) return@async false
+
+                        // BƯỚC 1: Lấy nội dung trang embed
+                        val embedPageContent = app.get(embedUrl, headers = mapOf("Referer" to mainUrl)).text
+                        val doc = Jsoup.parse(embedPageContent)
+
+                        // BƯỚC 2: Trích xuất chuỗi mã hóa từ data-obf
+                        val obfuscatedString = doc.selectFirst("div#player")?.attr("data-obf")
+                        if (obfuscatedString.isNullOrBlank()) return@async false
+
+                        // BƯỚC 3 & 4: Giải mã Base64 và parse JSON
+                        val decodedJson = String(Base64.getDecoder().decode(obfuscatedString))
+                        val streamData = parseJson<StreamData>(decodedJson)
+                        
+                        // BƯỚC 5: Xây dựng URL M3U9 cuối cùng
+                        val finalM3u8Url = "${streamData.streamUrlBase}.m3u9"
+                        
+                        val embedOrigin = URI(embedUrl).let { "${it.scheme}://${it.host}" }
+                        val playerHeaders = mapOf(
                             "Origin" to embedOrigin,
-                            "Referer" to embedUrl,
-                            "sec-ch-ua" to "\"Chromium\";v=\"137\", \"Not/A)Brand\";v=\"24\"",
-                            "sec-ch-ua-mobile" to "?1",
-                            "sec-ch-ua-platform" to "\"Android\"",
-                            "sec-fetch-dest" to "empty",
-                            "sec-fetch-mode" to "cors",
-                            "sec-fetch-site" to "same-origin",
+                            "Referer" to "$embedOrigin/",
                             "User-Agent" to userAgent
                         )
-                        // =============================================
 
-                        val embedPageContent = app.get(embedUrl, headers = fullHeaders).text
-                        val doc = Jsoup.parse(embedPageContent)
-                        val obfuscatedString = doc.selectFirst("#player")?.attr("data-obf")
-
-                        if (!obfuscatedString.isNullOrBlank()) {
-                            val finalM3u8Url = "$embedOrigin/$obfuscatedString.m3u8"
-
-                            callback(
-                                ExtractorLink(
-                                    source = this@NguonCProvider.name,
-                                    name = server.serverName,
-                                    url = finalM3u8Url,
-                                    referer = embedUrl,
-                                    quality = Qualities.Unknown.value,
-                                    type = ExtractorLinkType.M3U8,
-                                    headers = fullHeaders // Dùng lại bộ header đầy đủ cho player
-                                )
+                        // Các bước re-host M3U8 vẫn giữ nguyên để đảm bảo tương thích
+                        val m3u8Content = app.get(finalM3u8Url, headers = playerHeaders).text
+                        val uploadApi = "https://pacebin.onrender.com/nguonc.m3u8"
+                        val requestBodyUpload = m3u8Content.toRequestBody("text/plain".toMediaType())
+                        val uploadedUrl = app.post(uploadApi, requestBody = requestBodyUpload).text
+                        
+                        callback(
+                            ExtractorLink(
+                                source = this@NguonCProvider.name,
+                                name = server.serverName,
+                                url = uploadedUrl,
+                                referer = embedUrl,
+                                quality = Qualities.Unknown.value,
+                                type = ExtractorLinkType.M3U8,
+                                headers = playerHeaders
                             )
-                        }
+                        )
+                        true // Trả về true nếu thành công
                     } catch (e: Exception) {
                         e.printStackTrace()
+                        false // Trả về false nếu có lỗi
                     }
                 }
             }.awaitAll()
         }
-
-        return true
+        
+        return results.any { it }
     }
 
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
