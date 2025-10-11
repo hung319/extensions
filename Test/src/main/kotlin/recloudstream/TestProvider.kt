@@ -128,7 +128,7 @@ class NguonCProvider : MainAPI() {
         val year = this.created?.substringBefore("-")?.toIntOrNull()
 
         // Kiểm tra và làm sạch URL ảnh
-        val poster = this.posterUrl?.takeIf { it.endsWith(".jpg") || it.endsWith(".png") || it.endsWith(".jpeg") } 
+        val poster = this.posterUrl?.takeIf { it.endsWith(".jpg") || it.endsWith(".png") || it.endsWith(".jpeg") }
             ?: (this.thumbUrl as? String)?.takeIf { it.endsWith(".jpg") || it.endsWith(".png") || it.endsWith(".jpeg") }
 
         if (this.totalEpisodes <= 1) {
@@ -158,7 +158,7 @@ class NguonCProvider : MainAPI() {
         val items = response.items.mapNotNull { it.toSearchResponse() }
         return newHomePageResponse(request.name, items, hasNext = response.paginate.currentPage < response.paginate.totalPage)
     }
-    
+
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$apiUrl/films/search?keyword=$query"
         return app.get(url, headers = headers).parsedSafe<NguonCListResponse>()?.items?.mapNotNull {
@@ -175,7 +175,7 @@ class NguonCProvider : MainAPI() {
         val title = movie.name
         val poster = movie.posterUrl ?: movie.thumbUrl
         val plot = movie.description?.let { Jsoup.parse(it).text() }
-        val genres = movie.category?.values?.flatMap { it.list ?: emptyList() }?.map { it.name } ?: emptyList()       
+        val genres = movie.category?.values?.flatMap { it.list ?: emptyList() }?.map { it.name } ?: emptyList()
         val isAnime = genres.any { it.equals("Hoạt Hình", ignoreCase = true) }
         val type = if (isAnime) {
             if (movie.totalEpisodes <= 1) TvType.AnimeMovie else TvType.Anime
@@ -198,7 +198,7 @@ class NguonCProvider : MainAPI() {
             }
             if (recommendations.isNotEmpty()) break
         }
-        
+
         if (movie.totalEpisodes <= 1) {
             val loadData = NguonCLoadData(slug = slug, episodeNum = 1).toJson()
             return newMovieLoadResponse(title, url, type, loadData) {
@@ -254,7 +254,7 @@ class NguonCProvider : MainAPI() {
         val loadData = parseJson<NguonCLoadData>(data)
         val movie = app.get("$apiUrl/film/${loadData.slug}", headers = headers)
             .parsedSafe<NguonCDetailResponse>()?.movie ?: return false
-        
+
         coroutineScope {
             movie.episodes.map { server ->
                 async {
@@ -264,42 +264,43 @@ class NguonCProvider : MainAPI() {
                         } else {
                             server.items?.find { it.name.toIntOrNull() == loadData.episodeNum }
                         }
-                        
+
                         val embedUrl = episodeItem?.embed
                         if (embedUrl.isNullOrBlank()) return@async
 
-                        // BƯỚC 1: Tải nội dung trang embed
                         val embedPageContent = app.get(embedUrl, headers = headers).text
-                        
-                        // BƯỚC 2: Trích xuất chuỗi `data-obf`
                         val doc = Jsoup.parse(embedPageContent)
                         val obfuscatedString = doc.selectFirst("#player")?.attr("data-obf")
 
                         if (!obfuscatedString.isNullOrBlank()) {
-                            // BƯỚC 3: Dùng trực tiếp chuỗi `data-obf` để tạo URL M3U8 cuối cùng
                             val embedOrigin = URI(embedUrl).let { "${it.scheme}://${it.host}" }
-                            val finalM3u8Url = "$embedOrigin/$obfuscatedString.m3u9"
-                            
+                            val finalM3u8Url = "$embedOrigin/$obfuscatedString.m3u8"
+
                             val playerHeaders = mapOf(
                                 "Origin" to embedOrigin,
                                 "Referer" to embedUrl,
                                 "User-Agent" to userAgent
                             )
 
-                            // Thay đổi cốt lõi: 
-                            // Gọi callback trực tiếp với link M3U8 gốc và headers cần thiết.
-                            // Không cần dùng dịch vụ trung gian nữa.
+                            // ================= LOGIC QUAY LẠI =================
+                            // Tải nội dung M3U8, đăng lên onrender và dùng link trả về
+                            val m3u8Content = app.get(finalM3u8Url, headers = playerHeaders).text
+                            val uploadApi = "https://pacebin.onrender.com/nguonc.m3u8"
+                            val requestBodyUpload = m3u8Content.toRequestBody("text/plain".toMediaType())
+                            val uploadedUrl = app.post(uploadApi, requestBody = requestBodyUpload).text
+
                             callback(
                                 ExtractorLink(
                                     source = this@NguonCProvider.name,
                                     name = server.serverName,
-                                    url = finalM3u8Url,
+                                    url = uploadedUrl, // Sử dụng link từ onrender
                                     referer = embedUrl,
                                     quality = Qualities.Unknown.value,
                                     type = ExtractorLinkType.M3U8,
                                     headers = playerHeaders
                                 )
                             )
+                            // =================================================
                         }
                     } catch (e: Exception) {
                         e.printStackTrace()
@@ -307,7 +308,7 @@ class NguonCProvider : MainAPI() {
                 }
             }.awaitAll()
         }
-        
+
         return true
     }
 
