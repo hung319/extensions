@@ -278,7 +278,7 @@ class NguonCProvider : MainAPI() {
                         if (!obfuscatedString.isNullOrBlank()) {
                             // BƯỚC 3: Dùng trực tiếp chuỗi `data-obf` để tạo URL M3U8 cuối cùng
                             val embedOrigin = URI(embedUrl).let { "${it.scheme}://${it.host}" }
-                            val finalM3u8Url = "$embedOrigin/$obfuscatedString.m3u8"
+                            val finalM3u8Url = "$embedOrigin/$obfuscatedString.m3u9"
                             
                             val playerHeaders = mapOf(
                                 "Origin" to embedOrigin,
