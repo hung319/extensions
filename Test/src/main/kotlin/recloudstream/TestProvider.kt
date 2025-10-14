@@ -1,9 +1,9 @@
 // File: FanxxxProvider.kt
-package recloudstream // Thay đổi package name
+package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType // Import ExtractorLinkType
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.getQualityFromName
 import org.jsoup.nodes.Element
 
@@ -25,10 +25,13 @@ open class FanxxxProvider : MainAPI() {
         return newHomePageResponse(request.name, home)
     }
 
+    // SỬA LỖI: Cập nhật selector để lấy đúng title và poster
     private fun Element.toSearchResult(): SearchResponse? {
         val href = this.selectFirst("a")?.attr("href") ?: return null
-        val title = this.selectFirst("h3.post-title span.title")?.text() ?: "No Title"
-        val posterUrl = this.selectFirst("div.post-thumbnail img")?.attr("src")
+        // SỬA: Lấy text từ thẻ 'a' thay vì 'span' không tồn tại
+        val title = this.selectFirst("h3.post-title a")?.text() ?: "No Title"
+        // SỬA: Lấy ảnh từ 'data-src' do trang web dùng lazy loading
+        val posterUrl = this.selectFirst("div.post-thumbnail img")?.attr("data-src")
 
         return newMovieSearchResponse(title, href, TvType.Movie) {
             this.posterUrl = posterUrl
@@ -47,10 +50,16 @@ open class FanxxxProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
+        // Giữ nguyên selector này vì nó đã đúng
         val title = document.selectFirst("h1.entry-title-single")?.text()?.trim() ?: "No Title"
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         val description = document.selectFirst("div.entry-content-single > p")?.text()
-        val downloadPageUrl = document.selectFirst("div.download-link a")?.attr("href")
+        
+        // SỬA LỖI: Dùng selector ổn định hơn để tìm đúng link download
+        val downloadPageUrl = document.selectFirst("a[href*=\"hglink.to\"]")?.attr("href")
+
+        // Nếu không tìm thấy link download, sẽ không thể xem phim
+        if (downloadPageUrl == null) return null
 
         return newMovieLoadResponse(title, url, TvType.Movie, downloadPageUrl) {
             this.posterUrl = poster
@@ -64,9 +73,9 @@ open class FanxxxProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // `data` là URL tới hglink.to, sẽ redirect sang davioad.com
+        // Logic phần này vẫn giữ nguyên vì nó đã xử lý đúng trang download
         val downloadPageDoc = app.get(data, referer = "$mainUrl/").document
-        val downloadPageUrl = downloadPageDoc.location() // Lấy URL cuối cùng sau redirect (davioad.com/e/...)
+        val downloadPageUrl = downloadPageDoc.location() 
 
         val op = downloadPageDoc.selectFirst("input[name=op]")?.attr("value")
         val id = downloadPageDoc.selectFirst("input[name=id]")?.attr("value")
@@ -86,18 +95,15 @@ open class FanxxxProvider : MainAPI() {
         val finalPageDoc = app.post(
             downloadPageUrl,
             data = postData,
-            referer = downloadPageUrl // Gửi referer là trang download
+            referer = downloadPageUrl
         ).document
 
-        // Tìm link video, ưu tiên source tag
         val videoUrl = finalPageDoc.selectFirst("source")?.attr("src")
             ?: finalPageDoc.selectFirst("a[href*=.mp4], a[href*=.m3u8]")?.attr("href")
 
         videoUrl?.let {
             val isM3u8 = it.contains(".m3u8")
             
-            // **Thêm headers vào link**
-            // Dựa trên curl, referer là trang `davioad.com/e/...`
             val streamHeaders = mapOf(
                 "Referer" to downloadPageUrl,
                 "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
@@ -108,10 +114,10 @@ open class FanxxxProvider : MainAPI() {
                     source = this.name,
                     name = "Davioad Server",
                     url = it,
-                    referer = downloadPageUrl, // Referer chính
-                    quality = getQualityFromName(""), // Tự động xác định chất lượng
-                    type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO, // Đặt type
-                    headers = streamHeaders // Thêm headers
+                    referer = downloadPageUrl,
+                    quality = getQualityFromName(""),
+                    type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
+                    headers = streamHeaders
                 )
             )
         }
