@@ -6,6 +6,8 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 
 /**
  * Coder's Note:
@@ -92,7 +94,6 @@ class FanxxxProvider : MainAPI() {
         var pMut = p
         var cMut = c
         
-        // Hàm nội bộ để chuyển đổi số sang chuỗi theo cơ số `a`
         fun intToBase(n: Int, base: Int): String {
             return n.toString(base)
         }
@@ -100,7 +101,6 @@ class FanxxxProvider : MainAPI() {
         while (cMut-- > 0) {
             val token = intToBase(cMut, a)
             val replacement = if (k.getOrNull(cMut)?.isNotEmpty() == true) k[cMut] else token
-            // Sử dụng regex để đảm bảo chỉ thay thế toàn bộ từ (whole word)
             pMut = pMut.replace(Regex("\\b$token\\b"), replacement)
         }
         return pMut
@@ -124,12 +124,10 @@ class FanxxxProvider : MainAPI() {
         val davioadUrl = davioadResponse.url
         val document = davioadResponse.document
 
-        // Tìm đoạn script chứa packer
         val scriptContent = document.select("script").map { it.data() }.firstOrNull { 
             it.contains("eval(function(p,a,c,k,e,d)") 
         } ?: throw ErrorLoadingException("Packed script not found on davioad page")
 
-        // Dùng regex để bóc tách các tham số của packer
         val regex = Regex("""}\('(.+)',(\d+),(\d+),'(.+?)'\.split""")
         val match = regex.find(scriptContent) 
             ?: throw ErrorLoadingException("Failed to extract packer arguments")
@@ -139,23 +137,20 @@ class FanxxxProvider : MainAPI() {
         val c = cStr.toInt()
         val k = kStr.split("|")
 
-        // Giải mã để lấy ra script gốc
         val unpackedJs = unpack(p, a, c, k)
 
-        // Dùng regex để tìm link m3u8 trong script đã giải mã
         val hlsRegex = Regex("""file:"([^"]+m3u8)"""")
         val hlsMatch = hlsRegex.find(unpackedJs) 
             ?: throw ErrorLoadingException("HLS link not found in unpacked script")
             
         val streamPath = hlsMatch.groupValues[1]
-        // Đôi khi link trả về không có domain, cần nối lại
         val streamUrl = if (streamPath.startsWith("http")) {
             streamPath
         } else {
-            "https:$streamPath" // Mặc định là https nếu không có scheme
+            "https:$streamPath"
         }
         
-        // Gửi link đã xử lý về cho player
+        // Gửi link đã xử lý về cho player, tuân thủ định dạng ExtractorLink mới
         callback.invoke(
             ExtractorLink(
                 source = "Davioad",
@@ -163,15 +158,15 @@ class FanxxxProvider : MainAPI() {
                 url = streamUrl,
                 referer = davioadUrl, // Referer là yếu tố bắt buộc
                 quality = Qualities.Unknown.value,
-                isM3u8 = true,
+                type = ExtractorLinkType.M3U8, // Đã cập nhật
                 headers = mapOf(
-                    // Các headers này giúp giả lập một trình duyệt thật
                     "Accept" to "*/*",
                     "Accept-Language" to "en-US,en;q=0.9",
                     "Sec-Fetch-Dest" to "empty",
                     "Sec-Fetch-Mode" to "cors",
                     "Sec-Fetch-Site" to "same-origin",
-                )
+                ),
+                extractorData = null
             )
         )
 
