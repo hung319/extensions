@@ -31,8 +31,10 @@ class FanxxxProvider : MainAPI() {
     private fun Element.toSearchResult(): SearchResponse {
         val title = this.selectFirst("span.title")?.text()?.trim() ?: "Unknown Title"
         val href = this.selectFirst("a")!!.attr("href")
-        // Sử dụng data-src vì ảnh được lazy-load
-        val posterUrl = this.selectFirst("img")?.attr("data-src")
+        // SỬA LỖI: Xử lý URL tương đối (protocol-relative) cho poster.
+        val posterUrl = this.selectFirst("img")?.attr("data-src")?.let {
+            if (it.startsWith("//")) "https:$it" else it
+        }
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
         }
@@ -85,26 +87,6 @@ class FanxxxProvider : MainAPI() {
             this.tags = tags
         }
     }
-
-    /**
-     * Hàm giải mã packer của Javascript.
-     * Đây là phần cốt lõi để xử lý logic obfuscate của trang davioad.
-     */
-    private fun unpack(p: String, a: Int, c: Int, k: List<String>): String {
-        var pMut = p
-        var cMut = c
-        
-        fun intToBase(n: Int, base: Int): String {
-            return n.toString(base)
-        }
-
-        while (cMut-- > 0) {
-            val token = intToBase(cMut, a)
-            val replacement = if (k.getOrNull(cMut)?.isNotEmpty() == true) k[cMut] else token
-            pMut = pMut.replace(Regex("\\b$token\\b"), replacement)
-        }
-        return pMut
-    }
     
     /**
      * Tải các liên kết xem phim (m3u8).
@@ -116,49 +98,26 @@ class FanxxxProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // `data` chính là iframeUrl từ hàm load
-        val hglinkUrl = data
+        // SỬA LỖI: Logic hoàn toàn mới để xử lý trang player `turboviplay.com`.
+        // 'data' chính là iframeUrl từ hàm load(), ví dụ: https://turbovidhls.com/t/68a83109e0e15
+        val playerPageUrl = data
 
-        // Theo dõi chuyển hướng từ hglink.to -> davioad.com
-        val davioadResponse = app.get(hglinkUrl, referer = mainUrl)
-        val davioadUrl = davioadResponse.url
-        val document = davioadResponse.document
+        // Tải nội dung trang player
+        val playerDocument = app.get(playerPageUrl, referer = mainUrl).document
 
-        val scriptContent = document.select("script").map { it.data() }.firstOrNull { 
-            it.contains("eval(function(p,a,c,k,e,d)") 
-        } ?: throw ErrorLoadingException("Packed script not found on davioad page")
+        // Trích xuất link m3u8 từ thuộc tính 'data-hash'
+        val streamUrl = playerDocument.selectFirst("div#video_player")?.attr("data-hash")
+            ?: throw ErrorLoadingException("Could not find video stream URL in player page")
 
-        val regex = Regex("""}\('(.+)',(\d+),(\d+),'(.+?)'\.split""")
-        val match = regex.find(scriptContent) 
-            ?: throw ErrorLoadingException("Failed to extract packer arguments")
-
-        val (p, aStr, cStr, kStr) = match.destructured
-        val a = aStr.toInt()
-        val c = cStr.toInt()
-        val k = kStr.split("|")
-
-        val unpackedJs = unpack(p, a, c, k)
-
-        val hlsRegex = Regex("""file:"([^"]+m3u8)"""")
-        val hlsMatch = hlsRegex.find(unpackedJs) 
-            ?: throw ErrorLoadingException("HLS link not found in unpacked script")
-            
-        val streamPath = hlsMatch.groupValues[1]
-        val streamUrl = if (streamPath.startsWith("http")) {
-            streamPath
-        } else {
-            "https:$streamPath"
-        }
-        
-        // Gửi link đã xử lý về cho player, tuân thủ định dạng ExtractorLink mới
+        // Gửi link đã xử lý về cho player
         callback.invoke(
             ExtractorLink(
-                source = "Davioad",
+                source = "TurboViPlay",
                 name = "Fanxxx Stream",
                 url = streamUrl,
-                referer = davioadUrl, // Referer là yếu tố bắt buộc
+                referer = playerPageUrl, // Referer là trang player
                 quality = Qualities.Unknown.value,
-                type = ExtractorLinkType.M3U8, // Đã cập nhật
+                type = ExtractorLinkType.M3U8,
                 headers = mapOf(
                     "Accept" to "*/*",
                     "Accept-Language" to "en-US,en;q=0.9",
