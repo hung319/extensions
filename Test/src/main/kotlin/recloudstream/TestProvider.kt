@@ -24,14 +24,9 @@ class FanxxxProvider : MainAPI() {
         TvType.NSFW
     )
 
-    /**
-     * Hàm helper để chuyển đổi một phần tử HTML (Element) thành kết quả tìm kiếm (SearchResponse).
-     * Giúp tái sử dụng code cho cả trang chủ và trang tìm kiếm.
-     */
     private fun Element.toSearchResult(): SearchResponse {
         val title = this.selectFirst("span.title")?.text()?.trim() ?: "Unknown Title"
         val href = this.selectFirst("a")!!.attr("href")
-        // SỬA LỖI: Xử lý URL tương đối (protocol-relative) cho poster.
         val posterUrl = this.selectFirst("img")?.attr("data-src")?.let {
             if (it.startsWith("//")) "https:$it" else it
         }
@@ -40,9 +35,6 @@ class FanxxxProvider : MainAPI() {
         }
     }
     
-    /**
-     * Lấy danh sách phim từ trang chủ.
-     */
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get("$mainUrl/page/$page/").document
         val homePageList = document.select("article.thumb-block").map {
@@ -55,9 +47,6 @@ class FanxxxProvider : MainAPI() {
         )
     }
 
-    /**
-     * Thực hiện tìm kiếm phim theo từ khóa.
-     */
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/?s=$query"
         val document = app.get(searchUrl).document
@@ -66,10 +55,6 @@ class FanxxxProvider : MainAPI() {
         }
     }
     
-    /**
-     * Tải thông tin chi tiết của một bộ phim.
-     * Hàm này sẽ lấy URL của iframe và truyền nó cho `loadLinks` qua biến `data`.
-     */
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
         val title = document.selectFirst("h1[itemprop=name]")?.text() ?: "No title"
@@ -77,7 +62,6 @@ class FanxxxProvider : MainAPI() {
         val description = document.selectFirst("div.video-description")?.text()
         val tags = document.select("div.video-tags a.label").mapNotNull { it.text() }
 
-        // Lấy link iframe, đây là bước quan trọng để đến được link video
         val iframeUrl = document.selectFirst("iframe")?.attr("src")
             ?: throw ErrorLoadingException("No video iframe found on page")
 
@@ -87,35 +71,89 @@ class FanxxxProvider : MainAPI() {
             this.tags = tags
         }
     }
+
+    // Đưa hàm unpack trở lại để xử lý trình phát davioad.com
+    private fun unpack(p: String, a: Int, c: Int, k: List<String>): String {
+        var pMut = p
+        var cMut = c
+        
+        fun intToBase(n: Int, base: Int): String {
+            return n.toString(base)
+        }
+
+        while (cMut-- > 0) {
+            val token = intToBase(cMut, a)
+            val replacement = if (k.getOrNull(cMut)?.isNotEmpty() == true) k[cMut] else token
+            pMut = pMut.replace(Regex("\\b$token\\b"), replacement)
+        }
+        return pMut
+    }
     
-    /**
-     * Tải các liên kết xem phim (m3u8).
-     * @param data Đây là URL của iframe được truyền từ hàm `load`.
-     */
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // SỬA LỖI: Logic hoàn toàn mới để xử lý trang player `turboviplay.com`.
-        // 'data' chính là iframeUrl từ hàm load(), ví dụ: https://turbovidhls.com/t/68a83109e0e15
-        val playerPageUrl = data
+        // 'data' là iframeUrl, ví dụ: https://hglink.to/e/kk28e54hxf11
+        val hglinkUrl = data
 
-        // Tải nội dung trang player
-        val playerDocument = app.get(playerPageUrl, referer = mainUrl).document
+        // Theo dõi chuyển hướng để lấy trang player cuối cùng
+        val playerResponse = app.get(hglinkUrl, referer = mainUrl)
+        val playerPageUrl = playerResponse.url
+        val playerDocument = playerResponse.document
 
-        // Trích xuất link m3u8 từ thuộc tính 'data-hash'
-        val streamUrl = playerDocument.selectFirst("div#video_player")?.attr("data-hash")
-            ?: throw ErrorLoadingException("Could not find video stream URL in player page")
+        var streamUrl: String? = null
+        var sourceName = "Unknown"
 
-        // Gửi link đã xử lý về cho player
+        // **LOGIC MỚI: Thử cả hai phương pháp**
+
+        // **Phương pháp 1: Kiểm tra `data-hash` (cho turboviplay)**
+        val streamUrlFromDataHash = playerDocument.selectFirst("div#video_player")?.attr("data-hash")
+        if (!streamUrlFromDataHash.isNullOrBlank()) {
+            streamUrl = streamUrlFromDataHash
+            sourceName = "TurboViPlay"
+        } else {
+            // **Phương pháp 2: Nếu không có data-hash, thử giải mã packer (cho davioad)**
+            val scriptContent = playerDocument.select("script").map { it.data() }.firstOrNull { 
+                it.contains("eval(function(p,a,c,k,e,d)") 
+            }
+
+            if (scriptContent != null) {
+                val regex = Regex("""}\('(.+)',(\d+),(\d+),'(.+?)'\.split""")
+                val match = regex.find(scriptContent)
+                
+                if (match != null) {
+                    val (p, aStr, cStr, kStr) = match.destructured
+                    val unpackedJs = unpack(p, aStr.toInt(), cStr.toInt(), kStr.split("|"))
+
+                    val hlsRegex = Regex("""file:"([^"]+m3u8)"""")
+                    val hlsMatch = hlsRegex.find(unpackedJs)
+                    val streamPath = hlsMatch?.groupValues?.get(1)
+                    
+                    if (streamPath != null) {
+                         streamUrl = if (streamPath.startsWith("http")) {
+                            streamPath
+                        } else {
+                            "https:$streamPath"
+                        }
+                        sourceName = "Davioad"
+                    }
+                }
+            }
+        }
+
+        // Nếu sau khi thử cả 2 cách vẫn không có link -> báo lỗi
+        if (streamUrl == null) {
+            throw ErrorLoadingException("Could not find video stream URL using any known method")
+        }
+        
         callback.invoke(
             ExtractorLink(
-                source = "TurboViPlay",
+                source = sourceName,
                 name = "Fanxxx Stream",
                 url = streamUrl,
-                referer = playerPageUrl, // Referer là trang player
+                referer = playerPageUrl, // Referer là trang player cuối cùng
                 quality = Qualities.Unknown.value,
                 type = ExtractorLinkType.M3U8,
                 headers = mapOf(
