@@ -71,7 +71,7 @@ class Anime47Provider : MainAPI() {
         val videos: List<VideoItem>?,
         val images: ImagesInfo?,
         val score: Any?,
-        val status: String? // Added status field
+        val status: String?
     )
     private data class ApiDetailResponse(val data: DetailPost)
 
@@ -207,7 +207,7 @@ class Anime47Provider : MainAPI() {
                      showToast(it, "Provider by H4RS", Toast.LENGTH_LONG)
                  }
              } catch (e: Exception) {
-                 logError(e) // Log exception object
+                 logError(e)
              }
          }
 
@@ -274,21 +274,16 @@ class Anime47Provider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         if (query.isBlank()) return emptyList()
-
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
         val url = "$apiBaseUrl/search/full/?lang=vi&keyword=$encodedQuery&page=1"
-
         val res = safeApiCall { app.get(url, headers = apiHeaders, interceptor = interceptor, timeout = 10_000).parsedSafe<ApiSearchResponse>() }
-            ?: return emptyList() // Return empty list on failure
-
-        return res.results?.mapNotNull { it.toSearchResult() } ?: emptyList()
+        return res?.results?.mapNotNull { it.toSearchResult() } ?: emptyList()
     }
 
     override suspend fun quickSearch(query: String): List<SearchResponse> {
         return search(query)
     }
 
-    // === HÀM load ĐÃ SỬA LỖI BIÊN DỊCH + LOGIC PLACEHOLDER ===
     override suspend fun load(url: String): LoadResponse? {
         val animeId = url.substringAfterLast('-').trim()
         if (animeId.isBlank() || animeId.toIntOrNull() == null) {
@@ -296,20 +291,22 @@ class Anime47Provider : MainAPI() {
              return null
         }
 
-        // --- API Calls using safeApiCall ---
         val infoRes = safeApiCall { app.get("$apiBaseUrl/anime/info/$animeId?lang=vi", headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiDetailResponse>() }
         val episodesRes = safeApiCall { app.get("$apiBaseUrl/anime/$animeId/episodes?lang=vi", headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiEpisodeResponse>() }
         val recommendationsRes = safeApiCall { app.get("$apiBaseUrl/anime/info/$animeId/recommendations?lang=vi", headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiRecommendationResponse>() }
 
         if (infoRes == null) {
-            logError("Failed to load anime info for ID: $animeId") // Log String
+            logError("Failed to load anime info for ID: $animeId")
             return null
         }
 
         val post = infoRes.data
+
+        if (episodesRes == null) logError("Failed to load episodes for ID: $animeId")
+        if (recommendationsRes == null) logError("Failed to load recommendations for ID: $animeId")
+
         val title = post.title ?: "Unknown Title $animeId"
 
-        // === Poster/Cover Logic ===
         val imagePosterUrl = fixUrl(post.images?.poster?.firstOrNull()?.url)
         val topLevelPosterUrl = fixUrl(post.poster)
         val coverUrl = fixUrl(post.cover)
@@ -333,18 +330,17 @@ class Anime47Provider : MainAPI() {
         } else {
             null
         }
-        // === End Poster/Cover Fix ===
 
-        // --- Basic Info (Lọc tag Unknown) ---
         val plot = post.description
         val year = post.year?.toIntOrNull()
         val tags = post.genres?.mapNotNull { it.name }
             ?.filter { it.isNotBlank() && !it.equals("Unknown", ignoreCase = true) }
-            ?.takeIf { it.isNotEmpty() } // Use takeIf for null if empty
-        val tvType = post.toTvType(default = TvType.Anime)
+            ?.takeIf { it.isNotEmpty() }
 
-        // --- Process Episodes ---
-        val episodeList = episodesRes?.teams?.flatMap { team -> // Safely unwrap episodesRes
+        val tvType = post.toTvType(default = TvType.Anime)
+        val showStatus = post.status.toShowStatus()
+
+        val episodeList = episodesRes?.teams?.flatMap { team ->
             team.groups.flatMap { group ->
                 group.episodes.mapNotNull { ep ->
                     val currentId = ep.id
@@ -362,25 +358,22 @@ class Anime47Provider : MainAPI() {
                     }
                 }
             }
-        }?.distinctBy { it.data }?.sortedBy { it.episode } ?: emptyList() // Fallback remains
+        }?.distinctBy { it.data }?.sortedBy { it.episode } ?: emptyList()
 
-        // --- Structure episodes ---
+
         val episodesMap = mutableMapOf<DubStatus, List<Episode>>()
         if (episodeList.isNotEmpty()) {
             episodesMap[DubStatus.Subbed] = episodeList
         }
 
-        // --- Trailers & Recommendations ---
-        val trailers = infoRes.data.videos?.mapNotNull { fixUrl(it.url) }
+        val trailers = post.videos?.mapNotNull { fixUrl(it.url) }
         val recommendationsList = recommendationsRes?.data?.mapNotNull { it.toSearchResult() }
 
-        // --- Use newAnimeLoadResponse ---
         return try {
             newAnimeLoadResponse(
                 name = title,
                 url = url,
                 type = tvType
-                // comingSoon is set inside the block
             ) {
                 this.posterUrl = poster
                 this.backgroundPosterUrl = cover
@@ -388,9 +381,7 @@ class Anime47Provider : MainAPI() {
                 this.plot = plot
                 this.tags = tags
                 this.episodes = episodesMap
-                this.showStatus = post.status.toShowStatus() // Use helper for status
-
-                // Set comingSoon based on status and episodes
+                this.showStatus = showStatus
                 this.comingSoon = episodeList.isEmpty() && this.showStatus != ShowStatus.Completed
 
                 addTrailer(trailers)
@@ -399,24 +390,19 @@ class Anime47Provider : MainAPI() {
                 post.score?.let { apiScore ->
                      try {
                          val scoreDouble = apiScore.toString().toDoubleOrNull() ?: 0.0
-                         val scoreOutOf10000 = (scoreDouble * 1000).toInt()
-                         // Use correct Score constructor
-                         this.score = Score(score = scoreOutOf10000, maxScore = 10000)
+                         val scoreInt: Int = (scoreDouble * 1000).toInt()
+                         this.score = Score(score = scoreInt, maxScore = 10000)
                      } catch (e: NumberFormatException) {
-                         // Log the exception object
                          logError(IOException("Failed to parse score: $apiScore", e))
                      }
                 }
             }
         } catch (e: Exception) {
-            // Log the exception object and message string correctly
-            logError("!!! Anime47 ERROR creating AnimeLoadResponse for ID $animeId: ${e.message}")
-            logError(e)
+            logError("!!! Anime47 ERROR creating AnimeLoadResponse for ID $animeId", e)
             null
         }
-    } // End of load function
+    }
 
-    // === loadLinks (Remains unchanged from previous fix) ===
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -426,7 +412,7 @@ class Anime47Provider : MainAPI() {
 
         val id = data.substringAfterLast('/')
         if (id.isBlank()) {
-            logError("loadLinks received blank data: '$data'") // Log String
+            logError("loadLinks received blank data: '$data'")
             return false
         }
 
@@ -437,30 +423,30 @@ class Anime47Provider : MainAPI() {
             val watchRes = app.get(watchUrl, headers = apiHeaders, interceptor = interceptor, timeout = 10_000).parsedSafe<ApiWatchResponse>()
             streams = watchRes?.streams
         } catch (e: Exception) {
-            logError(IOException("Failed to get streams directly with ID: $id", e)) // Log Exception
+            logError(IOException("Failed to get streams directly with ID: $id", e))
         }
 
         if (streams.isNullOrEmpty()) {
-            logError("No streams found for ID: $id. Assuming it's an animeId, trying fallback...") // Log String
+            logError("No streams found for ID: $id. Assuming it's an animeId, trying fallback...")
             try {
                 val episodesUrl = "$apiBaseUrl/anime/$id/episodes?lang=vi"
                 val episodesRes = app.get(episodesUrl, headers = apiHeaders, interceptor = interceptor, timeout = 10_000).parsedSafe<ApiEpisodeResponse>()
                 val fallbackEpisodeId = episodesRes?.teams?.firstOrNull()?.groups?.firstOrNull()?.episodes?.firstOrNull()?.id
 
                 if (fallbackEpisodeId != null) {
-                    logError("Fallback success: Found episode $fallbackEpisodeId for anime $id") // Log String
+                    logError("Fallback success: Found episode $fallbackEpisodeId for anime $id")
                     val fallbackWatchUrl = "$apiBaseUrl/anime/watch/episode/$fallbackEpisodeId?lang=vi"
                     streams = app.get(fallbackWatchUrl, headers = apiHeaders, interceptor = interceptor, timeout = 10_000).parsedSafe<ApiWatchResponse>()?.streams
                 } else {
-                    logError("Fallback failed: No episodes found for animeId $id") // Log String
+                    logError("Fallback failed: No episodes found for animeId $id")
                 }
             } catch (e: Exception) {
-                 logError(IOException("Fallback attempt failed for animeId: $id", e)) // Log Exception
+                 logError(IOException("Fallback attempt failed for animeId: $id", e))
             }
         }
 
         if (streams.isNullOrEmpty()) {
-            logError("No streams found for data: '$data' (cleaned ID: '$id')") // Log String
+            logError("No streams found for data: '$data' (cleaned ID: '$id')")
             return false
         }
 
@@ -502,23 +488,23 @@ class Anime47Provider : MainAPI() {
                                             )
                                         )
                                     } catch (subE: Exception) {
-                                        logError(subE) // Log Exception
+                                        logError(subE)
                                     }
                                 }
                             }
 
                         } else {
-                            logError("Unhandled stream type or server for (ID: $id): $serverName - $streamUrl (Player: $playerType)") // Log String
+                            logError("Unhandled stream type or server for (ID: $id): $serverName - $streamUrl (Player: $playerType)")
                         }
                     } catch (streamE: Exception) {
-                        logError(streamE) // Log Exception
+                        logError(streamE)
                     }
                 }
             }.awaitAll()
         }
 
         if (!loaded.get()) {
-            logError("No extractor links were loaded for ID: $id") // Log String
+            logError("No extractor links were loaded for ID: $id")
         }
 
         return loaded.get()
@@ -566,7 +552,7 @@ class Anime47Provider : MainAPI() {
                                     .body(newBody)
                                     .build()
                            } catch (processE: Exception) {
-                               logError(processE) // Log Exception
+                               logError(processE)
                                response.close()
                                throw IOException("Failed to process video interceptor for $url", processE)
                            }
@@ -575,11 +561,11 @@ class Anime47Provider : MainAPI() {
                     return response ?: throw IOException("Proceed returned null response for $url")
                 } catch (networkE: Exception) {
                     response?.close()
-                    logError(networkE) // Log Exception
+                    logError(networkE)
                     throw networkE
                 } catch (e: Exception) {
                      response?.close()
-                     logError(e) // Log Exception
+                     logError(e)
                      throw e
                 }
             }
@@ -604,7 +590,7 @@ private fun skipByteErrorRaw(byteArray: ByteArray): ByteArray {
         }
         if (start > 0) byteArray.copyOfRange(start, byteArray.size) else byteArray
     } catch (e: Exception) {
-        logError(e) // Log Exception
+        logError(e)
         byteArray
     }
 }
