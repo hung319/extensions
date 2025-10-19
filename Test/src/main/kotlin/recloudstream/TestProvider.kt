@@ -4,11 +4,9 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
-import com.lagradost.cloudstream3.mvvm.Mvvm // Import for safeApiCall
 import com.lagradost.cloudstream3.mvvm.safeApiCall // Import for safeApiCall explicitly
-// import com.lagradost.cloudstream3.utils.AppUtils.parseJson // Not used directly
 import java.net.URLEncoder
-import okhttp3.Interceptor // Correct import
+import okhttp3.Interceptor
 import okhttp3.Response
 import okhttp3.ResponseBody
 import okhttp3.ResponseBody.Companion.toResponseBody
@@ -16,18 +14,17 @@ import java.util.EnumSet
 import java.util.Locale
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.awaitAll // Needed for replacing apmap
+import kotlinx.coroutines.awaitAll
 import com.lagradost.cloudstream3.CommonActivity.showToast
-import kotlinx.coroutines.Dispatchers // Needed for withContext
-import kotlinx.coroutines.withContext // Needed for withContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import android.widget.Toast
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer // Keep for trailers
+import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.mvvm.logError
-// import com.lagradost.cloudstream3.mvvm.safeApiCall // Removed usage
-import java.io.IOException // Added import
-import java.util.concurrent.atomic.AtomicBoolean // For thread-safe flag
-import java.lang.NumberFormatException // Import for score parsing exception
+import java.io.IOException
+import java.util.concurrent.atomic.AtomicBoolean
+import java.lang.NumberFormatException
 
 // === Provider Class ===
 class Anime47Provider : MainAPI() {
@@ -73,7 +70,8 @@ class Anime47Provider : MainAPI() {
         val genres: List<GenreInfo>?,
         val videos: List<VideoItem>?,
         val images: ImagesInfo?,
-        val score: Any? // API returns score as Int or Double, use Any? for flexibility
+        val score: Any?,
+        val status: String? // Added status field
     )
     private data class ApiDetailResponse(val data: DetailPost)
 
@@ -139,7 +137,7 @@ class Anime47Provider : MainAPI() {
     )
 
 
-    // === MainPage Requests (Remain unchanged) ===
+    // === MainPage Requests ===
     override val mainPage = mainPageOf(
         "/anime/filter?lang=vi&sort=latest" to "Anime Mới Cập Nhật",
         "/anime/filter?lang=vi&sort=rating" to "Top Đánh Giá",
@@ -147,7 +145,7 @@ class Anime47Provider : MainAPI() {
         "/anime/filter?lang=vi&type=movie" to "Anime Movie"
     )
 
-    // === API Headers (Remain unchanged) ===
+    // === API Headers ===
     private val apiHeaders
         get() = mapOf(
             "Accept" to "application/json, text/plain, */*",
@@ -156,10 +154,8 @@ class Anime47Provider : MainAPI() {
         )
 
     // === Helper Functions ===
-    // === fixUrl ĐÃ GỠ BỎ LỌC PLACEHOLDER ===
     private fun fixUrl(url: String?): String? {
         if (url.isNullOrBlank()) return null
-        // Dòng kiểm tra placeholder đã bị xóa
         if (url.startsWith("http")) return url
         if (url.startsWith("//")) return "https:$url"
         val base = mainUrl
@@ -194,6 +190,14 @@ class Anime47Provider : MainAPI() {
        }
    }
 
+    private fun String?.toShowStatus(): ShowStatus? {
+       return when (this?.lowercase()) {
+           "ongoing" -> ShowStatus.Ongoing
+           "completed" -> ShowStatus.Completed
+           else -> null
+       }
+   }
+
 
     // === Core Overrides ===
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -203,7 +207,7 @@ class Anime47Provider : MainAPI() {
                      showToast(it, "Provider by H4RS", Toast.LENGTH_LONG)
                  }
              } catch (e: Exception) {
-                 logError(e)
+                 logError(e) // Log exception object
              }
          }
 
@@ -224,7 +228,6 @@ class Anime47Provider : MainAPI() {
         return newHomePageResponse(request.name, home, hasNext = hasNext)
     }
 
-    // Đã chuyển sang newAnimeSearchResponse
     private fun Post.toSearchResult(): SearchResponse? {
         val fullUrl = mainUrl + this.link
         if (fullUrl.isBlank()) return null
@@ -241,7 +244,6 @@ class Anime47Provider : MainAPI() {
         }
     }
 
-    // Đã chuyển sang newAnimeSearchResponse
     private fun RecommendationItem.toSearchResult(): SearchResponse? {
         if (this.link.isNullOrBlank() || this.title.isNullOrBlank()) return null
         val fullUrl = mainUrl + this.link
@@ -255,7 +257,6 @@ class Anime47Provider : MainAPI() {
         }
     }
 
-    // Đã chuyển sang newAnimeSearchResponse
     private fun SearchItem.toSearchResult(): SearchResponse? {
         val fullUrl = mainUrl + this.link
         if (fullUrl.isBlank()) return null
@@ -277,23 +278,13 @@ class Anime47Provider : MainAPI() {
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
         val url = "$apiBaseUrl/search/full/?lang=vi&keyword=$encodedQuery&page=1"
 
-        val res = try {
-            app.get(
-                url,
-                headers = apiHeaders,
-                interceptor = interceptor,
-                timeout = 10_000
-            ).parsedSafe<ApiSearchResponse>()
-        } catch (e: Exception) {
-            logError(e)
-            return emptyList()
-        }
+        val res = safeApiCall { app.get(url, headers = apiHeaders, interceptor = interceptor, timeout = 10_000).parsedSafe<ApiSearchResponse>() }
+            ?: return emptyList() // Return empty list on failure
 
-        return res?.results?.mapNotNull { it.toSearchResult() } ?: emptyList()
+        return res.results?.mapNotNull { it.toSearchResult() } ?: emptyList()
     }
 
     override suspend fun quickSearch(query: String): List<SearchResponse> {
-        // Tái sử dụng logic của search()
         return search(query)
     }
 
@@ -305,26 +296,20 @@ class Anime47Provider : MainAPI() {
              return null
         }
 
-        // --- API Calls ---
-        // Using safeApiCall for better error handling and context switching
+        // --- API Calls using safeApiCall ---
         val infoRes = safeApiCall { app.get("$apiBaseUrl/anime/info/$animeId?lang=vi", headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiDetailResponse>() }
-        val episodesRes = safeApiCall { app.get("$apiBaseUrl/anime/$animeId/episodes?lang=vi", headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiEpisodeResponse>() } // Corrected URL
+        val episodesRes = safeApiCall { app.get("$apiBaseUrl/anime/$animeId/episodes?lang=vi", headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiEpisodeResponse>() }
         val recommendationsRes = safeApiCall { app.get("$apiBaseUrl/anime/info/$animeId/recommendations?lang=vi", headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiRecommendationResponse>() }
 
-
         if (infoRes == null) {
-            logError("Failed to load anime info for ID: $animeId (Request failed, timed out, or parsing error)")
+            logError("Failed to load anime info for ID: $animeId") // Log String
             return null
         }
-        // Log errors for optional calls but don't stop execution
-        if (episodesRes == null) logError("Failed to load episodes for ID: $animeId")
-        if (recommendationsRes == null) logError("Failed to load recommendations for ID: $animeId")
-
 
         val post = infoRes.data
         val title = post.title ?: "Unknown Title $animeId"
 
-        // === Poster/Cover Logic (Ưu tiên ảnh thật) ===
+        // === Poster/Cover Logic ===
         val imagePosterUrl = fixUrl(post.images?.poster?.firstOrNull()?.url)
         val topLevelPosterUrl = fixUrl(post.poster)
         val coverUrl = fixUrl(post.cover)
@@ -353,69 +338,49 @@ class Anime47Provider : MainAPI() {
         // --- Basic Info (Lọc tag Unknown) ---
         val plot = post.description
         val year = post.year?.toIntOrNull()
-        // === FIX: Simplified tags filtering ===
         val tags = post.genres?.mapNotNull { it.name }
             ?.filter { it.isNotBlank() && !it.equals("Unknown", ignoreCase = true) }
-            ?.let { if (it.isEmpty()) null else it } // Return null if empty after filter
-        // ================================
+            ?.takeIf { it.isNotEmpty() } // Use takeIf for null if empty
         val tvType = post.toTvType(default = TvType.Anime)
 
         // --- Process Episodes ---
-        // Explicitly handle null response
-        val episodeList = episodesRes?.teams?.flatMap { team ->
+        val episodeList = episodesRes?.teams?.flatMap { team -> // Safely unwrap episodesRes
             team.groups.flatMap { group ->
                 group.episodes.mapNotNull { ep ->
-                    // Check if properties exist before accessing
                     val currentId = ep.id
                     val currentNumber = ep.number
                     val currentTitle = ep.title
 
                     val displayNum = currentNumber ?: currentTitle?.toIntOrNull()
                     val epName = currentTitle?.let { tit -> if (tit.toIntOrNull() != null) "Tập $tit" else tit }
-                                     ?: displayNum?.let { num -> "Tập $num" } // Use num here
+                                     ?: displayNum?.let { num -> "Tập $num" }
                                      ?: "Tập $currentId"
 
                     newEpisode(currentId.toString()) {
                         name = epName
-                        episode = displayNum // Use displayNum which correctly falls back
+                        episode = displayNum
                     }
                 }
             }
-        }?.distinctBy { it.data }?.sortedBy { it.episode } ?: emptyList() // Fallback to emptyList if episodesRes is null
+        }?.distinctBy { it.data }?.sortedBy { it.episode } ?: emptyList() // Fallback remains
 
-        // --- Structure episodes for AnimeLoadResponse ---
+        // --- Structure episodes ---
         val episodesMap = mutableMapOf<DubStatus, List<Episode>>()
         if (episodeList.isNotEmpty()) {
             episodesMap[DubStatus.Subbed] = episodeList
-        } else {
-             logError("Warning: No episodes found or failed to parse for ID: $animeId")
         }
 
         // --- Trailers & Recommendations ---
         val trailers = infoRes.data.videos?.mapNotNull { fixUrl(it.url) }
         val recommendationsList = recommendationsRes?.data?.mapNotNull { it.toSearchResult() }
 
-        // === Log Debug Info ===
-        logError("Anime47 Load Debug - ID: $animeId")
-        logError("  > Title: $title")
-        logError("  > PosterURL: $poster")
-        logError("  > CoverURL: $cover")
-        logError("  > Year: $year")
-        logError("  > Plot: ${plot?.take(50)}...")
-        logError("  > Tags: $tags")
-        logError("  > Episode Map Size: ${episodesMap.size}")
-        logError("  > Subbed Episode Count: ${episodesMap[DubStatus.Subbed]?.size}")
-        // =======================
-
-        // --- Use newAnimeLoadResponse (REMOVE WHEN BLOCK) ---
+        // --- Use newAnimeLoadResponse ---
         return try {
             newAnimeLoadResponse(
                 name = title,
                 url = url,
-                type = tvType,
-                // Set comingSoon explicitly based on episode presence, unless API has better status
-                 comingSoon = episodeList.isEmpty() && post.status?.contains("Not yet aired", ignoreCase = true) == true // Example: Only if API says not aired AND no eps
-                 // comingSoonIfNone = false // Alternatively, never mark as coming soon automatically
+                type = tvType
+                // comingSoon is set inside the block
             ) {
                 this.posterUrl = poster
                 this.backgroundPosterUrl = cover
@@ -423,6 +388,10 @@ class Anime47Provider : MainAPI() {
                 this.plot = plot
                 this.tags = tags
                 this.episodes = episodesMap
+                this.showStatus = post.status.toShowStatus() // Use helper for status
+
+                // Set comingSoon based on status and episodes
+                this.comingSoon = episodeList.isEmpty() && this.showStatus != ShowStatus.Completed
 
                 addTrailer(trailers)
                 this.recommendations = recommendationsList
@@ -431,26 +400,23 @@ class Anime47Provider : MainAPI() {
                      try {
                          val scoreDouble = apiScore.toString().toDoubleOrNull() ?: 0.0
                          val scoreOutOf10000 = (scoreDouble * 1000).toInt()
-                         // === FIX: Use named arguments for Score constructor ===
+                         // Use correct Score constructor
                          this.score = Score(score = scoreOutOf10000, maxScore = 10000)
-                         // ======================================================
-                         logError("  > Score: ${this.score}")
                      } catch (e: NumberFormatException) {
-                         logError(IOException("  > Failed to parse score: $apiScore", e))
+                         // Log the exception object
+                         logError(IOException("Failed to parse score: $apiScore", e))
                      }
-                } ?: logError("  > Score: null (API didn't provide)")
+                }
             }
         } catch (e: Exception) {
-            logError("!!! Anime47 ERROR creating AnimeLoadResponse for ID $animeId")
-            // === FIX: Ensure correct logError overload ===
-            logError(e.message ?: "Unknown error creating response") // Log message string
-            logError(e) // Log the throwable itself for stack trace
-            // ============================================
+            // Log the exception object and message string correctly
+            logError("!!! Anime47 ERROR creating AnimeLoadResponse for ID $animeId: ${e.message}")
+            logError(e)
             null
         }
     } // End of load function
 
-    // === HÀM loadLinks ĐÃ SỬA LỖI SUBTITLE + LOGIC CHECK SERVER ===
+    // === loadLinks (Remains unchanged from previous fix) ===
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -458,53 +424,46 @@ class Anime47Provider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
 
-        // 1. Xử lý 'data' có thể là URL (lỗi từ load()) hoặc ID
         val id = data.substringAfterLast('/')
         if (id.isBlank()) {
-            logError(IOException("loadLinks received blank data: '$data'"))
+            logError("loadLinks received blank data: '$data'") // Log String
             return false
         }
 
         var streams: List<Stream>? = null
 
-        // 2. Thử tải stream trực tiếp, giả định 'id' là episodeId
         try {
             val watchUrl = "$apiBaseUrl/anime/watch/episode/$id?lang=vi"
             val watchRes = app.get(watchUrl, headers = apiHeaders, interceptor = interceptor, timeout = 10_000).parsedSafe<ApiWatchResponse>()
             streams = watchRes?.streams
         } catch (e: Exception) {
-            logError(IOException("Failed to get streams directly with ID: $id", e))
+            logError(IOException("Failed to get streams directly with ID: $id", e)) // Log Exception
         }
 
-        // 3. Nếu thất bại (streams rỗng), giả định 'id' là animeId (cho phim)
         if (streams.isNullOrEmpty()) {
-            logError(IOException("No streams found for ID: $id. Assuming it's an animeId, trying fallback..."))
+            logError("No streams found for ID: $id. Assuming it's an animeId, trying fallback...") // Log String
             try {
-                // Lấy episodeId đầu tiên từ animeId
-                val episodesUrl = "$apiBaseUrl/anime/$id/episodes?lang=vi" // Corrected URL
+                val episodesUrl = "$apiBaseUrl/anime/$id/episodes?lang=vi"
                 val episodesRes = app.get(episodesUrl, headers = apiHeaders, interceptor = interceptor, timeout = 10_000).parsedSafe<ApiEpisodeResponse>()
                 val fallbackEpisodeId = episodesRes?.teams?.firstOrNull()?.groups?.firstOrNull()?.episodes?.firstOrNull()?.id
 
                 if (fallbackEpisodeId != null) {
-                    logError(IOException("Fallback success: Found episode $fallbackEpisodeId for anime $id"))
-                    // Tải stream bằng episodeId vừa tìm được
+                    logError("Fallback success: Found episode $fallbackEpisodeId for anime $id") // Log String
                     val fallbackWatchUrl = "$apiBaseUrl/anime/watch/episode/$fallbackEpisodeId?lang=vi"
                     streams = app.get(fallbackWatchUrl, headers = apiHeaders, interceptor = interceptor, timeout = 10_000).parsedSafe<ApiWatchResponse>()?.streams
                 } else {
-                    logError(IOException("Fallback failed: No episodes found for animeId $id"))
+                    logError("Fallback failed: No episodes found for animeId $id") // Log String
                 }
             } catch (e: Exception) {
-                 logError(IOException("Fallback attempt failed for animeId: $id", e))
+                 logError(IOException("Fallback attempt failed for animeId: $id", e)) // Log Exception
             }
         }
 
-        // 4. Nếu vẫn không có stream, báo lỗi và thoát
         if (streams.isNullOrEmpty()) {
-            logError(IOException("No streams found for data: '$data' (cleaned ID: '$id')"))
+            logError("No streams found for data: '$data' (cleaned ID: '$id')") // Log String
             return false
         }
 
-        // 5. Xử lý stream và subtitle
         val loaded = AtomicBoolean(false)
         coroutineScope {
             streams.map { stream ->
@@ -520,7 +479,6 @@ class Anime47Provider : MainAPI() {
                     val ref = "$mainUrl/"
 
                     try {
-                        // === Xử lý Link Stream ===
                         if (serverName.contains("FE", ignoreCase = true) || playerType.equals("jwplayer", ignoreCase = true)) {
                             val link = newExtractorLink(
                                 source = this@Anime47Provider.name,
@@ -532,40 +490,38 @@ class Anime47Provider : MainAPI() {
                                 this.quality = Qualities.Unknown.value
                             }
                             callback(link)
-                            loaded.set(true) // Đánh dấu đã tải được ít nhất 1 link
+                            loaded.set(true)
 
-                            // === FIX: Xử lý Subtitle ===
                             currentStream.subtitles?.forEach { sub ->
                                 if (!sub.file.isNullOrBlank() && !sub.language.isNullOrBlank()) {
                                     try {
                                         subtitleCallback(
                                             SubtitleFile(
-                                                mapSubtitleLabel(sub.language), // Dùng hàm map đã có
+                                                mapSubtitleLabel(sub.language),
                                                 sub.file
                                             )
                                         )
-                                    } catch (e: Exception) {
-                                        logError(e)
+                                    } catch (subE: Exception) {
+                                        logError(subE) // Log Exception
                                     }
                                 }
                             }
-                            // ========================
 
                         } else {
-                            logError(IOException("Unhandled stream type or server for (ID: $id): $serverName - $streamUrl (Player: $playerType)"))
+                            logError("Unhandled stream type or server for (ID: $id): $serverName - $streamUrl (Player: $playerType)") // Log String
                         }
-                    } catch (e: Exception) {
-                        logError(e)
+                    } catch (streamE: Exception) {
+                        logError(streamE) // Log Exception
                     }
                 }
             }.awaitAll()
         }
 
         if (!loaded.get()) {
-            logError(IOException("No extractor links were loaded for ID: $id"))
+            logError("No extractor links were loaded for ID: $id") // Log String
         }
 
-        return loaded.get() // Trả về true nếu ít nhất 1 link được load
+        return loaded.get()
     }
 
 
@@ -576,17 +532,16 @@ class Anime47Provider : MainAPI() {
     )
     private fun mapSubtitleLabel(label: String): String {
         val lowerLabel = label.trim().lowercase(Locale.ROOT)
-        if (lowerLabel.isBlank()) return "Subtitle" // Trả về mặc định nếu rỗng
+        if (lowerLabel.isBlank()) return "Subtitle"
         for ((language, keywords) in subtitleLanguageMap) {
             if (keywords.any { keyword -> lowerLabel.contains(keyword) }) {
                 return language
             }
         }
-        // Trả về label gốc nếu không khớp keyword nào
         return label.trim().replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
     }
 
-     // Video Interceptor (Remain unchanged)
+     // Video Interceptor
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
         val nonprofitAsiaTsRegex = Regex("""https://cdn\d*\.nonprofit\.asia/.*""")
 
@@ -611,8 +566,8 @@ class Anime47Provider : MainAPI() {
                                     .body(newBody)
                                     .build()
                            } catch (processE: Exception) {
-                               logError(processE)
-                               response.close() // Close before throwing
+                               logError(processE) // Log Exception
+                               response.close()
                                throw IOException("Failed to process video interceptor for $url", processE)
                            }
                         }
@@ -620,11 +575,11 @@ class Anime47Provider : MainAPI() {
                     return response ?: throw IOException("Proceed returned null response for $url")
                 } catch (networkE: Exception) {
                     response?.close()
-                    logError(networkE)
+                    logError(networkE) // Log Exception
                     throw networkE
                 } catch (e: Exception) {
                      response?.close()
-                     logError(e)
+                     logError(e) // Log Exception
                      throw e
                 }
             }
@@ -633,7 +588,7 @@ class Anime47Provider : MainAPI() {
 } // End class Anime47Provider
 
 
-// Helper skipByteErrorRaw (Remain unchanged)
+// Helper skipByteErrorRaw
 private fun skipByteErrorRaw(byteArray: ByteArray): ByteArray {
     return try {
         if (byteArray.isEmpty()) return byteArray
@@ -649,7 +604,7 @@ private fun skipByteErrorRaw(byteArray: ByteArray): ByteArray {
         }
         if (start > 0) byteArray.copyOfRange(start, byteArray.size) else byteArray
     } catch (e: Exception) {
-        logError(e)
+        logError(e) // Log Exception
         byteArray
     }
 }
