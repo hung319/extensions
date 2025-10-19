@@ -16,13 +16,13 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.awaitAll // Needed for replacing apmap
 import com.lagradost.cloudstream3.CommonActivity.showToast
-// import kotlinx.coroutines.Dispatchers // Not used directly
-// import kotlinx.coroutines.withContext // Not used directly
+import kotlinx.coroutines.Dispatchers // Needed for withContext
+import kotlinx.coroutines.withContext // Needed for withContext
 import android.widget.Toast
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.mvvm.logError
-import com.lagradost.cloudstream3.mvvm.safeApiCall // Replaced normalSafeApiCall
+// import com.lagradost.cloudstream3.mvvm.safeApiCall // Replaced usage
 import java.io.IOException // Added import
 
 // === Provider Class ===
@@ -144,7 +144,7 @@ class Anime47Provider : MainAPI() {
          return when {
             this?.contains("movie", true) == true -> TvType.AnimeMovie
             this?.contains("ova", true) == true -> TvType.OVA
-            this?.contains("special", true) == true -> TvType.ONA
+            this?.contains("special", true) == true -> TvType.OVA // Fix: Use OVA for Special
             else -> TvType.Anime
         }
     }
@@ -170,13 +170,17 @@ class Anime47Provider : MainAPI() {
 
     // === Core Overrides ===
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-         // Using safeApiCall on Main thread might still be problematic,
-         // Consider moving toast logic outside or using a different approach if issues persist.
-         safeApiCall { // Use safeApiCall instead of normalSafeApiCall
-            CommonActivity.activity?.let {
-                showToast(it, "Provider by H4RS", Toast.LENGTH_LONG)
+         // Run toast on Main thread
+         withContext(Dispatchers.Main) {
+            try { // Add try-catch for safety although showToast should be safe
+                CommonActivity.activity?.let {
+                    showToast(it, "Provider by H4RS", Toast.LENGTH_LONG)
+                }
+            } catch (e: Exception) {
+                logError(e)
             }
         }
+
 
         val url = "$apiBaseUrl${request.data}&page=$page"
         val res = try {
@@ -200,7 +204,6 @@ class Anime47Provider : MainAPI() {
         if (fullUrl.isBlank()) return null
 
         val epCount = this.episodes?.filter { it.isDigit() }?.toIntOrNull()
-         // Fix: Use mutableMapOf for assignment type match
         val episodesMap: MutableMap<DubStatus, Int> = if (epCount != null) mutableMapOf(DubStatus.Subbed to epCount) else mutableMapOf()
         val tvType = this.toTvType()
 
@@ -208,7 +211,7 @@ class Anime47Provider : MainAPI() {
             this.posterUrl = fixUrl(this@toSearchResult.poster)
             this.year = this@toSearchResult.year?.toIntOrNull()
             this.dubStatus = EnumSet.of(DubStatus.Subbed)
-            this.episodes = episodesMap // Assign mutable map
+            this.episodes = episodesMap
         }
     }
 
@@ -233,7 +236,7 @@ class Anime47Provider : MainAPI() {
                  timeout = 15_000
             ).parsed<ApiFilterResponse>()
         } catch (e: Exception) {
-            logError(e) // Fix: Pass exception object
+            logError(e)
             return emptyList()
         }
         return res.data.posts.mapNotNull { it.toSearchResult() }
@@ -242,7 +245,7 @@ class Anime47Provider : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val animeId = url.substringAfterLast('-').trim()
         if (animeId.isBlank() || animeId.toIntOrNull() == null) {
-             logError(IllegalArgumentException("Invalid anime ID extracted from URL: $url")) // Fix: Pass exception object
+             logError(IllegalArgumentException("Invalid anime ID extracted from URL: $url"))
              return null
         }
 
@@ -267,7 +270,7 @@ class Anime47Provider : MainAPI() {
             }
 
             val infoRes = infoJob.await() ?: run {
-                logError(IOException("Failed to load anime info for ID: $animeId from URL: $url")) // Fix: Pass exception object
+                logError(IOException("Failed to load anime info for ID: $animeId from URL: $url"))
                 return@coroutineScope null
             }
             val episodesRes = episodesJob.await()
@@ -285,7 +288,6 @@ class Anime47Provider : MainAPI() {
             val episodes = episodesRes?.teams?.flatMap { team ->
                 team.groups.flatMap { group ->
                     group.episodes.mapNotNull { ep ->
-                        //val epNum = ep.number ?: ep.title?.filter { it.isDigit() }?.toIntOrNull()
                         val displayNum = ep.number ?: ep.title?.toIntOrNull()
                         val epName = ep.title?.let { if (it.toIntOrNull() != null) "Tập $it" else it }
                                       ?: displayNum?.let { "Tập $it" }
@@ -293,13 +295,12 @@ class Anime47Provider : MainAPI() {
 
                         newEpisode(ep.id.toString()) {
                             name = epName
-                            episode = null // Set episode to null for auto-sorting
+                            episode = null // Set episode to null for auto-sorting by CloudStream
                         }
                     }
                 }
-            }?.distinctBy { it.data }
-             //?.sortedBy { it.episode } // Remove manual sorting
-             ?: emptyList()
+            }?.distinctBy { it.data } ?: emptyList()
+             // No need to sort here if episode is null
 
              val trailers = infoRes.data.videos?.mapNotNull { fixUrl(it.url) }
             val recommendationsList = recommendationsRes?.data?.mapNotNull { it.toSearchResult() }
@@ -328,7 +329,7 @@ class Anime47Provider : MainAPI() {
                     }
                 }
                 else -> {
-                    logError(IOException("No episodes found for $title (ID: $animeId), returning as MovieLoadResponse.")) // Fix: Pass exception object
+                    logError(IOException("No episodes found for $title (ID: $animeId), returning as MovieLoadResponse."))
                     newMovieLoadResponse(title, url, TvType.AnimeMovie, animeId) {
                         this.posterUrl = poster
                         this.year = year
@@ -348,8 +349,9 @@ class Anime47Provider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val episodeId = data.toIntOrNull() ?: run {
-             logError(IllegalArgumentException("loadLinks received non-numeric data '$data', assuming animeId.")) // Fix: Pass exception object
+        // Use safe block for potentially failing operations
+        val episodeId = safeApiCall { data.toIntOrNull() } ?: run {
+             logError(IllegalArgumentException("loadLinks received non-numeric data '$data', assuming animeId."))
              try {
                 val episodesUrl = "$apiBaseUrl/anime/$data/episodes?lang=vi"
                 val episodesRes = app.get(episodesUrl, headers = apiHeaders, interceptor = interceptor, timeout = 10_000).parsedSafe<ApiEpisodeResponse>()
@@ -358,57 +360,62 @@ class Anime47Provider : MainAPI() {
          }
 
         if (episodeId == null) {
-            logError(IOException("Could not determine episode ID to load links from data: '$data'.")) // Fix: Pass exception object
+            logError(IOException("Could not determine episode ID to load links from data: '$data'."))
             return false
         }
 
         val watchUrl = "$apiBaseUrl/anime/watch/episode/$episodeId?lang=vi"
-        val watchRes = try {
+         // Use safe block for API call
+        val watchRes = safeApiCall {
             app.get(watchUrl, headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiWatchResponse>()
-        } catch (e: Exception) { null }
+        }
 
         if (watchRes?.streams == null) {
-             logError(IOException("No streams found for episode ID: $episodeId")) // Fix: Pass exception object
+             logError(IOException("No streams found for episode ID: $episodeId"))
              return false
         }
 
         var loaded = false
-         // Fix: Replace deprecated apmap with map + awaitAll
-        watchRes.streams.map { stream ->
-            async { // Launch async block for each stream
-                val streamUrl = stream.url
-                val serverName = stream.server_name
-                val playerType = stream.player_type
-                // Use return@async inside the async block
-                if (streamUrl.isNullOrBlank() || serverName.isNullOrBlank()) return@async
-                if (serverName.equals("HY", ignoreCase = true)) return@async
+         // Use coroutineScope for structured concurrency with map + awaitAll
+        coroutineScope {
+            watchRes.streams.map { stream ->
+                // Launch async block for each stream within the scope
+                async {
+                    val streamUrl = stream.url
+                    val serverName = stream.server_name
+                    val playerType = stream.player_type
+                    // Use return@async inside the async block
+                    if (streamUrl.isNullOrBlank() || serverName.isNullOrBlank()) return@async
+                    if (serverName.equals("HY", ignoreCase = true)) return@async
 
-                val sourceName = "$name - $serverName"
-                val ref = "$mainUrl/"
+                    val sourceName = "$name - $serverName"
+                    val ref = "$mainUrl/"
 
-                try {
-                    if ((playerType == "jwplayer" || serverName == "FE") && streamUrl.endsWith(".m3u8", ignoreCase = true)) {
-                        val link = newExtractorLink(
-                            source = this@Anime47Provider.name,
-                            name = serverName,
-                            url = streamUrl,
-                            type = ExtractorLinkType.M3U8
-                        ) {
-                            this.referer = ref
-                            this.quality = Qualities.Unknown.value
+                    try {
+                        if ((playerType == "jwplayer" || serverName == "FE") && streamUrl.endsWith(".m3u8", ignoreCase = true)) {
+                             // Correctly call suspend fun newExtractorLink inside async
+                            val link = newExtractorLink(
+                                source = this@Anime47Provider.name,
+                                name = serverName,
+                                url = streamUrl,
+                                type = ExtractorLinkType.M3U8
+                            ) {
+                                this.referer = ref
+                                this.quality = Qualities.Unknown.value
+                            }
+                            callback(link)
+                            loaded = true // Note: Potential race condition if strict accuracy needed
+                        } else if (serverName == "FE" && streamUrl.contains("vlogphim.net") && !streamUrl.endsWith(".m3u8", ignoreCase = true)) {
+                            logError(IOException("FE server URL is not M3U8, handling needed: $streamUrl"))
+                        } else {
+                            logError(IOException("Unhandled stream type or server for episode $episodeId: $serverName - $streamUrl (Player: $playerType)"))
                         }
-                        callback(link)
-                        loaded = true // This needs careful handling with concurrency, consider AtomicBoolean if strict accuracy needed
-                    } else if (serverName == "FE" && streamUrl.contains("vlogphim.net") && !streamUrl.endsWith(".m3u8", ignoreCase = true)) {
-                        logError(IOException("FE server URL is not M3U8, handling needed: $streamUrl")) // Fix: Pass exception object
-                    } else {
-                        logError(IOException("Unhandled stream type or server for episode $episodeId: $serverName - $streamUrl (Player: $playerType)")) // Fix: Pass exception object
+                    } catch (e: Exception) {
+                        logError(e)
                     }
-                } catch (e: Exception) {
-                    logError(e) // Fix: Pass exception object
-                }
-            } // End async block
-        }.awaitAll() // Wait for all async blocks to complete
+                } // End async block
+            }.awaitAll() // Wait for all async stream processing to complete
+        } // End coroutineScope
 
         return loaded
     }
@@ -431,7 +438,7 @@ class Anime47Provider : MainAPI() {
 
      // Video Interceptor
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
-        val vlogPhimRegex = Regex("""https://pl\.vlogphim\.net/""")
+        val nonprofitAsiaTsRegex = Regex("""https://cdn\d*\.nonprofit\.asia/.*""")
 
         return object : Interceptor {
             override fun intercept(chain: Interceptor.Chain): Response {
@@ -441,7 +448,7 @@ class Anime47Provider : MainAPI() {
                     response = chain.proceed(request)
                     val url = request.url.toString()
 
-                    if (vlogPhimRegex.containsMatchIn(url) && response.isSuccessful) {
+                    if (nonprofitAsiaTsRegex.containsMatchIn(url) && response.isSuccessful) {
                         response.body?.let { body ->
                            try {
                                 val responseBytes = body.bytes()
@@ -454,16 +461,20 @@ class Anime47Provider : MainAPI() {
                                     .body(newBody)
                                     .build()
                            } catch (processE: Exception) {
-                               logError(processE) // Fix: Pass exception object
-                               throw IOException("Failed to process video interceptor for $url", processE) // Fix: IOException imported
+                               logError(processE)
+                               throw IOException("Failed to process video interceptor for $url", processE)
                            }
                         }
                     }
                     return response
                 } catch (networkE: Exception) {
                     response?.close()
-                    logError(networkE) // Fix: Pass exception object
+                    logError(networkE)
                     throw networkE
+                } catch (e: Exception) {
+                     response?.close()
+                     logError(e)
+                     throw e
                 }
             }
         }
@@ -474,6 +485,7 @@ class Anime47Provider : MainAPI() {
 // Helper to fix potential TS stream byte errors
 private fun skipByteErrorRaw(byteArray: ByteArray): ByteArray {
     return try {
+        if (byteArray.isEmpty()) return byteArray
         val length = byteArray.size - 188
         var start = 0
         if (length > 0) {
@@ -486,7 +498,7 @@ private fun skipByteErrorRaw(byteArray: ByteArray): ByteArray {
         }
         if (start > 0) byteArray.copyOfRange(start, byteArray.size) else byteArray
     } catch (e: Exception) {
-        logError(e) // Fix: Pass exception object
+        logError(e)
         byteArray
     }
 }
