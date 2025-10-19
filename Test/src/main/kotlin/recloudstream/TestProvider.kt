@@ -225,22 +225,6 @@ class Anime47Provider : MainAPI() {
         }
     }
 
-    override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$apiBaseUrl/anime/filter?lang=vi&keyword=${URLEncoder.encode(query, "UTF-8")}"
-        val res = try {
-            app.get(
-                searchUrl,
-                headers = apiHeaders,
-                interceptor = interceptor,
-                 timeout = 15_000
-            ).parsed<ApiFilterResponse>()
-        } catch (e: Exception) {
-            logError(e)
-            return emptyList()
-        }
-        return res.data.posts.mapNotNull { it.toSearchResult() }
-    }
-
     override suspend fun load(url: String): LoadResponse? {
         val animeId = url.substringAfterLast('-').trim()
         if (animeId.isBlank() || animeId.toIntOrNull() == null) {
@@ -320,7 +304,6 @@ class Anime47Provider : MainAPI() {
         }
     }
 
-
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -349,6 +332,9 @@ class Anime47Provider : MainAPI() {
             return false
         }
 
+        // Log streams for debugging
+        // logError("Streams for episode $episodeId: $streams")
+
         val loaded = AtomicBoolean(false)
         coroutineScope {
             streams.map { stream ->
@@ -365,6 +351,7 @@ class Anime47Provider : MainAPI() {
                     val ref = "$mainUrl/"
 
                     try {
+                        // 1. Direct M3U8
                         if ((playerType == "jwplayer" || serverName == "FE") && streamUrl.endsWith(".m3u8", ignoreCase = true)) {
                             val link = newExtractorLink(
                                 source = this@Anime47Provider.name,
@@ -377,9 +364,38 @@ class Anime47Provider : MainAPI() {
                             }
                             callback(link)
                             loaded.set(true)
-                        } else if (serverName == "FE" && streamUrl.contains("vlogphim.net", ignoreCase = true) && !streamUrl.endsWith(".m3u8", ignoreCase = true)) {
-                            logError(IOException("FE server URL is not M3U8, handling needed: $streamUrl"))
-                        } else {
+                        }
+                        // 2. Handle FE server intermediate URL (vlogphim)
+                        else if (serverName == "FE" && streamUrl.contains("vlogphim.net", ignoreCase = true)) {
+                            try {
+                                // Assume simple GET request resolves to M3U8 URL (might need adjustment)
+                                val resp = app.get(streamUrl, referer = ref, interceptor = interceptor) // Add interceptor if needed
+                                val finalUrl = resp.url
+                                if (finalUrl.endsWith(".m3u8", ignoreCase = true)) {
+                                     // logError("Resolved FE link: $streamUrl -> $finalUrl")
+                                    val link = newExtractorLink(
+                                        source = this@Anime47Provider.name,
+                                        name = "$serverName Resolved", // Indicate it was resolved
+                                        url = finalUrl,
+                                        type = ExtractorLinkType.M3U8
+                                    ) {
+                                        this.referer = streamUrl // Use original streamUrl as referer maybe? Or ref?
+                                        this.quality = Qualities.Unknown.value
+                                    }
+                                    callback(link)
+                                    loaded.set(true)
+                                } else {
+                                     // Check if response body contains the link (less likely for vlogphim)
+                                     // val bodyText = resp.text
+                                     // ... regex matching ...
+                                    logError(IOException("Could not resolve M3U8 from FE URL (not a redirect or direct m3u8): $streamUrl -> Final URL: $finalUrl"))
+                                }
+                            } catch (resolveE: Exception) {
+                                logError(IOException("Failed to resolve FE URL $streamUrl", resolveE))
+                            }
+                        }
+                        // 3. Unhandled
+                        else {
                             logError(IOException("Unhandled stream type or server for episode $episodeId: $serverName - $streamUrl (Player: $playerType)"))
                         }
                     } catch (e: Exception) {
@@ -389,8 +405,13 @@ class Anime47Provider : MainAPI() {
             }.awaitAll()
         }
 
+        if (!loaded.get()) {
+            logError(IOException("No extractor links were loaded for episode ID: $episodeId"))
+        }
+
         return loaded.get()
     }
+
 
     // Subtitle mapping
     private val subtitleLanguageMap: Map<String, List<String>> = mapOf(
@@ -413,23 +434,20 @@ class Anime47Provider : MainAPI() {
         val nonprofitAsiaTsRegex = Regex("""https://cdn\d*\.nonprofit\.asia/.*""")
 
         return object : Interceptor {
-            override fun intercept(chain: Interceptor.Chain): Response { // Fix signature
-                val request = chain.request() // Fix: Call function
+            override fun intercept(chain: Interceptor.Chain): Response {
+                val request = chain.request()
                 var response: Response? = null
                 try {
-                    response = chain.proceed(request) // Fix: Call on chain
+                    response = chain.proceed(request)
                     val url = request.url.toString()
 
-                    // Fix: Use safe call ?.isSuccessful
                     if (nonprofitAsiaTsRegex.containsMatchIn(url) && response.isSuccessful) {
-                        // Fix: Use safe call ?.body
                         response.body?.let { body ->
                            try {
                                 val responseBytes = body.bytes()
                                 val fixedBytes = skipByteErrorRaw(responseBytes)
                                 val newBody = fixedBytes.toResponseBody(body.contentType())
-                                response.close() // Close original response first
-                                // Fix: Use safe call ?.newBuilder()
+                                response.close()
                                 return response.newBuilder()
                                     .removeHeader("Content-Length")
                                     .addHeader("Content-Length", fixedBytes.size.toString())
@@ -437,13 +455,11 @@ class Anime47Provider : MainAPI() {
                                     .build()
                            } catch (processE: Exception) {
                                logError(processE)
-                               // Fix: Ensure response is closed before throwing
-                               response.close() // Close here as well
+                               response.close() // Close before throwing
                                throw IOException("Failed to process video interceptor for $url", processE)
                            }
                         }
                     }
-                    // Fix: Return non-null response or throw
                     return response ?: throw IOException("Proceed returned null response for $url")
                 } catch (networkE: Exception) {
                     response?.close()
@@ -454,7 +470,6 @@ class Anime47Provider : MainAPI() {
                      logError(e)
                      throw e
                 }
-                 // No finally needed
             }
         }
     }
