@@ -248,7 +248,6 @@ class Anime47Provider : MainAPI() {
              return null
         }
 
-        // Use runCatching for safer API calls, returning Result<T?>
         val infoResult = runCatching {
             val infoUrl = "$apiBaseUrl/anime/info/$animeId?lang=vi"
             app.get(infoUrl, headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiDetailResponse>()
@@ -262,10 +261,9 @@ class Anime47Provider : MainAPI() {
             app.get(recUrl, headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiRecommendationResponse>()
         }
 
-        // Process results, logging failures
         val infoRes = infoResult.getOrNull() ?: run {
             logError(infoResult.exceptionOrNull() ?: IOException("Failed to load anime info for ID: $animeId"))
-            return null // Critical failure
+            return null
         }
          episodesResult.exceptionOrNull()?.let { logError(it) }
          recommendationsResult.exceptionOrNull()?.let { logError(it) }
@@ -329,7 +327,6 @@ class Anime47Provider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Determine episodeId safely
         val episodeId = data.toIntOrNull() ?: runCatching {
             logError(IllegalArgumentException("loadLinks received non-numeric data '$data', assuming animeId."))
             val episodesUrl = "$apiBaseUrl/anime/$data/episodes?lang=vi"
@@ -342,7 +339,6 @@ class Anime47Provider : MainAPI() {
             return false
         }
 
-        // Fetch streams safely
         val watchRes = runCatching {
             val watchUrl = "$apiBaseUrl/anime/watch/episode/$episodeId?lang=vi"
             app.get(watchUrl, headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiWatchResponse>()
@@ -357,24 +353,23 @@ class Anime47Provider : MainAPI() {
         coroutineScope {
             streams.map { stream ->
                 async {
-                    val currentStream = stream // Assign to non-nullable val inside async
+                    val currentStream = stream
                     val streamUrl = currentStream.url
                     val serverName = currentStream.server_name
                     val playerType = currentStream.player_type
 
                     if (streamUrl.isNullOrBlank() || serverName.isNullOrBlank()) return@async
-                    if (serverName.equals("HY", ignoreCase = true)) return@async // Fix: Use equals with ignoreCase
+                    if (serverName.equals("HY", ignoreCase = true)) return@async
 
                     val sourceName = "$name - $serverName"
                     val ref = "$mainUrl/"
 
                     try {
-                         // Fix: Use endsWith with ignoreCase and null safety
                         if ((playerType == "jwplayer" || serverName == "FE") && streamUrl.endsWith(".m3u8", ignoreCase = true)) {
                             val link = newExtractorLink(
                                 source = this@Anime47Provider.name,
                                 name = serverName,
-                                url = streamUrl, // Safe: Already checked for null/blank
+                                url = streamUrl,
                                 type = ExtractorLinkType.M3U8
                             ) {
                                 this.referer = ref
@@ -382,7 +377,6 @@ class Anime47Provider : MainAPI() {
                             }
                             callback(link)
                             loaded.set(true)
-                         // Fix: Use contains with ignoreCase and endsWith
                         } else if (serverName == "FE" && streamUrl.contains("vlogphim.net", ignoreCase = true) && !streamUrl.endsWith(".m3u8", ignoreCase = true)) {
                             logError(IOException("FE server URL is not M3U8, handling needed: $streamUrl"))
                         } else {
@@ -418,14 +412,12 @@ class Anime47Provider : MainAPI() {
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
         val nonprofitAsiaTsRegex = Regex("""https://cdn\d*\.nonprofit\.asia/.*""")
 
-         // Fix: Anonymous class must implement Interceptor
         return object : Interceptor {
-            // Fix: Correct function signature
-            override fun intercept(chain: Interceptor.Chain): Response {
-                val request = chain.request // Fix: Access request from chain
+            override fun intercept(chain: Interceptor.Chain): Response { // Fix signature
+                val request = chain.request() // Fix: Call function
                 var response: Response? = null
                 try {
-                    response = chain.proceed(request) // Fix: Call proceed on chain
+                    response = chain.proceed(request) // Fix: Call on chain
                     val url = request.url.toString()
 
                     // Fix: Use safe call ?.isSuccessful
@@ -436,7 +428,7 @@ class Anime47Provider : MainAPI() {
                                 val responseBytes = body.bytes()
                                 val fixedBytes = skipByteErrorRaw(responseBytes)
                                 val newBody = fixedBytes.toResponseBody(body.contentType())
-                                response.close()
+                                response.close() // Close original response first
                                 // Fix: Use safe call ?.newBuilder()
                                 return response.newBuilder()
                                     .removeHeader("Content-Length")
@@ -445,14 +437,14 @@ class Anime47Provider : MainAPI() {
                                     .build()
                            } catch (processE: Exception) {
                                logError(processE)
-                                // Fix: Ensure response is closed before throwing
-                                response.close()
-                                throw IOException("Failed to process video interceptor for $url", processE)
+                               // Fix: Ensure response is closed before throwing
+                               response.close() // Close here as well
+                               throw IOException("Failed to process video interceptor for $url", processE)
                            }
                         }
                     }
-                    // Fix: Return non-null response
-                    return response ?: throw IOException("Proceed returned null response") // Should not happen with OkHttp standard behavior
+                    // Fix: Return non-null response or throw
+                    return response ?: throw IOException("Proceed returned null response for $url")
                 } catch (networkE: Exception) {
                     response?.close()
                     logError(networkE)
@@ -462,7 +454,7 @@ class Anime47Provider : MainAPI() {
                      logError(e)
                      throw e
                 }
-                 // No finally needed as try-catch handles closing on exceptions
+                 // No finally needed
             }
         }
     }
