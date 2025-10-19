@@ -15,10 +15,10 @@ import java.util.Locale
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 // import kotlinx.coroutines.awaitAll // Không cần nữa
-import com.lagradost.cloudstream3.CommonActivity.showToast // Giữ lại import này
-import kotlinx.coroutines.Dispatchers // Giữ lại import này
-import kotlinx.coroutines.withContext // Giữ lại import này
-import android.widget.Toast // Giữ lại import này
+import com.lagradost.cloudstream3.CommonActivity.showToast
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import android.widget.Toast
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.mvvm.logError
@@ -162,38 +162,22 @@ class Anime47Provider : MainAPI() {
         }
     }
 
-    private fun String?.toRecommendationTvType(): TvType {
+    private fun String?.toTvType(): TvType { // Now accepts nullable String for types
         return when {
             this?.contains("movie", ignoreCase = true) == true -> TvType.AnimeMovie
             this?.contains("ova", ignoreCase = true) == true -> TvType.OVA
             this?.contains("special", ignoreCase = true) == true -> TvType.OVA
+            // Assuming default type is Anime if type string is null or doesn't match others
             else -> TvType.Anime
         }
     }
 
-    private fun Post.toTvType(): TvType {
-        return when {
-            this.type?.contains("movie", ignoreCase = true) == true -> TvType.AnimeMovie
-            this.type?.contains("ova", ignoreCase = true) == true -> TvType.OVA
-            (this.title.contains("Hoạt Hình Trung Quốc", ignoreCase = true) || this.slug.contains("donghua", ignoreCase = true)) -> TvType.Cartoon
-            else -> TvType.Anime
-        }
-    }
-
-    private fun DetailPost.toTvType(default: TvType = TvType.Anime): TvType {
-        return when {
-            this.type?.equals("TV", ignoreCase = true) == true -> TvType.Anime
-            this.type?.contains("movie", ignoreCase = true) == true -> TvType.AnimeMovie
-            this.type?.contains("ova", ignoreCase = true) == true -> TvType.OVA
-            (this.title?.contains("Hoạt Hình Trung Quốc", ignoreCase = true) == true) -> TvType.Cartoon
-            else -> default
-        }
-    }
+    // Removed Post.toTvType as it's redundant with String?.toTvType
+    // Removed DetailPost.toTvType as it's redundant with String?.toTvType
 
 
     // === Core Overrides ===
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // === KHÔI PHỤC TOAST ===
         withContext(Dispatchers.Main) {
             try {
                 CommonActivity.activity?.let {
@@ -203,7 +187,6 @@ class Anime47Provider : MainAPI() {
                 logError(e)
             }
         }
-        // === KẾT THÚC KHÔI PHỤC ===
 
         val url = "$apiBaseUrl${request.data}&page=$page"
         val res = try {
@@ -218,19 +201,32 @@ class Anime47Provider : MainAPI() {
             throw ErrorLoadingException("Không thể tải trang chủ. Lỗi Cloudflare hoặc API. Chi tiết: ${e.message}")
         }
 
-        val home = res.data.posts.mapNotNull { it.toSearchResult() }
+        // === SỬ DỤNG TRỰC TIẾP HÀM HELPER ===
+        val home = res.data.posts.mapNotNull { post ->
+            val epCount = post.episodes?.filter { it.isDigit() }?.toIntOrNull()
+            toSearchResponseInternal(
+                title = post.title,
+                url = post.link,
+                posterUrl = post.poster,
+                tvType = post.type.toTvType(), // Dùng hàm helper cho String?
+                year = post.year?.toIntOrNull(),
+                epCount = epCount
+            )
+        }
         val hasNext = home.size >= 24
         return newHomePageResponse(request.name, home, hasNext = hasNext)
     }
 
+    // === HÀM HELPER CHUNG ĐỂ TẠO SearchResponse ===
     private fun toSearchResponseInternal(
         title: String,
-        url: String,
+        url: String, // Url relative, ví dụ /thong-tin/...
         posterUrl: String?,
         tvType: TvType,
         year: Int?,
         epCount: Int?
     ): SearchResponse? {
+        // Link đầy đủ phải dùng mainUrl
         val fullUrl = mainUrl + url
         if (fullUrl.isBlank()) return null
         val poster = fixUrl(posterUrl) ?: return null
@@ -238,48 +234,18 @@ class Anime47Provider : MainAPI() {
         return newAnimeSearchResponse(title, fullUrl, tvType) {
             this.posterUrl = poster
             this.year = year
-            this.dubStatus = EnumSet.of(DubStatus.Subbed)
+            this.dubStatus = EnumSet.of(DubStatus.Subbed) // Assume Subbed
             if (epCount != null) {
                 this.episodes = mutableMapOf(DubStatus.Subbed to epCount)
             }
         }
     }
 
-    private fun Post.toSearchResult(): SearchResponse? {
-        val epCount = this.episodes?.filter { it.isDigit() }?.toIntOrNull()
-        return toSearchResponseInternal(
-            title = this.title,
-            url = this.link,
-            posterUrl = this.poster,
-            tvType = this.toTvType(),
-            year = this.year?.toIntOrNull(),
-            epCount = epCount
-        )
-    }
+    // === CÁC HÀM RIÊNG ĐÃ BỊ XÓA ===
+    // private fun Post.toSearchResult(): SearchResponse? { ... }
+    // private fun RecommendationItem.toSearchResult(): SearchResponse? { ... }
+    // private fun SearchItem.toSearchResult(): SearchResponse? { ... }
 
-    private fun RecommendationItem.toSearchResult(): SearchResponse? {
-        if (this.title == null || this.link == null) return null
-        return toSearchResponseInternal(
-            title = this.title,
-            url = this.link,
-            posterUrl = this.poster,
-            tvType = this.type.toRecommendationTvType(),
-            year = this.year?.toIntOrNull(),
-            epCount = null
-        )
-    }
-
-    private fun SearchItem.toSearchResult(): SearchResponse? {
-        val epCount = this.episodes?.filter { it.isDigit() }?.toIntOrNull()
-        return toSearchResponseInternal(
-            title = this.title,
-            url = this.link,
-            posterUrl = this.image,
-            tvType = this.type.toRecommendationTvType(),
-            year = null,
-            epCount = epCount
-        )
-    }
 
     override suspend fun search(query: String): List<SearchResponse> {
         if (query.isBlank()) return emptyList()
@@ -299,7 +265,18 @@ class Anime47Provider : MainAPI() {
             return emptyList()
         }
 
-        return res?.results?.mapNotNull { it.toSearchResult() } ?: emptyList()
+        // === SỬ DỤNG TRỰC TIẾP HÀM HELPER ===
+        return res?.results?.mapNotNull { item ->
+             val epCount = item.episodes?.filter { it.isDigit() }?.toIntOrNull()
+             toSearchResponseInternal(
+                 title = item.title,
+                 url = item.link,
+                 posterUrl = item.image, // Search API uses 'image'
+                 tvType = item.type.toTvType(), // Use helper
+                 year = null, // Search API doesn't provide year
+                 epCount = epCount
+             )
+         } ?: emptyList()
     }
 
     override suspend fun quickSearch(query: String): List<SearchResponse> {
@@ -347,57 +324,57 @@ class Anime47Provider : MainAPI() {
             val plot = post.description
             val year = post.year?.toIntOrNull()
             val tags = post.genres?.mapNotNull { it.name }?.filter { it.isNotBlank() }
-            val tvType = post.toTvType(default = TvType.Anime)
+            val tvType = post.type.toTvType(default = TvType.Anime) // Use helper
 
-            // === KHÔI PHỤC LOGIC PARSE TẬP ĐƠN GIẢN ===
+            // Logic parse episodes giữ nguyên như yêu cầu cuối
             val episodes = episodesResponse?.teams?.flatMap { team ->
                 team.groups.flatMap { group ->
                     group.episodes.mapNotNull { ep ->
-                        // Lấy số tập
-                        val epNum = ep.number
-                        // Tạo tên cơ bản
-                        val epName = if (epNum != null) {
-                            "Tập $epNum"
-                        } else {
-                            // Nếu không có số, thử dùng title, hoặc fallback về ID
-                            ep.title ?: "Tập ${ep.id}"
-                        }
-
+                        val epName = ep.title ?: "Tập ${ep.id}"
                         newEpisode(ep.id.toString()) {
                             name = epName
-                            episode = epNum // Gán số tập (có thể null)
+                            episode = null
                         }
                     }
                 }
-            }?.distinctBy { it.data } // Vẫn giữ distinctBy ID phòng trường hợp API trả về object giống hệt
-             ?.sortedWith( // Sắp xếp theo số tập (ưu tiên null cuối) và sau đó theo ID
-                 compareBy(nullsLast<Int>()) { ep: Episode -> ep.episode }
-                 .thenBy { ep: Episode -> ep.data.toIntOrNull() ?: 0 }
-             )
-            ?: emptyList()
-            // === KẾT THÚC KHÔI PHỤC ===
+            }?.distinctBy { it.data } ?: emptyList()
+
 
             val trailers = infoRes.data.videos?.mapNotNull { fixUrl(it.url) }
-            val recommendationsList = recommendationsResult.getOrNull()?.data?.mapNotNull { it.toSearchResult() }
+
+            // === SỬ DỤNG TRỰC TIẾP HÀM HELPER CHO RECOMMENDATIONS ===
+            val recommendationsList = recommendationsResult.getOrNull()?.data?.mapNotNull { item ->
+                // Ensure title and link are not null before calling helper
+                if (item.title == null || item.link == null) {
+                    null
+                } else {
+                    toSearchResponseInternal(
+                        title = item.title,
+                        url = item.link,
+                        posterUrl = item.poster,
+                        tvType = item.type.toTvType(), // Use helper
+                        year = item.year?.toIntOrNull(),
+                        epCount = null // Recommendations don't have episode count
+                    )
+                }
+            }
 
             return when (tvType) {
                 TvType.AnimeMovie, TvType.OVA -> {
                     val movieData = episodes.firstOrNull()?.data
-                    
                     if (movieData == null) {
                         logError(IOException("No episodes found for Movie/OVA: $title (ID: $animeId)"))
-                        return null 
+                        return null
                     }
-                        
                     newMovieLoadResponse(title, url, tvType, movieData) {
-                        this.posterUrl = poster 
+                        this.posterUrl = poster
                         this.year = year; this.plot = plot; this.tags = tags
                         addTrailer(trailers); this.recommendations = recommendationsList
                     }
                 }
                 else -> { // Anime, Cartoon
                     newTvSeriesLoadResponse(title, url, tvType, episodes) {
-                        this.posterUrl = poster 
+                        this.posterUrl = poster
                         this.backgroundPosterUrl = cover; this.year = year
                         this.plot = plot; this.tags = tags; addTrailer(trailers); this.recommendations = recommendationsList
                     }
@@ -453,7 +430,7 @@ class Anime47Provider : MainAPI() {
                 if (serverName.contains("FE", ignoreCase = true) || playerType.equals("jwplayer", ignoreCase = true)) {
                     val link = newExtractorLink(
                         source = this@Anime47Provider.name,
-                        name = serverName, 
+                        name = serverName,
                         url = streamUrl,
                         type = ExtractorLinkType.M3U8
                     ) {
@@ -473,7 +450,7 @@ class Anime47Provider : MainAPI() {
                                     )
                                 )
                             } catch (e: Exception) {
-                                logError(e) 
+                                logError(e)
                             }
                         }
                     }
@@ -511,7 +488,7 @@ class Anime47Provider : MainAPI() {
         "Malay" to listOf("malay", "ms", "malaysia"),
         "Arabic" to listOf("العربية", "arabic", "ar"),
     )
-    
+
     private fun mapSubtitleLabel(label: String): String {
         val lowerLabel = label.trim().lowercase(Locale.ROOT)
         if (lowerLabel.isBlank()) return "Subtitle"
@@ -523,7 +500,7 @@ class Anime47Provider : MainAPI() {
         return label.trim().replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
     }
 
-     // Video Interceptor
+    // Video Interceptor
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
         val nonprofitAsiaTsRegex = Regex("""https.cdn\d*\.nonprofit\.asia.*""")
 
@@ -537,7 +514,7 @@ class Anime47Provider : MainAPI() {
 
                     if (nonprofitAsiaTsRegex.containsMatchIn(url) && response.isSuccessful) {
                         response.body?.let { body ->
-                           try {
+                            try {
                                 val responseBytes = body.bytes()
                                 val fixedBytes = skipByteErrorRaw(responseBytes)
                                 val newBody = fixedBytes.toResponseBody(body.contentType())
@@ -547,11 +524,11 @@ class Anime47Provider : MainAPI() {
                                     .addHeader("Content-Length", fixedBytes.size.toString())
                                     .body(newBody)
                                     .build()
-                           } catch (processE: Exception) {
-                               logError(processE)
-                               response.close() // Close before throwing
-                               throw IOException("Failed to process video interceptor for $url", processE)
-                           }
+                            } catch (processE: Exception) {
+                                logError(processE)
+                                response.close() // Close before throwing
+                                throw IOException("Failed to process video interceptor for $url", processE)
+                            }
                         }
                     }
                     return response ?: throw IOException("Proceed returned null response for $url")
@@ -560,9 +537,9 @@ class Anime47Provider : MainAPI() {
                     logError(networkE)
                     throw networkE
                 } catch (e: Exception) {
-                     response?.close()
-                     logError(e)
-                     throw e
+                    response?.close()
+                    logError(e)
+                    throw e
                 }
             }
         }
