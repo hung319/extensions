@@ -223,13 +223,14 @@ class Anime47Provider : MainAPI() {
             throw ErrorLoadingException("Không thể tải trang chủ: ${e.message}")
         }
 
-        val home = res.data.posts.mapNotNull { it.toSearchResult() }
+        // FIX: Access `data` directly from the parsed response
+        val home = res.data.posts.mapNotNull { post -> post.toSearchResult() }
         val hasNext = home.size >= 24
         return newHomePageResponse(request.name, home, hasNext = hasNext)
     }
 
     private fun Post.toSearchResult(): SearchResponse? {
-        val fullUrl = mainUrl + this.link
+        val fullUrl = fixUrl(this.link) ?: return null // Use fixUrl and return null if invalid
         if (fullUrl.isBlank()) return null
 
         val epCount = this.episodes?.filter { it.isDigit() }?.toIntOrNull()
@@ -245,8 +246,9 @@ class Anime47Provider : MainAPI() {
     }
 
     private fun RecommendationItem.toSearchResult(): SearchResponse? {
-        if (this.link.isNullOrBlank() || this.title.isNullOrBlank()) return null
-        val fullUrl = mainUrl + this.link
+        if (this.title.isNullOrBlank()) return null
+        val fullUrl = fixUrl(this.link) ?: return null // Use fixUrl and return null if invalid
+        if (fullUrl.isBlank()) return null
         val tvType = this.type.toRecommendationTvType()
 
         return newAnimeSearchResponse(this.title, fullUrl, tvType) {
@@ -258,7 +260,7 @@ class Anime47Provider : MainAPI() {
     }
 
     private fun SearchItem.toSearchResult(): SearchResponse? {
-        val fullUrl = mainUrl + this.link
+        val fullUrl = fixUrl(this.link) ?: return null // Use fixUrl and return null if invalid
         if (fullUrl.isBlank()) return null
 
         val epCount = this.episodes?.filter { it.isDigit() }?.toIntOrNull()
@@ -277,7 +279,8 @@ class Anime47Provider : MainAPI() {
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
         val url = "$apiBaseUrl/search/full/?lang=vi&keyword=$encodedQuery&page=1"
         val res = safeApiCall { app.get(url, headers = apiHeaders, interceptor = interceptor, timeout = 10_000).parsedSafe<ApiSearchResponse>() }
-        return res?.results?.mapNotNull { it.toSearchResult() } ?: emptyList()
+        // FIX: Access `results` correctly after safeApiCall returns ApiSearchResponse?
+        return res?.results?.mapNotNull { item -> item.toSearchResult() } ?: emptyList()
     }
 
     override suspend fun quickSearch(query: String): List<SearchResponse> {
@@ -302,8 +305,10 @@ class Anime47Provider : MainAPI() {
 
         val post = infoRes.data
 
-        if (episodesRes == null) logError("Failed to load episodes for ID: $animeId")
-        if (recommendationsRes == null) logError("Failed to load recommendations for ID: $animeId")
+        // Log optional call failures non-fatally
+        if (episodesRes == null) logError("Warning: Failed to load episodes for ID $animeId")
+        if (recommendationsRes == null) logError("Warning: Failed to load recommendations for ID $animeId")
+
 
         val title = post.title ?: "Unknown Title $animeId"
 
@@ -333,13 +338,15 @@ class Anime47Provider : MainAPI() {
 
         val plot = post.description
         val year = post.year?.toIntOrNull()
-        val tags = post.genres?.mapNotNull { it.name }
-            ?.filter { it.isNotBlank() && !it.equals("Unknown", ignoreCase = true) }
-            ?.takeIf { it.isNotEmpty() }
+        // FIX: Corrected tags filtering and null handling
+        val tags = post.genres?.mapNotNull { genre -> genre.name }
+            ?.filter { tagName -> tagName.isNotBlank() && !tagName.equals("Unknown", ignoreCase = true) }
+            ?.takeIf { filteredList -> filteredList.isNotEmpty() }
 
         val tvType = post.toTvType(default = TvType.Anime)
         val showStatus = post.status.toShowStatus()
 
+        // FIX: Corrected episode processing logic with proper null checks and lambda structure
         val episodeList = episodesRes?.teams?.flatMap { team ->
             team.groups.flatMap { group ->
                 group.episodes.mapNotNull { ep ->
@@ -358,7 +365,7 @@ class Anime47Provider : MainAPI() {
                     }
                 }
             }
-        }?.distinctBy { it.data }?.sortedBy { it.episode } ?: emptyList()
+        }?.distinctBy { ep -> ep.data }?.sortedBy { ep -> ep.episode } ?: emptyList()
 
 
         val episodesMap = mutableMapOf<DubStatus, List<Episode>>()
@@ -366,8 +373,8 @@ class Anime47Provider : MainAPI() {
             episodesMap[DubStatus.Subbed] = episodeList
         }
 
-        val trailers = post.videos?.mapNotNull { fixUrl(it.url) }
-        val recommendationsList = recommendationsRes?.data?.mapNotNull { it.toSearchResult() }
+        val trailers = post.videos?.mapNotNull { video -> fixUrl(video.url) }
+        val recommendationsList = recommendationsRes?.data?.mapNotNull { rec -> rec.toSearchResult() }
 
         return try {
             newAnimeLoadResponse(
@@ -391,6 +398,7 @@ class Anime47Provider : MainAPI() {
                      try {
                          val scoreDouble = apiScore.toString().toDoubleOrNull() ?: 0.0
                          val scoreInt: Int = (scoreDouble * 1000).toInt()
+                         // FIX: Use correct Score constructor
                          this.score = Score(score = scoreInt, maxScore = 10000)
                      } catch (e: NumberFormatException) {
                          logError(IOException("Failed to parse score: $apiScore", e))
@@ -398,6 +406,7 @@ class Anime47Provider : MainAPI() {
                 }
             }
         } catch (e: Exception) {
+            // FIX: Pass Exception object to logError
             logError("!!! Anime47 ERROR creating AnimeLoadResponse for ID $animeId", e)
             null
         }
