@@ -28,8 +28,10 @@ import java.util.concurrent.atomic.AtomicBoolean // For thread-safe flag
 
 // === Provider Class ===
 class Anime47Provider : MainAPI() {
-    override var mainUrl = "https://anime47.best"
-    private val apiBaseUrl = "https://anime47.love"
+    // === FIX: ĐẶT LẠI mainUrl VỀ .love ĐỂ INTERCEPTOR HOẠT ĐỘNG ===
+    override var mainUrl = "https://anime47.love"
+    private val apiBaseUrl = "https://anime47.love/api" // Giữ .love
+    // === KẾT THÚC FIX ===
 
     override var name = "Anime47"
     override val hasMainPage = true
@@ -149,8 +151,8 @@ class Anime47Provider : MainAPI() {
     private val apiHeaders
         get() = mapOf(
             "Accept" to "application/json, text/plain, */*",
-            "Origin" to mainUrl,
-            "Referer" to "$mainUrl/"
+            "Origin" to mainUrl, // Tự động dùng https://anime47.love
+            "Referer" to "$mainUrl/" // Tự động dùng https://anime47.love/
         )
 
     // === Helper Functions ===
@@ -218,7 +220,8 @@ class Anime47Provider : MainAPI() {
                 timeout = 15_000
             ).parsed<ApiFilterResponse>()
         } catch (e: Exception) {
-            throw ErrorLoadingException("Không thể tải trang chủ: ${e.message}")
+            logError(e) 
+            throw ErrorLoadingException("Không thể tải trang chủ. Lỗi Cloudflare hoặc API. Chi tiết: ${e.message}")
         }
 
         val home = res.data.posts.mapNotNull { it.toSearchResult() }
@@ -266,9 +269,7 @@ class Anime47Provider : MainAPI() {
 
         val epCount = this.episodes?.filter { it.isDigit() }?.toIntOrNull()
         
-        // === FIX: SỬA LỖI TYPO TỪ DubS SANG DubStatus ===
         val episodesMap: MutableMap<DubStatus, Int> = if (epCount != null) mutableMapOf(DubStatus.Subbed to epCount) else mutableMapOf()
-        // === KẾT THÚC FIX ===
 
         val tvType = this.type.toRecommendationTvType()
 
@@ -304,7 +305,6 @@ class Anime47Provider : MainAPI() {
         return search(query)
     }
 
-    // === HÀM load ĐÃ SỬA: BỌC try-catch VÀ NÉM LỖI ===
     override suspend fun load(url: String): LoadResponse? {
         try {
             val animeId = url.substringAfterLast('-').trim()
@@ -312,25 +312,30 @@ class Anime47Provider : MainAPI() {
                 throw IllegalArgumentException("Invalid anime ID extracted from URL: $url")
             }
 
-            val infoResult = runCatching {
-                val infoUrl = "$apiBaseUrl/anime/info/$animeId?lang=vi"
-                app.get(infoUrl, headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiDetailResponse>()
+            // Gộp các request lại
+            val (infoResult, episodesResult, recommendationsResult) = coroutineScope {
+                val infoTask = async {
+                    val infoUrl = "$apiBaseUrl/anime/info/$animeId?lang=vi"
+                    runCatching { app.get(infoUrl, headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiDetailResponse>() }
+                }
+                val episodesTask = async {
+                    val episodesUrl = "$apiBaseUrl/anime/$animeId/episodes?lang=vi"
+                    runCatching { app.get(episodesUrl, headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiEpisodeResponse>() }
+                }
+                val recommendationsTask = async {
+                    val recUrl = "$apiBaseUrl/anime/info/$animeId/recommendations?lang=vi"
+                    runCatching { app.get(recUrl, headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiRecommendationResponse>() }
+                }
+                Triple(infoTask.await(), episodesTask.await(), recommendationsTask.await())
             }
-            val episodesResult = runCatching {
-                val episodesUrl = "$apiBaseUrl/anime/$animeId/episodes?lang=vi"
-                app.get(episodesUrl, headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiEpisodeResponse>()
-            }
-            val recommendationsResult = runCatching {
-                val recUrl = "$apiBaseUrl/anime/info/$animeId/recommendations?lang=vi"
-                app.get(recUrl, headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiRecommendationResponse>()
-            }
+
 
             val infoRes = infoResult.getOrThrow()
             if (infoRes == null) {
                 throw IOException("Failed to parse anime info (null response) for ID: $animeId")
             }
 
-            val episodesResponse = episodesResult.getOrThrow()
+            val episodesResponse = episodesResult.getOrThrow() 
 
             recommendationsResult.exceptionOrNull()?.let { logError(it) }
 
