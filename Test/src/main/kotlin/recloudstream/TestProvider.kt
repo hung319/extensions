@@ -4,6 +4,8 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
+import com.lagradost.cloudstream3.mvvm.Mvvm // Import for safeApiCall
+import com.lagradost.cloudstream3.mvvm.safeApiCall // Import for safeApiCall explicitly
 // import com.lagradost.cloudstream3.utils.AppUtils.parseJson // Not used directly
 import java.net.URLEncoder
 import okhttp3.Interceptor // Correct import
@@ -295,7 +297,7 @@ class Anime47Provider : MainAPI() {
         return search(query)
     }
 
-    // === HÀM load ĐÃ SỬA LOGIC POSTER (Ưu tiên ảnh thật) ===
+    // === HÀM load ĐÃ SỬA LỖI BIÊN DỊCH + LOGIC PLACEHOLDER ===
     override suspend fun load(url: String): LoadResponse? {
         val animeId = url.substringAfterLast('-').trim()
         if (animeId.isBlank() || animeId.toIntOrNull() == null) {
@@ -303,89 +305,117 @@ class Anime47Provider : MainAPI() {
              return null
         }
 
-        // --- API Calls (Remain unchanged) ---
-        val infoResult = runCatching { /* ... */ }
-        val episodesResult = runCatching { /* ... */ }
-        val recommendationsResult = runCatching { /* ... */ }
+        // --- API Calls ---
+        // Using safeApiCall for better error handling and context switching
+        val infoRes = safeApiCall { app.get("$apiBaseUrl/anime/info/$animeId?lang=vi", headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiDetailResponse>() }
+        val episodesRes = safeApiCall { app.get("$apiBaseUrl/anime/$animeId/episodes?lang=vi", headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiEpisodeResponse>() } // Corrected URL
+        val recommendationsRes = safeApiCall { app.get("$apiBaseUrl/anime/info/$animeId/recommendations?lang=vi", headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiRecommendationResponse>() }
 
-        val infoRes = infoResult.getOrNull() ?: run { /* ... */ }
-        episodesResult.exceptionOrNull()?.let { logError(it) }
-        recommendationsResult.exceptionOrNull()?.let { logError(it) }
+
+        if (infoRes == null) {
+            logError("Failed to load anime info for ID: $animeId (Request failed, timed out, or parsing error)")
+            return null
+        }
+        // Log errors for optional calls but don't stop execution
+        if (episodesRes == null) logError("Failed to load episodes for ID: $animeId")
+        if (recommendationsRes == null) logError("Failed to load recommendations for ID: $animeId")
+
 
         val post = infoRes.data
         val title = post.title ?: "Unknown Title $animeId"
 
-        // === FIX: ƯU TIÊN ẢNH THẬT, CHẤP NHẬN PLACEHOLDER LÀM PHƯƠNG ÁN CUỐI ===
-        // 1. Lấy tất cả URL có thể có (đã fix định dạng)
+        // === Poster/Cover Logic (Ưu tiên ảnh thật) ===
         val imagePosterUrl = fixUrl(post.images?.poster?.firstOrNull()?.url)
         val topLevelPosterUrl = fixUrl(post.poster)
-        val coverUrl = fixUrl(post.cover) // Xử lý cover luôn
+        val coverUrl = fixUrl(post.cover)
 
-        // 2. Hàm kiểm tra có phải placeholder không
         fun isPlaceholder(checkUrl: String?): Boolean {
             return checkUrl?.contains("via.placeholder.com", ignoreCase = true) == true
         }
 
-        // 3. Chọn Poster: Ưu tiên ảnh thật từ images, rồi đến ảnh thật từ top-level, cuối cùng mới lấy placeholder
         val poster = if (!imagePosterUrl.isNullOrBlank() && !isPlaceholder(imagePosterUrl)) {
-            imagePosterUrl // Ảnh thật từ images
+            imagePosterUrl
         } else if (!topLevelPosterUrl.isNullOrBlank() && !isPlaceholder(topLevelPosterUrl)) {
-            topLevelPosterUrl // Ảnh thật từ top-level
+            topLevelPosterUrl
         } else if (!imagePosterUrl.isNullOrBlank()) {
-            imagePosterUrl // Placeholder từ images (nếu có)
+            imagePosterUrl
         } else {
-            topLevelPosterUrl // Placeholder từ top-level (nếu có) hoặc null
+            topLevelPosterUrl
         }
 
-        // 4. Chọn Cover: Ưu tiên ảnh thật, nếu không có thì null (không dùng placeholder cho cover)
         val cover = if (!coverUrl.isNullOrBlank() && !isPlaceholder(coverUrl)) {
             coverUrl
         } else {
-            null // Không dùng placeholder cho ảnh nền
+            null
         }
-        // === KẾT THÚC FIX ===
+        // === End Poster/Cover Fix ===
 
         // --- Basic Info (Lọc tag Unknown) ---
         val plot = post.description
         val year = post.year?.toIntOrNull()
+        // === FIX: Simplified tags filtering ===
         val tags = post.genres?.mapNotNull { it.name }
             ?.filter { it.isNotBlank() && !it.equals("Unknown", ignoreCase = true) }
-            ?.takeIf { it.isNotEmpty() }
+            ?.let { if (it.isEmpty()) null else it } // Return null if empty after filter
+        // ================================
         val tvType = post.toTvType(default = TvType.Anime)
 
-        // --- Process Episodes (Đảm bảo data là ID) ---
-        val episodeList = episodesResult.getOrNull()?.teams?.flatMap { team ->
+        // --- Process Episodes ---
+        // Explicitly handle null response
+        val episodeList = episodesRes?.teams?.flatMap { team ->
             team.groups.flatMap { group ->
                 group.episodes.mapNotNull { ep ->
-                    val displayNum = ep.number ?: ep.title?.toIntOrNull()
-                    val epName = ep.title?.let { if (it.toIntOrNull() != null) "Tập $it" else it }
-                                     ?: displayNum?.let { "Tập $it" }
-                                     ?: "Tập ${ep.id}"
-                    newEpisode(ep.id.toString()) {
+                    // Check if properties exist before accessing
+                    val currentId = ep.id
+                    val currentNumber = ep.number
+                    val currentTitle = ep.title
+
+                    val displayNum = currentNumber ?: currentTitle?.toIntOrNull()
+                    val epName = currentTitle?.let { tit -> if (tit.toIntOrNull() != null) "Tập $tit" else tit }
+                                     ?: displayNum?.let { num -> "Tập $num" } // Use num here
+                                     ?: "Tập $currentId"
+
+                    newEpisode(currentId.toString()) {
                         name = epName
-                        episode = displayNum
+                        episode = displayNum // Use displayNum which correctly falls back
                     }
                 }
             }
-        }?.distinctBy { it.data }?.sortedBy { it.episode } ?: emptyList()
+        }?.distinctBy { it.data }?.sortedBy { it.episode } ?: emptyList() // Fallback to emptyList if episodesRes is null
 
         // --- Structure episodes for AnimeLoadResponse ---
         val episodesMap = mutableMapOf<DubStatus, List<Episode>>()
         if (episodeList.isNotEmpty()) {
             episodesMap[DubStatus.Subbed] = episodeList
+        } else {
+             logError("Warning: No episodes found or failed to parse for ID: $animeId")
         }
 
         // --- Trailers & Recommendations ---
         val trailers = infoRes.data.videos?.mapNotNull { fixUrl(it.url) }
-        val recommendationsList = recommendationsResult.getOrNull()?.data?.mapNotNull { it.toSearchResult() }
+        val recommendationsList = recommendationsRes?.data?.mapNotNull { it.toSearchResult() }
 
-        // --- Use newAnimeLoadResponse ---
+        // === Log Debug Info ===
+        logError("Anime47 Load Debug - ID: $animeId")
+        logError("  > Title: $title")
+        logError("  > PosterURL: $poster")
+        logError("  > CoverURL: $cover")
+        logError("  > Year: $year")
+        logError("  > Plot: ${plot?.take(50)}...")
+        logError("  > Tags: $tags")
+        logError("  > Episode Map Size: ${episodesMap.size}")
+        logError("  > Subbed Episode Count: ${episodesMap[DubStatus.Subbed]?.size}")
+        // =======================
+
+        // --- Use newAnimeLoadResponse (REMOVE WHEN BLOCK) ---
         return try {
             newAnimeLoadResponse(
                 name = title,
                 url = url,
                 type = tvType,
-                comingSoonIfNone = false
+                // Set comingSoon explicitly based on episode presence, unless API has better status
+                 comingSoon = episodeList.isEmpty() && post.status?.contains("Not yet aired", ignoreCase = true) == true // Example: Only if API says not aired AND no eps
+                 // comingSoonIfNone = false // Alternatively, never mark as coming soon automatically
             ) {
                 this.posterUrl = poster
                 this.backgroundPosterUrl = cover
@@ -401,18 +431,24 @@ class Anime47Provider : MainAPI() {
                      try {
                          val scoreDouble = apiScore.toString().toDoubleOrNull() ?: 0.0
                          val scoreOutOf10000 = (scoreDouble * 1000).toInt()
-                         this.score = Score(scoreOutOf10000, 10000)
+                         // === FIX: Use named arguments for Score constructor ===
+                         this.score = Score(score = scoreOutOf10000, maxScore = 10000)
+                         // ======================================================
+                         logError("  > Score: ${this.score}")
                      } catch (e: NumberFormatException) {
-                         logError(IOException("Failed to parse score: $apiScore", e))
+                         logError(IOException("  > Failed to parse score: $apiScore", e))
                      }
-                }
+                } ?: logError("  > Score: null (API didn't provide)")
             }
         } catch (e: Exception) {
-            logError("!!! Anime47 ERROR creating AnimeLoadResponse for ID $animeId: ${e.message}")
-            logError(e)
+            logError("!!! Anime47 ERROR creating AnimeLoadResponse for ID $animeId")
+            // === FIX: Ensure correct logError overload ===
+            logError(e.message ?: "Unknown error creating response") // Log message string
+            logError(e) // Log the throwable itself for stack trace
+            // ============================================
             null
         }
-    }
+    } // End of load function
 
     // === HÀM loadLinks ĐÃ SỬA LỖI SUBTITLE + LOGIC CHECK SERVER ===
     override suspend fun loadLinks(
@@ -445,7 +481,7 @@ class Anime47Provider : MainAPI() {
             logError(IOException("No streams found for ID: $id. Assuming it's an animeId, trying fallback..."))
             try {
                 // Lấy episodeId đầu tiên từ animeId
-                val episodesUrl = "$apiBaseUrl/anime/$id/episodes?lang=vi"
+                val episodesUrl = "$apiBaseUrl/anime/$id/episodes?lang=vi" // Corrected URL
                 val episodesRes = app.get(episodesUrl, headers = apiHeaders, interceptor = interceptor, timeout = 10_000).parsedSafe<ApiEpisodeResponse>()
                 val fallbackEpisodeId = episodesRes?.teams?.firstOrNull()?.groups?.firstOrNull()?.episodes?.firstOrNull()?.id
 
