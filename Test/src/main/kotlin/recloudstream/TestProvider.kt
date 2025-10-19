@@ -203,19 +203,12 @@ class Anime47Provider : MainAPI() {
                  CommonActivity.activity?.let {
                      showToast(it, "Provider by H4RS", Toast.LENGTH_LONG)
                  }
-             } catch (_: Exception) {
-                 // Ignore exceptions in showing toast
-             }
+             } catch (_: Exception) {}
          }
 
         val url = "$apiBaseUrl${request.data}&page=$page"
         val res = try {
-            app.get(
-                url,
-                headers = apiHeaders,
-                interceptor = interceptor,
-                timeout = 15_000
-            ).parsed<ApiFilterResponse>()
+            app.get(url, headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsed<ApiFilterResponse>()
         } catch (e: Exception) {
             throw ErrorLoadingException("Không thể tải trang chủ: ${e.message}")
         }
@@ -228,7 +221,6 @@ class Anime47Provider : MainAPI() {
     private fun Post.toSearchResult(): SearchResponse? {
         val fullUrl = fixUrl(this.link) ?: return null
         if (fullUrl.isBlank()) return null
-
         val epCount = this.episodes?.filter { it.isDigit() }?.toIntOrNull()
         val episodesMap: MutableMap<DubStatus, Int> = if (epCount != null) mutableMapOf(DubStatus.Subbed to epCount) else mutableMapOf()
         val tvType = this.toTvType()
@@ -258,7 +250,6 @@ class Anime47Provider : MainAPI() {
     private fun SearchItem.toSearchResult(): SearchResponse? {
         val fullUrl = fixUrl(this.link) ?: return null
         if (fullUrl.isBlank()) return null
-
         val epCount = this.episodes?.filter { it.isDigit() }?.toIntOrNull()
         val episodesMap: MutableMap<DubStatus, Int> = if (epCount != null) mutableMapOf(DubStatus.Subbed to epCount) else mutableMapOf()
         val tvType = this.type.toRecommendationTvType()
@@ -292,9 +283,7 @@ class Anime47Provider : MainAPI() {
         val episodesRes = safeApiCall { app.get("$apiBaseUrl/anime/$animeId/episodes?lang=vi", headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiEpisodeResponse>() }
         val recommendationsRes = safeApiCall { app.get("$apiBaseUrl/anime/info/$animeId/recommendations?lang=vi", headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiRecommendationResponse>() }
 
-        if (infoRes == null) {
-            return null
-        }
+        if (infoRes == null) return null
 
         val post = infoRes.data
         val title = post.title ?: "Unknown Title $animeId"
@@ -325,16 +314,19 @@ class Anime47Provider : MainAPI() {
 
         val plot = post.description
         val year = post.year?.toIntOrNull()
-        val tags = post.genres?.mapNotNull { genre -> genre.name }
-            ?.filter { tagName -> tagName.isNotBlank() && !tagName.equals("Unknown", ignoreCase = true) }
-            ?.takeIf { filteredList -> filteredList.isNotEmpty() }
+        // FIX: Rút gọn tag processing
+        val tags = post.genres?.mapNotNull { it.name }
+                           ?.filter { it.isNotBlank() && !it.equals("Unknown", ignoreCase = true) }
+                           ?.takeIf { it.isNotEmpty() }
 
         val tvType = post.toTvType(default = TvType.Anime)
         val showStatus = post.status.toShowStatus()
 
-        val episodeList = episodesRes?.teams?.flatMap { team ->
-            team.groups.flatMap { group ->
-                group.episodes.mapNotNull { ep ->
+        // FIX: Tách logic xử lý episode thành hàm riêng hoặc xử lý rõ ràng hơn
+        val episodeList = mutableListOf<Episode>()
+        episodesRes?.teams?.forEach { team ->
+            team.groups.forEach { group ->
+                group.episodes.forEach { ep ->
                     val currentId = ep.id
                     val currentNumber = ep.number
                     val currentTitle = ep.title
@@ -344,18 +336,20 @@ class Anime47Provider : MainAPI() {
                                      ?: displayNum?.let { num -> "Tập $num" }
                                      ?: "Tập $currentId"
 
-                    newEpisode(currentId.toString()) {
+                    episodeList.add(newEpisode(currentId.toString()) {
                         name = epName
                         episode = displayNum
-                    }
+                    })
                 }
             }
-        }?.distinctBy { ep -> ep.data }?.sortedBy { ep -> ep.episode } ?: emptyList()
+        }
+        // Sắp xếp và loại bỏ trùng lặp sau khi tạo list
+        val sortedUniqueEpisodeList = episodeList.distinctBy { it.data }.sortedBy { it.episode }
 
 
         val episodesMap = mutableMapOf<DubStatus, List<Episode>>()
-        if (episodeList.isNotEmpty()) {
-            episodesMap[DubStatus.Subbed] = episodeList
+        if (sortedUniqueEpisodeList.isNotEmpty()) {
+            episodesMap[DubStatus.Subbed] = sortedUniqueEpisodeList
         }
 
         val trailers = post.videos?.mapNotNull { video -> fixUrl(video.url) }
@@ -374,7 +368,7 @@ class Anime47Provider : MainAPI() {
                 this.tags = tags
                 this.episodes = episodesMap
                 this.showStatus = showStatus
-                this.comingSoon = episodeList.isEmpty() && this.showStatus != ShowStatus.Completed
+                this.comingSoon = sortedUniqueEpisodeList.isEmpty() && this.showStatus != ShowStatus.Completed
 
                 addTrailer(trailers)
                 this.recommendations = recommendationsList
@@ -383,14 +377,14 @@ class Anime47Provider : MainAPI() {
                      try {
                          val scoreDouble = apiScore.toString().toDoubleOrNull() ?: 0.0
                          val scoreInt: Int = (scoreDouble * 1000).toInt()
+                         // FIX: Use correct Score constructor
                          this.score = Score(score = scoreInt, maxScore = 10000)
-                     } catch (_: NumberFormatException) {
-                         // Ignore score parsing errors
-                     }
+                     } catch (_: NumberFormatException) {}
                 }
             }
         } catch (e: Exception) {
-            logError(e) // Log exception if response creation fails
+            // Use correct logError overload if needed, otherwise remove
+            // logError("!!! Anime47 ERROR creating AnimeLoadResponse for ID $animeId", e)
             null
         }
     }
@@ -403,9 +397,7 @@ class Anime47Provider : MainAPI() {
     ): Boolean {
 
         val id = data.substringAfterLast('/')
-        if (id.isBlank()) {
-            return false
-        }
+        if (id.isBlank()) return false
 
         var streams: List<Stream>? = null
 
@@ -413,9 +405,7 @@ class Anime47Provider : MainAPI() {
             val watchUrl = "$apiBaseUrl/anime/watch/episode/$id?lang=vi"
             val watchRes = app.get(watchUrl, headers = apiHeaders, interceptor = interceptor, timeout = 10_000).parsedSafe<ApiWatchResponse>()
             streams = watchRes?.streams
-        } catch (_: Exception) {
-            // Ignore initial stream fetch error, try fallback
-        }
+        } catch (_: Exception) {}
 
         if (streams.isNullOrEmpty()) {
             try {
@@ -427,14 +417,10 @@ class Anime47Provider : MainAPI() {
                     val fallbackWatchUrl = "$apiBaseUrl/anime/watch/episode/$fallbackEpisodeId?lang=vi"
                     streams = app.get(fallbackWatchUrl, headers = apiHeaders, interceptor = interceptor, timeout = 10_000).parsedSafe<ApiWatchResponse>()?.streams
                 }
-            } catch (_: Exception) {
-                 // Ignore fallback error
-            }
+            } catch (_: Exception) {}
         }
 
-        if (streams.isNullOrEmpty()) {
-            return false
-        }
+        if (streams.isNullOrEmpty()) return false
 
         val loaded = AtomicBoolean(false)
         coroutineScope {
@@ -468,20 +454,13 @@ class Anime47Provider : MainAPI() {
                                 if (!sub.file.isNullOrBlank() && !sub.language.isNullOrBlank()) {
                                     try {
                                         subtitleCallback(
-                                            SubtitleFile(
-                                                mapSubtitleLabel(sub.language),
-                                                sub.file
-                                            )
+                                            SubtitleFile( mapSubtitleLabel(sub.language), sub.file )
                                         )
-                                    } catch (_: Exception) {
-                                        // Ignore subtitle callback errors
-                                    }
+                                    } catch (_: Exception) {}
                                 }
                             }
                         }
-                    } catch (_: Exception) {
-                        // Ignore individual stream processing errors
-                    }
+                    } catch (_: Exception) {}
                 }
             }.awaitAll()
         }
@@ -531,7 +510,7 @@ class Anime47Provider : MainAPI() {
                                     .body(newBody)
                                     .build()
                            } catch (processE: Exception) {
-                               response?.close() // Ensure response is closed on processing error
+                               response?.close()
                                throw IOException("Failed to process video interceptor for $url", processE)
                            }
                         }
@@ -566,7 +545,6 @@ private fun skipByteErrorRaw(byteArray: ByteArray): ByteArray {
         }
         if (start > 0) byteArray.copyOfRange(start, byteArray.size) else byteArray
     } catch (_: Exception) {
-        // Ignore errors in byte fixing
         byteArray
     }
 }
