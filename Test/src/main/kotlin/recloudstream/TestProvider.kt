@@ -265,7 +265,10 @@ class Anime47Provider : MainAPI() {
         val poster = fixUrl(this@toSearchResult.image) ?: defaultPoster
 
         val epCount = this.episodes?.filter { it.isDigit() }?.toIntOrNull()
-        val episodesMap: MutableMap<DubStatus, Int> = if (epCount != null) mutableMapOf(DubS.Subbed to epCount) else mutableMapOf()
+        
+        // === FIX: SỬA LỖI TYPO TỪ DubS SANG DubStatus ===
+        val episodesMap: MutableMap<DubStatus, Int> = if (epCount != null) mutableMapOf(DubStatus.Subbed to epCount) else mutableMapOf()
+        // === KẾT THÚC FIX ===
 
         val tvType = this.type.toRecommendationTvType()
 
@@ -303,15 +306,12 @@ class Anime47Provider : MainAPI() {
 
     // === HÀM load ĐÃ SỬA: BỌC try-catch VÀ NÉM LỖI ===
     override suspend fun load(url: String): LoadResponse? {
-        // === FIX: BỌC TOÀN BỘ HÀM TRONG TRY-CATCH ĐỂ NÉM LỖI RA LOGCAT ===
         try {
             val animeId = url.substringAfterLast('-').trim()
             if (animeId.isBlank() || animeId.toIntOrNull() == null) {
-                // Ném lỗi này ra ngoài thay vì chỉ log
                 throw IllegalArgumentException("Invalid anime ID extracted from URL: $url")
             }
 
-            // Chúng ta vẫn dùng runCatching để bắt lỗi riêng lẻ
             val infoResult = runCatching {
                 val infoUrl = "$apiBaseUrl/anime/info/$animeId?lang=vi"
                 app.get(infoUrl, headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiDetailResponse>()
@@ -325,19 +325,13 @@ class Anime47Provider : MainAPI() {
                 app.get(recUrl, headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiRecommendationResponse>()
             }
 
-            // === FIX: SỬ DỤNG getOrThrow() ĐỂ LẤY LỖI NGAY LẬP TỨC ===
-            // Nếu infoResult bị lỗi, nó sẽ ném exception ra ngoài catch lớn
             val infoRes = infoResult.getOrThrow()
             if (infoRes == null) {
-                // Nếu request thành công nhưng parse ra null (trường hợp hiếm)
                 throw IOException("Failed to parse anime info (null response) for ID: $animeId")
             }
 
-            // Nếu episodesResult bị lỗi, nó cũng ném exception
             val episodesResponse = episodesResult.getOrThrow()
-            // (episodesResponse có thể là null nếu API trả về 200 OK nhưng body rỗng, nên ta xử lý null bên dưới)
 
-            // Lỗi recommendation không nghiêm trọng, nên vẫn dùng getOrNull
             recommendationsResult.exceptionOrNull()?.let { logError(it) }
 
 
@@ -355,7 +349,6 @@ class Anime47Provider : MainAPI() {
             
             val tvType = post.toTvType(default = TvType.Anime)
 
-            // Dùng episodesResponse (đã check lỗi) thay vì episodesResult.getOrNull()
             val episodes = episodesResponse?.teams?.flatMap { team ->
                 team.groups.flatMap { group ->
                     group.episodes.mapNotNull { ep ->
@@ -370,7 +363,7 @@ class Anime47Provider : MainAPI() {
                         }
                     }
                 }
-            }?.distinctBy { it.data } ?: emptyList() // Vẫn giữ an toàn nếu episodesResponse là null
+            }?.distinctBy { it.data } ?: emptyList()
 
             val trailers = infoRes.data.videos?.mapNotNull { fixUrl(it.url) }
             
@@ -393,15 +386,11 @@ class Anime47Provider : MainAPI() {
                     }
                 }
             }
-        // === FIX: KHỐI CATCH SẼ LOG VÀ NÉM LẠI LỖI ===
         } catch (e: Exception) {
-            // Log lỗi này vào logcat
             logError(e)
-            // Ném lại lỗi để app hiển thị stack trace trong log
             throw IOException("Error loading $url", e)
         }
     }
-    // === KẾT THÚC SỬA HÀM LOAD ===
 
     override suspend fun loadLinks(
         data: String,
