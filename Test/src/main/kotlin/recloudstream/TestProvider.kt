@@ -4,9 +4,8 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
-// import com.lagradost.cloudstream3.utils.AppUtils.parseJson // Not used directly
 import java.net.URLEncoder
-import okhttp3.Interceptor // Correct import
+import okhttp3.Interceptor
 import okhttp3.Response
 import okhttp3.ResponseBody
 import okhttp3.ResponseBody.Companion.toResponseBody
@@ -14,7 +13,6 @@ import java.util.EnumSet
 import java.util.Locale
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
-// import kotlinx.coroutines.awaitAll // Không cần nữa
 import com.lagradost.cloudstream3.CommonActivity.showToast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -22,9 +20,7 @@ import android.widget.Toast
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.mvvm.logError
-// import com.lagradost.cloudstream3.mvvm.safeApiCall // Removed usage
-import java.io.IOException // Added import
-// import java.util.concurrent.atomic.AtomicBoolean // Không cần nữa
+import java.io.IOException
 
 // === Provider Class ===
 class Anime47Provider : MainAPI() {
@@ -40,7 +36,6 @@ class Anime47Provider : MainAPI() {
     private val interceptor = CloudflareKiller()
 
     // === Data Classes for API Responses ===
-    // (Không thay đổi)
     private data class GenreInfo(val name: String?)
     private data class Post(
         val id: Int,
@@ -162,19 +157,14 @@ class Anime47Provider : MainAPI() {
         }
     }
 
-    private fun String?.toTvType(): TvType { // Now accepts nullable String for types
+    private fun String?.toTvType(): TvType {
         return when {
             this?.contains("movie", ignoreCase = true) == true -> TvType.AnimeMovie
             this?.contains("ova", ignoreCase = true) == true -> TvType.OVA
             this?.contains("special", ignoreCase = true) == true -> TvType.OVA
-            // Assuming default type is Anime if type string is null or doesn't match others
             else -> TvType.Anime
         }
     }
-
-    // Removed Post.toTvType as it's redundant with String?.toTvType
-    // Removed DetailPost.toTvType as it's redundant with String?.toTvType
-
 
     // === Core Overrides ===
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -184,7 +174,7 @@ class Anime47Provider : MainAPI() {
                     showToast(it, "Provider by H4RS", Toast.LENGTH_LONG)
                 }
             } catch (e: Exception) {
-                logError(e)
+                // Ignore UI errors
             }
         }
 
@@ -197,8 +187,8 @@ class Anime47Provider : MainAPI() {
                 timeout = 15_000
             ).parsed<ApiFilterResponse>()
         } catch (e: Exception) {
-            logError(e)
-            throw ErrorLoadingException("Không thể tải trang chủ. Lỗi Cloudflare hoặc API. Chi tiết: ${e.message}")
+            logError("Get MainPage failed: ${e.message}") // Log only critical failure
+            throw ErrorLoadingException("Không thể tải trang chủ. Lỗi Cloudflare hoặc API.") // Simplified message
         }
 
         val home = res.data.posts.mapNotNull { post ->
@@ -218,7 +208,7 @@ class Anime47Provider : MainAPI() {
 
     private fun toSearchResponseInternal(
         title: String,
-        url: String,
+        url: String, // Relative URL
         posterUrl: String?,
         tvType: TvType,
         year: Int?,
@@ -252,7 +242,7 @@ class Anime47Provider : MainAPI() {
                 timeout = 10_000
             ).parsedSafe<ApiSearchResponse>()
         } catch (e: Exception) {
-            logError(e)
+            logError("Search failed: ${e.message}")
             return emptyList()
         }
 
@@ -296,14 +286,16 @@ class Anime47Provider : MainAPI() {
                 Triple(infoTask.await(), episodesTask.await(), recommendationsTask.await())
             }
 
-            val infoRes = infoResult.getOrThrow()
-            if (infoRes == null) {
-                throw IOException("Failed to parse anime info (null response) for ID: $animeId")
+            val infoRes = infoResult.getOrElse {
+                throw IOException("Failed to fetch anime info for ID $animeId", it)
+            } ?: throw IOException("Parsed anime info is null for ID $animeId")
+
+            val episodesResponse = episodesResult.getOrElse {
+                logError("Failed to fetch episodes for ID $animeId: $it") // Log episode fetch errors but don't crash
+                null // Continue loading even if episodes fail
             }
 
-            val episodesResponse = episodesResult.getOrThrow()
-
-            recommendationsResult.exceptionOrNull()?.let { logError(it) }
+            recommendationsResult.exceptionOrNull()?.let { logError("Failed to fetch recommendations: $it") }
 
 
             val post = infoRes.data
@@ -314,22 +306,24 @@ class Anime47Provider : MainAPI() {
             val plot = post.description
             val year = post.year?.toIntOrNull()
             val tags = post.genres?.mapNotNull { it.name }?.filter { it.isNotBlank() }
-            // === FIX: BỎ THAM SỐ default KHÔNG HỢP LỆ ===
-            val tvType = post.type.toTvType() // Use helper without default
-            // === KẾT THÚC FIX ===
+            val tvType = post.type.toTvType()
 
+            // === SỬA TÊN TẬP VÀ episode = null ===
             val episodes = episodesResponse?.teams?.flatMap { team ->
                 team.groups.flatMap { group ->
                     group.episodes.mapNotNull { ep ->
-                        val epName = ep.title ?: "Tập ${ep.id}"
+                        // Lấy tên gốc từ API, fallback về ID nếu null
+                        // Thêm prefix "Tập "
+                        val epName = ep.title?.let { "Tập $it" } ?: "Tập ${ep.id}"
+
                         newEpisode(ep.id.toString()) {
                             name = epName
-                            episode = null
+                            episode = null // Đặt episode = null
                         }
                     }
                 }
             }?.distinctBy { it.data } ?: emptyList()
-
+            // === KẾT THÚC SỬA TÊN TẬP ===
 
             val trailers = infoRes.data.videos?.mapNotNull { fixUrl(it.url) }
 
@@ -352,7 +346,7 @@ class Anime47Provider : MainAPI() {
                 TvType.AnimeMovie, TvType.OVA -> {
                     val movieData = episodes.firstOrNull()?.data
                     if (movieData == null) {
-                        logError(IOException("No episodes found for Movie/OVA: $title (ID: $animeId)"))
+                        logError("No valid episode found for Movie/OVA: $title (ID: $animeId)")
                         return null
                     }
                     newMovieLoadResponse(title, url, tvType, movieData) {
@@ -370,8 +364,8 @@ class Anime47Provider : MainAPI() {
                 }
             }
         } catch (e: Exception) {
-            logError(e)
-            throw IOException("Error loading $url", e)
+            logError("Error loading $url: $e") // Log the main load error
+            throw IOException("Error loading $url", e) // Re-throw for app UI
         }
     }
 
@@ -384,7 +378,7 @@ class Anime47Provider : MainAPI() {
 
         val id = data.substringAfterLast('/')
         if (id.isBlank()) {
-            logError(IOException("loadLinks received blank data: '$data'"))
+            // logError("loadLinks received blank data: '$data'") // Removed redundant log
             return false
         }
 
@@ -395,20 +389,19 @@ class Anime47Provider : MainAPI() {
             val watchRes = app.get(watchUrl, headers = apiHeaders, interceptor = interceptor, timeout = 10_000).parsedSafe<ApiWatchResponse>()
             streams = watchRes?.streams
         } catch (e: Exception) {
-            logError(IOException("Failed to get streams directly with ID: $id", e))
+            logError("Failed to get streams directly with ID: $id - ${e.message}") // Log only critical failure
         }
 
         if (streams.isNullOrEmpty()) {
-            logError(IOException("No streams found for episode ID: '$id'"))
+            // logError("No streams found for episode ID: '$id'") // Removed redundant log
             return false
         }
 
         var loaded = false
         streams.forEach { stream ->
-            val currentStream = stream
-            val streamUrl = currentStream.url
-            val serverName = currentStream.server_name
-            val playerType = currentStream.player_type
+            val streamUrl = stream.url
+            val serverName = stream.server_name
+            val playerType = stream.player_type
 
             if (streamUrl.isNullOrBlank() || serverName.isNullOrBlank()) return@forEach
             if (serverName.contains("HY", ignoreCase = true)) return@forEach
@@ -429,32 +422,30 @@ class Anime47Provider : MainAPI() {
                     callback(link)
                     loaded = true
 
-                    currentStream.subtitles?.forEach { sub ->
+                    // === SỬ DỤNG newSubtitleFile ===
+                    stream.subtitles?.forEach { sub ->
                         if (!sub.file.isNullOrBlank() && !sub.label.isNullOrBlank()) {
                             try {
                                 subtitleCallback(
-                                    SubtitleFile(
-                                        mapSubtitleLabel(sub.label),
-                                        sub.file
+                                    newSubtitleFile( // Use suspend function
+                                        lang = mapSubtitleLabel(sub.label),
+                                        url = sub.file
                                     )
                                 )
                             } catch (e: Exception) {
-                                logError(e)
+                                logError("Failed processing subtitle ${sub.file}: $e")
                             }
                         }
                     }
-                } else {
-                    logError(IOException("Unhandled stream type or server for (ID: $id): $serverName - $streamUrl (Player: $playerType)"))
+                    // === KẾT THÚC SỬ DỤNG newSubtitleFile ===
                 }
+                // Removed redundant log for unhandled server type
             } catch (e: Exception) {
-                logError(e)
+                logError("Error processing stream $streamUrl: $e")
             }
         }
 
-        if (!loaded) {
-            logError(IOException("No extractor links were loaded for ID: $id"))
-        }
-
+        // Removed redundant log for no links loaded
         return loaded
     }
 
@@ -480,18 +471,20 @@ class Anime47Provider : MainAPI() {
 
     private fun mapSubtitleLabel(label: String): String {
         val lowerLabel = label.trim().lowercase(Locale.ROOT)
-        if (lowerLabel.isBlank()) return "Subtitle"
+        if (lowerLabel.isBlank()) return "Subtitle" // Default label
         for ((language, keywords) in subtitleLanguageMap) {
             if (keywords.any { keyword -> lowerLabel.contains(keyword) }) {
                 return language
             }
         }
+        // Return original label capitalized if no match
         return label.trim().replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
     }
 
     // Video Interceptor
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
-        val nonprofitAsiaTsRegex = Regex("""https.cdn\d*\.nonprofit\.asia.*""")
+        // Regex needs to be defined within the function or globally, ensure it's correct
+        val nonprofitAsiaTsRegex = Regex("""https://cdn\d*\.nonprofit\.asia/.*""")
 
         return object : Interceptor {
             override fun intercept(chain: Interceptor.Chain): Response {
@@ -501,34 +494,40 @@ class Anime47Provider : MainAPI() {
                     response = chain.proceed(request)
                     val url = request.url.toString()
 
+                    // Ensure regex matches correctly and response is successful
                     if (nonprofitAsiaTsRegex.containsMatchIn(url) && response.isSuccessful) {
                         response.body?.let { body ->
                             try {
                                 val responseBytes = body.bytes()
                                 val fixedBytes = skipByteErrorRaw(responseBytes)
                                 val newBody = fixedBytes.toResponseBody(body.contentType())
-                                response.close()
+                                response.close() // Close the original response body
                                 return response.newBuilder()
-                                    .removeHeader("Content-Length")
-                                    .addHeader("Content-Length", fixedBytes.size.toString())
+                                    .removeHeader("Content-Length") // Remove old header
+                                    .addHeader("Content-Length", fixedBytes.size.toString()) // Add corrected length
                                     .body(newBody)
                                     .build()
                             } catch (processE: Exception) {
-                                logError(processE)
-                                response.close() // Close before throwing
+                                logError("Error processing video interceptor for $url: $processE")
+                                response.close() // Ensure original response is closed on error
                                 throw IOException("Failed to process video interceptor for $url", processE)
                             }
+                        } ?: run {
+                            // Body is null, shouldn't happen with isSuccessful, but handle defensively
+                           throw IOException("Successful response but null body for $url")
                         }
                     }
-                    return response ?: throw IOException("Proceed returned null response for $url")
-                } catch (networkE: Exception) {
+                    // Return original response if no processing needed or conditions not met
+                    return response
+
+                } catch (networkE: IOException) { // Catch specific IOExceptions for network issues
                     response?.close()
-                    logError(networkE)
-                    throw networkE
-                } catch (e: Exception) {
+                    logError("Network error during video interception for ${request.url}: $networkE")
+                    throw networkE // Re-throw network errors
+                } catch (e: Exception) { // Catch other potential exceptions
                     response?.close()
-                    logError(e)
-                    throw e
+                    logError("Unexpected error during video interception for ${request.url}: $e")
+                    throw IOException("Unexpected error during video interception", e) // Wrap in IOException
                 }
             }
         }
@@ -540,19 +539,34 @@ class Anime47Provider : MainAPI() {
 private fun skipByteErrorRaw(byteArray: ByteArray): ByteArray {
     return try {
         if (byteArray.isEmpty()) return byteArray
-        val length = byteArray.size - 188
-        var start = 0
-        if (length > 0) {
-            for (i in 0 until length) {
-                val nextIndex = i + 188
-                if (nextIndex < byteArray.size && byteArray[i].toInt() == 71 && byteArray[nextIndex].toInt() == 71) { // 'G'
-                    start = i; break
-                }
+        val tsPacketSize = 188
+        val syncByte = 0x47.toByte() // 'G' in ASCII (71 decimal)
+
+        // Find the first occurrence of the sync byte at the start of a packet
+        var firstSyncByte = -1
+        for (i in byteArray.indices) {
+            if (byteArray[i] == syncByte && (i % tsPacketSize == 0)) {
+                firstSyncByte = i
+                break
             }
         }
-        if (start > 0) byteArray.copyOfRange(start, byteArray.size) else byteArray
-    } catch (e: Exception) {
-        logError(e)
+
+        // If no sync byte found at a valid position, return original array (or handle error)
+        if (firstSyncByte == -1) {
+            logError("TS Sync Byte (0x47) not found at expected packet start.")
+            return byteArray // Or throw? Returning original is safer.
+        }
+
+        // If the first sync byte is not at the beginning, trim the start
+        if (firstSyncByte > 0) {
+            logError("Trimming ${firstSyncByte} bytes from TS stream start.")
+            return byteArray.copyOfRange(firstSyncByte, byteArray.size)
+        }
+
+        // If sync byte is already at the beginning, no trimming needed
         byteArray
+    } catch (e: Exception) {
+        logError("Error in skipByteErrorRaw: $e")
+        byteArray // Return original array on error
     }
 }
