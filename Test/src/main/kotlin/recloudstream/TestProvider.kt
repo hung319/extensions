@@ -55,10 +55,10 @@ class Anime47Provider : MainAPI() {
     private data class ApiFilterResponse(val data: ApiFilterData)
 
     private data class VideoItem(val url: String?)
-    
+
     private data class ImageItem(val url: String?)
     private data class ImagesInfo(val poster: List<ImageItem>?)
-    
+
     private data class DetailPost(
         val id: Int,
         val title: String?,
@@ -115,12 +115,11 @@ class Anime47Provider : MainAPI() {
     )
     private data class ApiRecommendationResponse(val data: List<RecommendationItem>?)
 
-    // === FIX 3: THÊM DATA CLASS CHO SEARCH ===
     private data class SearchItem(
         val id: Int,
         val title: String,
         val link: String,
-        val image: String?, // API trả về 'image'
+        val image: String?,
         val type: String?,
         val episodes: String?
     )
@@ -128,19 +127,16 @@ class Anime47Provider : MainAPI() {
         val results: List<SearchItem>?,
         val has_more: Boolean?
     )
-    // ======================================
 
 
     // === MainPage Requests ===
-    // === FIX 3: THÊM SEARCH REQUEST ===
-    private val searchPage = SearchRequest("Tìm kiếm")
-    
+    // === FIX: Đã xóa SearchRequest ===
     override val mainPage = mainPageOf(
         "/anime/filter?lang=vi&sort=latest" to "Anime Mới Cập Nhật",
         "/anime/filter?lang=vi&sort=rating" to "Top Đánh Giá",
         "/anime/filter?lang=vi&type=tv" to "Anime TV",
-        "/anime/filter?lang=vi&type=movie" to "Anime Movie",
-        searchPage // <-- Thêm vào đây
+        "/anime/filter?lang=vi&type=movie" to "Anime Movie"
+        // searchPage đã bị xóa
     )
 
     // === API Headers ===
@@ -195,30 +191,7 @@ class Anime47Provider : MainAPI() {
 
     // === Core Overrides ===
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-         // === FIX 3: XỬ LÝ SEARCH REQUEST ===
-         if (request is SearchRequest) {
-            val query = request.query
-            if (query.isBlank()) return newHomePageResponse(request.name, emptyList(), false)
-
-            val encodedQuery = URLEncoder.encode(query, "UTF-8")
-            val url = "$apiBaseUrl/search/full/?lang=vi&keyword=$encodedQuery&page=$page"
-            
-            val res = try {
-                 app.get(
-                    url,
-                    headers = apiHeaders,
-                    interceptor = interceptor,
-                    timeout = 15_000
-                ).parsed<ApiSearchResponse>()
-            } catch (e: Exception) {
-                throw ErrorLoadingException("Không thể tải trang tìm kiếm: ${e.message}")
-            }
-
-            val home = res.results?.mapNotNull { it.toSearchResult() } ?: emptyList()
-            val hasNext = res.has_more ?: false
-            return newHomePageResponse(request.name, home, hasNext = hasNext)
-         }
-         // ==================================
+         // === FIX: Đã xóa khối `if (request is SearchRequest)` ===
 
          withContext(Dispatchers.Main) {
              try {
@@ -274,32 +247,29 @@ class Anime47Provider : MainAPI() {
         }
     }
 
-    // === FIX 3: THÊM HELPER CHO SEARCHITEM ===
     private fun SearchItem.toSearchResult(): SearchResponse? {
         val fullUrl = mainUrl + this.link
         if (fullUrl.isBlank()) return null
 
         val epCount = this.episodes?.filter { it.isDigit() }?.toIntOrNull()
         val episodesMap: MutableMap<DubStatus, Int> = if (epCount != null) mutableMapOf(DubStatus.Subbed to epCount) else mutableMapOf()
-        
-        // Tái sử dụng hàm helper 'toRecommendationTvType' vì logic map 'type' giống nhau
+
         val tvType = this.type.toRecommendationTvType()
 
         return newAnimeSearchResponse(this.title, fullUrl, tvType) {
-            this.posterUrl = fixUrl(this@toSearchResult.image) // Dùng 'image' từ API
+            this.posterUrl = fixUrl(this@toSearchResult.image)
             this.dubStatus = EnumSet.of(DubStatus.Subbed)
             this.episodes = episodesMap
         }
     }
-    // ======================================
 
-    // === FIX 3: THÊM QUICKSEARCH ===
+    // quickSearch vẫn hoạt động bình thường
     override suspend fun quickSearch(query: String): List<SearchResponse> {
         if (query.isBlank()) return emptyList()
 
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
         val url = "$apiBaseUrl/search/full/?lang=vi&keyword=$encodedQuery&page=1"
-        
+
         val res = try {
             app.get(
                 url,
@@ -314,7 +284,6 @@ class Anime47Provider : MainAPI() {
 
         return res?.results?.mapNotNull { it.toSearchResult() } ?: emptyList()
     }
-    // ==================================
 
     override suspend fun load(url: String): LoadResponse? {
         val animeId = url.substringAfterLast('-').trim()
@@ -346,11 +315,9 @@ class Anime47Provider : MainAPI() {
         val post = infoRes.data
         val title = post.title ?: "Unknown Title $animeId"
 
-        // === FIX 1: LOGIC LẤY POSTER ===
         val primaryPoster = fixUrl(post.poster)
         val fallbackPoster = fixUrl(post.images?.poster?.firstOrNull()?.url)
         val poster = if (primaryPoster.isNullOrBlank()) fallbackPoster else primaryPoster
-        // === KẾT THÚC FIX 1 ===
 
         val cover = fixUrl(post.cover)
         val plot = post.description
@@ -401,14 +368,12 @@ class Anime47Provider : MainAPI() {
         }
     }
 
-    // === FIX 2: HÀM loadLinks ĐÃ SỬA ===
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // 1. Xác định episodeId
         val episodeId = data.toIntOrNull() ?: runCatching {
             logError(IllegalArgumentException("loadLinks received non-numeric data '$data', assuming animeId."))
             val episodesUrl = "$apiBaseUrl/anime/$data/episodes?lang=vi"
@@ -421,7 +386,6 @@ class Anime47Provider : MainAPI() {
             return false
         }
 
-        // 2. Lấy danh sách streams
         val watchRes = runCatching {
             val watchUrl = "$apiBaseUrl/anime/watch/episode/$episodeId?lang=vi"
             app.get(watchUrl, headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiWatchResponse>()
@@ -432,7 +396,6 @@ class Anime47Provider : MainAPI() {
             return false
         }
 
-        // 3. Xử lý streams
         val loaded = AtomicBoolean(false)
         coroutineScope {
             streams.map { stream ->
@@ -448,7 +411,6 @@ class Anime47Provider : MainAPI() {
                     val ref = "$mainUrl/"
 
                     try {
-                        // Logic "FE" hoặc "jwplayer" là M3U8
                         if (serverName.equals("FE", ignoreCase = true) || playerType.equals("jwplayer", ignoreCase = true)) {
                             val link = newExtractorLink(
                                 source = this@Anime47Provider.name,
@@ -478,7 +440,6 @@ class Anime47Provider : MainAPI() {
 
         return loaded.get()
     }
-    // === KẾT THÚC FIX 2 ===
 
 
     // Subtitle mapping
