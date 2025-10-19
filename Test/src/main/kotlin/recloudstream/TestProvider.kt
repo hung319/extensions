@@ -28,10 +28,8 @@ import java.util.concurrent.atomic.AtomicBoolean // For thread-safe flag
 
 // === Provider Class ===
 class Anime47Provider : MainAPI() {
-    // === FIX: ĐẶT LẠI mainUrl VỀ .love ĐỂ INTERCEPTOR HOẠT ĐỘNG ===
     override var mainUrl = "https://anime47.love"
-    private val apiBaseUrl = "https://anime47.love/api" // Giữ .love
-    // === KẾT THÚC FIX ===
+    private val apiBaseUrl = "https://anime47.love/api"
 
     override var name = "Anime47"
     override val hasMainPage = true
@@ -60,8 +58,10 @@ class Anime47Provider : MainAPI() {
 
     private data class VideoItem(val url: String?)
 
-    private data class ImageItem(val url: String?)
-    private data class ImagesInfo(val poster: List<ImageItem>?)
+    // === FIX: LOẠI BỎ CÁC DATA CLASS KHÔNG ỔN ĐỊNH ===
+    // private data class ImageItem(val url: String?) // Đã xóa
+    // private data class ImagesInfo(val poster: List<ImageItem>?) // Đã xóa
+    // === KẾT THÚC FIX ===
 
     private data class DetailPost(
         val id: Int,
@@ -72,8 +72,10 @@ class Anime47Provider : MainAPI() {
         val type: String?,
         val year: String?,
         val genres: List<GenreInfo>?,
-        val videos: List<VideoItem>?,
-        val images: ImagesInfo?
+        val videos: List<VideoItem>?
+        // === FIX: LOẠI BỎ TRƯỜNG 'images' GÂY LỖI PARSE ===
+        // val images: ImagesInfo? // Đã xóa
+        // === KẾT THÚC FIX ===
     )
     private data class ApiDetailResponse(val data: DetailPost)
 
@@ -151,8 +153,8 @@ class Anime47Provider : MainAPI() {
     private val apiHeaders
         get() = mapOf(
             "Accept" to "application/json, text/plain, */*",
-            "Origin" to mainUrl, // Tự động dùng https://anime47.love
-            "Referer" to "$mainUrl/" // Tự động dùng https://anime47.love/
+            "Origin" to mainUrl,
+            "Referer" to "$mainUrl/"
         )
 
     // === Helper Functions ===
@@ -306,6 +308,7 @@ class Anime47Provider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        // Vẫn giữ try-catch để bắt các lỗi khác nếu có
         try {
             val animeId = url.substringAfterLast('-').trim()
             if (animeId.isBlank() || animeId.toIntOrNull() == null) {
@@ -329,7 +332,7 @@ class Anime47Provider : MainAPI() {
                 Triple(infoTask.await(), episodesTask.await(), recommendationsTask.await())
             }
 
-
+            // infoResult sẽ không còn lỗi parse nữa
             val infoRes = infoResult.getOrThrow()
             if (infoRes == null) {
                 throw IOException("Failed to parse anime info (null response) for ID: $animeId")
@@ -343,8 +346,9 @@ class Anime47Provider : MainAPI() {
             val post = infoRes.data
             val title = post.title ?: "Unknown Title $animeId"
 
-            val poster = (fixUrl(post.images?.poster?.firstOrNull()?.url)
-                ?: fixUrl(post.poster)) ?: defaultPoster 
+            // === FIX: CHỈ SỬ DỤNG post.poster ===
+            val poster = fixUrl(post.poster) ?: defaultPoster 
+            // === KẾT THÚC FIX ===
 
             val cover = fixUrl(post.cover) 
 
