@@ -201,14 +201,13 @@ class Anime47Provider : MainAPI() {
             throw ErrorLoadingException("Không thể tải trang chủ. Lỗi Cloudflare hoặc API. Chi tiết: ${e.message}")
         }
 
-        // === SỬ DỤNG TRỰC TIẾP HÀM HELPER ===
         val home = res.data.posts.mapNotNull { post ->
             val epCount = post.episodes?.filter { it.isDigit() }?.toIntOrNull()
             toSearchResponseInternal(
                 title = post.title,
                 url = post.link,
                 posterUrl = post.poster,
-                tvType = post.type.toTvType(), // Dùng hàm helper cho String?
+                tvType = post.type.toTvType(),
                 year = post.year?.toIntOrNull(),
                 epCount = epCount
             )
@@ -217,16 +216,14 @@ class Anime47Provider : MainAPI() {
         return newHomePageResponse(request.name, home, hasNext = hasNext)
     }
 
-    // === HÀM HELPER CHUNG ĐỂ TẠO SearchResponse ===
     private fun toSearchResponseInternal(
         title: String,
-        url: String, // Url relative, ví dụ /thong-tin/...
+        url: String,
         posterUrl: String?,
         tvType: TvType,
         year: Int?,
         epCount: Int?
     ): SearchResponse? {
-        // Link đầy đủ phải dùng mainUrl
         val fullUrl = mainUrl + url
         if (fullUrl.isBlank()) return null
         val poster = fixUrl(posterUrl) ?: return null
@@ -234,18 +231,12 @@ class Anime47Provider : MainAPI() {
         return newAnimeSearchResponse(title, fullUrl, tvType) {
             this.posterUrl = poster
             this.year = year
-            this.dubStatus = EnumSet.of(DubStatus.Subbed) // Assume Subbed
+            this.dubStatus = EnumSet.of(DubStatus.Subbed)
             if (epCount != null) {
                 this.episodes = mutableMapOf(DubStatus.Subbed to epCount)
             }
         }
     }
-
-    // === CÁC HÀM RIÊNG ĐÃ BỊ XÓA ===
-    // private fun Post.toSearchResult(): SearchResponse? { ... }
-    // private fun RecommendationItem.toSearchResult(): SearchResponse? { ... }
-    // private fun SearchItem.toSearchResult(): SearchResponse? { ... }
-
 
     override suspend fun search(query: String): List<SearchResponse> {
         if (query.isBlank()) return emptyList()
@@ -265,15 +256,14 @@ class Anime47Provider : MainAPI() {
             return emptyList()
         }
 
-        // === SỬ DỤNG TRỰC TIẾP HÀM HELPER ===
-        return res?.results?.mapNotNull { item ->
+         return res?.results?.mapNotNull { item ->
              val epCount = item.episodes?.filter { it.isDigit() }?.toIntOrNull()
              toSearchResponseInternal(
                  title = item.title,
                  url = item.link,
-                 posterUrl = item.image, // Search API uses 'image'
-                 tvType = item.type.toTvType(), // Use helper
-                 year = null, // Search API doesn't provide year
+                 posterUrl = item.image,
+                 tvType = item.type.toTvType(),
+                 year = null,
                  epCount = epCount
              )
          } ?: emptyList()
@@ -324,9 +314,10 @@ class Anime47Provider : MainAPI() {
             val plot = post.description
             val year = post.year?.toIntOrNull()
             val tags = post.genres?.mapNotNull { it.name }?.filter { it.isNotBlank() }
-            val tvType = post.type.toTvType(default = TvType.Anime) // Use helper
+            // === FIX: BỎ THAM SỐ default KHÔNG HỢP LỆ ===
+            val tvType = post.type.toTvType() // Use helper without default
+            // === KẾT THÚC FIX ===
 
-            // Logic parse episodes giữ nguyên như yêu cầu cuối
             val episodes = episodesResponse?.teams?.flatMap { team ->
                 team.groups.flatMap { group ->
                     group.episodes.mapNotNull { ep ->
@@ -342,9 +333,7 @@ class Anime47Provider : MainAPI() {
 
             val trailers = infoRes.data.videos?.mapNotNull { fixUrl(it.url) }
 
-            // === SỬ DỤNG TRỰC TIẾP HÀM HELPER CHO RECOMMENDATIONS ===
             val recommendationsList = recommendationsResult.getOrNull()?.data?.mapNotNull { item ->
-                // Ensure title and link are not null before calling helper
                 if (item.title == null || item.link == null) {
                     null
                 } else {
@@ -352,9 +341,9 @@ class Anime47Provider : MainAPI() {
                         title = item.title,
                         url = item.link,
                         posterUrl = item.poster,
-                        tvType = item.type.toTvType(), // Use helper
+                        tvType = item.type.toTvType(),
                         year = item.year?.toIntOrNull(),
-                        epCount = null // Recommendations don't have episode count
+                        epCount = null
                     )
                 }
             }
