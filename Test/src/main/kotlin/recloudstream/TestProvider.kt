@@ -314,16 +314,16 @@ class Anime47Provider : MainAPI() {
 
         val plot = post.description
         val year = post.year?.toIntOrNull()
-        // FIX: Rút gọn tag processing
+        // FIX: Rút gọn tag processing - sử dụng let để đảm bảo post.genres không null
         val tags = post.genres?.mapNotNull { it.name }
                            ?.filter { it.isNotBlank() && !it.equals("Unknown", ignoreCase = true) }
-                           ?.takeIf { it.isNotEmpty() }
+                           .let { if (it.isNullOrEmpty()) null else it } // takeIf tương đương
 
         val tvType = post.toTvType(default = TvType.Anime)
         val showStatus = post.status.toShowStatus()
 
-        // FIX: Tách logic xử lý episode thành hàm riêng hoặc xử lý rõ ràng hơn
-        val episodeList = mutableListOf<Episode>()
+        // FIX: Tách logic xử lý episode thành biến trung gian
+        val parsedEpisodes = mutableListOf<Episode>()
         episodesRes?.teams?.forEach { team ->
             team.groups.forEach { group ->
                 group.episodes.forEach { ep ->
@@ -336,24 +336,24 @@ class Anime47Provider : MainAPI() {
                                      ?: displayNum?.let { num -> "Tập $num" }
                                      ?: "Tập $currentId"
 
-                    episodeList.add(newEpisode(currentId.toString()) {
+                    parsedEpisodes.add(newEpisode(currentId.toString()) {
                         name = epName
                         episode = displayNum
                     })
                 }
             }
         }
-        // Sắp xếp và loại bỏ trùng lặp sau khi tạo list
-        val sortedUniqueEpisodeList = episodeList.distinctBy { it.data }.sortedBy { it.episode }
+        val episodeList = parsedEpisodes.distinctBy { it.data }.sortedBy { it.episode }
 
 
         val episodesMap = mutableMapOf<DubStatus, List<Episode>>()
-        if (sortedUniqueEpisodeList.isNotEmpty()) {
-            episodesMap[DubStatus.Subbed] = sortedUniqueEpisodeList
+        if (episodeList.isNotEmpty()) {
+            episodesMap[DubStatus.Subbed] = episodeList
         }
 
-        val trailers = post.videos?.mapNotNull { video -> fixUrl(video.url) }
-        val recommendationsList = recommendationsRes?.data?.mapNotNull { rec -> rec.toSearchResult() }
+        // FIX: Xử lý trailers và recommendations với kiểm tra null rõ ràng
+        val trailers = post.videos?.mapNotNull { fixUrl(it.url) } ?: emptyList() // Fallback to empty list
+        val recommendationsList = recommendationsRes?.data?.mapNotNull { it.toSearchResult() } ?: emptyList() // Fallback to empty list
 
         return try {
             newAnimeLoadResponse(
@@ -368,23 +368,22 @@ class Anime47Provider : MainAPI() {
                 this.tags = tags
                 this.episodes = episodesMap
                 this.showStatus = showStatus
-                this.comingSoon = sortedUniqueEpisodeList.isEmpty() && this.showStatus != ShowStatus.Completed
+                this.comingSoon = episodeList.isEmpty() && this.showStatus != ShowStatus.Completed
 
-                addTrailer(trailers)
-                this.recommendations = recommendationsList
+                addTrailer(trailers) // Pass the non-null (possibly empty) list
+                this.recommendations = recommendationsList // Pass the non-null (possibly empty) list
 
                 post.score?.let { apiScore ->
                      try {
                          val scoreDouble = apiScore.toString().toDoubleOrNull() ?: 0.0
                          val scoreInt: Int = (scoreDouble * 1000).toInt()
-                         // FIX: Use correct Score constructor
+                         // FIX: Use correct Score constructor with named arguments
                          this.score = Score(score = scoreInt, maxScore = 10000)
                      } catch (_: NumberFormatException) {}
                 }
             }
         } catch (e: Exception) {
-            // Use correct logError overload if needed, otherwise remove
-            // logError("!!! Anime47 ERROR creating AnimeLoadResponse for ID $animeId", e)
+            // logError(e) // Removed log
             null
         }
     }
