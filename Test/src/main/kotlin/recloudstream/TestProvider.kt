@@ -343,57 +343,47 @@ class Anime47Provider : MainAPI() {
             
             val tvType = post.toTvType(default = TvType.Anime)
 
-            // === FIX: BỎ GROUPBY, HIỂN THỊ TẤT CẢ TẬP VÀ FIX TÊN ===
             val episodes = episodesResponse?.teams?.flatMap { team ->
                 team.groups.flatMap { group ->
-                    // Không filter, không groupBy, map thẳng
                     group.episodes.mapNotNull { ep ->
-                        // Ưu tiên ep.number nếu có, nếu không thì parse từ title
                         val epNum = ep.number ?: ep.title?.toIntOrNull()
 
-                        // Logic tạo tên
                         val baseName = if (epNum != null) "Tập $epNum" else (ep.title ?: "Tập ${ep.id}")
                         
-                        // Regex tìm số ở đầu title, ví dụ "01" trong "01[BD]"
                         val numRegex = """^\d+""".toRegex() 
                         val match = numRegex.find(ep.title ?: "")
                         
                         val suffix = if (match != null && ep.title != null) {
-                            // Lấy phần còn lại sau số (e.g., "[BD]", "_END")
                             ep.title.substring(match.value.length) 
                         } else if (match == null && ep.title != null && epNum != null && ep.title != epNum.toString()) {
-                             // Trường hợp title không bắt đầu bằng số, nhưng khác số tập
-                            ep.title
+                             ep.title
                         } else if (match == null && ep.title != null && epNum == null) {
-                            // Trường hợp không có số tập, dùng title gốc
                              return@mapNotNull newEpisode(ep.id.toString()) {
                                 name = ep.title
-                                episode = null // Không có số tập
+                                episode = null
                             }
                         }
                         else {
-                            "" // Rỗng
+                            "" 
                         }
 
-                        // Dọn dẹp tag (bỏ _, trim)
                         val cleanedSuffix = suffix.replace("_", " ").trim()
-                        // Nối tên: "Tập 1" + " " + "[BD]"
                         val epName = if (cleanedSuffix.isEmpty()) baseName else "$baseName $cleanedSuffix"
-                        // === Kết thúc logic tạo tên ===
                         
                         newEpisode(ep.id.toString()) {
                             name = epName
-                            episode = epNum // Gán số tập (có thể null)
+                            episode = epNum
                         }
                     }
                 }
-            }?.distinctBy { it.data } // Vẫn giữ distinctBy ID để phòng trường hợp API lỗi trả về 2 object y hệt
-             ?.sortedWith( // Sắp xếp theo số tập (ưu tiên null cuối) và sau đó theo ID
-                 compareBy(nullsLast()) { it.episode }
+            }?.distinctBy { it.data } 
+             ?.sortedWith(
+                 // === FIX: CHỈ ĐỊNH RÕ KIỂU <Int> CHO nullsLast ===
+                 compareBy(nullsLast<Int>()) { it.episode }
+                 // === KẾT THÚC FIX ===
                  .thenBy { it.data.toIntOrNull() ?: 0 }
              )
             ?: emptyList()
-            // === KẾT THÚC FIX ===
 
             val trailers = infoRes.data.videos?.mapNotNull { fixUrl(it.url) }
             
