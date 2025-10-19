@@ -146,8 +146,12 @@ class Anime47Provider : MainAPI() {
         )
 
     // === Helper Functions ===
+    // === fixUrl ĐÃ SỬA LỖI PLACEHOLDER ===
     private fun fixUrl(url: String?): String? {
         if (url.isNullOrBlank()) return null
+        // === FIX: BỎ QUA LINK PLACEHOLDER ===
+        if (url.contains("via.placeholder.com", ignoreCase = true)) return null
+        // ===================================
         if (url.startsWith("http")) return url
         if (url.startsWith("//")) return "https:$url"
         val base = mainUrl
@@ -285,6 +289,7 @@ class Anime47Provider : MainAPI() {
         return search(query)
     }
 
+    // === HÀM load ĐÃ SỬA LOGIC POSTER ===
     override suspend fun load(url: String): LoadResponse? {
         val animeId = url.substringAfterLast('-').trim()
         if (animeId.isBlank() || animeId.toIntOrNull() == null) {
@@ -315,10 +320,24 @@ class Anime47Provider : MainAPI() {
         val post = infoRes.data
         val title = post.title ?: "Unknown Title $animeId"
 
-        val primaryPoster = fixUrl(post.poster)
-        val fallbackPoster = fixUrl(post.images?.poster?.firstOrNull()?.url)
-        val poster = if (primaryPoster.isNullOrBlank()) fallbackPoster else primaryPoster
+        // === FIX: ĐẢO NGƯỢC ƯU TIÊN LẤY POSTER ===
+        // 1. Ưu tiên lấy poster từ trong object 'images' (fixUrl đã lọc placeholder)
+        val imagePoster = fixUrl(post.images?.poster?.firstOrNull()?.url)
 
+        // 2. Lấy poster từ trường cấp cao nhất làm dự phòng (fixUrl đã lọc placeholder)
+        val topLevelPoster = fixUrl(post.poster)
+
+        // 3. Chọn poster: Ưu tiên imagePoster nếu hợp lệ, nếu không thì dùng topLevelPoster
+        val poster = if (!imagePoster.isNullOrBlank()) {
+            imagePoster
+        } else if (!topLevelPoster.isNullOrBlank()) {
+            topLevelPoster
+        } else {
+            null // Không tìm thấy poster hợp lệ nào
+        }
+        // === KẾT THÚC FIX ===
+
+        // Cover cũng được lọc placeholder nhờ fixUrl
         val cover = fixUrl(post.cover)
         val plot = post.description
         val year = post.year?.toIntOrNull()
@@ -348,16 +367,18 @@ class Anime47Provider : MainAPI() {
         return when {
             tvType == TvType.AnimeMovie || tvType == TvType.OVA -> {
                 // Phim: dataUrl là animeId, để loadLinks xử lý fallback
-                val movieData = episodes.firstOrNull()?.data ?: animeId 
+                val movieData = episodes.firstOrNull()?.data ?: animeId
                 newMovieLoadResponse(title, url, tvType, movieData) {
-                    this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = tags
+                    this.posterUrl = poster // <-- Dùng biến poster đã fix
+                    this.year = year; this.plot = plot; this.tags = tags
                     addTrailer(trailers); this.recommendations = recommendationsList
                 }
             }
             episodes.isNotEmpty() -> {
                 // Series: dataUrl là danh sách episodeId
                 newTvSeriesLoadResponse(title, url, tvType, episodes) {
-                    this.posterUrl = poster; this.backgroundPosterUrl = cover; this.year = year
+                    this.posterUrl = poster // <-- Dùng biến poster đã fix
+                    this.backgroundPosterUrl = cover; this.year = year
                     this.plot = plot; this.tags = tags; addTrailer(trailers); this.recommendations = recommendationsList
                 }
             }
@@ -365,7 +386,8 @@ class Anime47Provider : MainAPI() {
                 // Không có tập (coi như phim): dataUrl là animeId
                 logError(IOException("No episodes found for $title (ID: $animeId), returning as MovieLoadResponse."))
                 newMovieLoadResponse(title, url, TvType.AnimeMovie, animeId) {
-                    this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = tags
+                    this.posterUrl = poster // <-- Dùng biến poster đã fix
+                    this.year = year; this.plot = plot; this.tags = tags
                     addTrailer(trailers); this.recommendations = recommendationsList
                 }
             }
@@ -379,7 +401,7 @@ class Anime47Provider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        
+
         // 1. Xử lý 'data' có thể là URL (lỗi từ load()) hoặc ID
         val id = data.substringAfterLast('/')
         if (id.isBlank()) {
@@ -388,7 +410,7 @@ class Anime47Provider : MainAPI() {
         }
 
         var streams: List<Stream>? = null
-        
+
         // 2. Thử tải stream trực tiếp, giả định 'id' là episodeId
         try {
             val watchUrl = "$apiBaseUrl/anime/watch/episode/$id?lang=vi"
@@ -419,13 +441,13 @@ class Anime47Provider : MainAPI() {
                  logError(IOException("Fallback attempt failed for animeId: $id", e))
             }
         }
-        
+
         // 4. Nếu vẫn không có stream, báo lỗi và thoát
         if (streams.isNullOrEmpty()) {
             logError(IOException("No streams found for data: '$data' (cleaned ID: '$id')"))
             return false
         }
-        
+
         // 5. Xử lý stream
         val loaded = AtomicBoolean(false)
         coroutineScope {
