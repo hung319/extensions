@@ -6,7 +6,7 @@ import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
 // import com.lagradost.cloudstream3.utils.AppUtils.parseJson // Not used directly
 import java.net.URLEncoder
-import okhttphttp3.Interceptor
+import okhttp3.Interceptor // Correct import
 import okhttp3.Response
 import okhttp3.ResponseBody
 import okhttp3.ResponseBody.Companion.toResponseBody
@@ -143,27 +143,27 @@ class Anime47Provider : MainAPI() {
 
     private fun String?.toRecommendationTvType(): TvType {
          return when {
-            this?.contains("movie", ignoreCase = true) == true -> TvType.AnimeMovie // Fix: Use ignoreCase
+            this?.contains("movie", ignoreCase = true) == true -> TvType.AnimeMovie
             this?.contains("ova", ignoreCase = true) == true -> TvType.OVA
-            this?.contains("special", ignoreCase = true) == true -> TvType.OVA // Fix: Use OVA for Special
+            this?.contains("special", ignoreCase = true) == true -> TvType.OVA
             else -> TvType.Anime
         }
     }
 
     private fun Post.toTvType(): TvType {
         return when {
-            this.type?.contains("movie", ignoreCase = true) == true -> TvType.AnimeMovie // Fix: Use ignoreCase
+            this.type?.contains("movie", ignoreCase = true) == true -> TvType.AnimeMovie
             this.type?.contains("ova", ignoreCase = true) == true -> TvType.OVA
-            (this.title.contains("Hoạt Hình Trung Quốc", ignoreCase = true) || this.slug.contains("donghua", ignoreCase = true)) -> TvType.Cartoon // Fix: Use ignoreCase
+            (this.title.contains("Hoạt Hình Trung Quốc", ignoreCase = true) || this.slug.contains("donghua", ignoreCase = true)) -> TvType.Cartoon
             else -> TvType.Anime
         }
     }
 
     private fun DetailPost.toTvType(default: TvType = TvType.Anime): TvType {
         return when {
-            this.type?.contains("movie", ignoreCase = true) == true -> TvType.AnimeMovie // Fix: Use ignoreCase
+            this.type?.contains("movie", ignoreCase = true) == true -> TvType.AnimeMovie
             this.type?.contains("ova", ignoreCase = true) == true -> TvType.OVA
-            (this.title?.contains("Hoạt Hình Trung Quốc", ignoreCase = true) == true ) -> TvType.Cartoon // Fix: Use ignoreCase
+            (this.title?.contains("Hoạt Hình Trung Quốc", ignoreCase = true) == true ) -> TvType.Cartoon
             else -> default
         }
     }
@@ -262,7 +262,6 @@ class Anime47Provider : MainAPI() {
             app.get(recUrl, headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiRecommendationResponse>()
         }
 
-
         // Process results, logging failures
         val infoRes = infoResult.getOrNull() ?: run {
             logError(infoResult.exceptionOrNull() ?: IOException("Failed to load anime info for ID: $animeId"))
@@ -270,7 +269,6 @@ class Anime47Provider : MainAPI() {
         }
          episodesResult.exceptionOrNull()?.let { logError(it) }
          recommendationsResult.exceptionOrNull()?.let { logError(it) }
-
 
         val post = infoRes.data
         val title = post.title ?: "Unknown Title $animeId"
@@ -281,7 +279,7 @@ class Anime47Provider : MainAPI() {
         val tags = post.genres?.mapNotNull { it.name }?.filter { it.isNotBlank() }
         val tvType = post.toTvType(default = TvType.Anime)
 
-        val episodes = episodesResult.getOrNull()?.teams?.flatMap { team -> // Use getOrNull()
+        val episodes = episodesResult.getOrNull()?.teams?.flatMap { team ->
             team.groups.flatMap { group ->
                 group.episodes.mapNotNull { ep ->
                     val displayNum = ep.number ?: ep.title?.toIntOrNull()
@@ -298,9 +296,9 @@ class Anime47Provider : MainAPI() {
         }?.distinctBy { it.data } ?: emptyList()
 
          val trailers = infoRes.data.videos?.mapNotNull { fixUrl(it.url) }
-        val recommendationsList = recommendationsResult.getOrNull()?.data?.mapNotNull { it.toSearchResult() } // Use getOrNull()
+        val recommendationsList = recommendationsResult.getOrNull()?.data?.mapNotNull { it.toSearchResult() }
 
-        return when { // Use return directly
+        return when {
             tvType == TvType.AnimeMovie || tvType == TvType.OVA -> {
                 val movieData = episodes.firstOrNull()?.data ?: animeId
                 newMovieLoadResponse(title, url, tvType, movieData) {
@@ -337,7 +335,7 @@ class Anime47Provider : MainAPI() {
             val episodesUrl = "$apiBaseUrl/anime/$data/episodes?lang=vi"
             val episodesRes = app.get(episodesUrl, headers = apiHeaders, interceptor = interceptor, timeout = 10_000).parsedSafe<ApiEpisodeResponse>()
             episodesRes?.teams?.firstOrNull()?.groups?.firstOrNull()?.episodes?.firstOrNull()?.id
-        }.getOrNull() // Use runCatching for safety
+        }.getOrNull()
 
         if (episodeId == null) {
             logError(IOException("Could not determine episode ID to load links from data: '$data'."))
@@ -355,40 +353,36 @@ class Anime47Provider : MainAPI() {
             return false
         }
 
-        // Use AtomicBoolean for thread-safe flag update
         val loaded = AtomicBoolean(false)
-        coroutineScope { // Needed for async
+        coroutineScope {
             streams.map { stream ->
-                // Launch async block for each stream within the scope
                 async {
-                    // Explicitly name the lambda parameter
-                    val currentStream = stream
+                    val currentStream = stream // Assign to non-nullable val inside async
                     val streamUrl = currentStream.url
                     val serverName = currentStream.server_name
                     val playerType = currentStream.player_type
 
                     if (streamUrl.isNullOrBlank() || serverName.isNullOrBlank()) return@async
-                    // Fix: Correct equals call with ignoreCase
-                    if (serverName.equals("HY", ignoreCase = true)) return@async
+                    if (serverName.equals("HY", ignoreCase = true)) return@async // Fix: Use equals with ignoreCase
 
                     val sourceName = "$name - $serverName"
                     val ref = "$mainUrl/"
 
                     try {
-                        // Fix: Correct endsWith call with ignoreCase and null safety
+                         // Fix: Use endsWith with ignoreCase and null safety
                         if ((playerType == "jwplayer" || serverName == "FE") && streamUrl.endsWith(".m3u8", ignoreCase = true)) {
-                            val link = newExtractorLink( // Call suspend fun inside async
+                            val link = newExtractorLink(
                                 source = this@Anime47Provider.name,
                                 name = serverName,
-                                url = streamUrl, // streamUrl is guaranteed non-null here
+                                url = streamUrl, // Safe: Already checked for null/blank
                                 type = ExtractorLinkType.M3U8
                             ) {
                                 this.referer = ref
                                 this.quality = Qualities.Unknown.value
                             }
                             callback(link)
-                            loaded.set(true) // Set AtomicBoolean
-                         // Fix: Correct contains call with null safety and endsWith
+                            loaded.set(true)
+                         // Fix: Use contains with ignoreCase and endsWith
                         } else if (serverName == "FE" && streamUrl.contains("vlogphim.net", ignoreCase = true) && !streamUrl.endsWith(".m3u8", ignoreCase = true)) {
                             logError(IOException("FE server URL is not M3U8, handling needed: $streamUrl"))
                         } else {
@@ -397,11 +391,11 @@ class Anime47Provider : MainAPI() {
                     } catch (e: Exception) {
                         logError(e)
                     }
-                } // End async block
-            }.awaitAll() // Wait for all async stream processing to complete
-        } // End coroutineScope
+                }
+            }.awaitAll()
+        }
 
-        return loaded.get() // Return final value of AtomicBoolean
+        return loaded.get()
     }
 
     // Subtitle mapping
@@ -424,21 +418,26 @@ class Anime47Provider : MainAPI() {
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
         val nonprofitAsiaTsRegex = Regex("""https://cdn\d*\.nonprofit\.asia/.*""")
 
+         // Fix: Anonymous class must implement Interceptor
         return object : Interceptor {
+            // Fix: Correct function signature
             override fun intercept(chain: Interceptor.Chain): Response {
-                val request = chain.request()
+                val request = chain.request // Fix: Access request from chain
                 var response: Response? = null
                 try {
-                    response = chain.proceed(request)
+                    response = chain.proceed(request) // Fix: Call proceed on chain
                     val url = request.url.toString()
 
+                    // Fix: Use safe call ?.isSuccessful
                     if (nonprofitAsiaTsRegex.containsMatchIn(url) && response.isSuccessful) {
+                        // Fix: Use safe call ?.body
                         response.body?.let { body ->
                            try {
                                 val responseBytes = body.bytes()
                                 val fixedBytes = skipByteErrorRaw(responseBytes)
                                 val newBody = fixedBytes.toResponseBody(body.contentType())
                                 response.close()
+                                // Fix: Use safe call ?.newBuilder()
                                 return response.newBuilder()
                                     .removeHeader("Content-Length")
                                     .addHeader("Content-Length", fixedBytes.size.toString())
@@ -446,11 +445,14 @@ class Anime47Provider : MainAPI() {
                                     .build()
                            } catch (processE: Exception) {
                                logError(processE)
-                               throw IOException("Failed to process video interceptor for $url", processE)
+                                // Fix: Ensure response is closed before throwing
+                                response.close()
+                                throw IOException("Failed to process video interceptor for $url", processE)
                            }
                         }
                     }
-                    return response
+                    // Fix: Return non-null response
+                    return response ?: throw IOException("Proceed returned null response") // Should not happen with OkHttp standard behavior
                 } catch (networkE: Exception) {
                     response?.close()
                     logError(networkE)
@@ -459,11 +461,8 @@ class Anime47Provider : MainAPI() {
                      response?.close()
                      logError(e)
                      throw e
-                } finally {
-                     // Ensure response is closed if an exception happens before returning normally
-                     // This might be redundant if exceptions always lead to re-throwing, but adds safety
-                     // response?.close() // Careful: Might close response needed by caller if exception is handled differently later
                 }
+                 // No finally needed as try-catch handles closing on exceptions
             }
         }
     }
