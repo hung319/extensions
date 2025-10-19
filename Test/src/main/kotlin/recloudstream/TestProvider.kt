@@ -37,6 +37,10 @@ class Anime47Provider : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA, TvType.Cartoon)
 
+    // === FIX: THÊM POSTER DỰ PHÒNG ===
+    private val defaultPoster = "https://placehold.co/600x400"
+    // === KẾT THÚC FIX ===
+
     private val interceptor = CloudflareKiller()
 
     // === Data Classes for API Responses ===
@@ -91,7 +95,6 @@ class Anime47Provider : MainAPI() {
     private data class SubtitleItem(
         val file: String?,
         val label: String?
-        // val default: Boolean? // Không cần dùng đến
     )
 
     private data class Stream(
@@ -153,13 +156,12 @@ class Anime47Provider : MainAPI() {
         )
 
     // === Helper Functions ===
-    // Sửa logic placeholder: chỉ lọc BỎ placeholder, không ưu tiên sau cùng
+    // fixUrl: Vẫn lọc bỏ placeholder
     private fun fixUrl(url: String?): String? {
         if (url.isNullOrBlank()) return null
         
-        // === FIX 2: LỌC BỎ HOÀN TOÀN LINK PLACEHOLDER VÌ CHÚNG KHÔNG HỢP LỆ ===
+        // Lọc bỏ link placeholder không hợp lệ
         if (url.contains("via.placeholder.com", ignoreCase = true)) return null
-        // ===================================
         
         if (url.startsWith("http")) return url
         if (url.startsWith("//")) return "https:$url"
@@ -226,41 +228,39 @@ class Anime47Provider : MainAPI() {
             throw ErrorLoadingException("Không thể tải trang chủ: ${e.message}")
         }
 
-        // Dùng mapNotNull để tự động lọc ra các item có poster là null (do fixUrl)
+        // mapNotNull vẫn an toàn, nó sẽ lọc item nếu link/title bị null
         val home = res.data.posts.mapNotNull { it.toSearchResult() }
         val hasNext = home.size >= 24
         return newHomePageResponse(request.name, home, hasNext = hasNext)
     }
 
+    // === FIX: DÙNG POSTER DỰ PHÒNG ===
     private fun Post.toSearchResult(): SearchResponse? {
         val fullUrl = mainUrl + this.link
         if (fullUrl.isBlank()) return null
         
-        // fixUrl sẽ trả về null nếu là placeholder
-        val poster = fixUrl(this@toSearchResult.poster)
-        // Nếu poster là null (bị fixUrl lọc), thì không hiển thị item này
-        if (poster == null) return null 
+        // Cung cấp poster dự phòng, không trả về null
+        val poster = fixUrl(this@toSearchResult.poster) ?: defaultPoster
 
         val epCount = this.episodes?.filter { it.isDigit() }?.toIntOrNull()
         val episodesMap: MutableMap<DubStatus, Int> = if (epCount != null) mutableMapOf(DubStatus.Subbed to epCount) else mutableMapOf()
         val tvType = this.toTvType()
 
         return newAnimeSearchResponse(this.title, fullUrl, tvType) {
-            this.posterUrl = poster // Đã được fixUrl xử lý
+            this.posterUrl = poster // Poster giờ sẽ không bao giờ null
             this.year = this@toSearchResult.year?.toIntOrNull()
             this.dubStatus = EnumSet.of(DubStatus.Subbed)
             this.episodes = episodesMap
         }
     }
 
+    // === FIX: DÙNG POSTER DỰ PHÒNG ===
     private fun RecommendationItem.toSearchResult(): SearchResponse? {
         if (this.link.isNullOrBlank() || this.title.isNullOrBlank()) return null
         val fullUrl = mainUrl + this.link
         
-        // fixUrl sẽ trả về null nếu là placeholder
-        val poster = fixUrl(this@toSearchResult.poster)
-        // Nếu poster là null (bị fixUrl lọc), thì không hiển thị item này
-        if (poster == null) return null
+        // Cung cấp poster dự phòng, không trả về null
+        val poster = fixUrl(this@toSearchResult.poster) ?: defaultPoster
         
         val tvType = this.type.toRecommendationTvType()
 
@@ -270,14 +270,13 @@ class Anime47Provider : MainAPI() {
         }
     }
 
+    // === FIX: DÙNG POSTER DỰ PHÒNG ===
     private fun SearchItem.toSearchResult(): SearchResponse? {
         val fullUrl = mainUrl + this.link
         if (fullUrl.isBlank()) return null
 
-        // fixUrl sẽ trả về null nếu là placeholder
-        val poster = fixUrl(this@toSearchResult.image)
-        // Nếu poster là null (bị fixUrl lọc), thì không hiển thị item này
-        if (poster == null) return null
+        // Cung cấp poster dự phòng, không trả về null
+        val poster = fixUrl(this@toSearchResult.image) ?: defaultPoster
 
         val epCount = this.episodes?.filter { it.isDigit() }?.toIntOrNull()
         val episodesMap: MutableMap<DubStatus, Int> = if (epCount != null) mutableMapOf(DubStatus.Subbed to epCount) else mutableMapOf()
@@ -309,7 +308,7 @@ class Anime47Provider : MainAPI() {
             return emptyList()
         }
         
-        // mapNotNull sẽ tự động lọc các kết quả có poster là placeholder (do toSearchResult trả về null)
+        // Giờ đây 'Blood-C' sẽ xuất hiện trong search (với ảnh placeholder)
         return res?.results?.mapNotNull { it.toSearchResult() } ?: emptyList()
     }
 
@@ -318,7 +317,7 @@ class Anime47Provider : MainAPI() {
         return search(query)
     }
 
-    // === HÀM load ĐÃ SỬA LOGIC POSTER VÀ LOGIC XỬ LÝ TYPE ===
+    // === HÀM load ĐÃ SỬA: DÙNG POSTER DỰ PHÒNG ===
     override suspend fun load(url: String): LoadResponse? {
         val animeId = url.substringAfterLast('-').trim()
         if (animeId.isBlank() || animeId.toIntOrNull() == null) {
@@ -349,19 +348,18 @@ class Anime47Provider : MainAPI() {
         val post = infoRes.data
         val title = post.title ?: "Unknown Title $animeId"
 
-        // === FIX 2: LOGIC LỌC BỎ HOÀN TOÀN PLACEHOLDER ===
-        // fixUrl đã được cập nhật để trả về null nếu là placeholder
-        val poster = fixUrl(post.images?.poster?.firstOrNull()?.url)
-            ?: fixUrl(post.poster)
+        // === FIX: DÙNG POSTER DỰ PHÒNG, KHÔNG DÙNG NULL ===
+        val poster = (fixUrl(post.images?.poster?.firstOrNull()?.url)
+            ?: fixUrl(post.poster)) ?: defaultPoster // <-- Dùng poster dự phòng
 
-        val cover = fixUrl(post.cover)
-        // === KẾT THÚC FIX 2 ===
+        // Cover có thể là null, không quan trọng bằng poster
+        val cover = fixUrl(post.cover) 
+        // === KẾT THÚC FIX ===
 
         val plot = post.description
         val year = post.year?.toIntOrNull()
         val tags = post.genres?.mapNotNull { it.name }?.filter { it.isNotBlank() }
         
-        // Sửa logic map Type, đảm bảo "TV" là TvType.Anime
         val tvType = post.toTvType(default = TvType.Anime)
 
         val episodes = episodesResult.getOrNull()?.teams?.flatMap { team ->
@@ -382,35 +380,28 @@ class Anime47Provider : MainAPI() {
 
          val trailers = infoRes.data.videos?.mapNotNull { fixUrl(it.url) }
          
-         // mapNotNull sẽ tự động lọc recommendation bị fixUrl (poster) loại bỏ
+         // Giờ đây recommendation cũng sẽ có ảnh dự phòng
         val recommendationsList = recommendationsResult.getOrNull()?.data?.mapNotNull { it.toSearchResult() }
 
-        // === FIX 3: SỬA LOGIC TRẢ VỀ ĐỂ XỬ LÝ ĐÚNG TV SHOW (NHƯ ID 1000) ===
         return when (tvType) {
             TvType.AnimeMovie, TvType.OVA -> {
-                // Phim: dataUrl là animeId (để loadLinks xử lý fallback), 
-                // hoặc episodeId đầu tiên nếu có
                 val movieData = episodes.firstOrNull()?.data ?: animeId
                 newMovieLoadResponse(title, url, tvType, movieData) {
-                    this.posterUrl = poster // <-- Dùng biến poster đã fix
+                    this.posterUrl = poster // <-- poster không còn null
                     this.year = year; this.plot = plot; this.tags = tags
                     addTrailer(trailers); this.recommendations = recommendationsList
                 }
             }
             else -> { // Bao gồm TvType.Anime, TvType.Cartoon
-                // Series: dataUrl là danh sách episodeId (có thể rỗng)
-                // Luôn trả về TvSeriesLoadResponse cho đúng type
                 newTvSeriesLoadResponse(title, url, tvType, episodes) {
-                    this.posterUrl = poster // <-- Dùng biến poster đã fix
+                    this.posterUrl = poster // <-- poster không còn null
                     this.backgroundPosterUrl = cover; this.year = year
                     this.plot = plot; this.tags = tags; addTrailer(trailers); this.recommendations = recommendationsList
                 }
             }
         }
-        // === KẾT THÚC FIX 3 ===
     }
 
-    // === HÀM loadLinks ĐÃ SỬA (logic cũ vẫn ổn, chỉ thêm sub) ===
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -437,7 +428,6 @@ class Anime47Provider : MainAPI() {
         }
 
         // 3. Nếu thất bại (streams rỗng), giả định 'id' là animeId (cho phim)
-        // (Trường hợp này xảy ra do logic fallback trong hàm load)
         if (streams.isNullOrEmpty()) {
             logError(IOException("No streams found for ID: $id. Assuming it's an animeId, trying fallback..."))
             try {
@@ -485,7 +475,7 @@ class Anime47Provider : MainAPI() {
                         if (serverName.contains("FE", ignoreCase = true) || playerType.equals("jwplayer", ignoreCase = true)) {
                             val link = newExtractorLink(
                                 source = this@Anime47Provider.name,
-                                name = serverName, // Giữ tên đầy đủ "A4VF | FE"
+                                name = serverName, 
                                 url = streamUrl,
                                 type = ExtractorLinkType.M3U8
                             ) {
@@ -500,7 +490,7 @@ class Anime47Provider : MainAPI() {
                                     try {
                                         subtitleCallback(
                                             SubtitleFile(
-                                                mapSubtitleLabel(sub.label), // Sử dụng hàm map có sẵn
+                                                mapSubtitleLabel(sub.label),
                                                 sub.file
                                             )
                                         )
@@ -527,7 +517,7 @@ class Anime47Provider : MainAPI() {
     }
 
 
-    // === FIX 1: MỞ RỘNG SUBTITLE MAP ===
+    // Subtitle mapping (đã mở rộng)
     private val subtitleLanguageMap: Map<String, List<String>> = mapOf(
         "Vietnamese" to listOf("tiếng việt", "vietnamese", "vietsub", "viet", "vi"),
         "English" to listOf("tiếng anh", "english", "engsub", "eng", "en"),
@@ -537,7 +527,7 @@ class Anime47Provider : MainAPI() {
         "German" to listOf("deutsch", "german", "de"),
         "Italian" to listOf("italiano", "italian", "it"),
         "Russian" to listOf("русский", "russian", "ru"),
-        "Japanese" to listOf("日本語", "japanese", "ja", "raw"), // 'raw' thường là tiếng Nhật
+        "Japanese" to listOf("日本語", "japanese", "ja", "raw"),
         "Korean" to listOf("한국어", "korean", "ko"),
         "Chinese" to listOf("中文", "chinese", "zh", "cn"),
         "Thai" to listOf("ไทย", "thai", "th"),
@@ -545,7 +535,6 @@ class Anime47Provider : MainAPI() {
         "Malay" to listOf("malay", "ms", "malaysia"),
         "Arabic" to listOf("العربية", "arabic", "ar"),
     )
-    // === KẾT THÚC FIX 1 ===
     
     private fun mapSubtitleLabel(label: String): String {
         val lowerLabel = label.trim().lowercase(Locale.ROOT)
@@ -555,7 +544,6 @@ class Anime47Provider : MainAPI() {
                 return language
             }
         }
-        // Nếu không khớp, trả về label gốc đã viết hoa chữ cái đầu
         return label.trim().replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
     }
 
