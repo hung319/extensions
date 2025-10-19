@@ -14,17 +14,17 @@ import java.util.EnumSet
 import java.util.Locale
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.awaitAll // Needed for replacing apmap
-import com.lagradost.cloudstream3.CommonActivity.showToast
-import kotlinx.coroutines.Dispatchers // Needed for withContext
-import kotlinx.coroutines.withContext // Needed for withContext
-import android.widget.Toast
+// import kotlinx.coroutines.awaitAll // Không cần nữa
+import com.lagradost.cloudstream3.CommonActivity.showToast // Giữ lại import này
+import kotlinx.coroutines.Dispatchers // Giữ lại import này
+import kotlinx.coroutines.withContext // Giữ lại import này
+import android.widget.Toast // Giữ lại import này
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.mvvm.logError
 // import com.lagradost.cloudstream3.mvvm.safeApiCall // Removed usage
 import java.io.IOException // Added import
-import java.util.concurrent.atomic.AtomicBoolean // For thread-safe flag
+// import java.util.concurrent.atomic.AtomicBoolean // Không cần nữa
 
 // === Provider Class ===
 class Anime47Provider : MainAPI() {
@@ -40,6 +40,7 @@ class Anime47Provider : MainAPI() {
     private val interceptor = CloudflareKiller()
 
     // === Data Classes for API Responses ===
+    // (Không thay đổi)
     private data class GenreInfo(val name: String?)
     private data class Post(
         val id: Int,
@@ -140,12 +141,11 @@ class Anime47Provider : MainAPI() {
     )
 
     // === API Headers ===
-    private val apiHeaders
-        get() = mapOf(
-            "Accept" to "application/json, text/plain, */*",
-            "Origin" to mainUrl,
-            "Referer" to "$mainUrl/"
-        )
+    private val apiHeaders = mapOf(
+        "Accept" to "application/json, text/plain, */*",
+        "Origin" to mainUrl,
+        "Referer" to "$mainUrl/"
+    )
 
     // === Helper Functions ===
     private fun fixUrl(url: String?): String? {
@@ -156,14 +156,14 @@ class Anime47Provider : MainAPI() {
         val base = mainUrl
         val relativePath = if (url.startsWith("/")) url else "/$url"
         return if (base.startsWith("http")) {
-             base + relativePath
+            base + relativePath
         } else {
-             "https:" + base + relativePath
+            "https:" + base + relativePath
         }
     }
 
     private fun String?.toRecommendationTvType(): TvType {
-         return when {
+        return when {
             this?.contains("movie", ignoreCase = true) == true -> TvType.AnimeMovie
             this?.contains("ova", ignoreCase = true) == true -> TvType.OVA
             this?.contains("special", ignoreCase = true) == true -> TvType.OVA
@@ -185,7 +185,7 @@ class Anime47Provider : MainAPI() {
             this.type?.equals("TV", ignoreCase = true) == true -> TvType.Anime
             this.type?.contains("movie", ignoreCase = true) == true -> TvType.AnimeMovie
             this.type?.contains("ova", ignoreCase = true) == true -> TvType.OVA
-            (this.title?.contains("Hoạt Hình Trung Quốc", ignoreCase = true) == true ) -> TvType.Cartoon
+            (this.title?.contains("Hoạt Hình Trung Quốc", ignoreCase = true) == true) -> TvType.Cartoon
             else -> default
         }
     }
@@ -193,15 +193,17 @@ class Anime47Provider : MainAPI() {
 
     // === Core Overrides ===
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-         withContext(Dispatchers.Main) {
-             try {
-                 CommonActivity.activity?.let {
-                     showToast(it, "Provider by H4RS", Toast.LENGTH_LONG)
-                 }
-             } catch (e: Exception) {
-                 logError(e)
-             }
-         }
+        // === KHÔI PHỤC TOAST ===
+        withContext(Dispatchers.Main) {
+            try {
+                CommonActivity.activity?.let {
+                    showToast(it, "Provider by H4RS", Toast.LENGTH_LONG)
+                }
+            } catch (e: Exception) {
+                logError(e)
+            }
+        }
+        // === KẾT THÚC KHÔI PHỤC ===
 
         val url = "$apiBaseUrl${request.data}&page=$page"
         val res = try {
@@ -212,7 +214,7 @@ class Anime47Provider : MainAPI() {
                 timeout = 15_000
             ).parsed<ApiFilterResponse>()
         } catch (e: Exception) {
-            logError(e) 
+            logError(e)
             throw ErrorLoadingException("Không thể tải trang chủ. Lỗi Cloudflare hoặc API. Chi tiết: ${e.message}")
         }
 
@@ -221,55 +223,62 @@ class Anime47Provider : MainAPI() {
         return newHomePageResponse(request.name, home, hasNext = hasNext)
     }
 
-    private fun Post.toSearchResult(): SearchResponse? {
-        val fullUrl = mainUrl + this.link
+    private fun toSearchResponseInternal(
+        title: String,
+        url: String,
+        posterUrl: String?,
+        tvType: TvType,
+        year: Int?,
+        epCount: Int?
+    ): SearchResponse? {
+        val fullUrl = mainUrl + url
         if (fullUrl.isBlank()) return null
-        
-        val poster = fixUrl(this@toSearchResult.poster) ?: return null
+        val poster = fixUrl(posterUrl) ?: return null
 
-        val epCount = this.episodes?.filter { it.isDigit() }?.toIntOrNull()
-        val episodesMap: MutableMap<DubStatus, Int> = if (epCount != null) mutableMapOf(DubStatus.Subbed to epCount) else mutableMapOf()
-        val tvType = this.toTvType()
-
-        return newAnimeSearchResponse(this.title, fullUrl, tvType) {
-            this.posterUrl = poster 
-            this.year = this@toSearchResult.year?.toIntOrNull()
+        return newAnimeSearchResponse(title, fullUrl, tvType) {
+            this.posterUrl = poster
+            this.year = year
             this.dubStatus = EnumSet.of(DubStatus.Subbed)
-            this.episodes = episodesMap
+            if (epCount != null) {
+                this.episodes = mutableMapOf(DubStatus.Subbed to epCount)
+            }
         }
+    }
+
+    private fun Post.toSearchResult(): SearchResponse? {
+        val epCount = this.episodes?.filter { it.isDigit() }?.toIntOrNull()
+        return toSearchResponseInternal(
+            title = this.title,
+            url = this.link,
+            posterUrl = this.poster,
+            tvType = this.toTvType(),
+            year = this.year?.toIntOrNull(),
+            epCount = epCount
+        )
     }
 
     private fun RecommendationItem.toSearchResult(): SearchResponse? {
-        if (this.link.isNullOrBlank() || this.title.isNullOrBlank()) return null
-        val fullUrl = mainUrl + this.link
-        
-        val poster = fixUrl(this@toSearchResult.poster) ?: return null
-        
-        val tvType = this.type.toRecommendationTvType()
-
-        return newAnimeSearchResponse(this.title, fullUrl, tvType) {
-             posterUrl = poster
-             year = this@toSearchResult.year?.toIntOrNull()
-        }
+        if (this.title == null || this.link == null) return null
+        return toSearchResponseInternal(
+            title = this.title,
+            url = this.link,
+            posterUrl = this.poster,
+            tvType = this.type.toRecommendationTvType(),
+            year = this.year?.toIntOrNull(),
+            epCount = null
+        )
     }
 
     private fun SearchItem.toSearchResult(): SearchResponse? {
-        val fullUrl = mainUrl + this.link
-        if (fullUrl.isBlank()) return null
-
-        val poster = fixUrl(this@toSearchResult.image) ?: return null
-
         val epCount = this.episodes?.filter { it.isDigit() }?.toIntOrNull()
-        
-        val episodesMap: MutableMap<DubStatus, Int> = if (epCount != null) mutableMapOf(DubStatus.Subbed to epCount) else mutableMapOf()
-
-        val tvType = this.type.toRecommendationTvType()
-
-        return newAnimeSearchResponse(this.title, fullUrl, tvType) {
-            this.posterUrl = poster
-            this.dubStatus = EnumSet.of(DubStatus.Subbed)
-            this.episodes = episodesMap
-        }
+        return toSearchResponseInternal(
+            title = this.title,
+            url = this.link,
+            posterUrl = this.image,
+            tvType = this.type.toRecommendationTvType(),
+            year = null,
+            epCount = epCount
+        )
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -289,7 +298,7 @@ class Anime47Provider : MainAPI() {
             logError(e)
             return emptyList()
         }
-        
+
         return res?.results?.mapNotNull { it.toSearchResult() } ?: emptyList()
     }
 
@@ -325,7 +334,7 @@ class Anime47Provider : MainAPI() {
                 throw IOException("Failed to parse anime info (null response) for ID: $animeId")
             }
 
-            val episodesResponse = episodesResult.getOrThrow() 
+            val episodesResponse = episodesResult.getOrThrow()
 
             recommendationsResult.exceptionOrNull()?.let { logError(it) }
 
@@ -334,59 +343,41 @@ class Anime47Provider : MainAPI() {
             val title = post.title ?: "Unknown Title $animeId"
 
             val poster = fixUrl(post.poster)
-
-            val cover = fixUrl(post.cover) 
-
+            val cover = fixUrl(post.cover)
             val plot = post.description
             val year = post.year?.toIntOrNull()
             val tags = post.genres?.mapNotNull { it.name }?.filter { it.isNotBlank() }
-            
             val tvType = post.toTvType(default = TvType.Anime)
 
+            // === KHÔI PHỤC LOGIC PARSE TẬP ĐƠN GIẢN ===
             val episodes = episodesResponse?.teams?.flatMap { team ->
                 team.groups.flatMap { group ->
                     group.episodes.mapNotNull { ep ->
-                        val epNum = ep.number ?: ep.title?.toIntOrNull()
-
-                        val baseName = if (epNum != null) "Tập $epNum" else (ep.title ?: "Tập ${ep.id}")
-                        
-                        val numRegex = """^\d+""".toRegex() 
-                        val match = numRegex.find(ep.title ?: "")
-                        
-                        val suffix = if (match != null && ep.title != null) {
-                            ep.title.substring(match.value.length) 
-                        } else if (match == null && ep.title != null && epNum != null && ep.title != epNum.toString()) {
-                             ep.title
-                        } else if (match == null && ep.title != null && epNum == null) {
-                             return@mapNotNull newEpisode(ep.id.toString()) {
-                                name = ep.title
-                                episode = null
-                            }
-                        }
-                        else {
-                            "" 
+                        // Lấy số tập
+                        val epNum = ep.number
+                        // Tạo tên cơ bản
+                        val epName = if (epNum != null) {
+                            "Tập $epNum"
+                        } else {
+                            // Nếu không có số, thử dùng title, hoặc fallback về ID
+                            ep.title ?: "Tập ${ep.id}"
                         }
 
-                        val cleanedSuffix = suffix.replace("_", " ").trim()
-                        val epName = if (cleanedSuffix.isEmpty()) baseName else "$baseName $cleanedSuffix"
-                        
                         newEpisode(ep.id.toString()) {
                             name = epName
-                            episode = epNum
+                            episode = epNum // Gán số tập (có thể null)
                         }
                     }
                 }
-            }?.distinctBy { it.data } 
-             ?.sortedWith(
-                 // === FIX: CHỈ ĐỊNH RÕ KIỂU `ep: Episode` ===
+            }?.distinctBy { it.data } // Vẫn giữ distinctBy ID phòng trường hợp API trả về object giống hệt
+             ?.sortedWith( // Sắp xếp theo số tập (ưu tiên null cuối) và sau đó theo ID
                  compareBy(nullsLast<Int>()) { ep: Episode -> ep.episode }
                  .thenBy { ep: Episode -> ep.data.toIntOrNull() ?: 0 }
-                 // === KẾT THÚC FIX ===
              )
             ?: emptyList()
+            // === KẾT THÚC KHÔI PHỤC ===
 
             val trailers = infoRes.data.videos?.mapNotNull { fixUrl(it.url) }
-            
             val recommendationsList = recommendationsResult.getOrNull()?.data?.mapNotNull { it.toSearchResult() }
 
             return when (tvType) {
@@ -446,64 +437,59 @@ class Anime47Provider : MainAPI() {
             return false
         }
 
-        val loaded = AtomicBoolean(false)
-        coroutineScope {
-            streams.map { stream ->
-                async {
-                    val currentStream = stream
-                    val streamUrl = currentStream.url
-                    val serverName = currentStream.server_name
-                    val playerType = currentStream.player_type
+        var loaded = false
+        streams.forEach { stream ->
+            val currentStream = stream
+            val streamUrl = currentStream.url
+            val serverName = currentStream.server_name
+            val playerType = currentStream.player_type
 
-                    if (streamUrl.isNullOrBlank() || serverName.isNullOrBlank()) return@async
+            if (streamUrl.isNullOrBlank() || serverName.isNullOrBlank()) return@forEach
+            if (serverName.contains("HY", ignoreCase = true)) return@forEach
 
-                    if (serverName.contains("HY", ignoreCase = true)) return@async
+            val ref = "$mainUrl/"
 
-                    val ref = "$mainUrl/"
-
-                    try {
-                        if (serverName.contains("FE", ignoreCase = true) || playerType.equals("jwplayer", ignoreCase = true)) {
-                            val link = newExtractorLink(
-                                source = this@Anime47Provider.name,
-                                name = serverName, 
-                                url = streamUrl,
-                                type = ExtractorLinkType.M3U8
-                            ) {
-                                this.referer = ref
-                                this.quality = Qualities.Unknown.value
-                            }
-                            callback(link)
-                            loaded.set(true)
-
-                            currentStream.subtitles?.forEach { sub ->
-                                if (!sub.file.isNullOrBlank() && !sub.label.isNullOrBlank()) {
-                                    try {
-                                        subtitleCallback(
-                                            SubtitleFile(
-                                                mapSubtitleLabel(sub.label),
-                                                sub.file
-                                            )
-                                        )
-                                    } catch (e: Exception) {
-                                        logError(e) 
-                                    }
-                                }
-                            }
-                        } else {
-                            logError(IOException("Unhandled stream type or server for (ID: $id): $serverName - $streamUrl (Player: $playerType)"))
-                        }
-                    } catch (e: Exception) {
-                        logError(e)
+            try {
+                if (serverName.contains("FE", ignoreCase = true) || playerType.equals("jwplayer", ignoreCase = true)) {
+                    val link = newExtractorLink(
+                        source = this@Anime47Provider.name,
+                        name = serverName, 
+                        url = streamUrl,
+                        type = ExtractorLinkType.M3U8
+                    ) {
+                        this.referer = ref
+                        this.quality = Qualities.Unknown.value
                     }
+                    callback(link)
+                    loaded = true
+
+                    currentStream.subtitles?.forEach { sub ->
+                        if (!sub.file.isNullOrBlank() && !sub.label.isNullOrBlank()) {
+                            try {
+                                subtitleCallback(
+                                    SubtitleFile(
+                                        mapSubtitleLabel(sub.label),
+                                        sub.file
+                                    )
+                                )
+                            } catch (e: Exception) {
+                                logError(e) 
+                            }
+                        }
+                    }
+                } else {
+                    logError(IOException("Unhandled stream type or server for (ID: $id): $serverName - $streamUrl (Player: $playerType)"))
                 }
-            }.awaitAll()
+            } catch (e: Exception) {
+                logError(e)
+            }
         }
 
-        if (!loaded.get()) {
+        if (!loaded) {
             logError(IOException("No extractor links were loaded for ID: $id"))
         }
 
-        return loaded.get()
+        return loaded
     }
 
 
@@ -539,7 +525,7 @@ class Anime47Provider : MainAPI() {
 
      // Video Interceptor
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
-        val nonprofitAsiaTsRegex = Regex("""https://cdn\d*\.nonprofit\.asia/.*""")
+        val nonprofitAsiaTsRegex = Regex("""https.cdn\d*\.nonprofit\.asia.*""")
 
         return object : Interceptor {
             override fun intercept(chain: Interceptor.Chain): Response {
