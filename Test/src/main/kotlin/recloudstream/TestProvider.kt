@@ -37,9 +37,6 @@ class Anime47Provider : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA, TvType.Cartoon)
 
-    // === FIX: ĐÃ XÓA defaultPoster ===
-    // private val defaultPoster = "https://placehold.co/600x400"
-
     private val interceptor = CloudflareKiller()
 
     // === Data Classes for API Responses ===
@@ -59,8 +56,6 @@ class Anime47Provider : MainAPI() {
 
     private data class VideoItem(val url: String?)
 
-    // Đã xóa ImageItem và ImagesInfo (gây lỗi parse)
-
     private data class DetailPost(
         val id: Int,
         val title: String?,
@@ -71,7 +66,6 @@ class Anime47Provider : MainAPI() {
         val year: String?,
         val genres: List<GenreInfo>?,
         val videos: List<VideoItem>?
-        // Đã xóa trường 'images' (gây lỗi parse)
     )
     private data class ApiDetailResponse(val data: DetailPost)
 
@@ -154,7 +148,6 @@ class Anime47Provider : MainAPI() {
         )
 
     // === Helper Functions ===
-    // fixUrl: Lọc bỏ placeholder, trả về null nếu không hợp lệ
     private fun fixUrl(url: String?): String? {
         if (url.isNullOrBlank()) return null
         if (url.contains("via.placeholder.com", ignoreCase = true)) return null
@@ -223,18 +216,15 @@ class Anime47Provider : MainAPI() {
             throw ErrorLoadingException("Không thể tải trang chủ. Lỗi Cloudflare hoặc API. Chi tiết: ${e.message}")
         }
 
-        // mapNotNull sẽ lọc bỏ các item có poster là null
         val home = res.data.posts.mapNotNull { it.toSearchResult() }
         val hasNext = home.size >= 24
         return newHomePageResponse(request.name, home, hasNext = hasNext)
     }
 
-    // === FIX: Bỏ defaultPoster, trả về null nếu poster không hợp lệ ===
     private fun Post.toSearchResult(): SearchResponse? {
         val fullUrl = mainUrl + this.link
         if (fullUrl.isBlank()) return null
         
-        // Trả về null nếu poster là placeholder hoặc rỗng, item sẽ bị lọc
         val poster = fixUrl(this@toSearchResult.poster) ?: return null
 
         val epCount = this.episodes?.filter { it.isDigit() }?.toIntOrNull()
@@ -249,12 +239,10 @@ class Anime47Provider : MainAPI() {
         }
     }
 
-    // === FIX: Bỏ defaultPoster, trả về null nếu poster không hợp lệ ===
     private fun RecommendationItem.toSearchResult(): SearchResponse? {
         if (this.link.isNullOrBlank() || this.title.isNullOrBlank()) return null
         val fullUrl = mainUrl + this.link
         
-        // Trả về null nếu poster là placeholder hoặc rỗng, item sẽ bị lọc
         val poster = fixUrl(this@toSearchResult.poster) ?: return null
         
         val tvType = this.type.toRecommendationTvType()
@@ -265,12 +253,10 @@ class Anime47Provider : MainAPI() {
         }
     }
 
-    // === FIX: Bỏ defaultPoster, trả về null nếu poster không hợp lệ ===
     private fun SearchItem.toSearchResult(): SearchResponse? {
         val fullUrl = mainUrl + this.link
         if (fullUrl.isBlank()) return null
 
-        // Trả về null nếu poster là placeholder hoặc rỗng, item sẽ bị lọc
         val poster = fixUrl(this@toSearchResult.image) ?: return null
 
         val epCount = this.episodes?.filter { it.isDigit() }?.toIntOrNull()
@@ -304,7 +290,6 @@ class Anime47Provider : MainAPI() {
             return emptyList()
         }
         
-        // mapNotNull sẽ lọc bỏ các item có poster là null
         return res?.results?.mapNotNull { it.toSearchResult() } ?: emptyList()
     }
 
@@ -348,7 +333,6 @@ class Anime47Provider : MainAPI() {
             val post = infoRes.data
             val title = post.title ?: "Unknown Title $animeId"
 
-            // === FIX: Bỏ defaultPoster, chấp nhận poster = null ===
             val poster = fixUrl(post.poster)
 
             val cover = fixUrl(post.cover) 
@@ -359,21 +343,57 @@ class Anime47Provider : MainAPI() {
             
             val tvType = post.toTvType(default = TvType.Anime)
 
+            // === FIX: BỎ GROUPBY, HIỂN THỊ TẤT CẢ TẬP VÀ FIX TÊN ===
             val episodes = episodesResponse?.teams?.flatMap { team ->
                 team.groups.flatMap { group ->
+                    // Không filter, không groupBy, map thẳng
                     group.episodes.mapNotNull { ep ->
-                        val displayNum = ep.number ?: ep.title?.toIntOrNull()
-                        val epName = ep.title?.let { if (it.toIntOrNull() != null) "Tập $it" else it }
-                                        ?: displayNum?.let { "Tập $it" }
-                                        ?: "Tập ${ep.id}"
+                        // Ưu tiên ep.number nếu có, nếu không thì parse từ title
+                        val epNum = ep.number ?: ep.title?.toIntOrNull()
 
+                        // Logic tạo tên
+                        val baseName = if (epNum != null) "Tập $epNum" else (ep.title ?: "Tập ${ep.id}")
+                        
+                        // Regex tìm số ở đầu title, ví dụ "01" trong "01[BD]"
+                        val numRegex = """^\d+""".toRegex() 
+                        val match = numRegex.find(ep.title ?: "")
+                        
+                        val suffix = if (match != null && ep.title != null) {
+                            // Lấy phần còn lại sau số (e.g., "[BD]", "_END")
+                            ep.title.substring(match.value.length) 
+                        } else if (match == null && ep.title != null && epNum != null && ep.title != epNum.toString()) {
+                             // Trường hợp title không bắt đầu bằng số, nhưng khác số tập
+                            ep.title
+                        } else if (match == null && ep.title != null && epNum == null) {
+                            // Trường hợp không có số tập, dùng title gốc
+                             return@mapNotNull newEpisode(ep.id.toString()) {
+                                name = ep.title
+                                episode = null // Không có số tập
+                            }
+                        }
+                        else {
+                            "" // Rỗng
+                        }
+
+                        // Dọn dẹp tag (bỏ _, trim)
+                        val cleanedSuffix = suffix.replace("_", " ").trim()
+                        // Nối tên: "Tập 1" + " " + "[BD]"
+                        val epName = if (cleanedSuffix.isEmpty()) baseName else "$baseName $cleanedSuffix"
+                        // === Kết thúc logic tạo tên ===
+                        
                         newEpisode(ep.id.toString()) {
                             name = epName
-                            episode = null
+                            episode = epNum // Gán số tập (có thể null)
                         }
                     }
                 }
-            }?.distinctBy { it.data } ?: emptyList()
+            }?.distinctBy { it.data } // Vẫn giữ distinctBy ID để phòng trường hợp API lỗi trả về 2 object y hệt
+             ?.sortedWith( // Sắp xếp theo số tập (ưu tiên null cuối) và sau đó theo ID
+                 compareBy(nullsLast()) { it.episode }
+                 .thenBy { it.data.toIntOrNull() ?: 0 }
+             )
+            ?: emptyList()
+            // === KẾT THÚC FIX ===
 
             val trailers = infoRes.data.videos?.mapNotNull { fixUrl(it.url) }
             
@@ -381,14 +401,11 @@ class Anime47Provider : MainAPI() {
 
             return when (tvType) {
                 TvType.AnimeMovie, TvType.OVA -> {
-                    // === FIX: Gửi episodeId đầu tiên (nếu có) thay vì animeId ===
-                    // Điều này loại bỏ nhu cầu fallback trong loadLinks
                     val movieData = episodes.firstOrNull()?.data
                     
-                    // Nếu không có tập nào, không thể load phim
                     if (movieData == null) {
                         logError(IOException("No episodes found for Movie/OVA: $title (ID: $animeId)"))
-                        return null // Hoặc throw? Trả về null để app xử lý
+                        return null 
                     }
                         
                     newMovieLoadResponse(title, url, tvType, movieData) {
@@ -411,7 +428,6 @@ class Anime47Provider : MainAPI() {
         }
     }
 
-    // === FIX: ĐÃ XÓA LOGIC FALLBACK ===
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -419,7 +435,6 @@ class Anime47Provider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
 
-        // data giờ đây PHẢI là episodeId (từ hàm load)
         val id = data.substringAfterLast('/')
         if (id.isBlank()) {
             logError(IOException("loadLinks received blank data: '$data'"))
@@ -436,13 +451,11 @@ class Anime47Provider : MainAPI() {
             logError(IOException("Failed to get streams directly with ID: $id", e))
         }
 
-        // Nếu không có stream (dù đã có episodeId), báo lỗi và thoát
         if (streams.isNullOrEmpty()) {
             logError(IOException("No streams found for episode ID: '$id'"))
             return false
         }
 
-        // Xử lý stream
         val loaded = AtomicBoolean(false)
         coroutineScope {
             streams.map { stream ->
