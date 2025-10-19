@@ -259,14 +259,10 @@ class Anime47Provider : MainAPI() {
         }
     }
 
-    // === FIX: THÊM HÀM search() ===
     override suspend fun search(query: String): List<SearchResponse> {
         if (query.isBlank()) return emptyList()
 
-        // Logic y hệt quickSearch
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
-        // API này có phân trang, nhưng hàm search() (theo mẫu Onflix) không hỗ trợ
-        // nên chúng ta chỉ lấy trang 1.
         val url = "$apiBaseUrl/search/full/?lang=vi&keyword=$encodedQuery&page=1"
 
         val res = try {
@@ -281,30 +277,12 @@ class Anime47Provider : MainAPI() {
             return emptyList()
         }
 
-        // Trả về kết quả (chỉ trang 1)
         return res?.results?.mapNotNull { it.toSearchResult() } ?: emptyList()
     }
-    // =============================
 
     override suspend fun quickSearch(query: String): List<SearchResponse> {
-        if (query.isBlank()) return emptyList()
-
-        val encodedQuery = URLEncoder.encode(query, "UTF-8")
-        val url = "$apiBaseUrl/search/full/?lang=vi&keyword=$encodedQuery&page=1"
-
-        val res = try {
-            app.get(
-                url,
-                headers = apiHeaders,
-                interceptor = interceptor,
-                timeout = 10_000
-            ).parsedSafe<ApiSearchResponse>()
-        } catch (e: Exception) {
-            logError(e)
-            return emptyList()
-        }
-
-        return res?.results?.mapNotNull { it.toSearchResult() } ?: emptyList()
+        // Tái sử dụng logic của search()
+        return search(query)
     }
 
     override suspend fun load(url: String): LoadResponse? {
@@ -355,6 +333,7 @@ class Anime47Provider : MainAPI() {
                                      ?: displayNum?.let { "Tập $it" }
                                      ?: "Tập ${ep.id}"
 
+                    // === Đảm bảo data là ID (ep.id), KHÔNG PHẢI URL ===
                     newEpisode(ep.id.toString()) {
                         name = epName
                         episode = null
@@ -368,19 +347,22 @@ class Anime47Provider : MainAPI() {
 
         return when {
             tvType == TvType.AnimeMovie || tvType == TvType.OVA -> {
-                val movieData = episodes.firstOrNull()?.data ?: animeId
+                // Phim: dataUrl là animeId, để loadLinks xử lý fallback
+                val movieData = episodes.firstOrNull()?.data ?: animeId 
                 newMovieLoadResponse(title, url, tvType, movieData) {
                     this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = tags
                     addTrailer(trailers); this.recommendations = recommendationsList
                 }
             }
             episodes.isNotEmpty() -> {
+                // Series: dataUrl là danh sách episodeId
                 newTvSeriesLoadResponse(title, url, tvType, episodes) {
                     this.posterUrl = poster; this.backgroundPosterUrl = cover; this.year = year
                     this.plot = plot; this.tags = tags; addTrailer(trailers); this.recommendations = recommendationsList
                 }
             }
             else -> {
+                // Không có tập (coi như phim): dataUrl là animeId
                 logError(IOException("No episodes found for $title (ID: $animeId), returning as MovieLoadResponse."))
                 newMovieLoadResponse(title, url, TvType.AnimeMovie, animeId) {
                     this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = tags
@@ -390,34 +372,61 @@ class Anime47Provider : MainAPI() {
         }
     }
 
+    // === HÀM loadLinks ĐÃ SỬA LỖI LOGIC CHECK SERVER ===
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val episodeId = data.toIntOrNull() ?: runCatching {
-            logError(IllegalArgumentException("loadLinks received non-numeric data '$data', assuming animeId."))
-            val episodesUrl = "$apiBaseUrl/anime/$data/episodes?lang=vi"
-            val episodesRes = app.get(episodesUrl, headers = apiHeaders, interceptor = interceptor, timeout = 10_000).parsedSafe<ApiEpisodeResponse>()
-            episodesRes?.teams?.firstOrNull()?.groups?.firstOrNull()?.episodes?.firstOrNull()?.id
-        }.getOrNull()
-
-        if (episodeId == null) {
-            logError(IOException("Could not determine episode ID to load links from data: '$data'."))
+        
+        // 1. Xử lý 'data' có thể là URL (lỗi từ load()) hoặc ID
+        val id = data.substringAfterLast('/')
+        if (id.isBlank()) {
+            logError(IOException("loadLinks received blank data: '$data'"))
             return false
         }
 
-        val watchRes = runCatching {
-            val watchUrl = "$apiBaseUrl/anime/watch/episode/$episodeId?lang=vi"
-            app.get(watchUrl, headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiWatchResponse>()
-        }.getOrNull()
-
-        val streams = watchRes?.streams ?: run {
-            logError(IOException("No streams found for episode ID: $episodeId"))
-            return false
+        var streams: List<Stream>? = null
+        
+        // 2. Thử tải stream trực tiếp, giả định 'id' là episodeId
+        try {
+            val watchUrl = "$apiBaseUrl/anime/watch/episode/$id?lang=vi"
+            val watchRes = app.get(watchUrl, headers = apiHeaders, interceptor = interceptor, timeout = 10_000).parsedSafe<ApiWatchResponse>()
+            streams = watchRes?.streams
+        } catch (e: Exception) {
+            logError(IOException("Failed to get streams directly with ID: $id", e))
         }
 
+        // 3. Nếu thất bại (streams rỗng), giả định 'id' là animeId (cho phim)
+        if (streams.isNullOrEmpty()) {
+            logError(IOException("No streams found for ID: $id. Assuming it's an animeId, trying fallback..."))
+            try {
+                // Lấy episodeId đầu tiên từ animeId
+                val episodesUrl = "$apiBaseUrl/anime/$id/episodes?lang=vi"
+                val episodesRes = app.get(episodesUrl, headers = apiHeaders, interceptor = interceptor, timeout = 10_000).parsedSafe<ApiEpisodeResponse>()
+                val fallbackEpisodeId = episodesRes?.teams?.firstOrNull()?.groups?.firstOrNull()?.episodes?.firstOrNull()?.id
+
+                if (fallbackEpisodeId != null) {
+                    logError(IOException("Fallback success: Found episode $fallbackEpisodeId for anime $id"))
+                    // Tải stream bằng episodeId vừa tìm được
+                    val fallbackWatchUrl = "$apiBaseUrl/anime/watch/episode/$fallbackEpisodeId?lang=vi"
+                    streams = app.get(fallbackWatchUrl, headers = apiHeaders, interceptor = interceptor, timeout = 10_000).parsedSafe<ApiWatchResponse>()?.streams
+                } else {
+                    logError(IOException("Fallback failed: No episodes found for animeId $id"))
+                }
+            } catch (e: Exception) {
+                 logError(IOException("Fallback attempt failed for animeId: $id", e))
+            }
+        }
+        
+        // 4. Nếu vẫn không có stream, báo lỗi và thoát
+        if (streams.isNullOrEmpty()) {
+            logError(IOException("No streams found for data: '$data' (cleaned ID: '$id')"))
+            return false
+        }
+        
+        // 5. Xử lý stream
         val loaded = AtomicBoolean(false)
         coroutineScope {
             streams.map { stream ->
@@ -428,15 +437,18 @@ class Anime47Provider : MainAPI() {
                     val playerType = currentStream.player_type
 
                     if (streamUrl.isNullOrBlank() || serverName.isNullOrBlank()) return@async
-                    if (serverName.equals("HY", ignoreCase = true)) return@async
+
+                    // === FIX: Dùng 'contains' thay vì 'equals' ===
+                    if (serverName.contains("HY", ignoreCase = true)) return@async
 
                     val ref = "$mainUrl/"
 
                     try {
-                        if (serverName.equals("FE", ignoreCase = true) || playerType.equals("jwplayer", ignoreCase = true)) {
+                        // === FIX: Dùng 'contains' thay vì 'equals' ===
+                        if (serverName.contains("FE", ignoreCase = true) || playerType.equals("jwplayer", ignoreCase = true)) {
                             val link = newExtractorLink(
                                 source = this@Anime47Provider.name,
-                                name = serverName,
+                                name = serverName, // Giữ tên đầy đủ "A4VF | FE"
                                 url = streamUrl,
                                 type = ExtractorLinkType.M3U8
                             ) {
@@ -445,9 +457,8 @@ class Anime47Provider : MainAPI() {
                             }
                             callback(link)
                             loaded.set(true)
-                        }
-                        else {
-                            logError(IOException("Unhandled stream type or server for episode $episodeId: $serverName - $streamUrl (Player: $playerType)"))
+                        } else {
+                            logError(IOException("Unhandled stream type or server for (ID: $id): $serverName - $streamUrl (Player: $playerType)"))
                         }
                     } catch (e: Exception) {
                         logError(e)
@@ -457,7 +468,7 @@ class Anime47Provider : MainAPI() {
         }
 
         if (!loaded.get()) {
-            logError(IOException("No extractor links were loaded for episode ID: $episodeId"))
+            logError(IOException("No extractor links were loaded for ID: $id"))
         }
 
         return loaded.get()
