@@ -378,10 +378,10 @@ class Anime47Provider : MainAPI() {
                 }
             }?.distinctBy { it.data } 
              ?.sortedWith(
-                 // === FIX: CHỈ ĐỊNH RÕ KIỂU <Int> CHO nullsLast ===
-                 compareBy(nullsLast<Int>()) { it.episode }
+                 // === FIX: CHỈ ĐỊNH RÕ KIỂU `ep: Episode` ===
+                 compareBy(nullsLast<Int>()) { ep: Episode -> ep.episode }
+                 .thenBy { ep: Episode -> ep.data.toIntOrNull() ?: 0 }
                  // === KẾT THÚC FIX ===
-                 .thenBy { it.data.toIntOrNull() ?: 0 }
              )
             ?: emptyList()
 
