@@ -130,13 +130,11 @@ class Anime47Provider : MainAPI() {
 
 
     // === MainPage Requests ===
-    // === FIX: Đã xóa SearchRequest ===
     override val mainPage = mainPageOf(
         "/anime/filter?lang=vi&sort=latest" to "Anime Mới Cập Nhật",
         "/anime/filter?lang=vi&sort=rating" to "Top Đánh Giá",
         "/anime/filter?lang=vi&type=tv" to "Anime TV",
         "/anime/filter?lang=vi&type=movie" to "Anime Movie"
-        // searchPage đã bị xóa
     )
 
     // === API Headers ===
@@ -191,8 +189,6 @@ class Anime47Provider : MainAPI() {
 
     // === Core Overrides ===
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-         // === FIX: Đã xóa khối `if (request is SearchRequest)` ===
-
          withContext(Dispatchers.Main) {
              try {
                  CommonActivity.activity?.let {
@@ -263,7 +259,33 @@ class Anime47Provider : MainAPI() {
         }
     }
 
-    // quickSearch vẫn hoạt động bình thường
+    // === FIX: THÊM HÀM search() ===
+    override suspend fun search(query: String): List<SearchResponse> {
+        if (query.isBlank()) return emptyList()
+
+        // Logic y hệt quickSearch
+        val encodedQuery = URLEncoder.encode(query, "UTF-8")
+        // API này có phân trang, nhưng hàm search() (theo mẫu Onflix) không hỗ trợ
+        // nên chúng ta chỉ lấy trang 1.
+        val url = "$apiBaseUrl/search/full/?lang=vi&keyword=$encodedQuery&page=1"
+
+        val res = try {
+            app.get(
+                url,
+                headers = apiHeaders,
+                interceptor = interceptor,
+                timeout = 10_000
+            ).parsedSafe<ApiSearchResponse>()
+        } catch (e: Exception) {
+            logError(e)
+            return emptyList()
+        }
+
+        // Trả về kết quả (chỉ trang 1)
+        return res?.results?.mapNotNull { it.toSearchResult() } ?: emptyList()
+    }
+    // =============================
+
     override suspend fun quickSearch(query: String): List<SearchResponse> {
         if (query.isBlank()) return emptyList()
 
