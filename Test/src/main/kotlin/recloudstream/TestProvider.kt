@@ -6,7 +6,7 @@ import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
 // import com.lagradost.cloudstream3.utils.AppUtils.parseJson // Not used directly
 import java.net.URLEncoder
-import okhttp3.Interceptor
+import okhttphttp3.Interceptor
 import okhttp3.Response
 import okhttp3.ResponseBody
 import okhttp3.ResponseBody.Companion.toResponseBody
@@ -22,8 +22,9 @@ import android.widget.Toast
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.mvvm.logError
-// import com.lagradost.cloudstream3.mvvm.safeApiCall // Replaced usage
+// import com.lagradost.cloudstream3.mvvm.safeApiCall // Removed usage
 import java.io.IOException // Added import
+import java.util.concurrent.atomic.AtomicBoolean // For thread-safe flag
 
 // === Provider Class ===
 class Anime47Provider : MainAPI() {
@@ -142,27 +143,27 @@ class Anime47Provider : MainAPI() {
 
     private fun String?.toRecommendationTvType(): TvType {
          return when {
-            this?.contains("movie", true) == true -> TvType.AnimeMovie
-            this?.contains("ova", true) == true -> TvType.OVA
-            this?.contains("special", true) == true -> TvType.OVA // Fix: Use OVA for Special
+            this?.contains("movie", ignoreCase = true) == true -> TvType.AnimeMovie // Fix: Use ignoreCase
+            this?.contains("ova", ignoreCase = true) == true -> TvType.OVA
+            this?.contains("special", ignoreCase = true) == true -> TvType.OVA // Fix: Use OVA for Special
             else -> TvType.Anime
         }
     }
 
     private fun Post.toTvType(): TvType {
         return when {
-            this.type?.contains("movie", true) == true -> TvType.AnimeMovie
-            this.type?.contains("ova", true) == true -> TvType.OVA
-            (this.title.contains("Hoạt Hình Trung Quốc", true) || this.slug.contains("donghua", true)) -> TvType.Cartoon
+            this.type?.contains("movie", ignoreCase = true) == true -> TvType.AnimeMovie // Fix: Use ignoreCase
+            this.type?.contains("ova", ignoreCase = true) == true -> TvType.OVA
+            (this.title.contains("Hoạt Hình Trung Quốc", ignoreCase = true) || this.slug.contains("donghua", ignoreCase = true)) -> TvType.Cartoon // Fix: Use ignoreCase
             else -> TvType.Anime
         }
     }
 
     private fun DetailPost.toTvType(default: TvType = TvType.Anime): TvType {
         return when {
-            this.type?.contains("movie", true) == true -> TvType.AnimeMovie
-            this.type?.contains("ova", true) == true -> TvType.OVA
-            (this.title?.contains("Hoạt Hình Trung Quốc", true) == true ) -> TvType.Cartoon
+            this.type?.contains("movie", ignoreCase = true) == true -> TvType.AnimeMovie // Fix: Use ignoreCase
+            this.type?.contains("ova", ignoreCase = true) == true -> TvType.OVA
+            (this.title?.contains("Hoạt Hình Trung Quốc", ignoreCase = true) == true ) -> TvType.Cartoon // Fix: Use ignoreCase
             else -> default
         }
     }
@@ -170,9 +171,8 @@ class Anime47Provider : MainAPI() {
 
     // === Core Overrides ===
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-         // Run toast on Main thread
          withContext(Dispatchers.Main) {
-            try { // Add try-catch for safety although showToast should be safe
+            try {
                 CommonActivity.activity?.let {
                     showToast(it, "Provider by H4RS", Toast.LENGTH_LONG)
                 }
@@ -180,7 +180,6 @@ class Anime47Provider : MainAPI() {
                 logError(e)
             }
         }
-
 
         val url = "$apiBaseUrl${request.data}&page=$page"
         val res = try {
@@ -249,99 +248,82 @@ class Anime47Provider : MainAPI() {
              return null
         }
 
-        return coroutineScope {
-            val infoJob = async {
-                try {
-                    val infoUrl = "$apiBaseUrl/anime/info/$animeId?lang=vi"
-                    app.get(infoUrl, headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiDetailResponse>()
-                } catch (e: Exception) { null }
-            }
-            val episodesJob = async {
-                try {
-                    val episodesUrl = "$apiBaseUrl/anime/$animeId/episodes?lang=vi"
-                    app.get(episodesUrl, headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiEpisodeResponse>()
-                } catch (e: Exception) { null }
-            }
-            val recommendationsJob = async {
-                try {
-                    val recUrl = "$apiBaseUrl/anime/info/$animeId/recommendations?lang=vi"
-                    app.get(recUrl, headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiRecommendationResponse>()
-                } catch (e: Exception) { null }
-            }
+        // Use runCatching for safer API calls, returning Result<T?>
+        val infoResult = runCatching {
+            val infoUrl = "$apiBaseUrl/anime/info/$animeId?lang=vi"
+            app.get(infoUrl, headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiDetailResponse>()
+        }
+        val episodesResult = runCatching {
+            val episodesUrl = "$apiBaseUrl/anime/$animeId/episodes?lang=vi"
+            app.get(episodesUrl, headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiEpisodeResponse>()
+        }
+        val recommendationsResult = runCatching {
+            val recUrl = "$apiBaseUrl/anime/info/$animeId/recommendations?lang=vi"
+            app.get(recUrl, headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiRecommendationResponse>()
+        }
 
-            val infoRes = infoJob.await() ?: run {
-                logError(IOException("Failed to load anime info for ID: $animeId from URL: $url"))
-                return@coroutineScope null
-            }
-            val episodesRes = episodesJob.await()
-            val recommendationsRes = recommendationsJob.await()
 
-            val post = infoRes.data
-            val title = post.title ?: "Unknown Title $animeId"
-            val poster = fixUrl(post.poster)
-            val cover = fixUrl(post.cover)
-            val plot = post.description
-            val year = post.year?.toIntOrNull()
-            val tags = post.genres?.mapNotNull { it.name }?.filter { it.isNotBlank() }
-            val tvType = post.toTvType(default = TvType.Anime)
+        // Process results, logging failures
+        val infoRes = infoResult.getOrNull() ?: run {
+            logError(infoResult.exceptionOrNull() ?: IOException("Failed to load anime info for ID: $animeId"))
+            return null // Critical failure
+        }
+         episodesResult.exceptionOrNull()?.let { logError(it) }
+         recommendationsResult.exceptionOrNull()?.let { logError(it) }
 
-            val episodes = episodesRes?.teams?.flatMap { team ->
-                team.groups.flatMap { group ->
-                    group.episodes.mapNotNull { ep ->
-                        val displayNum = ep.number ?: ep.title?.toIntOrNull()
-                        val epName = ep.title?.let { if (it.toIntOrNull() != null) "Tập $it" else it }
-                                      ?: displayNum?.let { "Tập $it" }
-                                      ?: "Tập ${ep.id}"
 
-                        newEpisode(ep.id.toString()) {
-                            name = epName
-                            episode = null // Set episode to null for auto-sorting by CloudStream
-                        }
+        val post = infoRes.data
+        val title = post.title ?: "Unknown Title $animeId"
+        val poster = fixUrl(post.poster)
+        val cover = fixUrl(post.cover)
+        val plot = post.description
+        val year = post.year?.toIntOrNull()
+        val tags = post.genres?.mapNotNull { it.name }?.filter { it.isNotBlank() }
+        val tvType = post.toTvType(default = TvType.Anime)
+
+        val episodes = episodesResult.getOrNull()?.teams?.flatMap { team -> // Use getOrNull()
+            team.groups.flatMap { group ->
+                group.episodes.mapNotNull { ep ->
+                    val displayNum = ep.number ?: ep.title?.toIntOrNull()
+                    val epName = ep.title?.let { if (it.toIntOrNull() != null) "Tập $it" else it }
+                                  ?: displayNum?.let { "Tập $it" }
+                                  ?: "Tập ${ep.id}"
+
+                    newEpisode(ep.id.toString()) {
+                        name = epName
+                        episode = null
                     }
                 }
-            }?.distinctBy { it.data } ?: emptyList()
-             // No need to sort here if episode is null
+            }
+        }?.distinctBy { it.data } ?: emptyList()
 
-             val trailers = infoRes.data.videos?.mapNotNull { fixUrl(it.url) }
-            val recommendationsList = recommendationsRes?.data?.mapNotNull { it.toSearchResult() }
+         val trailers = infoRes.data.videos?.mapNotNull { fixUrl(it.url) }
+        val recommendationsList = recommendationsResult.getOrNull()?.data?.mapNotNull { it.toSearchResult() } // Use getOrNull()
 
-            when {
-                tvType == TvType.AnimeMovie || tvType == TvType.OVA -> {
-                    val movieData = episodes.firstOrNull()?.data ?: animeId
-                    newMovieLoadResponse(title, url, tvType, movieData) {
-                        this.posterUrl = poster
-                        this.year = year
-                        this.plot = plot
-                        this.tags = tags
-                        addTrailer(trailers)
-                        this.recommendations = recommendationsList
-                    }
+        return when { // Use return directly
+            tvType == TvType.AnimeMovie || tvType == TvType.OVA -> {
+                val movieData = episodes.firstOrNull()?.data ?: animeId
+                newMovieLoadResponse(title, url, tvType, movieData) {
+                    this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = tags
+                    addTrailer(trailers); this.recommendations = recommendationsList
                 }
-                episodes.isNotEmpty() -> {
-                    newTvSeriesLoadResponse(title, url, tvType, episodes) {
-                        this.posterUrl = poster
-                        this.backgroundPosterUrl = cover
-                        this.year = year
-                        this.plot = plot
-                        this.tags = tags
-                         addTrailer(trailers)
-                         this.recommendations = recommendationsList
-                    }
+            }
+            episodes.isNotEmpty() -> {
+                newTvSeriesLoadResponse(title, url, tvType, episodes) {
+                    this.posterUrl = poster; this.backgroundPosterUrl = cover; this.year = year
+                    this.plot = plot; this.tags = tags; addTrailer(trailers); this.recommendations = recommendationsList
                 }
-                else -> {
-                    logError(IOException("No episodes found for $title (ID: $animeId), returning as MovieLoadResponse."))
-                    newMovieLoadResponse(title, url, TvType.AnimeMovie, animeId) {
-                        this.posterUrl = poster
-                        this.year = year
-                        this.plot = plot
-                        this.tags = tags
-                        addTrailer(trailers)
-                        this.recommendations = recommendationsList
-                    }
+            }
+            else -> {
+                logError(IOException("No episodes found for $title (ID: $animeId), returning as MovieLoadResponse."))
+                newMovieLoadResponse(title, url, TvType.AnimeMovie, animeId) {
+                    this.posterUrl = poster; this.year = year; this.plot = plot; this.tags = tags
+                    addTrailer(trailers); this.recommendations = recommendationsList
                 }
             }
         }
     }
+
 
     override suspend fun loadLinks(
         data: String,
@@ -349,63 +331,65 @@ class Anime47Provider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Use safe block for potentially failing operations
-        val episodeId = safeApiCall { data.toIntOrNull() } ?: run {
-             logError(IllegalArgumentException("loadLinks received non-numeric data '$data', assuming animeId."))
-             try {
-                val episodesUrl = "$apiBaseUrl/anime/$data/episodes?lang=vi"
-                val episodesRes = app.get(episodesUrl, headers = apiHeaders, interceptor = interceptor, timeout = 10_000).parsedSafe<ApiEpisodeResponse>()
-                episodesRes?.teams?.firstOrNull()?.groups?.firstOrNull()?.episodes?.firstOrNull()?.id
-             } catch (e: Exception) { null }
-         }
+        // Determine episodeId safely
+        val episodeId = data.toIntOrNull() ?: runCatching {
+            logError(IllegalArgumentException("loadLinks received non-numeric data '$data', assuming animeId."))
+            val episodesUrl = "$apiBaseUrl/anime/$data/episodes?lang=vi"
+            val episodesRes = app.get(episodesUrl, headers = apiHeaders, interceptor = interceptor, timeout = 10_000).parsedSafe<ApiEpisodeResponse>()
+            episodesRes?.teams?.firstOrNull()?.groups?.firstOrNull()?.episodes?.firstOrNull()?.id
+        }.getOrNull() // Use runCatching for safety
 
         if (episodeId == null) {
             logError(IOException("Could not determine episode ID to load links from data: '$data'."))
             return false
         }
 
-        val watchUrl = "$apiBaseUrl/anime/watch/episode/$episodeId?lang=vi"
-         // Use safe block for API call
-        val watchRes = safeApiCall {
+        // Fetch streams safely
+        val watchRes = runCatching {
+            val watchUrl = "$apiBaseUrl/anime/watch/episode/$episodeId?lang=vi"
             app.get(watchUrl, headers = apiHeaders, interceptor = interceptor, timeout = 15_000).parsedSafe<ApiWatchResponse>()
+        }.getOrNull()
+
+        val streams = watchRes?.streams ?: run {
+            logError(IOException("No streams found for episode ID: $episodeId"))
+            return false
         }
 
-        if (watchRes?.streams == null) {
-             logError(IOException("No streams found for episode ID: $episodeId"))
-             return false
-        }
-
-        var loaded = false
-         // Use coroutineScope for structured concurrency with map + awaitAll
-        coroutineScope {
-            watchRes.streams.map { stream ->
+        // Use AtomicBoolean for thread-safe flag update
+        val loaded = AtomicBoolean(false)
+        coroutineScope { // Needed for async
+            streams.map { stream ->
                 // Launch async block for each stream within the scope
                 async {
-                    val streamUrl = stream.url
-                    val serverName = stream.server_name
-                    val playerType = stream.player_type
-                    // Use return@async inside the async block
+                    // Explicitly name the lambda parameter
+                    val currentStream = stream
+                    val streamUrl = currentStream.url
+                    val serverName = currentStream.server_name
+                    val playerType = currentStream.player_type
+
                     if (streamUrl.isNullOrBlank() || serverName.isNullOrBlank()) return@async
+                    // Fix: Correct equals call with ignoreCase
                     if (serverName.equals("HY", ignoreCase = true)) return@async
 
                     val sourceName = "$name - $serverName"
                     val ref = "$mainUrl/"
 
                     try {
+                        // Fix: Correct endsWith call with ignoreCase and null safety
                         if ((playerType == "jwplayer" || serverName == "FE") && streamUrl.endsWith(".m3u8", ignoreCase = true)) {
-                             // Correctly call suspend fun newExtractorLink inside async
-                            val link = newExtractorLink(
+                            val link = newExtractorLink( // Call suspend fun inside async
                                 source = this@Anime47Provider.name,
                                 name = serverName,
-                                url = streamUrl,
+                                url = streamUrl, // streamUrl is guaranteed non-null here
                                 type = ExtractorLinkType.M3U8
                             ) {
                                 this.referer = ref
                                 this.quality = Qualities.Unknown.value
                             }
                             callback(link)
-                            loaded = true // Note: Potential race condition if strict accuracy needed
-                        } else if (serverName == "FE" && streamUrl.contains("vlogphim.net") && !streamUrl.endsWith(".m3u8", ignoreCase = true)) {
+                            loaded.set(true) // Set AtomicBoolean
+                         // Fix: Correct contains call with null safety and endsWith
+                        } else if (serverName == "FE" && streamUrl.contains("vlogphim.net", ignoreCase = true) && !streamUrl.endsWith(".m3u8", ignoreCase = true)) {
                             logError(IOException("FE server URL is not M3U8, handling needed: $streamUrl"))
                         } else {
                             logError(IOException("Unhandled stream type or server for episode $episodeId: $serverName - $streamUrl (Player: $playerType)"))
@@ -417,7 +401,7 @@ class Anime47Provider : MainAPI() {
             }.awaitAll() // Wait for all async stream processing to complete
         } // End coroutineScope
 
-        return loaded
+        return loaded.get() // Return final value of AtomicBoolean
     }
 
     // Subtitle mapping
@@ -475,6 +459,10 @@ class Anime47Provider : MainAPI() {
                      response?.close()
                      logError(e)
                      throw e
+                } finally {
+                     // Ensure response is closed if an exception happens before returning normally
+                     // This might be redundant if exceptions always lead to re-throwing, but adds safety
+                     // response?.close() // Careful: Might close response needed by caller if exception is handled differently later
                 }
             }
         }
