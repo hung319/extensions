@@ -554,13 +554,13 @@ class Anime47Provider : MainAPI() {
 
     // Video Interceptor
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
-        // === FIX: Bắt link .ts chung chung, không chỉ nonprofit.asia ===
-        val tsRegex = Regex("""*.nonprofit.asia.*""") // Matches any URL ending in .ts, with or without query params
+        // === FIX: Áp dụng riêng cho nonprofit.asia ===
+        val nonprofitAsiaRegex = Regex("""*\.nonprofit\.asia/.*""")
 
         return object : Interceptor {
             override fun intercept(chain: Interceptor.Chain): Response {
                 val request = chain.request()
-                // === FIX: Kiểm tra Range header để bỏ qua khi tua video ===
+                // Kiểm tra Range header để bỏ qua khi tua video
                 val isRangeRequest = request.header("Range") != null
                 
                 var response: Response? = null
@@ -569,10 +569,10 @@ class Anime47Provider : MainAPI() {
                     val url = request.url.toString()
 
                     // Chỉ can thiệp khi:
-                    // 1. URL là file .ts
+                    // 1. URL khớp với Regex của nonprofit.asia
                     // 2. Request thành công (200 OK - tải toàn bộ file)
                     // 3. KHÔNG phải là Range request (không phải đang tua video / response.code 206)
-                    if (tsRegex.containsMatchIn(url) && response.isSuccessful && response.code == 200 && !isRangeRequest) {
+                    if (nonprofitAsiaRegex.containsMatchIn(url) && response.isSuccessful && response.code == 200 && !isRangeRequest) {
                         response.body?.let { body ->
                             try {
                                 val responseBytes = body.bytes()
@@ -591,7 +591,7 @@ class Anime47Provider : MainAPI() {
                             }
                         }
                     }
-                    // Trả về response gốc nếu không phải .ts, hoặc là range request, hoặc request lỗi
+                    // Trả về response gốc nếu không khớp regex, hoặc là range request, hoặc request lỗi
                     return response ?: throw IOException("Proceed returned null response for $url")
                 } catch (networkE: Exception) {
                     response?.close()
