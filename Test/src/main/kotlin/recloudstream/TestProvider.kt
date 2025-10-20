@@ -538,20 +538,7 @@ class Anime47Provider : MainAPI() {
     // Subtitle mapping
     private val subtitleLanguageMap: Map<String, List<String>> = mapOf(
         "Vietnamese" to listOf("tiếng việt", "vietnamese", "vietsub", "viet", "vi"),
-        "English" to listOf("tiếng anh", "english", "engsub", "eng", "en"),
-        "Spanish" to listOf("español", "spanish", "es"),
-        "Portuguese" to listOf("português", "portuguese", "pt", "br"),
-        "French" to listOf("français", "french", "fr"),
-        "German" to listOf("deutsch", "german", "de"),
-        "Italian" to listOf("italiano", "italian", "it"),
-        "Russian" to listOf("русский", "russian", "ru"),
-        "Japanese" to listOf("日本語", "japanese", "ja", "raw"),
-        "Korean" to listOf("한국어", "korean", "ko"),
-        "Chinese" to listOf("中文", "chinese", "zh", "cn"),
-        "Thai" to listOf("ไทย", "thai", "th"),
-        "Indonesian" to listOf("indonesia", "indonesian", "id"),
-        "Malay" to listOf("malay", "ms", "malaysia"),
-        "Arabic" to listOf("العربية", "arabic", "ar"),
+        "English" to listOf("tiếng anh", "english", "engsub", "eng", "en")
     )
     
     private fun mapSubtitleLabel(label: String): String {
@@ -567,21 +554,29 @@ class Anime47Provider : MainAPI() {
 
     // Video Interceptor
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
-        val nonprofitAsiaTsRegex = Regex("""https://cdn\d*\.nonprofit\.asia/.*""")
+        // === FIX: Bắt link .ts chung chung, không chỉ nonprofit.asia ===
+        val tsRegex = Regex(""".*\.ts($|\?.*)""") // Matches any URL ending in .ts, with or without query params
 
         return object : Interceptor {
             override fun intercept(chain: Interceptor.Chain): Response {
                 val request = chain.request()
+                // === FIX: Kiểm tra Range header để bỏ qua khi tua video ===
+                val isRangeRequest = request.header("Range") != null
+                
                 var response: Response? = null
                 try {
                     response = chain.proceed(request)
                     val url = request.url.toString()
 
-                    if (nonprofitAsiaTsRegex.containsMatchIn(url) && response.isSuccessful) {
+                    // Chỉ can thiệp khi:
+                    // 1. URL là file .ts
+                    // 2. Request thành công (200 OK - tải toàn bộ file)
+                    // 3. KHÔNG phải là Range request (không phải đang tua video / response.code 206)
+                    if (tsRegex.containsMatchIn(url) && response.isSuccessful && response.code == 200 && !isRangeRequest) {
                         response.body?.let { body ->
                             try {
                                 val responseBytes = body.bytes()
-                                val fixedBytes = skipByteErrorRaw(responseBytes)
+                                val fixedBytes = skipByteErrorRaw(responseBytes) // Chạy hàm sửa lỗi
                                 val newBody = fixedBytes.toResponseBody(body.contentType())
                                 response.close()
                                 return response.newBuilder()
@@ -596,6 +591,7 @@ class Anime47Provider : MainAPI() {
                             }
                         }
                     }
+                    // Trả về response gốc nếu không phải .ts, hoặc là range request, hoặc request lỗi
                     return response ?: throw IOException("Proceed returned null response for $url")
                 } catch (networkE: Exception) {
                     response?.close()
