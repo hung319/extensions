@@ -555,7 +555,7 @@ class Anime47Provider : MainAPI() {
     // Video Interceptor
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
         // === FIX: Áp dụng riêng cho nonprofit.asia ===
-        val nonprofitAsiaRegex = Regex("""*\.nonprofit\.asia/.*""")
+        val nonprofitAsiaRegex = Regex("""nonprofit.asia""")
 
         return object : Interceptor {
             override fun intercept(chain: Interceptor.Chain): Response {
