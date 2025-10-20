@@ -19,11 +19,15 @@ import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.mvvm.logError
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
-// === Imports for Toast (Re-added) ===
+// === Imports for Toast ===
 import com.lagradost.cloudstream3.CommonActivity.showToast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import android.widget.Toast
+// === FIX: Imports for newEpisode and toJson ===
+import com.lagradost.cloudstream3.newEpisode
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
+// === End FIX ===
 
 // === Provider Class ===
 class Anime47Provider : MainAPI() {
@@ -36,11 +40,7 @@ class Anime47Provider : MainAPI() {
     override var lang = "vi"
     override val hasDownloadSupport = true
     
-    // === FIX: Chỉ giữ lại TvType.Anime ===
     override val supportedTypes = setOf(TvType.Anime)
-
-    // === FIX: Bỏ defaultPoster ===
-    // private val defaultPoster = "https://placehold.co/600x400" // Đã xóa
 
     private val interceptor = CloudflareKiller()
 
@@ -181,7 +181,6 @@ class Anime47Provider : MainAPI() {
 
     // === Core Overrides ===
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // === FIX: Giữ lại Toast ===
         withContext(Dispatchers.Main) {
             try {
                 CommonActivity.activity?.let {
@@ -191,7 +190,6 @@ class Anime47Provider : MainAPI() {
                 logError(e)
             }
         }
-        // === Kết thúc FIX ===
 
         val url = "$apiBaseUrl${request.data}&page=$page"
         val res = try {
@@ -226,7 +224,6 @@ class Anime47Provider : MainAPI() {
         val episodesMap: Map<DubStatus, Int> = if (epCount != null) mapOf(DubStatus.Subbed to epCount) else emptyMap()
 
         return newAnimeSearchResponse(title, url, tvType) {
-            // === FIX: Bỏ defaultPoster ===
             this.posterUrl = fixUrl(poster)
             this.year = year
             if (episodesMap.isNotEmpty()) {
@@ -242,7 +239,6 @@ class Anime47Provider : MainAPI() {
             title = this.title,
             url = mainUrl + this.link,
             poster = this.poster,
-            // === FIX: Chỉ giữ lại TvType.Anime ===
             tvType = TvType.Anime,
             year = this.year?.toIntOrNull(),
             episodesStr = this.episodes
@@ -255,7 +251,6 @@ class Anime47Provider : MainAPI() {
             title = this.title,
             url = mainUrl + this.link,
             poster = this.poster,
-            // === FIX: Chỉ giữ lại TvType.Anime ===
             tvType = TvType.Anime,
             year = this.year?.toIntOrNull(),
             episodesStr = null
@@ -268,7 +263,6 @@ class Anime47Provider : MainAPI() {
             title = this.title,
             url = mainUrl + this.link,
             poster = this.image,
-            // === FIX: Chỉ giữ lại TvType.Anime ===
             tvType = TvType.Anime,
             year = null,
             episodesStr = this.episodes
@@ -353,22 +347,17 @@ class Anime47Provider : MainAPI() {
                 .filter { it.number != null } // Chỉ lấy những tập có 'number'
                 .groupBy { it.number!! } // Gộp nhóm theo 'number'
                 .map { (epNum, epList) ->
-                    // epNum là số tập (ví dụ: 1)
-                    // epList là danh sách các tập có cùng số 1 (ví dụ: id 2332 và 38315)
                     
                     val epName = "Tập $epNum"
                     
-                    // === FIX 1: Sửa lỗi Unresolved reference 'toJson' ===
-                    // Chuyển danh sách ID thành một chuỗi JSON
-                    val idListJson = AppUtils.toJson(epList.map { it.id }.distinct())
+                    // === FIX 1: Dùng extension function .toJson() ===
+                    val idListJson = epList.map { it.id }.distinct().toJson()
 
-                    // === FIX 2 & 3: Sửa lỗi Argument type mismatch & Unresolved reference 'episode' ===
-                    // newEpisode không dùng builder block { } mà truyền tham số trực tiếp
-                    newEpisode(
-                        data = idListJson,
-                        name = epName,
-                        episode = epNum // Số tập để sắp xếp
-                    )
+                    // === FIX 2: Dùng cú pháp builder của newEpisode ===
+                    newEpisode(idListJson) { // data (idListJson) được truyền vào constructor
+                        name = epName      // name và episode được gán bên trong builder
+                        episode = epNum 
+                    }
                 }
                 .sortedBy { it.episode } // Sắp xếp lại theo số tập
             // === LOGIC GỘP TẬP KẾT THÚC ===
@@ -378,17 +367,15 @@ class Anime47Provider : MainAPI() {
 
             return when (tvType) {
                 TvType.AnimeMovie, TvType.OVA -> {
-                    // Đối với Movie, data là animeId (logic cũ)
                     val movieData = episodes.firstOrNull()?.data ?: animeId
-                    newMovieLoadResponse(title, url, TvType.Anime, movieData) { // Trả về TvType.Anime
+                    newMovieLoadResponse(title, url, TvType.Anime, movieData) {
                         this.posterUrl = poster 
                         this.year = year; this.plot = plot; this.tags = tags
                         addTrailer(trailers); this.recommendations = recommendationsList
                     }
                 }
                 else -> { 
-                    // Đối với Series, data là danh sách tập đã gộp
-                    newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) { // Trả về TvType.Anime
+                    newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
                         this.posterUrl = poster 
                         this.backgroundPosterUrl = cover; this.year = year
                         this.plot = plot; this.tags = tags; addTrailer(trailers); this.recommendations = recommendationsList
@@ -401,7 +388,7 @@ class Anime47Provider : MainAPI() {
         }
     }
 
-    // === HÀM LOADLINKS ĐÃ CẬP NHẬT LOGIC GỘP SERVER ===
+    // === HÀM LOADLINKS (Không đổi) ===
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -427,7 +414,6 @@ class Anime47Provider : MainAPI() {
 
         if (episodeIds.isNotEmpty()) {
             // === LOGIC MỚI: XỬ LÝ NHIỀU ID ===
-            // 'data' là một danh sách ID, gọi API cho từng ID song song
             allStreams = coroutineScope {
                 episodeIds.map { id ->
                     async {
@@ -440,9 +426,9 @@ class Anime47Provider : MainAPI() {
                             null
                         }
                     }
-                }.awaitAll() // Chờ tất cả API trả về
-                 .filterNotNull() // Lọc các kết quả lỗi (null)
-                 .flatten() // Gộp tất cả danh sách Stream lại thành một
+                }.awaitAll()
+                 .filterNotNull()
+                 .flatten()
             }
             // === KẾT THÚC LOGIC MỚI ===
 
@@ -462,7 +448,7 @@ class Anime47Provider : MainAPI() {
                 logError(IOException("Failed to get streams directly with ID: $id", e))
             }
 
-            // Fallback: Nếu không có stream, giả định 'id' là 'animeId' (dành cho movie)
+            // Fallback:
             if (allStreams.isNullOrEmpty()) {
                 Log.d(logTag, "No streams for ID $id. Trying fallback as anime ID.")
                 try {
@@ -484,7 +470,6 @@ class Anime47Provider : MainAPI() {
             // === KẾT THÚC LOGIC CŨ ===
         }
 
-        // 'allStreams' giờ đã chứa tất cả server
         if (allStreams.isNullOrEmpty()) {
             logError(IOException("No streams found for data: '$data'"))
             return false
@@ -492,12 +477,10 @@ class Anime47Provider : MainAPI() {
 
         val loaded = AtomicBoolean(false)
         coroutineScope {
-            // Không dùng distinctBy, để giữ lại cả 2 server dù trùng link
             allStreams.map { stream ->
                 async {
                     val currentStream = stream
                     val streamUrl = currentStream.url
-                    // Tên server lấy trực tiếp từ API (stream.server_name)
                     val serverName = currentStream.server_name
                     val playerType = currentStream.player_type
 
@@ -510,7 +493,7 @@ class Anime47Provider : MainAPI() {
                         if (serverName.contains("FE", ignoreCase = true) || playerType.equals("jwplayer", ignoreCase = true)) {
                             val link = newExtractorLink(
                                 source = this@Anime47Provider.name,
-                                name = serverName, // Sử dụng tên server từ API
+                                name = serverName, 
                                 url = streamUrl,
                                 type = ExtractorLinkType.M3U8
                             ) {
