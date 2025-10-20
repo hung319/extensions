@@ -300,7 +300,7 @@ class Anime47Provider : MainAPI() {
         return search(query)
     }
 
-    // === HÀM LOAD ĐÃ CẬP NHẬT LOGIC GỘP TẬP ===
+    // === HÀM LOAD ĐÃ SỬA LỖI BIÊN DỊCH ===
     override suspend fun load(url: String): LoadResponse? {
         try {
             val animeId = url.substringAfterLast('-').trim()
@@ -358,14 +358,17 @@ class Anime47Provider : MainAPI() {
                     
                     val epName = "Tập $epNum"
                     
+                    // === FIX 1: Sửa lỗi Unresolved reference 'toJson' ===
                     // Chuyển danh sách ID thành một chuỗi JSON
-                    // Ví dụ: [2332, 38315]
-                    val idListJson = epList.map { it.id }.distinct().toJson()
+                    val idListJson = AppUtils.toJson(epList.map { it.id }.distinct())
 
-                    newEpisode(idListJson) { // data giờ là chuỗi JSON
-                        name = epName
+                    // === FIX 2 & 3: Sửa lỗi Argument type mismatch & Unresolved reference 'episode' ===
+                    // newEpisode không dùng builder block { } mà truyền tham số trực tiếp
+                    newEpisode(
+                        data = idListJson,
+                        name = epName,
                         episode = epNum // Số tập để sắp xếp
-                    }
+                    )
                 }
                 .sortedBy { it.episode } // Sắp xếp lại theo số tập
             // === LOGIC GỘP TẬP KẾT THÚC ===
