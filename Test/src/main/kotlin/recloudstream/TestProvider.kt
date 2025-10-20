@@ -555,46 +555,90 @@ class Anime47Provider : MainAPI() {
         return loaded.get()
     }
 
-    // === Giữ nguyên getVideoInterceptor (theo yêu cầu) ===
+    // === FIX: Thêm Headers vào Request và Xử lý Tua video (Range Request) ===
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
         val nonprofitRegex = Regex(""".*nonprofit.*""")
         
+        // Nắm bắt baseUrl và User-Agent tại thời điểm tạo interceptor
+        // (baseUrl đã được cập nhật bởi getBaseUrl() trong loadLinks)
+        val referer = "$baseUrl/"
+        val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
+
         return object : Interceptor {
             override fun intercept(chain: Interceptor.Chain): Response {
                 val request = chain.request()
-                val response = chain.proceed(request)
-                val url = request.url.toString()
+                // Kiểm tra xem đây có phải là request khi tua (Range) không
+                val isRangeRequest = request.header("Range") != null
+                
+                // 1. Sửa Request: Thêm headers cần thiết
+                val newRequest = request.newBuilder()
+                    .header("Referer", referer)
+                    .header("User-Agent", userAgent)
+                    .build()
 
-                if (nonprofitRegex.containsMatchIn(url) ) {
-                    response.body?.let { body ->
-                        try {
-                            val fixedBytes = skipByteError(body)
-                            val newBody = fixedBytes.toResponseBody(body.contentType())
-                            return response.newBuilder().body(newBody).build()
-                        } catch (_: Exception) {
+                var response: Response? = null
+                try {
+                    // Tiến hành request với header đã sửa
+                    response = chain.proceed(newRequest)
+                    val url = request.url.toString()
+
+                    // 2. Sửa Response: Chỉ sửa lỗi byte nếu là file .ts VÀ không phải đang tua
+                    if (nonprofitRegex.containsMatchIn(url) && response.isSuccessful && response.code == 200 && !isRangeRequest) {
+                        response.body?.let { body ->
+                            try {
+                                // Sử dụng hàm skipByteErrorRaw mới (an toàn hơn)
+                                val responseBytes = body.bytes() 
+                                val fixedBytes = skipByteErrorRaw(responseBytes)
+                                val newBody = fixedBytes.toResponseBody(body.contentType())
+                                
+                                response.close() // Đóng response cũ
+                                return response.newBuilder()
+                                    .removeHeader("Content-Length") // Xóa header cũ
+                                    .addHeader("Content-Length", fixedBytes.size.toString()) // Thêm header mới
+                                    .body(newBody)
+                                    .build()
+                            } catch (e: Exception) {
+                                logError(e)
+                                response.close() // Đóng nếu lỗi
+                                throw IOException("Failed to process interceptor for $url", e)
+                            }
                         }
                     }
+                    
+                    // Trả về response gốc (cho file M3U8, file .ts khi tua, hoặc file lỗi)
+                    return response ?: throw IOException("Proceed returned null response for $url")
+
+                } catch (networkE: Exception) {
+                    response?.close()
+                    logError(networkE)
+                    throw networkE
+                } catch (e: Exception) {
+                    response?.close()
+                    logError(e)
+                    throw e
                 }
-                return response
             }
         }
     }
-}
+} // Kết thúc class Anime47Provider
 
-// === Giữ nguyên skipByteError (theo yêu cầu) ===
-private fun skipByteError(responseBody: ResponseBody): ByteArray {
-    val source = responseBody.source()
-    source.request(Long.MAX_VALUE)
-    val buffer = source.buffer.clone()
-    source.close()
-    val byteArray = buffer.readByteArray()
-    val length = byteArray.size - 188
-    var start = 0
-    for (i in 0 until length) {
-        val nextIndex = i + 188
-        if (nextIndex < byteArray.size && byteArray[i].toInt() == 71 && byteArray[nextIndex].toInt() == 71) {
-            start = i; break
+// === FIX: Helper mới, an toàn hơn cho Interceptor, thay thế skipByteError cũ ===
+private fun skipByteErrorRaw(byteArray: ByteArray): ByteArray {
+    return try {
+        if (byteArray.isEmpty()) return byteArray
+        val length = byteArray.size - 188
+        var start = 0
+        if (length > 0) {
+            for (i in 0 until length) {
+                val nextIndex = i + 188
+                if (nextIndex < byteArray.size && byteArray[i].toInt() == 71 && byteArray[nextIndex].toInt() == 71) { // 'G'
+                    start = i; break
+                }
+            }
         }
+        if (start > 0) byteArray.copyOfRange(start, byteArray.size) else byteArray
+    } catch (e: Exception) {
+        logError(e)
+        byteArray
     }
-    return if (start > 0) byteArray.copyOfRange(start, byteArray.size) else byteArray
 }
