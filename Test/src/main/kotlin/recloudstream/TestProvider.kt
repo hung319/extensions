@@ -555,7 +555,7 @@ class Anime47Provider : MainAPI() {
     // Video Interceptor
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
         // === FIX: Bắt link .ts chung chung, không chỉ nonprofit.asia ===
-        val tsRegex = Regex(""".*\.ts($|\?.*)""") // Matches any URL ending in .ts, with or without query params
+        val tsRegex = Regex("""*.nonprofit.asia.*""") // Matches any URL ending in .ts, with or without query params
 
         return object : Interceptor {
             override fun intercept(chain: Interceptor.Chain): Response {
