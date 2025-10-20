@@ -552,79 +552,44 @@ class Anime47Provider : MainAPI() {
         return label.trim().replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
     }
 
-    // Video Interceptor
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
-        // === FIX: Áp dụng riêng cho nonprofit.asia ===
-        val nonprofitAsiaRegex = Regex("""nonprofit.asia""")
-
+        val nonprofitRegex = Regex(""".*nonprofit.*""")
+        
         return object : Interceptor {
             override fun intercept(chain: Interceptor.Chain): Response {
                 val request = chain.request()
-                // Kiểm tra Range header để bỏ qua khi tua video
-                val isRangeRequest = request.header("Range") != null
-                
-                var response: Response? = null
-                try {
-                    response = chain.proceed(request)
-                    val url = request.url.toString()
+                val response = chain.proceed(request)
+                val url = request.url.toString()
 
-                    // Chỉ can thiệp khi:
-                    // 1. URL khớp với Regex của nonprofit.asia
-                    // 2. Request thành công (200 OK - tải toàn bộ file)
-                    // 3. KHÔNG phải là Range request (không phải đang tua video / response.code 206)
-                    if (nonprofitAsiaRegex.containsMatchIn(url) && response.isSuccessful && response.code == 200 && !isRangeRequest) {
-                        response.body?.let { body ->
-                            try {
-                                val responseBytes = body.bytes()
-                                val fixedBytes = skipByteErrorRaw(responseBytes) // Chạy hàm sửa lỗi
-                                val newBody = fixedBytes.toResponseBody(body.contentType())
-                                response.close()
-                                return response.newBuilder()
-                                    .removeHeader("Content-Length")
-                                    .addHeader("Content-Length", fixedBytes.size.toString())
-                                    .body(newBody)
-                                    .build()
-                            } catch (processE: Exception) {
-                                logError(processE)
-                                response.close()
-                                throw IOException("Failed to process video interceptor for $url", processE)
-                            }
+                if (nonprofitRegex.containsMatchIn(url) ) {
+                    response.body?.let { body ->
+                        try {
+                            val fixedBytes = skipByteError(body)
+                            val newBody = fixedBytes.toResponseBody(body.contentType())
+                            return response.newBuilder().body(newBody).build()
+                        } catch (_: Exception) {
                         }
                     }
-                    // Trả về response gốc nếu không khớp regex, hoặc là range request, hoặc request lỗi
-                    return response ?: throw IOException("Proceed returned null response for $url")
-                } catch (networkE: Exception) {
-                    response?.close()
-                    logError(networkE)
-                    throw networkE
-                } catch (e: Exception) {
-                    response?.close()
-                    logError(e)
-                    throw e
                 }
+                return response
             }
         }
     }
-} // End class Anime47Provider
+}
 
-
-// Helper to fix potential TS stream byte errors
-private fun skipByteErrorRaw(byteArray: ByteArray): ByteArray {
-    return try {
-        if (byteArray.isEmpty()) return byteArray
-        val length = byteArray.size - 188
-        var start = 0
-        if (length > 0) {
-            for (i in 0 until length) {
-                val nextIndex = i + 188
-                if (nextIndex < byteArray.size && byteArray[i].toInt() == 71 && byteArray[nextIndex].toInt() == 71) { // 'G'
-                    start = i; break
-                }
-            }
+private fun skipByteError(responseBody: ResponseBody): ByteArray {
+    val source = responseBody.source()
+    source.request(Long.MAX_VALUE)
+    val buffer = source.buffer.clone()
+    source.close()
+    val byteArray = buffer.readByteArray()
+    val length = byteArray.size - 188
+    var start = 0
+    for (i in 0 until length) {
+        val nextIndex = i + 188
+        if (nextIndex < byteArray.size && byteArray[i].toInt() == 71 && byteArray[nextIndex].toInt() == 71) {
+            start = i; break
         }
-        if (start > 0) byteArray.copyOfRange(start, byteArray.size) else byteArray
-    } catch (e: Exception) {
-        logError(e)
-        byteArray
     }
+    return if (start > 0) byteArray.copyOfRange(start, byteArray.size) else byteArray
 }
