@@ -187,8 +187,9 @@ class Anime47Provider : MainAPI() {
                 timeout = 15_000
             ).parsed<ApiFilterResponse>()
         } catch (e: Exception) {
-            logError("Get MainPage failed: ${e.message}") // Log only critical failure
-            throw ErrorLoadingException("Không thể tải trang chủ. Lỗi Cloudflare hoặc API.") // Simplified message
+            // === FIX: Pass exception to logError ===
+            logError(e)
+            throw ErrorLoadingException("Không thể tải trang chủ. Lỗi Cloudflare hoặc API.")
         }
 
         val home = res.data.posts.mapNotNull { post ->
@@ -242,7 +243,8 @@ class Anime47Provider : MainAPI() {
                 timeout = 10_000
             ).parsedSafe<ApiSearchResponse>()
         } catch (e: Exception) {
-            logError("Search failed: ${e.message}")
+            // === FIX: Pass exception to logError ===
+            logError(e)
             return emptyList()
         }
 
@@ -287,15 +289,19 @@ class Anime47Provider : MainAPI() {
             }
 
             val infoRes = infoResult.getOrElse {
+                // === FIX: Pass exception to logError ===
+                logError(it) // Log the specific fetch error
                 throw IOException("Failed to fetch anime info for ID $animeId", it)
             } ?: throw IOException("Parsed anime info is null for ID $animeId")
 
             val episodesResponse = episodesResult.getOrElse {
-                logError("Failed to fetch episodes for ID $animeId: $it") // Log episode fetch errors but don't crash
-                null // Continue loading even if episodes fail
+                // === FIX: Pass exception to logError ===
+                logError(it) // Log episode fetch errors but don't crash
+                null
             }
 
-            recommendationsResult.exceptionOrNull()?.let { logError("Failed to fetch recommendations: $it") }
+            // === FIX: Pass exception to logError ===
+            recommendationsResult.exceptionOrNull()?.let { logError(it) }
 
 
             val post = infoRes.data
@@ -308,22 +314,18 @@ class Anime47Provider : MainAPI() {
             val tags = post.genres?.mapNotNull { it.name }?.filter { it.isNotBlank() }
             val tvType = post.type.toTvType()
 
-            // === SỬA TÊN TẬP VÀ episode = null ===
             val episodes = episodesResponse?.teams?.flatMap { team ->
                 team.groups.flatMap { group ->
                     group.episodes.mapNotNull { ep ->
-                        // Lấy tên gốc từ API, fallback về ID nếu null
-                        // Thêm prefix "Tập "
                         val epName = ep.title?.let { "Tập $it" } ?: "Tập ${ep.id}"
-
                         newEpisode(ep.id.toString()) {
                             name = epName
-                            episode = null // Đặt episode = null
+                            episode = null
                         }
                     }
                 }
             }?.distinctBy { it.data } ?: emptyList()
-            // === KẾT THÚC SỬA TÊN TẬP ===
+
 
             val trailers = infoRes.data.videos?.mapNotNull { fixUrl(it.url) }
 
@@ -346,7 +348,8 @@ class Anime47Provider : MainAPI() {
                 TvType.AnimeMovie, TvType.OVA -> {
                     val movieData = episodes.firstOrNull()?.data
                     if (movieData == null) {
-                        logError("No valid episode found for Movie/OVA: $title (ID: $animeId)")
+                        // === FIX: Pass correct exception type ===
+                        logError(IOException("No valid episode found for Movie/OVA: $title (ID: $animeId)"))
                         return null
                     }
                     newMovieLoadResponse(title, url, tvType, movieData) {
@@ -364,7 +367,8 @@ class Anime47Provider : MainAPI() {
                 }
             }
         } catch (e: Exception) {
-            logError("Error loading $url: $e") // Log the main load error
+            // === FIX: Pass exception to logError ===
+            logError(e) // Log the main load error
             throw IOException("Error loading $url", e) // Re-throw for app UI
         }
     }
@@ -378,7 +382,6 @@ class Anime47Provider : MainAPI() {
 
         val id = data.substringAfterLast('/')
         if (id.isBlank()) {
-            // logError("loadLinks received blank data: '$data'") // Removed redundant log
             return false
         }
 
@@ -389,11 +392,11 @@ class Anime47Provider : MainAPI() {
             val watchRes = app.get(watchUrl, headers = apiHeaders, interceptor = interceptor, timeout = 10_000).parsedSafe<ApiWatchResponse>()
             streams = watchRes?.streams
         } catch (e: Exception) {
-            logError("Failed to get streams directly with ID: $id - ${e.message}") // Log only critical failure
+            // === FIX: Pass exception to logError ===
+            logError(e) // Simplified log
         }
 
         if (streams.isNullOrEmpty()) {
-            // logError("No streams found for episode ID: '$id'") // Removed redundant log
             return false
         }
 
@@ -422,30 +425,28 @@ class Anime47Provider : MainAPI() {
                     callback(link)
                     loaded = true
 
-                    // === SỬ DỤNG newSubtitleFile ===
                     stream.subtitles?.forEach { sub ->
                         if (!sub.file.isNullOrBlank() && !sub.label.isNullOrBlank()) {
                             try {
                                 subtitleCallback(
-                                    newSubtitleFile( // Use suspend function
+                                    newSubtitleFile(
                                         lang = mapSubtitleLabel(sub.label),
                                         url = sub.file
                                     )
                                 )
                             } catch (e: Exception) {
-                                logError("Failed processing subtitle ${sub.file}: $e")
+                                // === FIX: Pass exception to logError ===
+                                logError(e)
                             }
                         }
                     }
-                    // === KẾT THÚC SỬ DỤNG newSubtitleFile ===
                 }
-                // Removed redundant log for unhandled server type
             } catch (e: Exception) {
-                logError("Error processing stream $streamUrl: $e")
+                // === FIX: Pass exception to logError ===
+                logError(e)
             }
         }
 
-        // Removed redundant log for no links loaded
         return loaded
     }
 
@@ -471,20 +472,18 @@ class Anime47Provider : MainAPI() {
 
     private fun mapSubtitleLabel(label: String): String {
         val lowerLabel = label.trim().lowercase(Locale.ROOT)
-        if (lowerLabel.isBlank()) return "Subtitle" // Default label
+        if (lowerLabel.isBlank()) return "Subtitle"
         for ((language, keywords) in subtitleLanguageMap) {
             if (keywords.any { keyword -> lowerLabel.contains(keyword) }) {
                 return language
             }
         }
-        // Return original label capitalized if no match
         return label.trim().replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
     }
 
     // Video Interceptor
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
-        // Regex needs to be defined within the function or globally, ensure it's correct
-        val nonprofitAsiaTsRegex = Regex("""https://cdn\d*\.nonprofit\.asia/.*""")
+        val nonprofitAsiaTsRegex = Regex("""https.cdn\d*\.nonprofit\.asia.*""")
 
         return object : Interceptor {
             override fun intercept(chain: Interceptor.Chain): Response {
@@ -494,40 +493,40 @@ class Anime47Provider : MainAPI() {
                     response = chain.proceed(request)
                     val url = request.url.toString()
 
-                    // Ensure regex matches correctly and response is successful
                     if (nonprofitAsiaTsRegex.containsMatchIn(url) && response.isSuccessful) {
                         response.body?.let { body ->
                             try {
                                 val responseBytes = body.bytes()
                                 val fixedBytes = skipByteErrorRaw(responseBytes)
                                 val newBody = fixedBytes.toResponseBody(body.contentType())
-                                response.close() // Close the original response body
+                                response.close()
                                 return response.newBuilder()
-                                    .removeHeader("Content-Length") // Remove old header
-                                    .addHeader("Content-Length", fixedBytes.size.toString()) // Add corrected length
+                                    .removeHeader("Content-Length")
+                                    .addHeader("Content-Length", fixedBytes.size.toString())
                                     .body(newBody)
                                     .build()
                             } catch (processE: Exception) {
-                                logError("Error processing video interceptor for $url: $processE")
-                                response.close() // Ensure original response is closed on error
+                                // === FIX: Pass exception to logError ===
+                                logError(processE)
+                                response.close()
                                 throw IOException("Failed to process video interceptor for $url", processE)
                             }
                         } ?: run {
-                            // Body is null, shouldn't happen with isSuccessful, but handle defensively
                            throw IOException("Successful response but null body for $url")
                         }
                     }
-                    // Return original response if no processing needed or conditions not met
                     return response
 
-                } catch (networkE: IOException) { // Catch specific IOExceptions for network issues
+                } catch (networkE: IOException) {
                     response?.close()
-                    logError("Network error during video interception for ${request.url}: $networkE")
-                    throw networkE // Re-throw network errors
-                } catch (e: Exception) { // Catch other potential exceptions
+                    // === FIX: Pass exception to logError ===
+                    logError(networkE)
+                    throw networkE
+                } catch (e: Exception) {
                     response?.close()
-                    logError("Unexpected error during video interception for ${request.url}: $e")
-                    throw IOException("Unexpected error during video interception", e) // Wrap in IOException
+                    // === FIX: Pass exception to logError ===
+                    logError(e)
+                    throw IOException("Unexpected error during video interception", e)
                 }
             }
         }
@@ -540,9 +539,8 @@ private fun skipByteErrorRaw(byteArray: ByteArray): ByteArray {
     return try {
         if (byteArray.isEmpty()) return byteArray
         val tsPacketSize = 188
-        val syncByte = 0x47.toByte() // 'G' in ASCII (71 decimal)
+        val syncByte = 0x47.toByte()
 
-        // Find the first occurrence of the sync byte at the start of a packet
         var firstSyncByte = -1
         for (i in byteArray.indices) {
             if (byteArray[i] == syncByte && (i % tsPacketSize == 0)) {
@@ -551,22 +549,22 @@ private fun skipByteErrorRaw(byteArray: ByteArray): ByteArray {
             }
         }
 
-        // If no sync byte found at a valid position, return original array (or handle error)
         if (firstSyncByte == -1) {
-            logError("TS Sync Byte (0x47) not found at expected packet start.")
-            return byteArray // Or throw? Returning original is safer.
+            // === FIX: Pass correct exception type ===
+            logError(IOException("TS Sync Byte (0x47) not found at expected packet start."))
+            return byteArray
         }
 
-        // If the first sync byte is not at the beginning, trim the start
         if (firstSyncByte > 0) {
-            logError("Trimming ${firstSyncByte} bytes from TS stream start.")
+            // === FIX: Pass correct exception type ===
+            logError(IOException("Trimming ${firstSyncByte} bytes from TS stream start."))
             return byteArray.copyOfRange(firstSyncByte, byteArray.size)
         }
 
-        // If sync byte is already at the beginning, no trimming needed
         byteArray
     } catch (e: Exception) {
-        logError("Error in skipByteErrorRaw: $e")
-        byteArray // Return original array on error
+        // === FIX: Pass exception to logError ===
+        logError(e)
+        byteArray
     }
 }
