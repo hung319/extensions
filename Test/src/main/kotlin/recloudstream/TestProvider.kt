@@ -64,7 +64,7 @@ class Anime47Provider : MainAPI() {
     // private suspend fun getBaseUrl(): String { ... }
     // === Kết thúc FIX ===
 
-    // === Data Classes cho API (Giữ nguyên) ===
+    // === Data Classes cho API ===
     private data class GenreInfo(val name: String?)
     private data class Post(
         val id: Int,
@@ -120,11 +120,20 @@ class Anime47Provider : MainAPI() {
         val player_type: String?,
         val subtitles: List<SubtitleItem>?
     )
+    
+    // === FIX: THÊM LẠI DATA CLASS BỊ THIẾU ===
+    private data class WatchAnimeInfo(
+        val id: Int,
+        val title: String?,
+        val slug: String?,
+        val thumbnail: String?
+    )
     private data class ApiWatchResponse(
         val id: Int?,
         val streams: List<Stream>?,
         val anime: WatchAnimeInfo?
     )
+    // === KẾT THÚC FIX ===
 
     private data class RecommendationItem(
         val id: Int,
