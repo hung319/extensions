@@ -1,4 +1,4 @@
-// Save this file as HHTQProvider.kt
+// Save this file as HHDRagonProvider.kt
 package recloudstream
 
 import com.fasterxml.jackson.annotation.JsonProperty
@@ -42,9 +42,12 @@ private data class StreamBlueSource(
     @JsonProperty("type") val type: String?
 )
 
-class HHTQProvider : MainAPI() {
+// =========================================================================
+// 1. DÙNG HHDRagonProvider
+// =========================================================================
+class HHDRagonProvider : MainAPI() {
     override var mainUrl = "https://hhtq.lat"
-    override var name = "HHTQ"
+    override var name = "HHTQ" // Tên có thể vẫn giữ là HHTQ
     override var lang = "vi"
     override val hasMainPage = true
     override val hasDownloadSupport = true
@@ -139,10 +142,7 @@ class HHTQProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // 1. GET trang xem phim (loadlinks.html)
         val document = app.get(data, headers = headers, referer = mainUrl, interceptor = killer).document
-        
-        // 2. Tìm nonce và post_id từ global config (thường là halim_cfg)
         val scriptData = document.select("script").map { it.data() }.firstOrNull { it.contains("halim_cfg") }
             ?: throw ErrorLoadingException("Không tìm thấy halim_cfg script")
 
@@ -151,7 +151,6 @@ class HHTQProvider : MainAPI() {
         val postId = postIdRegex.find(scriptData)?.groupValues?.get(1)
             ?: throw ErrorLoadingException("Không tìm thấy post_id")
 
-        // 3. Lấy danh sách server
         val servers = document.select("li.server-item")
 
         coroutineScope {
@@ -164,38 +163,28 @@ class HHTQProvider : MainAPI() {
 
                 launch {
                     try {
-                        // 4. Xây dựng URL AJAX (từ cURL 1)
                         val playerAjaxUrl = "$mainUrl/halimmovies/player.php?episode_slug=$episodeSlug&server_id=$serverId&subsv_id=&post_id=$postId&nonce=$nonce&custom_var="
-                        
                         val ajaxHeaders = headers + mapOf(
                             "Accept" to "text/html, */*; q=0.01",
                             "X-Requested-With" to "XMLHttpRequest",
                             "Referer" to data
                         )
-
-                        // 5. Gọi AJAX để lấy JSON chứa iframe
                         val ajaxRes = app.get(playerAjaxUrl, headers = ajaxHeaders, interceptor = killer).parsed<PlayerResponse>()
-
                         if (ajaxRes.status != true || ajaxRes.data?.sources.isNullOrBlank()) {
                             return@launch
                         }
 
-                        // 6. Parse HTML bên trong JSON để lấy src
                         val iframeDoc = Jsoup.parse(ajaxRes.data.sources)
                         val embedUrl = iframeDoc.selectFirst("iframe")?.attr("src") ?: return@launch
-
-                        // 7. Xử lý embedUrl
                         
-                        // --- Logic inline cho streamblue.biz (từ cURL 2) ---
+                        // --- Logic inline cho streamblue.biz ---
                         if (embedUrl.contains("streamblue.biz")) {
                             val streamblueReferer = "https://streamblue.biz/"
                             
-                            // 7a. GET trang embed để lấy videoId
                             val embedDoc = app.get(embedUrl, headers = headers + mapOf("Referer" to data)).document
                             val videoId = Regex("""videoId\s*:\s*['"]?(\d+)['"]?""").find(embedDoc.html())?.groupValues?.get(1)
                                 ?: return@launch
                             
-                            // 7b. POST để lấy sources (từ cURL 2)
                             val postUrl = "https://streamblue.biz/players/sources?videoId=$videoId"
                             val postHeaders = headers + mapOf(
                                 "X-Requested-With" to "XMLHttpRequest",
@@ -205,43 +194,41 @@ class HHTQProvider : MainAPI() {
                             val sourceRes = app.post(postUrl, headers = postHeaders).parsed<StreamBlueResponse>()
                             val sourceString = sourceRes.message?.source ?: return@launch
 
-                            // 7c. Parse chuỗi JSON bên trong
                             val sourceList = jacksonObjectMapper().readValue<List<StreamBlueSource>>(sourceString)
 
                             sourceList.forEach { source ->
                                 val qualityLabel = source.label ?: "HD"
                                 val linkType = if (source.type == "video/mp4") ExtractorLinkType.VIDEO else ExtractorLinkType.M3U8
                                 
-                                // 7d. Sử dụng suspend fun newExtractorLink như được yêu cầu
-                                val link = newExtractorLink(
-                                    source = "$name ($serverName)", // VD: "HHTQ (VIP)"
-                                    name = "StreamBlue $qualityLabel",
-                                    url = source.file,
-                                    type = linkType
-                                ) {
-                                    this.quality = qualityLabel.toQualityValue()
-                                    this.referer = streamblueReferer
-                                    this.isM3u8 = linkType == ExtractorLinkType.M3U8
-                                }
-                                callback(link)
+                                // Dùng suspend fun (Đúng)
+                                callback(
+                                    newExtractorLink(
+                                        source = "$name ($serverName)",
+                                        name = "StreamBlue $qualityLabel",
+                                        url = source.file,
+                                        type = linkType // 2. Dùng ExtractorLinkType
+                                    ) { 
+                                        this.quality = qualityLabel.toQualityValue()
+                                        this.referer = streamblueReferer
+                                        // 2. ĐÃ BỎ isM3u8
+                                    }
+                                )
                             }
                         } 
                         // --- Kết thúc logic streamblue.biz ---
                         
                         else {
-                            // 8. Fallback: Dùng loadExtractor cho các server khác
+                            // =========================================================================
+                            // 3. SỬA LỖI FALLBACK
+                            // Dùng .copy() để tạo link mới với tên đã sửa
+                            // Đây là cách duy nhất đúng vì:
+                            // - link.name là 'val' (Lỗi 'val cannot be reassigned')
+                            // - Chúng ta đang ở trong callback không-suspend (Lỗi 'Suspension functions...')
+                            // =========================================================================
                             loadExtractor(embedUrl, data, subtitleCallback) { link ->
-                                // Sử dụng newExtractorLink (non-suspend) để thêm tên server
                                 callback(
-                                    newExtractorLink(
-                                        source = link.source,
-                                        name = "$serverName: ${link.name}", // VD: "OK: Google"
-                                        url = link.url,
-                                        type = link.type,
-                                        quality = link.quality,
-                                        isM3u8 = link.isM3u8,
-                                        referer = link.referer,
-                                        headers = link.headers
+                                    link.copy( // <-- SỬ DỤNG .copy()
+                                        name = "$serverName: ${link.name}" // Chỉ thay đổi tên
                                     )
                                 )
                             }
