@@ -42,12 +42,9 @@ private data class StreamBlueSource(
     @JsonProperty("type") val type: String?
 )
 
-// =========================================================================
-// 1. DÙNG HHDRagonProvider
-// =========================================================================
 class HHDRagonProvider : MainAPI() {
     override var mainUrl = "https://hhtq.lat"
-    override var name = "HHTQ" // Tên có thể vẫn giữ là HHTQ
+    override var name = "HHTQ"
     override var lang = "vi"
     override val hasMainPage = true
     override val hasDownloadSupport = true
@@ -187,7 +184,7 @@ class HHDRagonProvider : MainAPI() {
                             
                             val postUrl = "https://streamblue.biz/players/sources?videoId=$videoId"
                             val postHeaders = headers + mapOf(
-                                "X-Requested-With" to "XMLHttpRequest",
+                                "X-RequestedWith" to "XMLHttpRequest",
                                 "Referer" to embedUrl,
                                 "Origin" to streamblueReferer
                             )
@@ -206,11 +203,10 @@ class HHDRagonProvider : MainAPI() {
                                         source = "$name ($serverName)",
                                         name = "StreamBlue $qualityLabel",
                                         url = source.file,
-                                        type = linkType // 2. Dùng ExtractorLinkType
+                                        type = linkType 
                                     ) { 
                                         this.quality = qualityLabel.toQualityValue()
                                         this.referer = streamblueReferer
-                                        // 2. ĐÃ BỎ isM3u8
                                     }
                                 )
                             }
@@ -219,18 +215,11 @@ class HHDRagonProvider : MainAPI() {
                         
                         else {
                             // =========================================================================
-                            // 3. SỬA LỖI FALLBACK
-                            // Dùng .copy() để tạo link mới với tên đã sửa
-                            // Đây là cách duy nhất đúng vì:
-                            // - link.name là 'val' (Lỗi 'val cannot be reassigned')
-                            // - Chúng ta đang ở trong callback không-suspend (Lỗi 'Suspension functions...')
+                            // SỬA LỖI: Dùng link gốc từ loadExtractor
+                            // Theo yêu cầu, chỉ cần callback(link) để tránh lỗi build
                             // =========================================================================
                             loadExtractor(embedUrl, data, subtitleCallback) { link ->
-                                callback(
-                                    link.copy( // <-- SỬ DỤNG .copy()
-                                        name = "$serverName: ${link.name}" // Chỉ thay đổi tên
-                                    )
-                                )
+                                callback(link)
                             }
                         }
                     } catch (e: Exception) {
