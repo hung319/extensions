@@ -1,13 +1,13 @@
-// Save this file as HHDRagonProvider.kt
+// Save this file as HHDRagonProvider.kt (hoặc HHTQProvider.kt)
+
 package recloudstream
 
-import com.fasterxml.jackson.annotation.JsonProperty
-import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
-import com.fasterxml.jackson.module.kotlin.readValue
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
-import com.lagradost.cloudstream3.utils.*
-import org.jsoup.Jsoup
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
@@ -15,79 +15,77 @@ import com.lagradost.cloudstream3.CommonActivity.showToast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import android.widget.Toast
-// Import cho cả 2 hàm newExtractorLink (suspend và non-suspend)
+// Thêm import cho newExtractorLink
 import com.lagradost.cloudstream3.utils.newExtractorLink
+// Thêm Jsoup để phân tích HTML từ AJAX
+import org.jsoup.Jsoup
 
-// Data class cho AJAX request tới player.php (cURL 1)
-private data class PlayerResponse(
-    @JsonProperty("data") val data: PlayerData?,
-    @JsonProperty("status") val status: Boolean
-)
-private data class PlayerData(
-    // "sources" là một chuỗi HTML chứa iframe
-    @JsonProperty("sources") val sources: String?
-)
-
-// Data class cho streamblue.biz (cURL 2)
-private data class StreamBlueResponse(
-    @JsonProperty("message") val message: StreamBlueMessage?
-)
-private data class StreamBlueMessage(
-    // "source" là một chuỗi JSON
-    @JsonProperty("source") val source: String?
-)
-private data class StreamBlueSource(
-    @JsonProperty("file") val file: String,
-    @JsonProperty("label") val label: String?,
-    @JsonProperty("type") val type: String?
+// JSON response mới cho AJAX request trong loadLinks
+private data class HalimAjaxResponse(
+    val html: String
 )
 
 class HHDRagonProvider : MainAPI() {
-    override var mainUrl = "https://hhtq.lat"
-    override var name = "HHTQ"
+    override var mainUrl = "https://hhtq.lat" // Đã thay đổi
+    override var name = "HHTQ" // Đã thay đổi
     override var lang = "vi"
     override val hasMainPage = true
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(
+        TvType.Anime,
+        TvType.AnimeMovie,
         TvType.Cartoon,
-        TvType.Anime
     )
 
     private val killer = CloudflareKiller()
-    private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/536.36"
+    private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36"
     private val headers = mapOf("User-Agent" to userAgent)
 
     override val mainPage = mainPageOf(
-        "/" to "Mới Cập Nhật",
-        "/the-loai/hh3d" to "HH3D",
-        "/the-loai/hh2d" to "HH2D",
+        "/type/" to "Mới Cập Nhật", // Đã thay đổi (lấy từ link section title)
+        "/genres/anime" to "Anime", // Đã thay đổi
+        "/genres/hhkungfu" to "HHKungfu", // Đã thay đổi
+        "/genres/hhpanda" to "HHPanda" // Đã thêm
     )
     
-    private fun Element.toSearchResponse(): SearchResponse {
-        val linkTag = this.selectFirst("a")!!
+    private fun Element.toSearchResponse(forceTvType: TvType? = null): SearchResponse {
+        // Selector đã thay đổi
+        val linkTag = this.selectFirst("a.halim-thumb") 
+            ?: return newAnimeSearchResponse("Lỗi", "", TvType.Anime) // failsafe
+        
         val href = fixUrl(linkTag.attr("href"))
-        val title = linkTag.attr("title")
-        val posterUrl = fixUrlNull(this.selectFirst("img")?.attr("data-src"))
-        val type = TvType.Cartoon 
+        val title = linkTag.attr("title").trim()
+        // Lấy ảnh từ data-src
+        val posterUrl = fixUrlNull(this.selectFirst("figure img")?.attr("data-src"))
+        val type = forceTvType ?: TvType.Anime // Caller nên chỉ định type
+        // Lấy nhãn (Tập 196)
+        val episodeLabel = this.selectFirst("span.movie-label")?.text()
 
-        return newAnimeSearchResponse(title, href, type) { this.posterUrl = posterUrl }
+        return newAnimeSearchResponse(title, href, type) {
+            this.posterUrl = posterUrl
+            this.otherName = episodeLabel // Dùng otherName để hiển thị nhãn tập
+        }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         withContext(Dispatchers.Main) {
             CommonActivity.activity?.let { activity ->
-                showToast(activity, "Provider cho HHTQ.lat", Toast.LENGTH_LONG)
+                showToast(activity, "Provider HHTQ (H4RS)", Toast.LENGTH_LONG)
             }
         }
-        
-        val url = if (page == 1) {
-            "$mainUrl${request.data}"
-        } else {
-            "$mainUrl${request.data.removeSuffix("/")}/page/$page/"
-        }
-        
+        // Logic phân trang đã thay đổi: ?page=
+        val url = "$mainUrl${request.data}" + if (page > 1) "?page=$page" else ""
         val document = app.get(url, headers = headers, interceptor = killer).document
-        val home = document.select("div.halim_box div.item").map { it.toSearchResponse() }
+
+        val type = when {
+            request.data.contains("hhkungfu") || request.data.contains("hhpanda") -> TvType.Cartoon
+            else -> TvType.Anime
+        }
+
+        // Selector item đã thay đổi
+        val home = document.select("div.halim_box article.thumb.grid-item").map { it.toSearchResponse(type) }
+        
+        // Selector pagination đã thay đổi
         val hasNext = document.selectFirst("a.next.page-numbers") != null && home.isNotEmpty()
 
         return newHomePageResponse(
@@ -97,41 +95,53 @@ class HHDRagonProvider : MainAPI() {
     }
     
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$mainUrl/tim-kiem/?keyword=${query}"
+        // URL tìm kiếm đã thay đổi
+        val url = "$mainUrl/search?s=${query}"
         val document = app.get(url, headers = headers, interceptor = killer).document
-        return document.select("div.halim_box div.item").map { it.toSearchResponse() }
+        // Selector item đã thay đổi
+        return document.select("div.halim_box article.thumb.grid-item").map { it.toSearchResponse() }
     }
 
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url, headers = headers, interceptor = killer).document
         
-        val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: "No Title"
-        val posterUrl = fixUrlNull(document.selectFirst("div.film-poster img")?.attr("data-src"))
-        val plot = document.selectFirst("div.film-content")?.text()?.trim()
-        val tags = document.select("li.halim-tags a").map { it.text() }
-        val year = document.select("ul.filminfo li a[href*='/year/']").firstOrNull()?.text()?.toIntOrNull()
-        val tvType = TvType.Cartoon
+        // Selector tiêu đề đã thay đổi
+        val title = document.selectFirst("div.movie-detail a.entry-title")?.text()?.trim() ?: "No Title"
+        // Selector poster đã thay đổi
+        val posterUrl = fixUrlNull(document.selectFirst("div.movie-poster img.movie-thumb")?.attr("src"))
+        // Selector nội dung đã thay đổi
+        val plot = document.selectFirst("div.entry-content article.item-content > p")?.text()
+        // Selector thể loại đã thay đổi
+        val tags = document.select("p.genre a").map { it.text() }
         
+        // Không tìm thấy năm sản xuất rõ ràng trong HTML mới, tạm thời bỏ qua
+        // val year = null 
+
+        val tvType = when {
+            // Cập nhật logic phát hiện type
+            tags.any { it.equals("HHKungfu", ignoreCase = true) || it.equals("HHPanda", ignoreCase = true) } -> TvType.Cartoon
+            else -> TvType.Anime 
+        }
+        
+        // Selector danh sách tập đã thay đổi
         val episodes = document.select("div.episode-lists a.episode-item").map {
             newEpisode(fixUrl(it.attr("href"))) {
+                // Tên tập lấy từ text() thay vì title
                 this.name = "Tập ${it.text()}"
             }
         }.reversed()
         
-        val recommendations = document.select("div.related-movie div.item").mapNotNull { it.toSearchResponse() }
+        // Phim đề xuất bị comment-out trong HTML mới, tạm thời bỏ qua
+        // val recommendations = null
         
         return newTvSeriesLoadResponse(title, url, tvType, episodes) {
             this.posterUrl = posterUrl
             this.plot = plot
             this.tags = tags
-            this.year = year
-            this.recommendations = recommendations
+            // this.year = year // Bỏ qua
+            // this.recommendations = recommendations // Bỏ qua
         }
     }
-
-    // Biểu thức Regex để tìm nonce và post_id từ script
-    private val nonceRegex = Regex(""""nonce":"?([a-zA-Z0-9]+)"?""")
-    private val postIdRegex = Regex(""""post_id":"?(\d+)"?""")
 
     override suspend fun loadLinks(
         data: String,
@@ -139,102 +149,74 @@ class HHDRagonProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data, headers = headers, referer = mainUrl, interceptor = killer).document
-        val scriptData = document.select("script").map { it.data() }.firstOrNull { it.contains("halim_cfg") }
+        
+        // 1. Phân tích server và episode_slug từ URL
+        val (server, episodeSlug) = Regex("""sv-(\d+)-tap-([\d-]+)""").find(data)?.destructured
+            ?: throw ErrorLoadingException("Không thể phân tích server/episode từ URL: $data")
+
+        // 2. Tải trang xem phim
+        val watchPageDoc = app.get(data, headers = headers, referer = mainUrl, interceptor = killer).document
+
+        // 3. Tìm script chứa 'var halim_cfg'
+        val script = watchPageDoc.select("script[data-optimized=\"1\"]").firstOrNull { it.data().contains("var halim_cfg") }?.data()
+            ?: watchPageDoc.select("script").firstOrNull { it.data().contains("var halim_cfg") }?.data()
             ?: throw ErrorLoadingException("Không tìm thấy halim_cfg script")
 
-        val nonce = nonceRegex.find(scriptData)?.groupValues?.get(1)
-            ?: throw ErrorLoadingException("Không tìm thấy nonce")
-        val postId = postIdRegex.find(scriptData)?.groupValues?.get(1)
-            ?: throw ErrorLoadingException("Không tìm thấy post_id")
-
-        val servers = document.select("li.server-item")
-
-        coroutineScope {
-            servers.forEach { server ->
-                val serverName = server.selectFirst("a.server-name")?.text()?.trim() ?: "Server"
-                val episodeSlug = server.attr("data-episode-slug")
-                val serverId = server.attr("data-server-id")
-
-                if (episodeSlug.isBlank() || serverId.isBlank()) return@forEach
-
-                launch {
-                    try {
-                        val playerAjaxUrl = "$mainUrl/halimmovies/player.php?episode_slug=$episodeSlug&server_id=$serverId&subsv_id=&post_id=$postId&nonce=$nonce&custom_var="
-                        val ajaxHeaders = headers + mapOf(
-                            "Accept" to "text/html, */*; q=0.01",
-                            "X-Requested-With" to "XMLHttpRequest",
-                            "Referer" to data
-                        )
-                        val ajaxRes = app.get(playerAjaxUrl, headers = ajaxHeaders, interceptor = killer).parsed<PlayerResponse>()
-                        if (ajaxRes.status != true || ajaxRes.data?.sources.isNullOrBlank()) {
-                            return@launch
-                        }
-
-                        val iframeDoc = Jsoup.parse(ajaxRes.data.sources)
-                        val embedUrl = iframeDoc.selectFirst("iframe")?.attr("src") ?: return@launch
-                        
-                        // --- Logic inline cho streamblue.biz ---
-                        if (embedUrl.contains("streamblue.biz")) {
-                            val streamblueReferer = "https://streamblue.biz/"
-                            
-                            val embedDoc = app.get(embedUrl, headers = headers + mapOf("Referer" to data)).document
-                            val videoId = Regex("""videoId\s*:\s*['"]?(\d+)['"]?""").find(embedDoc.html())?.groupValues?.get(1)
-                                ?: return@launch
-                            
-                            val postUrl = "https://streamblue.biz/players/sources?videoId=$videoId"
-                            val postHeaders = headers + mapOf(
-                                "X-RequestedWith" to "XMLHttpRequest",
-                                "Referer" to embedUrl,
-                                "Origin" to streamblueReferer
-                            )
-                            val sourceRes = app.post(postUrl, headers = postHeaders).parsed<StreamBlueResponse>()
-                            val sourceString = sourceRes.message?.source ?: return@launch
-
-                            val sourceList = jacksonObjectMapper().readValue<List<StreamBlueSource>>(sourceString)
-
-                            sourceList.forEach { source ->
-                                val qualityLabel = source.label ?: "HD"
-                                val linkType = if (source.type == "video/mp4") ExtractorLinkType.VIDEO else ExtractorLinkType.M3U8
-                                
-                                // Dùng suspend fun (Đúng)
-                                callback(
-                                    newExtractorLink(
-                                        source = "$name ($serverName)",
-                                        name = "StreamBlue $qualityLabel",
-                                        url = source.file,
-                                        type = linkType 
-                                    ) { 
-                                        this.quality = qualityLabel.toQualityValue()
-                                        this.referer = streamblueReferer
-                                    }
-                                )
-                            }
-                        } 
-                        // --- Kết thúc logic streamblue.biz ---
-                        
-                        else {
-                            // =========================================================================
-                            // SỬA LỖI: Dùng link gốc từ loadExtractor
-                            // Theo yêu cầu, chỉ cần callback(link) để tránh lỗi build
-                            // =========================================================================
-                            loadExtractor(embedUrl, data, subtitleCallback) { link ->
-                                callback(link)
-                            }
-                        }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
-                }
+        // 4. Trích xuất post_id từ script
+        val postId = Regex("""post_id"\s*:\s*"(\d+)"""").find(script)?.groupValues?.get(1)
+            ?: throw ErrorLoadingException("Không tìm thấy post_id trong halim_cfg")
+        
+        // 5. Trích xuất ajax_url (từ halim_cfg hoặc script dự phòng)
+        val ajaxUrl = Regex("""ajax_url"\s*:\s*"([^"]+)"""").find(script)?.groupValues?.get(1)?.replace("\\/", "/")
+            ?: run {
+                // Thử tìm trong script#halim-init-js-extra
+                val initScript = watchPageDoc.selectFirst("script#halim-init-js-extra")?.data()
+                Regex("""ajax_url"\s*:\s*"([^"]+)"""").find(initScript ?: "")?.groupValues?.get(1)?.replace("\\/", "/")
             }
+            ?: throw ErrorLoadingException("Không tìm thấy ajax_url")
+
+        val fullAjaxUrl = if (ajaxUrl.startsWith("http")) ajaxUrl else (if(ajaxUrl.startsWith("/")) "$mainUrl$ajaxUrl" else "$mainUrl/$ajaxUrl")
+
+        // 6. Chuẩn bị dữ liệu cho AJAX call
+        val ajaxData = mapOf(
+            "action" to "halim_ajax_player",
+            "post" to postId,
+            "server" to server,
+            "episode" to episodeSlug
+        )
+        
+        val ajaxHeaders = headers + mapOf(
+            "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8",
+            "X-Requested-With" to "XMLHttpRequest",
+            "Referer" to data
+        )
+
+        // 7. Gọi AJAX để lấy HTML của trình phát
+        val ajaxRes = app.post(fullAjaxUrl, headers = ajaxHeaders, data = ajaxData, interceptor = killer)
+                        .parsed<HalimAjaxResponse>()
+
+        // 8. Phân tích HTML trả về để tìm iframe hoặc video
+        val playerHtml = ajaxRes.html
+        val iframeSrc = Jsoup.parse(playerHtml).selectFirst("iframe")?.attr("src")
+            // Dự phòng: tìm thẻ video trực tiếp
+            ?: Jsoup.parse(playerHtml).selectFirst("video > source")?.attr("src")
+            ?: throw ErrorLoadingException("Không tìm thấy iframe hoặc video source trong AJAX response")
+
+        if (iframeSrc.endsWith(".mp4") || iframeSrc.contains(".mp4?")) {
+            callback(newExtractorLink(
+                source = name,
+                name = "Direct MP4",
+                url = iframeSrc,
+                type = ExtractorLinkType.VIDEO
+            ) {
+                this.referer = data
+                this.quality = Qualities.Unknown.value
+            })
+        } else {
+            // 9. Tải extractor từ src của iframe
+            loadExtractor(iframeSrc, data, subtitleCallback, callback)
         }
         
         return true
-    }
-
-    // Helper để chuyển "720p" -> 720
-    private fun String.toQualityValue(): Int {
-        return Regex("""(\d+)""").find(this)?.groupValues?.get(1)?.toIntOrNull()
-            ?: Qualities.Unknown.value
     }
 }
