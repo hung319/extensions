@@ -21,9 +21,18 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.Jsoup
 import java.util.Base64
 
-// JSON response cho player.php
-private data class PlayerPhpData(val sources: String)
-private data class PlayerPhpResponse(val data: PlayerPhpData, val status: Boolean)
+// === START FIX: Sửa cấu trúc Data Class ===
+// PlayerPhpData (đối tượng bên trong "data")
+private data class PlayerPhpData(
+    val sources: String,
+    val status: Boolean // 'status' nằm ở đây
+)
+
+// PlayerPhpResponse (đối tượng top-level)
+private data class PlayerPhpResponse(
+    val data: PlayerPhpData // Chỉ chứa 'data'
+)
+// === END FIX ===
 
 // Data classes để parse JSON từ streamblue
 private data class StreamBlueSourceItem(
@@ -206,12 +215,10 @@ class HHDRagonProvider : MainAPI() {
             "Referer" to postUrl
         )
 
-        // --- START FIX: Dọn dẹp JSON response bị lỗi ---
         val ajaxRes = app.get(ajaxUrlWithParams, headers = ajaxHeaders, interceptor = killer)
         val responseText = ajaxRes.text
         
-        // Dọn dẹp các ký tự "V/" bị chèn thừa
-        val cleanedText = responseText.replace("\\/ V/", "\\/").replace("bizV/v", "biz\\/v")
+        val cleanedText = responseText.replace("\\/ V\\/", "\\/").replace("bizV\\/v", "biz\\/v")
 
         val parsedResponse = try {
             jacksonObjectMapper().readValue<PlayerPhpResponse>(cleanedText)
@@ -221,18 +228,19 @@ class HHDRagonProvider : MainAPI() {
                 "Request: $ajaxUrlWithParams\n" +
                 "Original Response: $responseText\n" +
                 "Cleaned Response: $cleanedText\n" +
-                "Error: ${e.message}"
+                "Error: ${e.message}" // Đây là dòng 219
             )
         }
 
-        if (!parsedResponse.status || parsedResponse.data.sources.isBlank()) {
+        // === START FIX: Cập nhật kiểm tra status ===
+        if (!parsedResponse.data.status || parsedResponse.data.sources.isBlank()) {
+        // === END FIX ===
             throw ErrorLoadingException(
                 "AJAX call to player.php thất bại hoặc không có sources.\n" +
                 "Request: $ajaxUrlWithParams\n" +
                 "Cleaned Response: $cleanedText"
             )
         }
-        // --- END FIX ---
 
         val playerHtml = parsedResponse.data.sources
         val iframeSrc = Jsoup.parse(playerHtml).selectFirst("iframe")?.attr("src")
