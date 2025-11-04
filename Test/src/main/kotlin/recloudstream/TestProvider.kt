@@ -2,6 +2,8 @@
 
 package recloudstream
 
+// Thêm import này
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
 import com.lagradost.cloudstream3.*
@@ -21,20 +23,19 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.Jsoup
 import java.util.Base64
 
-// === START FIX: Sửa cấu trúc Data Class ===
-// PlayerPhpData (đối tượng bên trong "data")
+// JSON response cho player.php
 private data class PlayerPhpData(
     val sources: String,
-    val status: Boolean // 'status' nằm ở đây
+    val status: Boolean
 )
-
-// PlayerPhpResponse (đối tượng top-level)
 private data class PlayerPhpResponse(
-    val data: PlayerPhpData // Chỉ chứa 'data'
+    val data: PlayerPhpData
 )
-// === END FIX ===
 
 // Data classes để parse JSON từ streamblue
+// === START FIX: Thêm Annotation ===
+@JsonIgnoreProperties(ignoreUnknown = true) 
+// === END FIX ===
 private data class StreamBlueSourceItem(
     val file: String,
     val label: String
@@ -45,6 +46,7 @@ private data class StreamBlueMessage(
     val source: String // Đây là một JSON string
 )
 
+@JsonIgnoreProperties(ignoreUnknown = true) // Thêm luôn cho class này
 private data class StreamBlueResponse(
     val status: Boolean,
     val message: StreamBlueMessage
@@ -228,13 +230,11 @@ class HHDRagonProvider : MainAPI() {
                 "Request: $ajaxUrlWithParams\n" +
                 "Original Response: $responseText\n" +
                 "Cleaned Response: $cleanedText\n" +
-                "Error: ${e.message}" // Đây là dòng 219
+                "Error: ${e.message}"
             )
         }
 
-        // === START FIX: Cập nhật kiểm tra status ===
         if (!parsedResponse.data.status || parsedResponse.data.sources.isBlank()) {
-        // === END FIX ===
             throw ErrorLoadingException(
                 "AJAX call to player.php thất bại hoặc không có sources.\n" +
                 "Request: $ajaxUrlWithParams\n" +
@@ -275,7 +275,9 @@ class HHDRagonProvider : MainAPI() {
 
             val mapper = jacksonObjectMapper()
             val sourceString = streamBlueRes.message.source
-            val sources = mapper.readValue<List<StreamBlueSourceItem>>(sourceString)
+            
+            // Đây là dòng 338
+            val sources = mapper.readValue<List<StreamBlueSourceItem>>(sourceString) 
 
             sources.forEach { source ->
                 val isM3u8 = source.file.contains(".m3u8")
