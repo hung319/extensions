@@ -19,7 +19,7 @@ import kotlinx.coroutines.withContext
 import android.widget.Toast
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.Jsoup
-import java.util.Base64 // <-- Thêm import này
+import java.util.Base64 // <-- Đã import
 
 // JSON response cho player.php
 private data class PlayerPhpData(val sources: String)
@@ -153,30 +153,41 @@ class HHDRagonProvider : MainAPI() {
         val nonce = watchPageDoc.selectFirst("body")?.attr("data-nonce")
             ?: throw ErrorLoadingException("Không tìm thấy data-nonce")
 
-        val scriptElement = watchPageDoc.select("script").firstOrNull { 
-            it.data().contains("var halim_cfg") || it.attr("src").contains("var halim_cfg") 
-        } ?: throw ErrorLoadingException("Không tìm thấy halim_cfg script")
+        // --- START FIX: Logic tìm script đã được cập nhật ---
+        var script: String = "" // Initialize empty script string
+        val scriptElements = watchPageDoc.select("script") // Lấy tất cả scripts
 
-        val script: String = if (scriptElement.data().contains("var halim_cfg")) {
-            scriptElement.data()
-        } else {
+        for (scriptElement in scriptElements) {
+            val inlineScript = scriptElement.data()
+            if (inlineScript.contains("var halim_cfg")) {
+                script = inlineScript
+                break // Tìm thấy (inline)
+            }
+
             val srcAttr = scriptElement.attr("src")
             if (srcAttr.startsWith("data:text/javascript;base64,")) {
                 val base64Data = srcAttr.substringAfter("data:text/javascript;base64,")
                 try {
-                    Base64.getDecoder().decode(base64Data).toString(Charsets.UTF_8)
+                    // Giải mã Base64
+                    val decodedScript = Base64.getDecoder().decode(base64Data).toString(Charsets.UTF_8)
+                    // Kiểm tra nội dung đã giải mã
+                    if (decodedScript.contains("var halim_cfg")) {
+                        script = decodedScript
+                        break // Tìm thấy (base64)
+                    }
                 } catch (e: Exception) {
-                    throw ErrorLoadingException("Lỗi giải mã Base64 halim_cfg script: ${e.message}")
+                    continue // Bỏ qua nếu lỗi giải mã, thử script tiếp theo
                 }
-            } else {
-                scriptElement.data()
             }
         }
-        
-        if (script.isBlank()) {
-             throw ErrorLoadingException("Không tìm thấy nội dung halim_cfg script")
-        }
 
+        // Kiểm tra sau khi vòng lặp kết thúc
+        if (script.isBlank()) {
+            throw ErrorLoadingException("Không tìm thấy halim_cfg script") // Đây là dòng báo lỗi
+        }
+        // --- END FIX ---
+        
+        // 5. Trích xuất các biến
         val postId = Regex("""post_id"\s*:\s*"(\d+)"""").find(script)?.groupValues?.get(1)
             ?: throw ErrorLoadingException("Không tìm thấy post_id")
         
@@ -189,6 +200,7 @@ class HHDRagonProvider : MainAPI() {
         val server = Regex("""server"\s*:\s*["']?(\d+)["']?""").find(script)?.groupValues?.get(1)
             ?: throw ErrorLoadingException("Không tìm thấy server")
 
+        // 6. Xây dựng URL cho AJAX
         val fullPlayerUrl = (if (playerUrl.startsWith("http")) playerUrl else "$mainUrl$playerUrl")
         val ajaxUrlWithParams = "$fullPlayerUrl?episode_slug=$episodeSlug&server_id=$server&subsv_id=&post_id=$postId&nonce=$nonce&custom_var="
         
@@ -198,6 +210,7 @@ class HHDRagonProvider : MainAPI() {
             "Referer" to data
         )
 
+        // 7. Gọi AJAX (GET)
         val ajaxRes = app.get(ajaxUrlWithParams, headers = ajaxHeaders, interceptor = killer)
                         .parsed<PlayerPhpResponse>()
 
@@ -247,7 +260,7 @@ class HHDRagonProvider : MainAPI() {
                     source = this.name,
                     name = "${this.name} ${source.label}",
                     url = source.file,
-                    type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                    type = if (isM3ua) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                 ) {
                     this.referer = iframeSrc
                     this.quality = when {
@@ -255,7 +268,6 @@ class HHDRagonProvider : MainAPI() {
                         source.label.contains("FULLHD", ignoreCase = true) -> Qualities.P1080.value
                         else -> Qualities.Unknown.value
                     }
-                    // Đã xóa: this.isM3u8 = isM3u8
                 }.let { callback(it) }
             }
         } 
