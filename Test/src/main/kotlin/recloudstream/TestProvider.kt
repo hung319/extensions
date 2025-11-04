@@ -19,7 +19,7 @@ import kotlinx.coroutines.withContext
 import android.widget.Toast
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.Jsoup
-import java.util.Base64 // <-- Đã import
+import java.util.Base64
 
 // JSON response cho player.php
 private data class PlayerPhpData(val sources: String)
@@ -153,41 +153,35 @@ class HHDRagonProvider : MainAPI() {
         val nonce = watchPageDoc.selectFirst("body")?.attr("data-nonce")
             ?: throw ErrorLoadingException("Không tìm thấy data-nonce")
 
-        // --- START FIX: Logic tìm script đã được cập nhật ---
-        var script: String = "" // Initialize empty script string
-        val scriptElements = watchPageDoc.select("script") // Lấy tất cả scripts
+        var script: String = ""
+        val scriptElements = watchPageDoc.select("script")
 
         for (scriptElement in scriptElements) {
             val inlineScript = scriptElement.data()
             if (inlineScript.contains("var halim_cfg")) {
                 script = inlineScript
-                break // Tìm thấy (inline)
+                break
             }
 
             val srcAttr = scriptElement.attr("src")
             if (srcAttr.startsWith("data:text/javascript;base64,")) {
                 val base64Data = srcAttr.substringAfter("data:text/javascript;base64,")
                 try {
-                    // Giải mã Base64
                     val decodedScript = Base64.getDecoder().decode(base64Data).toString(Charsets.UTF_8)
-                    // Kiểm tra nội dung đã giải mã
                     if (decodedScript.contains("var halim_cfg")) {
                         script = decodedScript
-                        break // Tìm thấy (base64)
+                        break
                     }
                 } catch (e: Exception) {
-                    continue // Bỏ qua nếu lỗi giải mã, thử script tiếp theo
+                    continue
                 }
             }
         }
 
-        // Kiểm tra sau khi vòng lặp kết thúc
         if (script.isBlank()) {
-            throw ErrorLoadingException("Không tìm thấy halim_cfg script") // Đây là dòng báo lỗi
+            throw ErrorLoadingException("Không tìm thấy halim_cfg script")
         }
-        // --- END FIX ---
         
-        // 5. Trích xuất các biến
         val postId = Regex("""post_id"\s*:\s*"(\d+)"""").find(script)?.groupValues?.get(1)
             ?: throw ErrorLoadingException("Không tìm thấy post_id")
         
@@ -200,25 +194,42 @@ class HHDRagonProvider : MainAPI() {
         val server = Regex("""server"\s*:\s*["']?(\d+)["']?""").find(script)?.groupValues?.get(1)
             ?: throw ErrorLoadingException("Không tìm thấy server")
 
-        // 6. Xây dựng URL cho AJAX
+        val postUrl = Regex("""post_url"\s*:\s*"([^"]+)"""").find(script)?.groupValues?.get(1)?.replace("\\/", "/")
+            ?: data
+
         val fullPlayerUrl = (if (playerUrl.startsWith("http")) playerUrl else "$mainUrl$playerUrl")
         val ajaxUrlWithParams = "$fullPlayerUrl?episode_slug=$episodeSlug&server_id=$server&subsv_id=&post_id=$postId&nonce=$nonce&custom_var="
         
         val ajaxHeaders = headers + mapOf(
             "Accept" to "text/html, */*; q=0.01",
             "X-Requested-With" to "XMLHttpRequest",
-            "Referer" to data
+            "Referer" to postUrl
         )
 
-        // 7. Gọi AJAX (GET)
+        // --- START FIX: Thêm debug chi tiết ---
         val ajaxRes = app.get(ajaxUrlWithParams, headers = ajaxHeaders, interceptor = killer)
-                        .parsed<PlayerPhpResponse>()
-
-        if (!ajaxRes.status || ajaxRes.data.sources.isBlank()) {
-            throw ErrorLoadingException("AJAX call to player.php thất bại hoặc không có sources")
+        val responseText = ajaxRes.text
+        
+        val parsedResponse = try {
+            jacksonObjectMapper().readValue<PlayerPhpResponse>(responseText)
+        } catch (e: Exception) {
+            throw ErrorLoadingException(
+                "Lỗi parse JSON từ player.php.\n" +
+                "Request: $ajaxUrlWithParams\n" +
+                "Response: $responseText"
+            )
         }
 
-        val playerHtml = ajaxRes.data.sources
+        if (!parsedResponse.status || parsedResponse.data.sources.isBlank()) {
+            throw ErrorLoadingException(
+                "AJAX call to player.php thất bại hoặc không có sources.\n" +
+                "Request: $ajaxUrlWithParams\n" +
+                "Response: $responseText"
+            )
+        }
+        // --- END FIX ---
+
+        val playerHtml = parsedResponse.data.sources
         val iframeSrc = Jsoup.parse(playerHtml).selectFirst("iframe")?.attr("src")
             ?: Jsoup.parse(playerHtml).selectFirst("video > source")?.attr("src")
             ?: throw ErrorLoadingException("Không tìm thấy iframe hoặc video source trong AJAX response")
