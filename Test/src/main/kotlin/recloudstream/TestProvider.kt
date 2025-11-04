@@ -206,17 +206,22 @@ class HHDRagonProvider : MainAPI() {
             "Referer" to postUrl
         )
 
-        // --- START FIX: Thêm debug chi tiết ---
+        // --- START FIX: Dọn dẹp JSON response bị lỗi ---
         val ajaxRes = app.get(ajaxUrlWithParams, headers = ajaxHeaders, interceptor = killer)
         val responseText = ajaxRes.text
         
+        // Dọn dẹp các ký tự "V/" bị chèn thừa
+        val cleanedText = responseText.replace("\\/ V/", "\\/").replace("bizV/v", "biz\\/v")
+
         val parsedResponse = try {
-            jacksonObjectMapper().readValue<PlayerPhpResponse>(responseText)
+            jacksonObjectMapper().readValue<PlayerPhpResponse>(cleanedText)
         } catch (e: Exception) {
             throw ErrorLoadingException(
                 "Lỗi parse JSON từ player.php.\n" +
                 "Request: $ajaxUrlWithParams\n" +
-                "Response: $responseText"
+                "Original Response: $responseText\n" +
+                "Cleaned Response: $cleanedText\n" +
+                "Error: ${e.message}"
             )
         }
 
@@ -224,7 +229,7 @@ class HHDRagonProvider : MainAPI() {
             throw ErrorLoadingException(
                 "AJAX call to player.php thất bại hoặc không có sources.\n" +
                 "Request: $ajaxUrlWithParams\n" +
-                "Response: $responseText"
+                "Cleaned Response: $cleanedText"
             )
         }
         // --- END FIX ---
