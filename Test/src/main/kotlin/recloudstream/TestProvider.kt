@@ -1,13 +1,15 @@
-// Save this file as HHDRagonProvider.kt (hoặc HHTQProvider.kt)
+// Save this file as HHDRagonProvider.kt
 
 package recloudstream
 
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import com.fasterxml.jackson.module.kotlin.readValue
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.loadExtractor
+import com.lagradost.cloudstream3.utils.loadExtractor // Vẫn giữ để fallback
 import org.jsoup.nodes.Element
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
@@ -15,14 +17,28 @@ import com.lagradost.cloudstream3.CommonActivity.showToast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import android.widget.Toast
-// Thêm import cho newExtractorLink
 import com.lagradost.cloudstream3.utils.newExtractorLink
-// Thêm Jsoup để phân tích HTML từ AJAX
 import org.jsoup.Jsoup
 
 // JSON response cho player.php
 private data class PlayerPhpData(val sources: String)
 private data class PlayerPhpResponse(val data: PlayerPhpData, val status: Boolean)
+
+// Data classes để parse JSON từ streamblue
+private data class StreamBlueSourceItem(
+    val file: String,
+    val label: String
+)
+
+private data class StreamBlueMessage(
+    val type: String,
+    val source: String // Đây là một JSON string
+)
+
+private data class StreamBlueResponse(
+    val status: Boolean,
+    val message: StreamBlueMessage
+)
 
 
 class HHDRagonProvider : MainAPI() {
@@ -38,7 +54,7 @@ class HHDRagonProvider : MainAPI() {
     )
 
     private val killer = CloudflareKiller()
-    private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36"
+    private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/5.37.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/5.36"
     private val headers = mapOf("User-Agent" to userAgent)
 
     override val mainPage = mainPageOf(
@@ -107,11 +123,11 @@ class HHDRagonProvider : MainAPI() {
             else -> TvType.Anime 
         }
         
-        // **FIX:** Chỉ chọn danh sách tập từ tab-id="0" (Server #1)
+        // Chỉ chọn danh sách tập từ tab-id="0" (Server #1)
         val episodeList = document.selectFirst("div.episode-lists[tab-id=0]")
             ?: document.selectFirst("div.episode-lists") // Fallback
 
-        // **FIX:** Đã xóa .reversed() theo yêu cầu để sắp xếp 1, 2, 3...
+        // Đã xóa .reversed()
         val episodes = episodeList?.select("a.episode-item")?.map {
             newEpisode(fixUrl(it.attr("href"))) {
                 this.name = "Tập ${it.text()}"
@@ -132,18 +148,15 @@ class HHDRagonProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         
-        // 1. Tải trang xem phim để lấy config và nonce
-        val watchPageDoc = app.get(data, headers = headers, referer = mainUrl, interceptor = killer).document
+        // === BƯỚC 1: LẤY IFRAME SRC TỪ HHTQ ===
 
-        // 2. Lấy nonce từ body
+        val watchPageDoc = app.get(data, headers = headers, referer = mainUrl, interceptor = killer).document
         val nonce = watchPageDoc.selectFirst("body")?.attr("data-nonce")
             ?: throw ErrorLoadingException("Không tìm thấy data-nonce")
 
-        // 3. Tìm script chứa 'var halim_cfg' (có thể là base64 hoặc inline)
         val script = watchPageDoc.select("script").firstOrNull { it.data().contains("var halim_cfg") }?.data()
             ?: throw ErrorLoadingException("Không tìm thấy halim_cfg script")
 
-        // 4. Trích xuất các biến cần thiết từ halim_cfg
         val postId = Regex("""post_id"\s*:\s*"(\d+)"""").find(script)?.groupValues?.get(1)
             ?: throw ErrorLoadingException("Không tìm thấy post_id")
         
@@ -156,7 +169,6 @@ class HHDRagonProvider : MainAPI() {
         val server = Regex("""server"\s*:\s*(\d+)""").find(script)?.groupValues?.get(1)
             ?: throw ErrorLoadingException("Không tìm thấy server")
 
-        // 5. Xây dựng URL cho AJAX call (dựa theo curl của user)
         val fullPlayerUrl = (if (playerUrl.startsWith("http")) playerUrl else "$mainUrl$playerUrl")
         val ajaxUrlWithParams = "$fullPlayerUrl?episode_slug=$episodeSlug&server_id=$server&subsv_id=&post_id=$postId&nonce=$nonce&custom_var="
         
@@ -166,7 +178,6 @@ class HHDRagonProvider : MainAPI() {
             "Referer" to data
         )
 
-        // 6. Gọi AJAX (đây là GET, dựa trên curl của user)
         val ajaxRes = app.get(ajaxUrlWithParams, headers = ajaxHeaders, interceptor = killer)
                         .parsed<PlayerPhpResponse>()
 
@@ -174,14 +185,67 @@ class HHDRagonProvider : MainAPI() {
             throw ErrorLoadingException("AJAX call to player.php thất bại hoặc không có sources")
         }
 
-        // 7. Phân tích HTML trả về (bên trong 'sources')
         val playerHtml = ajaxRes.data.sources
         val iframeSrc = Jsoup.parse(playerHtml).selectFirst("iframe")?.attr("src")
             ?: Jsoup.parse(playerHtml).selectFirst("video > source")?.attr("src")
             ?: throw ErrorLoadingException("Không tìm thấy iframe hoặc video source trong AJAX response")
 
-        // 8. Tải extractor từ src của iframe
-        if (iframeSrc.endsWith(".mp4") || iframeSrc.contains(".mp4?")) {
+        // === BƯỚC 2: XỬ LÝ LINK IFRAME (STREAMBLUE) ===
+
+        if (iframeSrc.contains("streamblue.biz")) {
+            // Tải trang iframe để lấy videoId
+            val streamBlueDoc = app.get(iframeSrc, referer = data).document
+        
+            val videoId = streamBlueDoc.selectFirst("body")?.attr("data-video")
+                ?: throw ErrorLoadingException("Không tìm thấy data-video trên trang StreamBlue")
+
+            // Xây dựng URL API của StreamBlue
+            val streamBlueApiUrl = "https://streamblue.biz/players/sources?videoId=$videoId"
+            
+            val postHeaders = mapOf(
+                "authority" to "streamblue.biz",
+                "accept" to "*/*",
+                "origin" to "https://streamblue.biz",
+                "referer" to iframeSrc, // Referer là URL của iframe
+                "sec-fetch-mode" to "cors",
+                "sec-fetch-site" to "same-origin",
+                "x-requested-with" to "XMLHttpRequest",
+                "user-agent" to userAgent
+            )
+
+            // Thực hiện POST request
+            val streamBlueRes = app.post(streamBlueApiUrl, headers = postHeaders).parsed<StreamBlueResponse>()
+
+            if (!streamBlueRes.status || streamBlueRes.message.type != "direct") {
+                throw ErrorLoadingException("StreamBlue API call thất bại hoặc không phải 'direct' type")
+            }
+
+            // Parse JSON string lồng nhau
+            val mapper = jacksonObjectMapper()
+            val sourceString = streamBlueRes.message.source
+            val sources = mapper.readValue<List<StreamBlueSourceItem>>(sourceString)
+
+            // Gửi link cho player
+            sources.forEach { source ->
+                val isM3u8 = source.file.contains(".m3u8")
+                
+                newExtractorLink(
+                    source = this.name, // "HHTQ"
+                    name = "${this.name} ${source.label}",
+                    url = source.file,
+                    type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                ) {
+                    this.referer = iframeSrc // Referer là URL iframe
+                    this.quality = when {
+                        source.label.contains("HD", ignoreCase = true) -> Qualities.P720.value
+                        source.label.contains("FULLHD", ignoreCase = true) -> Qualities.P1080.value
+                        else -> Qualities.Unknown.value
+                    }
+                }.let { callback(it) }
+            }
+        } 
+        // Fallback cho các link mp4 trực tiếp hoặc extractor khác
+        else if (iframeSrc.endsWith(".mp4") || iframeSrc.contains(".mp4?")) {
             callback(newExtractorLink(
                 source = name,
                 name = "Direct MP4",
@@ -192,7 +256,7 @@ class HHDRagonProvider : MainAPI() {
                 this.quality = Qualities.Unknown.value
             })
         } else {
-            // Xử lý các link extractor (như streamblue.biz)
+            // Thử loadExtractor cho các trường hợp khác
             loadExtractor(iframeSrc, data, subtitleCallback, callback)
         }
         
