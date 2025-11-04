@@ -2,7 +2,6 @@
 
 package recloudstream
 
-// Thêm import này
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
@@ -33,9 +32,7 @@ private data class PlayerPhpResponse(
 )
 
 // Data classes để parse JSON từ streamblue
-// === START FIX: Thêm Annotation ===
 @JsonIgnoreProperties(ignoreUnknown = true) 
-// === END FIX ===
 private data class StreamBlueSourceItem(
     val file: String,
     val label: String
@@ -46,7 +43,7 @@ private data class StreamBlueMessage(
     val source: String // Đây là một JSON string
 )
 
-@JsonIgnoreProperties(ignoreUnknown = true) // Thêm luôn cho class này
+@JsonIgnoreProperties(ignoreUnknown = true)
 private data class StreamBlueResponse(
     val status: Boolean,
     val message: StreamBlueMessage
@@ -69,12 +66,11 @@ class HHDRagonProvider : MainAPI() {
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/5.37.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/5.36"
     private val headers = mapOf("User-Agent" to userAgent)
 
+    // === START FIX: Chỉ giữ lại 1 trang chính ===
     override val mainPage = mainPageOf(
-        "/type/" to "Mới Cập Nhật",
-        "/genres/anime" to "Anime",
-        "/genres/hhkungfu" to "HHKungfu",
-        "/genres/hhpanda" to "HHPanda"
+        "/type/" to "Mới Cập Nhật"
     )
+    // === END FIX ===
     
     private fun Element.toSearchResponse(forceTvType: TvType? = null): SearchResponse {
         val linkTag = this.selectFirst("a.halim-thumb") 
@@ -93,11 +89,12 @@ class HHDRagonProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        withContext(Dispatchers.Main) {
-            CommonActivity.activity?.let { activity ->
-                showToast(activity, "Provider HHTQ (H4RS)", Toast.LENGTH_LONG)
-            }
-        }
+        // Bỏ toast
+        // withContext(Dispatchers.Main) {
+        //     CommonActivity.activity?.let { activity ->
+        //         showToast(activity, "Provider HHTQ (H4RS)", Toast.LENGTH_LONG)
+        //     }
+        // }
         val url = "$mainUrl${request.data}" + if (page > 1) "?page=$page" else ""
         val document = app.get(url, headers = headers, interceptor = killer).document
 
@@ -217,6 +214,7 @@ class HHDRagonProvider : MainAPI() {
             "Referer" to postUrl
         )
 
+        // === START FIX: Dọn dẹp log ===
         val ajaxRes = app.get(ajaxUrlWithParams, headers = ajaxHeaders, interceptor = killer)
         val responseText = ajaxRes.text
         
@@ -225,22 +223,13 @@ class HHDRagonProvider : MainAPI() {
         val parsedResponse = try {
             jacksonObjectMapper().readValue<PlayerPhpResponse>(cleanedText)
         } catch (e: Exception) {
-            throw ErrorLoadingException(
-                "Lỗi parse JSON từ player.php.\n" +
-                "Request: $ajaxUrlWithParams\n" +
-                "Original Response: $responseText\n" +
-                "Cleaned Response: $cleanedText\n" +
-                "Error: ${e.message}"
-            )
+            throw ErrorLoadingException("Lỗi parse JSON từ player.php: ${e.message}")
         }
 
         if (!parsedResponse.data.status || parsedResponse.data.sources.isBlank()) {
-            throw ErrorLoadingException(
-                "AJAX call to player.php thất bại hoặc không có sources.\n" +
-                "Request: $ajaxUrlWithParams\n" +
-                "Cleaned Response: $cleanedText"
-            )
+            throw ErrorLoadingException("AJAX call to player.php thất bại hoặc không có sources")
         }
+        // === END FIX ===
 
         val playerHtml = parsedResponse.data.sources
         val iframeSrc = Jsoup.parse(playerHtml).selectFirst("iframe")?.attr("src")
@@ -276,7 +265,6 @@ class HHDRagonProvider : MainAPI() {
             val mapper = jacksonObjectMapper()
             val sourceString = streamBlueRes.message.source
             
-            // Đây là dòng 338
             val sources = mapper.readValue<List<StreamBlueSourceItem>>(sourceString) 
 
             sources.forEach { source ->
