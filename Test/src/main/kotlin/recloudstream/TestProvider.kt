@@ -260,7 +260,7 @@ class HHDRagonProvider : MainAPI() {
                     source = this.name,
                     name = "${this.name} ${source.label}",
                     url = source.file,
-                    type = if (isM3ua) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                    type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                 ) {
                     this.referer = iframeSrc
                     this.quality = when {
