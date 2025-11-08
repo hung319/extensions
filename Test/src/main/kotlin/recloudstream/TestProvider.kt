@@ -57,8 +57,11 @@ class PhimDinhCaoProvider : MainAPI() {
     )
     
     // === Cấu trúc trang chủ ===
+    // Thêm các mục mới
     override val mainPage = mainPageOf(
-        "phim-moi" to "Phim Mới",
+        "/" to "Motchill Đề Cử (Trang Chủ)",
+        "phim-bo" to "Phim Bộ Mới",
+        "phim-le" to "Phim Lẻ Mới"
     )
 
     companion object {
@@ -170,19 +173,54 @@ class PhimDinhCaoProvider : MainAPI() {
         }
     }
     
-    private fun parseMoviesFromPage(document: Element): List<SearchResponse> {
-        // === CẬP NHẬT SELECTOR (bộ chọn) CHO PHÙ HỢP VỚI HTML ===
+    // === PARSER MỚI: Dành cho Trang Chủ (Homepage) - dùng h4.name ===
+    private fun parseMoviesFromHomePage(document: Element): List<SearchResponse> {
         return document.select("ul.list-film li").mapNotNull { item ->
-            // Đổi "h4.name a" thành "div.name a"
+            val titleElement = item.selectFirst("div.info h4.name a")
+            val name = titleElement?.text()
+            val movieUrl = fixUrlNull(titleElement?.attr("href"))
+            
+            // Lấy năm từ text của thẻ h4
+            val year = item.selectFirst("div.info h4.name")?.ownText()?.trim()?.toIntOrNull()
+
+            var posterUrl = fixUrlNull(item.selectFirst("img")?.attr("src"))
+            if (posterUrl.isNullOrEmpty() || posterUrl.contains("tiktokcdn.com")) { // Check chung
+                val onerrorPoster = item.selectFirst("img")?.attr("onerror")
+                if (onerrorPoster?.contains("this.src=") == true) {
+                    posterUrl = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
+                }
+            }
+            if (posterUrl.isNullOrEmpty()) {
+                posterUrl = fixUrlNull(item.selectFirst("img")?.attr("data-src"))
+            }
+
+            val status = item.selectFirst("div.status")?.text()?.trim()
+            val type = if (status?.contains("Tập") == true || (status?.contains("/") == true && !status.contains("Full", ignoreCase = true))) TvType.TvSeries else TvType.Movie
+            val qualityText = item.selectFirst("div.HD")?.text()?.trim() ?: status
+
+            if (name != null && movieUrl != null) {
+                newMovieSearchResponse(name, movieUrl) {
+                    this.type = type
+                    this.posterUrl = posterUrl
+                    this.year = year
+                    this.quality = getQualityFromSearchString(qualityText)
+                }
+            } else null
+        }
+    }
+
+    // === PARSER CŨ: Đổi tên thành "SearchOrCategory" - dùng div.name ===
+    private fun parseMoviesFromSearchOrCategoryPage(document: Element): List<SearchResponse> {
+        return document.select("ul.list-film li").mapNotNull { item ->
+            // Dùng selector của trang search (div.name)
             val titleElement = item.selectFirst("div.info div.name a")
             val nameText = titleElement?.text()
-            // Đổi "h4.name" thành "div.name"
             val yearText = item.selectFirst("div.info div.name")?.ownText()?.trim()
             val name = nameText?.substringBeforeLast(yearText ?: "")?.trim() ?: nameText
             val movieUrl = fixUrlNull(titleElement?.attr("href"))
             
             var posterUrl = fixUrlNull(item.selectFirst("img")?.attr("src"))
-            if (posterUrl.isNullOrEmpty() || posterUrl.contains("p21-ad-sg.ibyteimg.com")) {
+            if (posterUrl.isNullOrEmpty() || posterUrl.contains("tiktokcdn.com")) { // Check chung
                 val onerrorPoster = item.selectFirst("img")?.attr("onerror")
                 if (onerrorPoster?.contains("this.src=") == true) {
                     posterUrl = fixUrlNull(onerrorPoster.substringAfter("this.src='").substringBefore("';"))
@@ -221,25 +259,46 @@ class PhimDinhCaoProvider : MainAPI() {
 
         val currentUrl = getBaseUrl()
 
-        val urlToFetch = when (request.data) {
-            "phim-moi" -> if (page <= 1) currentUrl else "$currentUrl/phim-moi-page-$page/"
+        // Xử lý pagination. Trang chủ (/) không có page.
+        val pageSuffix = if (page <= 1) "/" else "/page/$page/" 
+        
+        val (urlToFetch, isHomepage) = when (request.data) {
+            "/" -> Pair(currentUrl, true) // Trang chủ
+            "phim-bo" -> Pair("$currentUrl/phim-bo$pageSuffix", false) // Trang Phim Bộ
+            "phim-le" -> Pair("$currentUrl/phim-le$pageSuffix", false) // Trang Phim Lẻ
             else -> return newHomePageResponse(emptyList())
         }
         
+        // Trang chủ không có pagination, trả về rỗng nếu cố load trang 2
+        if (isHomepage && page > 1) return newHomePageResponse(emptyList())
+
         val document = app.get(urlToFetch, interceptor = cfKiller).document
-        val movies = parseMoviesFromPage(document)
+        
+        val movies = if (isHomepage) {
+            // Trang chủ: Dùng parser homepage (h4.name)
+            // Chỉ lấy section "Motchill Đề Cử" (nằm trong div.col-lg-9)
+            val mainListElement = document.selectFirst("div.col-lg-9")
+            if (mainListElement != null) {
+                 parseMoviesFromHomePage(mainListElement) // Chỉ parse section này
+            } else {
+                 parseMoviesFromHomePage(document) // Fallback
+            }
+        } else {
+            // Trang Category: Dùng parser search/category (div.name)
+            parseMoviesFromSearchOrCategoryPage(document)
+        }
+
         return newHomePageResponse(request.name, movies, hasNext = movies.isNotEmpty())
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val currentUrl = getBaseUrl()
-        // Logic tạo URL search đã chính xác theo file HTML/JS
         val searchQuery = query.trim().replace(Regex("\\s+"), "-").lowercase()
         val searchUrl = "$currentUrl/search/$searchQuery/"
         val document = app.get(searchUrl, interceptor = cfKiller).document
         
-        // Dùng lại hàm parse đã sửa
-        return parseMoviesFromPage(document)
+        // Dùng parser của trang Search (div.name)
+        return parseMoviesFromSearchOrCategoryPage(document)
     }
 
     override suspend fun load(url: String): LoadResponse? {
@@ -465,7 +524,7 @@ class PhimDinhCaoProvider : MainAPI() {
     }
     
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
-        // ... (Giũ nguyên)
+        // ... (Giữ nguyên)
         return object : Interceptor {
             override fun intercept(chain: Interceptor.Chain): Response {
                 val request = chain.request()
