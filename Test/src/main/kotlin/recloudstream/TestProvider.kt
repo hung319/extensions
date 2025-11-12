@@ -28,7 +28,7 @@ class Vn2Provider : MainAPI() {
     //         HÀM HỖ TRỢ KHỬ DẤU
     // ================================
 
-    // Hàm để loại bỏ dấu tiếng Việt (Hàm này đã đúng)
+    // Hàm để loại bỏ dấu tiếng Việt
     private fun deAccent(str: String): String {
         val nfdNormalizedString = Normalizer.normalize(str, Normalizer.Form.NFD) 
         val pattern = "\\p{InCombiningDiacriticalMarks}+".toRegex()
@@ -74,6 +74,7 @@ class Vn2Provider : MainAPI() {
             
             return newHomePageResponse(request.name, items)
         } catch (e: Exception) {
+            println("Vn2Provider ERROR in getMainPage: ${e.message}")
             throw e // Ném lỗi để debug
         }
     }
@@ -88,10 +89,11 @@ class Vn2Provider : MainAPI() {
             val deAccentedQuery = deAccent(query)
             val formattedQuery = deAccentedQuery.replace(" ", "-").lowercase()
             val url = "$mainUrl/tim-kiem/$formattedQuery.aspx"
+            println("Vn2Provider Searching URL: $url") // Log URL tìm kiếm
             
             val document = app.get(url).document
 
-            return document.select("div.boxtk").mapNotNull {
+            val results = document.select("div.boxtk").mapNotNull {
                 val a = it.selectFirst("p.nametk a") ?: return@mapNotNull null
                 val href = fixUrl(a.attr("href"))
                 val title = a.text()
@@ -102,7 +104,10 @@ class Vn2Provider : MainAPI() {
                     posterUrl = fixUrl(img)
                 }
             }
+            println("Vn2Provider Search found ${results.size} items") // Log số kết quả
+            return results
         } catch (e: Exception) {
+            println("Vn2Provider ERROR in search: ${e.message}")
             throw e // Ném lỗi để debug
         }
     }
@@ -133,6 +138,7 @@ class Vn2Provider : MainAPI() {
                         episode = epNum
                     }
                 }
+            println("Vn2Provider Load found ${episodes.size} episodes") // Log số tập
 
             if (episodes.isNotEmpty()) {
                 // Dùng newTvSeriesLoadResponse
@@ -154,6 +160,7 @@ class Vn2Provider : MainAPI() {
                 }
             }
         } catch (e: Exception) {
+            println("Vn2Provider ERROR in load: ${e.message}")
             throw e // Ném lỗi để debug
         }
     }
@@ -169,6 +176,7 @@ class Vn2Provider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
 
+        println("Vn2Provider loadLinks started for data: $data")
         val document = app.get(data).document
         var linkFound = false
 
@@ -177,39 +185,53 @@ class Vn2Provider : MainAPI() {
             try {
                 val serverUrl = fixUrl(server.attr("href"))
                 val serverName = server.text()
+                println("Vn2Provider trying server: $serverName, URL: $serverUrl")
                 
                 val serverDoc = app.get(serverUrl).document
                 val script = serverDoc.select("script:contains(channel_fix)").html()
+                println("Vn2Provider script found: ${script.isNotBlank()}")
 
+                // --- Bắt đầu trích xuất biến ---
                 val channelFix = Regex("""var channel_fix = "(.*?)";""").find(script)?.groupValues?.get(1)?.trim() ?: ""
+                println("Vn2Provider channelFix: $channelFix")
+
                 val channel2Fix = Regex("""var channel2_fix = "(.*?)";""").find(script)?.groupValues?.get(1)?.trim() ?: ""
                 val channel3Fix = Regex("""var channel3_fix = "(.*?)";""").find(script)?.groupValues?.get(1)?.trim() ?: ""
                 val channelFixIframe = Regex("""var channel_fix_iframe = "(.*?)";""").find(script)?.groupValues?.get(1)?.trim() ?: ""
                 
                 val nameTapPhim = Regex("""var name_tapphim = "(.*?)";""").find(script)?.groupValues?.get(1)?.trim() ?: ""
+                println("Vn2Provider nameTapPhim: $nameTapPhim")
                 
                 val nameFixId = Regex("""var name_fixid = Number\((.*?)\);""").find(script)?.groupValues?.get(1)?.replace("\"".toRegex(), "")?.trim() ?: ""
+                println("Vn2Provider nameFixId: $nameFixId")
+
                 val totalView = Regex("""var totalview = (.*?);""").find(script)?.groupValues?.get(1)?.replace("\"".toRegex(), "")?.trim() ?: ""
+                // println("Vn2Provider totalView: $totalView") // Biến này quá dài, ẩn đi
                 
                 val nameFixload = Regex("""var name_fixload = '(.*?)';""").find(script)?.groupValues?.get(1)?.trim() ?: ""
                 val domainApi = Regex("""var domain_api = "(.*?)";""").find(script)?.groupValues?.get(1)?.trim() ?: "https://vn2data.com/play"
+                // --- Kết thúc trích xuất biến ---
 
                 val numSv = "111" 
                 val idplay = "${nameTapPhim}sv${numSv}id${nameFixId}numview${totalView}chankeynull" 
+                println("Vn2Provider idplay: $idplay")
 
                 val contentLink1 = channelFix.replace("V8FfiTt0053896624711HQ2", "")
                 
                 var channelVideoEmbed = "$domainApi/js_fix/9x/play.php?link=${idplay}vn2fix1${contentLink1}vn2fix2${channel2Fix}vn2fix3${channelFixIframe}vn2fixload${channel3Fix}vn2fixurl4vn2fixurl56O548l721190cookiecatvn2myname${nameFixload}folderfixcatnumget$serverUrl"
                 
                 val iframeUrl = channelVideoEmbed.replace("&", "vn2_fix")
+                println("Vn2Provider constructed iframeUrl: $iframeUrl")
 
                 val iframeResponseText = app.get(iframeUrl, referer = serverUrl).text
+                println("Vn2Provider iframeResponseText length: ${iframeResponseText.length}")
 
-                // SỬA: Dùng regex cụ thể hơn, tìm kiếm 'http' bên trong dấu ngoặc kép
-                // để tránh khớp với 'var link_video_sd = "";'
+                // Regex quan trọng (đã sửa ở lần trước)
                 val videoUrl = Regex("""var link_video_sd = "(https?://.*?)";""").find(iframeResponseText)?.groupValues?.get(1)
+                println("Vn2Provider extracted videoUrl: $videoUrl")
 
                 if (videoUrl != null && videoUrl.isNotBlank()) {
+                    println("Vn2Provider SUCCESS: Link found!")
                     val linkType = if (videoUrl.contains(".m3u8")) {
                         ExtractorLinkType.M3U8
                     } else {
@@ -226,12 +248,17 @@ class Vn2Provider : MainAPI() {
                         this.quality = Qualities.Unknown.value
                     })
                     linkFound = true
+                } else {
+                    println("Vn2Provider FAILED: videoUrl regex did not match.")
                 }
             } catch (e: Exception) {
+                println("Vn2Provider ERROR in loadLinks amap loop: ${e.message}")
+                e.printStackTrace() // In đầy đủ stack trace
                 throw e // Ném lỗi để debug
             }
         }
 
+        println("Vn2Provider loadLinks finished. linkFound: $linkFound")
         return linkFound
     }
 
