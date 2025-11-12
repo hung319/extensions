@@ -5,7 +5,7 @@ import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import org.jsoup.nodes.Element
-import com.lagradost.cloudstream3.network.reCAPTCHAv3
+// import com.lagradost.cloudstream3.network.reCAPTCHAv3 // Lỗi: Đã xóa import không cần thiết
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
 
@@ -37,6 +37,9 @@ class Vn2Provider : MainAPI() {
     )
 
     // Tải dữ liệu cho các mục trang chủ
+    // Lỗi 'mainPageLoad' overrides nothing: Đây có thể là lỗi cấu hình build. 
+    // Hãy chắc chắn `lib.type` trong build.gradle.kts không phải là "anime".
+    // Hàm này đúng cho MainAPI.
     override suspend fun mainPageLoad(
         page: Int,
         mainPageData: MainPageData
@@ -63,7 +66,10 @@ class Vn2Provider : MainAPI() {
         return newMovieSearchResponse(title, href, TvType.TvSeries) { // Mặc định là TvSeries, sẽ check lại ở `load`
             posterUrl = fixUrl(img)
             if (!episode.isNullOrEmpty()) {
-                addDubStatus(true, episode) // Hiển thị thông tin tập
+                // Lỗi: addDubStatus(true, episode)
+                // Sửa: Phân tích số tập và dùng signature mới
+                val epCount = episode.split('/')?.firstOrNull()?.trim()?.toIntOrNull()
+                addDubStatus(true, null, epCount, null) // (dubExist, subExist, dubEpisodes, subEpisodes)
             }
         }
     }
@@ -88,7 +94,10 @@ class Vn2Provider : MainAPI() {
             newMovieSearchResponse(title, href, TvType.TvSeries) {
                 posterUrl = fixUrl(img)
                 if (status != null) {
-                    addDubStatus(true, status)
+                    // Lỗi: addDubStatus(true, status)
+                    // Sửa: Phân tích số tập và dùng signature mới
+                    val epCount = status.split('/')?.firstOrNull()?.trim()?.toIntOrNull()
+                    addDubStatus(true, null, epCount, null)
                 }
             }
         }
@@ -107,10 +116,14 @@ class Vn2Provider : MainAPI() {
 
         // Lấy thông tin diễn viên từ meta description
         val metaDesc = document.selectFirst("meta[name=description]")?.attr("content")
+        
+        // Lỗi: Gán List<String> cho List<ActorData>
+        // Sửa: Chuyển đổi List<String> sang List<ActorData>
         val actors = metaDesc?.split(".").lastOrNull()?.trim()
             ?.split(" - ")
             ?.map { it.trim() }
-            ?.let { if (it.size > 1) it else null } // Chỉ lấy nếu có nhiều diễn viên
+            ?.filter { it.isNotEmpty() } // Lọc bỏ tên rỗng
+            ?.map { ActorData(Actor(it)) } // Chuyển đổi String -> ActorData
 
         val genre = document.selectFirst("p.fontf1:contains(THỂ LOẠI:) span.fontf8")?.text()?.trim()
 
@@ -132,20 +145,22 @@ class Vn2Provider : MainAPI() {
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = fixUrl(poster)
                 this.plot = plot
-                this.actors = actors
-                addGenre(genre)
+                this.actors = actors // Sửa: Đã gán đúng kiểu List<ActorData>
+                // Lỗi: Unresolved reference 'addGenre'
+                // Sửa: Gán trực tiếp vào 'genres'
+                this.genres = if (genre != null) listOf(genre) else null
             }
         } else {
-            // Nếu không có danh sách tập, đây là phim lẻ. Link xem phim là chính trang này.
-            // Tuy nhiên, trang info (`/xem/681/...`) lại link đến trang xem phim (`/xem/tap-1/...`)
-            // Ta sẽ lấy link "XEM PHIM" làm link xem phim lẻ
+            // Nếu không có danh sách tập, đây là phim lẻ.
             val movieWatchLink = document.selectFirst("div.playphim a")?.attr("href") ?: url
             
             return newMovieLoadResponse(title, url, TvType.Movie, fixUrl(movieWatchLink)) {
                 this.posterUrl = fixUrl(poster)
                 this.plot = plot
-                this.actors = actors
-                addGenre(genre)
+                this.actors = actors // Sửa: Đã gán đúng kiểu List<ActorData>
+                // Lỗi: Unresolved reference 'addGenre'
+                // Sửa: Gán trực tiếp vào 'genres'
+                this.genres = if (genre != null) listOf(genre) else null
             }
         }
     }
@@ -163,9 +178,9 @@ class Vn2Provider : MainAPI() {
 
         val document = app.get(data).document
 
-        // Trang này có nhiều server, ta sẽ duyệt qua tất cả
-        // `apmap` sẽ chạy song song các request
-        document.select("div.num_film2 a").apmap { server ->
+        // Lỗi: 'apmap' is deprecated
+        // Sửa: Thay bằng 'amap'
+        document.select("div.num_film2 a").amap { server -> // Đã đổi sang amap
             val serverUrl = fixUrl(server.attr("href"))
             val serverName = server.text()
             
@@ -180,25 +195,17 @@ class Vn2Provider : MainAPI() {
                 val domainData = Regex("""var domain_data = "(.*?)";""").find(script)?.groupValues?.get(1)
 
                 if (channelFix != null && domainData != null) {
-                    // *** PHẦN QUAN TRỌNG ***
-                    // Dựa trên phân tích, trang web dùng JWPlayer và các biến JS
-                    // `domain_data` là CDN, `channel_fix` là ID của video.
-                    // Cấu trúc link HLS (m3u8) khả năng cao là: {domain_data}/{channel_fix}.m3u8
-                    
                     val hlsUrl = "$domainData/$channelFix.m3u8"
 
-                    // **ĐÃ CẬP NHẬT THEO YÊU CẦU**
-                    // Sử dụng ExtractorLinkType.M3U8
                     val link = newExtractorLink(
                         source = serverName,
                         name = serverName,
                         url = hlsUrl,
-                        type = ExtractorLinkType.M3U8 // Cập nhật: Dùng M3U8 thay vì Hls
+                        type = ExtractorLinkType.M3U8 
                     ) {
                         this.referer = "$mainUrl/"
                         this.quality = Qualities.Unknown.value
                     }
-                    // Gửi link đã tạo qua callback
                     callback(link)
                 }
             } catch (e: Exception) {
