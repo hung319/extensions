@@ -99,12 +99,13 @@ class Vn2Provider : MainAPI() {
         val plot = document.selectFirst("div.wiew_info p")?.text()
         val metaDesc = document.selectFirst("meta[name=description]")?.attr("content")
         
-        // Dùng List<ActorData> (đúng theo cấu trúc MovieLoadResponse)
+        // SỬA: Đảm bảo toàn bộ chuỗi này dùng (safe call `?.`)
+        // Lỗi của bạn ở dòng 103 nằm đâu đó trong khối này.
         val actors = metaDesc?.split(".").lastOrNull()?.trim()
             ?.split(" - ")
             ?.map { it.trim() }
             ?.filter { it.isNotEmpty() } 
-            ?.map { ActorData(Actor(it)) } 
+            ?.map { ActorData(Actor(it)) } // Dùng ActorData (đúng chuẩn MovieLoadResponse)
 
         val genre = document.selectFirst("p.fontf1:contains(THỂ LOẠI:) span.fontf8")?.text()?.trim()
 
@@ -125,8 +126,8 @@ class Vn2Provider : MainAPI() {
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = fixUrl(poster)
                 this.plot = plot
-                this.actors = actors 
-                // SỬA: Dùng 'tags' thay vì 'genres'
+                this.actors = actors // Gán List<ActorData>?
+                // Dùng 'tags' (đúng chuẩn MovieLoadResponse)
                 this.tags = if (genre != null) listOf(genre) else null
             }
         } else {
@@ -136,8 +137,8 @@ class Vn2Provider : MainAPI() {
             return newMovieLoadResponse(title, url, TvType.Movie, fixUrl(movieWatchLink)) {
                 this.posterUrl = fixUrl(poster)
                 this.plot = plot
-                this.actors = actors 
-                // SỬA: Dùng 'tags' thay vì 'genres'
+                this.actors = actors // Gán List<ActorData>?
+                // Dùng 'tags' (đúng chuẩn MovieLoadResponse)
                 this.tags = if (genre != null) listOf(genre) else null
             }
         }
