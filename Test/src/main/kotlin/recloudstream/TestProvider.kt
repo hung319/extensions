@@ -177,10 +177,12 @@ class Vn2Provider : MainAPI() {
                 val channelFixIframe = Regex("""var channel_fix_iframe = "(.*?)";""").find(script)?.groupValues?.get(1)?.trim() ?: ""
                 
                 val nameTapPhim = Regex("""var name_tapphim = "(.*?)";""").find(script)?.groupValues?.get(1)?.trim() ?: ""
-                val nameFixId = Regex("""var name_fixid = Number\((.*?)\);""").find(script)?.groupValues?.get(1)?.replace(""""", "")?.trim() ?: ""
-                val totalView = Regex("""var totalview = (.*?);""").find(script)?.groupValues?.get(1)?.replace(""""", "")?.trim() ?: ""
-                val nameFixload = Regex("""var name_fixload = '(.*?)';""").find(script)?.groupValues?.get(1)?.trim() ?: ""
                 
+                // SỬA 1: Dùng .replace(Regex, "")
+                val nameFixId = Regex("""var name_fixid = Number\((.*?)\);""").find(script)?.groupValues?.get(1)?.replace("\"".toRegex(), "")?.trim() ?: ""
+                val totalView = Regex("""var totalview = (.*?);""").find(script)?.groupValues?.get(1)?.replace("\"".toRegex(), "")?.trim() ?: ""
+                
+                val nameFixload = Regex("""var name_fixload = '(.*?)';""").find(script)?.groupValues?.get(1)?.trim() ?: ""
                 val domainApi = Regex("""var domain_api = "(.*?)";""").find(script)?.groupValues?.get(1)?.trim() ?: "https://vn2data.com/play"
 
                 // 4. Xây dựng 'idplay' (theo logic của content.js)
@@ -197,8 +199,7 @@ class Vn2Provider : MainAPI() {
                 // 6. Tải nội dung text của trang iframe (play.php)
                 val iframeResponseText = app.get(iframeUrl, referer = serverUrl).text
 
-                // 7. SỬA LỖI: Dùng regex để trích xuất 'link_video_sd'
-                // (Dựa trên 'curl' response do người dùng cung cấp)
+                // 7. Dùng regex để trích xuất 'link_video_sd'
                 val videoUrl = Regex("""var link_video_sd = "(.*?)";""").find(iframeResponseText)?.groupValues?.get(1)
 
                 if (videoUrl != null && videoUrl.isNotBlank()) {
@@ -206,8 +207,8 @@ class Vn2Provider : MainAPI() {
                     val linkType = if (videoUrl.contains(".m3u8")) {
                         ExtractorLinkType.M3U8
                     } else {
-                        // Dựa trên kết quả curl, đây là link MP4
-                        ExtractorLinkType.Video 
+                        // SỬA 2: Dùng .VIDEO (viết hoa)
+                        ExtractorLinkType.VIDEO 
                     }
 
                     // 9. Gửi link về cho trình phát
@@ -215,7 +216,7 @@ class Vn2Provider : MainAPI() {
                         source = serverName,
                         name = serverName,
                         url = videoUrl, // Link .mp4
-                        type = linkType // Loại .Video
+                        type = linkType // Loại .VIDEO
                     ) {
                         this.referer = "$mainUrl/" // Referer chung
                         this.quality = Qualities.Unknown.value
