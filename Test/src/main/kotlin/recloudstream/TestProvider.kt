@@ -24,11 +24,11 @@ class Vn2Provider : MainAPI() {
         TvType.Movie
     )
 
-    // =D==============================
+    // ================================
     //         HÀM HỖ TRỢ KHỬ DẤU
     // ================================
 
-    // Hàm để loại bỏ dấu tiếng Việt
+    // Hàm để loại bỏ dấu tiếng Việt (Hàm này đã đúng)
     private fun deAccent(str: String): String {
         val nfdNormalizedString = Normalizer.normalize(str, Normalizer.Form.NFD) 
         val pattern = "\\p{InCombiningDiacriticalMarks}+".toRegex()
@@ -66,8 +66,7 @@ class Vn2Provider : MainAPI() {
                 val title = a.text()
                 val img = element.selectFirst("img.c10")?.attr("src")
 
-                // Dùng newMovieSearchResponse
-                // Đã loại bỏ addDubStatus (gây lỗi build trên môi trường của bạn)
+                // Dùng newMovieSearchResponse (chuẩn MainAPI của bạn)
                 newMovieSearchResponse(title, href, TvType.TvSeries) { 
                     posterUrl = fixUrl(img)
                 }
@@ -75,8 +74,7 @@ class Vn2Provider : MainAPI() {
             
             return newHomePageResponse(request.name, items)
         } catch (e: Exception) {
-            // SỬA: Thêm throw e để log lỗi
-            throw e
+            throw e // Ném lỗi để debug
         }
     }
 
@@ -86,9 +84,9 @@ class Vn2Provider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         try {
-            // SỬA: Thêm khử dấu và thay thế khoảng trắng
+            // SỬA: Thêm .lowercase() và thay " " bằng "-"
             val deAccentedQuery = deAccent(query)
-            val formattedQuery = deAccentedQuery.replace(" ", "+")
+            val formattedQuery = deAccentedQuery.replace(" ", "-").lowercase()
             val url = "$mainUrl/tim-kiem/$formattedQuery.aspx"
             
             val document = app.get(url).document
@@ -99,15 +97,13 @@ class Vn2Provider : MainAPI() {
                 val title = a.text()
                 val img = it.selectFirst("img.c10")?.attr("src")
 
-                // Dùng newMovieSearchResponse
-                // Đã loại bỏ addDubStatus (gây lỗi build trên môi trường của bạn)
+                // Dùng newMovieSearchResponse (chuẩn MainAPI của bạn)
                 newMovieSearchResponse(title, href, TvType.TvSeries) {
                     posterUrl = fixUrl(img)
                 }
             }
         } catch (e: Exception) {
-            // SỬA: Thêm throw e để log lỗi
-            throw e
+            throw e // Ném lỗi để debug
         }
     }
 
@@ -123,7 +119,7 @@ class Vn2Provider : MainAPI() {
             val poster = document.selectFirst("img.c13")?.attr("src")
             val plot = document.selectFirst("div.wiew_info p")?.text()
             
-            // SỬA: Đã loại bỏ hoàn toàn 'actors' theo yêu cầu
+            // Đã loại bỏ 'actors' theo yêu cầu
             val genre = document.selectFirst("p.fontf1:contains(THỂ LOẠI:) span.fontf8")?.text()?.trim()
 
             val episodes = document.select("div.num_film a[href*=/xem/tap-]")
@@ -143,7 +139,7 @@ class Vn2Provider : MainAPI() {
                 return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                     this.posterUrl = fixUrl(poster)
                     this.plot = plot
-                    // SỬA: Dùng 'tags' (đúng chuẩn MovieLoadResponse của bạn)
+                    // Dùng 'tags' (đúng chuẩn MovieLoadResponse của bạn)
                     this.tags = if (genre != null) listOf(genre) else null
                 }
             } else {
@@ -153,13 +149,12 @@ class Vn2Provider : MainAPI() {
                 return newMovieLoadResponse(title, url, TvType.Movie, fixUrl(movieWatchLink)) {
                     this.posterUrl = fixUrl(poster)
                     this.plot = plot
-                    // SỬA: Dùng 'tags' (đúng chuẩn MovieLoadResponse của bạn)
+                    // Dùng 'tags' (đúng chuẩn MovieLoadResponse của bạn)
                     this.tags = if (genre != null) listOf(genre) else null
                 }
             }
         } catch (e: Exception) {
-            // SỬA: Thêm throw e để log lỗi
-            throw e
+            throw e // Ném lỗi để debug
         }
     }
 
@@ -231,8 +226,7 @@ class Vn2Provider : MainAPI() {
                     linkFound = true
                 }
             } catch (e: Exception) {
-                // SỬA: Thêm throw e để log lỗi
-                throw e
+                throw e // Ném lỗi để debug
             }
         }
 
