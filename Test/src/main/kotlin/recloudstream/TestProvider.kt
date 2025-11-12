@@ -205,7 +205,9 @@ class Vn2Provider : MainAPI() {
 
                 val iframeResponseText = app.get(iframeUrl, referer = serverUrl).text
 
-                val videoUrl = Regex("""var link_video_sd = "(.*?)";""").find(iframeResponseText)?.groupValues?.get(1)
+                // SỬA: Dùng regex cụ thể hơn, tìm kiếm 'http' bên trong dấu ngoặc kép
+                // để tránh khớp với 'var link_video_sd = "";'
+                val videoUrl = Regex("""var link_video_sd = "(https?://.*?)";""").find(iframeResponseText)?.groupValues?.get(1)
 
                 if (videoUrl != null && videoUrl.isNotBlank()) {
                     val linkType = if (videoUrl.contains(".m3u8")) {
