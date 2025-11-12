@@ -149,44 +149,85 @@ class Vn2Provider : MainAPI() {
     // ================================
 
     override suspend fun loadLinks(
-        data: String, 
+        data: String, // data ở đây là URL đến trang xem phim (ví dụ: /xem/tap-1/...)
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
 
         val document = app.get(data).document
+        var linkFound = false
 
+        // Xử lý song song tất cả các server (Server 1, Server 2...)
         document.select("div.num_film2 a").amap { server -> 
             val serverUrl = fixUrl(server.attr("href"))
             val serverName = server.text()
             
             try {
+                // 1. Tải trang của server (Server 1, Server 2, ...)
                 val serverDoc = app.get(serverUrl).document
+                
+                // 2. Tìm script chứa các biến cần thiết (giống như trong content.js)
                 val script = serverDoc.select("script:contains(channel_fix)").html()
-                val channelFix = Regex("""var channel_fix = "(.*?)";""").find(script)?.groupValues?.get(1)
-                val domainData = Regex("""var domain_data = "(.*?)";""").find(script)?.groupValues?.get(1)
 
-                if (channelFix != null && domainData != null) {
-                    val hlsUrl = "$domainData/$channelFix.m3u8"
+                // 3. Trích xuất tất cả các biến cần thiết để xây dựng link iframe
+                val channelFix = Regex("""var channel_fix = "(.*?)";""").find(script)?.groupValues?.get(1)?.trim() ?: ""
+                val channel2Fix = Regex("""var channel2_fix = "(.*?)";""").find(script)?.groupValues?.get(1)?.trim() ?: ""
+                val channel3Fix = Regex("""var channel3_fix = "(.*?)";""").find(script)?.groupValues?.get(1)?.trim() ?: ""
+                val channelFixIframe = Regex("""var channel_fix_iframe = "(.*?)";""").find(script)?.groupValues?.get(1)?.trim() ?: ""
+                
+                val nameTapPhim = Regex("""var name_tapphim = "(.*?)";""").find(script)?.groupValues?.get(1)?.trim() ?: ""
+                val nameFixId = Regex("""var name_fixid = Number\((.*?)\);""").find(script)?.groupValues?.get(1)?.replace(""""", "")?.trim() ?: ""
+                val totalView = Regex("""var totalview = (.*?);""").find(script)?.groupValues?.get(1)?.replace(""""", "")?.trim() ?: ""
+                val nameFixload = Regex("""var name_fixload = '(.*?)';""").find(script)?.groupValues?.get(1)?.trim() ?: ""
+                
+                val domainApi = Regex("""var domain_api = "(.*?)";""").find(script)?.groupValues?.get(1)?.trim() ?: "https://vn2data.com/play"
 
-                    val link = newExtractorLink(
+                // 4. Xây dựng 'idplay' (theo logic của content.js)
+                val numSv = "111" // Giả định '111' là đủ
+                val idplay = "${nameTapPhim}sv${numSv}id${nameFixId}numview${totalView}chankeynull" 
+
+                // 5. Xây dựng URL iframe trỏ đến 'play.php' (theo logic của content.js)
+                val contentLink1 = channelFix.replace("V8FfiTt0053896624711HQ2", "")
+                
+                var channelVideoEmbed = "$domainApi/js_fix/9x/play.php?link=${idplay}vn2fix1${contentLink1}vn2fix2${channel2Fix}vn2fix3${channelFixIframe}vn2fixload${channel3Fix}vn2fixurl4vn2fixurl56O548l721190cookiecatvn2myname${nameFixload}folderfixcatnumget$serverUrl"
+                
+                val iframeUrl = channelVideoEmbed.replace("&", "vn2_fix")
+
+                // 6. Tải nội dung text của trang iframe (play.php)
+                val iframeResponseText = app.get(iframeUrl, referer = serverUrl).text
+
+                // 7. SỬA LỖI: Dùng regex để trích xuất 'link_video_sd'
+                // (Dựa trên 'curl' response do người dùng cung cấp)
+                val videoUrl = Regex("""var link_video_sd = "(.*?)";""").find(iframeResponseText)?.groupValues?.get(1)
+
+                if (videoUrl != null && videoUrl.isNotBlank()) {
+                    // 8. Xác định loại link (MP4 hay M3U8)
+                    val linkType = if (videoUrl.contains(".m3u8")) {
+                        ExtractorLinkType.M3U8
+                    } else {
+                        // Dựa trên kết quả curl, đây là link MP4
+                        ExtractorLinkType.Video 
+                    }
+
+                    // 9. Gửi link về cho trình phát
+                    callback(newExtractorLink(
                         source = serverName,
                         name = serverName,
-                        url = hlsUrl,
-                        type = ExtractorLinkType.M3U8 
+                        url = videoUrl, // Link .mp4
+                        type = linkType // Loại .Video
                     ) {
-                        this.referer = "$mainUrl/"
+                        this.referer = "$mainUrl/" // Referer chung
                         this.quality = Qualities.Unknown.value
-                    }
-                    callback(link)
+                    })
+                    linkFound = true
                 }
             } catch (e: Exception) {
-                // Bỏ qua nếu server bị lỗi
+                // Bỏ qua nếu server này bị lỗi
             }
         }
 
-        return true
+        return linkFound // Trả về true nếu tìm thấy ít nhất 1 link
     }
 
     // ================================
