@@ -97,15 +97,10 @@ class Vn2Provider : MainAPI() {
         val title = document.selectFirst("h1.header-title")?.text()?.trim() ?: ""
         val poster = document.selectFirst("img.c13")?.attr("src")
         val plot = document.selectFirst("div.wiew_info p")?.text()
-        val metaDesc = document.selectFirst("meta[name=description]")?.attr("content")
+        // val metaDesc = document.selectFirst("meta[name=description]")?.attr("content") // Đã xoá
         
-        // SỬA: Đảm bảo toàn bộ chuỗi này dùng (safe call `?.`)
-        // Lỗi của bạn ở dòng 103 nằm đâu đó trong khối này.
-        val actors = metaDesc?.split(".").lastOrNull()?.trim()
-            ?.split(" - ")
-            ?.map { it.trim() }
-            ?.filter { it.isNotEmpty() } 
-            ?.map { ActorData(Actor(it)) } // Dùng ActorData (đúng chuẩn MovieLoadResponse)
+        // SỬA: Đã loại bỏ hoàn toàn logic 'actors' gây lỗi
+        // val actors = ... 
 
         val genre = document.selectFirst("p.fontf1:contains(THỂ LOẠI:) span.fontf8")?.text()?.trim()
 
@@ -126,7 +121,7 @@ class Vn2Provider : MainAPI() {
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = fixUrl(poster)
                 this.plot = plot
-                this.actors = actors // Gán List<ActorData>?
+                // this.actors = actors // Đã xoá
                 // Dùng 'tags' (đúng chuẩn MovieLoadResponse)
                 this.tags = if (genre != null) listOf(genre) else null
             }
@@ -137,7 +132,7 @@ class Vn2Provider : MainAPI() {
             return newMovieLoadResponse(title, url, TvType.Movie, fixUrl(movieWatchLink)) {
                 this.posterUrl = fixUrl(poster)
                 this.plot = plot
-                this.actors = actors // Gán List<ActorData>?
+                // this.actors = actors // Đã xoá
                 // Dùng 'tags' (đúng chuẩn MovieLoadResponse)
                 this.tags = if (genre != null) listOf(genre) else null
             }
