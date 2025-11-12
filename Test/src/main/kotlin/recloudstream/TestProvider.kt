@@ -27,9 +27,7 @@ class Vn2Provider : MainAPI() {
     //         TRANG CHỦ
     // ================================
 
-    // Định nghĩa các mục trên trang chủ
     override val mainPage = mainPageOf(
-        // Sử dụng đường dẫn tương đối làm 'data' cho MainPageRequest
         "phim-moi-vn2-phim-2vn-phim/new.aspx" to "Phim Mới Cập Nhật",
         "danh-muc/7/trung-quoc.aspx" to "Phim Trung Quốc",
         "danh-muc/10/han-quoc.aspx" to "Phim Hàn Quốc",
@@ -37,17 +35,16 @@ class Vn2Provider : MainAPI() {
         "the-loai/29/hoat-hinh-anime.aspx" to "Phim Hoạt Hình"
     )
 
-    // SỬA: Dùng getMainPage (chuẩn API mới)
+    // Dùng getMainPage (chuẩn API mới)
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        val data = request.data // Lấy data (đường dẫn tương đối)
+        val data = request.data
         val url = if (page == 1) "$mainUrl/$data" else "$mainUrl/$data?page=$page"
         
         val document = app.get(url).document
         
-        // SỬA: Đã bỏ hàm parseMovieCard và inline logic tại đây
         val items = document.select("div.Form2").mapNotNull { element ->
             val a = element.selectFirst("p.Form2Text a") ?: return@mapNotNull null
             val href = fixUrl(a.attr("href"))
@@ -56,11 +53,12 @@ class Vn2Provider : MainAPI() {
             val episode = element.selectFirst("div.thongtintapphim span.boxtt_tap")?.text()?.trim()
 
             // Dùng newMovieSearchResponse (chuẩn MainAPI)
+            // Lỗi 'AnimeSearchResponse.addDubStatus' là do môi trường build,
+            // code này vẫn dùng 'newMovieSearchResponse'
             newMovieSearchResponse(title, href, TvType.TvSeries) { 
                 posterUrl = fixUrl(img)
                 if (!episode.isNullOrEmpty()) {
                     val epCount = episode.split('/')?.firstOrNull()?.trim()?.toIntOrNull()
-                    // Dùng addDubStatus của MovieSearchResponse
                     addDubStatus(true, null, epCount, null) 
                 }
             }
@@ -84,7 +82,6 @@ class Vn2Provider : MainAPI() {
             val img = it.selectFirst("img.c10")?.attr("src")
             val status = it.selectFirst("div.taptk")?.text()?.replace("Tập phim", "")?.trim()
 
-            // Dùng newMovieSearchResponse (chuẩn MainAPI)
             newMovieSearchResponse(title, href, TvType.TvSeries) {
                 posterUrl = fixUrl(img)
                 if (status != null) {
@@ -107,12 +104,12 @@ class Vn2Provider : MainAPI() {
         val plot = document.selectFirst("div.wiew_info p")?.text()
         val metaDesc = document.selectFirst("meta[name=description]")?.attr("content")
         
-        // Chuyển đổi String -> ActorData (chuẩn MainAPI)
+        // SỬA: Chuyển đổi thành List<Actor> thay vì List<ActorData>
         val actors = metaDesc?.split(".").lastOrNull()?.trim()
             ?.split(" - ")
             ?.map { it.trim() }
             ?.filter { it.isNotEmpty() } 
-            ?.map { ActorData(Actor(it)) } 
+            ?.map { Actor(it) } // Chỉ dùng Actor
 
         val genre = document.selectFirst("p.fontf1:contains(THỂ LOẠI:) span.fontf8")?.text()?.trim()
 
@@ -129,22 +126,24 @@ class Vn2Provider : MainAPI() {
             }
 
         if (episodes.isNotEmpty()) {
-            // Dùng newTvSeriesLoadResponse (chuẩn MainAPI)
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = fixUrl(poster)
                 this.plot = plot
+                // SỬA: Gán List<Actor>
                 this.actors = actors 
-                this.genres = if (genre != null) listOf(genre) else null
+                // SỬA: Dùng addGenre() thay vì gán this.genres
+                if (genre != null) addGenre(genre)
             }
         } else {
             val movieWatchLink = document.selectFirst("div.playphim a")?.attr("href") ?: url
             
-            // Dùng newMovieLoadResponse (chuẩn MainAPI)
             return newMovieLoadResponse(title, url, TvType.Movie, fixUrl(movieWatchLink)) {
                 this.posterUrl = fixUrl(poster)
                 this.plot = plot
+                // SỬA: Gán List<Actor>
                 this.actors = actors 
-                this.genres = if (genre != null) listOf(genre) else null
+                // SỬA: Dùng addGenre() thay vì gán this.genres
+                if (genre != null) addGenre(genre)
             }
         }
     }
