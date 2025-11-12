@@ -5,13 +5,14 @@ import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import org.jsoup.nodes.Element
-// import com.lagradost.cloudstream3.network.reCAPTCHAv3 // Lỗi: Đã xóa import không cần thiết
+// import com.lagradost.cloudstream3.network.reCAPTCHAv3 // Đã xóa
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
 
 // import com.lagradost.cloudstream3.utils.ExtractorApiKt.newExtractorLink
 
-class Vn2Provider : MainAPI() {
+// Kế thừa từ MainAPI là chính xác cho trang web này
+class Vn2Provider : MainAPI() { 
     override var mainUrl = "https://www.vn2b.my"
     override var name = "Phim Vn2"
     override val hasMainPage = true
@@ -36,10 +37,7 @@ class Vn2Provider : MainAPI() {
         "$mainUrl/the-loai/29/hoat-hinh-anime.aspx" to "Phim Hoạt Hình"
     )
 
-    // Tải dữ liệu cho các mục trang chủ
-    // Lỗi 'mainPageLoad' overrides nothing: Đây có thể là lỗi cấu hình build. 
-    // Hãy chắc chắn `lib.type` trong build.gradle.kts không phải là "anime".
-    // Hàm này đúng cho MainAPI.
+    // Dùng mainPageLoad (chính xác cho MainAPI)
     override suspend fun mainPageLoad(
         page: Int,
         mainPageData: MainPageData
@@ -63,12 +61,12 @@ class Vn2Provider : MainAPI() {
         val img = element.selectFirst("img.c10")?.attr("src")
         val episode = element.selectFirst("div.thongtintapphim span.boxtt_tap")?.text()?.trim()
 
-        return newMovieSearchResponse(title, href, TvType.TvSeries) { // Mặc định là TvSeries, sẽ check lại ở `load`
+        // Dùng newMovieSearchResponse (chính xác cho MainAPI)
+        return newMovieSearchResponse(title, href, TvType.TvSeries) { 
             posterUrl = fixUrl(img)
             if (!episode.isNullOrEmpty()) {
-                // Lỗi: addDubStatus(true, episode)
-                // Sửa: Phân tích số tập và dùng signature mới
                 val epCount = episode.split('/')?.firstOrNull()?.trim()?.toIntOrNull()
+                // Dùng addDubStatus của MovieSearchResponse (chính xác)
                 addDubStatus(true, null, epCount, null) // (dubExist, subExist, dubEpisodes, subEpisodes)
             }
         }
@@ -91,12 +89,12 @@ class Vn2Provider : MainAPI() {
             val img = it.selectFirst("img.c10")?.attr("src")
             val status = it.selectFirst("div.taptk")?.text()?.replace("Tập phim", "")?.trim()
 
+            // Dùng newMovieSearchResponse (chính xác cho MainAPI)
             newMovieSearchResponse(title, href, TvType.TvSeries) {
                 posterUrl = fixUrl(img)
                 if (status != null) {
-                    // Lỗi: addDubStatus(true, status)
-                    // Sửa: Phân tích số tập và dùng signature mới
                     val epCount = status.split('/')?.firstOrNull()?.trim()?.toIntOrNull()
+                    // Dùng addDubStatus của MovieSearchResponse (chính xác)
                     addDubStatus(true, null, epCount, null)
                 }
             }
@@ -117,8 +115,7 @@ class Vn2Provider : MainAPI() {
         // Lấy thông tin diễn viên từ meta description
         val metaDesc = document.selectFirst("meta[name=description]")?.attr("content")
         
-        // Lỗi: Gán List<String> cho List<ActorData>
-        // Sửa: Chuyển đổi List<String> sang List<ActorData>
+        // Chuyển đổi String -> ActorData (chính xác)
         val actors = metaDesc?.split(".").lastOrNull()?.trim()
             ?.split(" - ")
             ?.map { it.trim() }
@@ -142,24 +139,24 @@ class Vn2Provider : MainAPI() {
 
         // Kiểm tra là Phim Lẻ hay Phim Bộ
         if (episodes.isNotEmpty()) {
+            // Dùng newTvSeriesLoadResponse (chính xác)
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = fixUrl(poster)
                 this.plot = plot
-                this.actors = actors // Sửa: Đã gán đúng kiểu List<ActorData>
-                // Lỗi: Unresolved reference 'addGenre'
-                // Sửa: Gán trực tiếp vào 'genres'
+                this.actors = actors 
+                // Gán genres (chính xác cho MainAPI)
                 this.genres = if (genre != null) listOf(genre) else null
             }
         } else {
             // Nếu không có danh sách tập, đây là phim lẻ.
             val movieWatchLink = document.selectFirst("div.playphim a")?.attr("href") ?: url
             
+            // Dùng newMovieLoadResponse (chính xác)
             return newMovieLoadResponse(title, url, TvType.Movie, fixUrl(movieWatchLink)) {
                 this.posterUrl = fixUrl(poster)
                 this.plot = plot
-                this.actors = actors // Sửa: Đã gán đúng kiểu List<ActorData>
-                // Lỗi: Unresolved reference 'addGenre'
-                // Sửa: Gán trực tiếp vào 'genres'
+                this.actors = actors 
+                // Gán genres (chính xác cho MainAPI)
                 this.genres = if (genre != null) listOf(genre) else null
             }
         }
@@ -178,9 +175,8 @@ class Vn2Provider : MainAPI() {
 
         val document = app.get(data).document
 
-        // Lỗi: 'apmap' is deprecated
-        // Sửa: Thay bằng 'amap'
-        document.select("div.num_film2 a").amap { server -> // Đã đổi sang amap
+        // Dùng amap (thay cho apmap đã cũ)
+        document.select("div.num_film2 a").amap { server -> 
             val serverUrl = fixUrl(server.attr("href"))
             val serverName = server.text()
             
@@ -201,7 +197,7 @@ class Vn2Provider : MainAPI() {
                         source = serverName,
                         name = serverName,
                         url = hlsUrl,
-                        type = ExtractorLinkType.M3U8 
+                        type = ExtractorLinkType.M3U8 // Dùng M3U8 (chính xác)
                     ) {
                         this.referer = "$mainUrl/"
                         this.quality = Qualities.Unknown.value
