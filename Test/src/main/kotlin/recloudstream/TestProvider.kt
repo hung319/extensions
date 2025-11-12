@@ -68,21 +68,26 @@ class Vn2Provider : MainAPI() {
     // ================================
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$mainUrl/tim-kiem/$query.aspx"
+        // SỬA: Thay thế khoảng trắng bằng dấu '+'
+        // Các URL thường không xử lý tốt khoảng trắng.
+        val formattedQuery = query.replace(" ", "+")
+        val url = "$mainUrl/tim-kiem/$formattedQuery.aspx"
+        
         val document = app.get(url).document
 
+        // Selectors (div.boxtk, p.nametk a, img.c10)
+        // đã được xác nhận là đúng dựa trên file HTML 'www.vn2b.my_tim-kiem_vuon.aspx.html'
         return document.select("div.boxtk").mapNotNull {
             val a = it.selectFirst("p.nametk a") ?: return@mapNotNull null
             val href = fixUrl(a.attr("href"))
             val title = a.text()
+            // img.c10 nằm bên trong div.boxtk_img, nhưng .selectFirst("img.c10") vẫn tìm được
             val img = it.selectFirst("img.c10")?.attr("src")
-            // val status = it.selectFirst("div.taptk")?.text()?.replace("Tập phim", "")?.trim()
 
-            // SỬA: Dùng newMovieSearchResponse
-            // Cấu trúc MovieSearchResponse bạn cung cấp không có addDubStatus.
+            // Dùng newMovieSearchResponse (chuẩn MainAPI)
             newMovieSearchResponse(title, href, TvType.TvSeries) {
                 posterUrl = fixUrl(img)
-                // ĐÃ LOẠI BỎ addDubStatus GÂY LỖI
+                // Đã loại bỏ 'addDubStatus' vì nó gây lỗi build trong môi trường của bạn
             }
         }
     }
