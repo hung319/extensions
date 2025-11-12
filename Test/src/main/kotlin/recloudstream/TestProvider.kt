@@ -189,13 +189,14 @@ class Vn2Provider : MainAPI() {
                 
                 val serverDoc = app.get(serverUrl).document
                 
-                // SỬA: Lấy toàn bộ HTML thay vì dùng selector
-                // Log  cho thấy serverDoc.select("script:contains(channel_fix)") đã thất bại
+                // Lấy toàn bộ HTML (vì .select(script) đã thất bại)
                 val script = serverDoc.html() 
                 println("Vn2Provider script length: ${script.length}")
 
-                // --- Bắt đầu trích xuất biến ---
-                val channelFix = Regex("""var channel_fix = "(.*?)";""").find(script)?.groupValues?.get(1)?.trim() ?: ""
+                // --- Bắt đầu trích xuất biến (ĐÃ SỬA LẠI REGEX) ---
+                
+                // SỬA 1: Regex cụ thể hơn cho channel_fix (khớp với ID dài)
+                val channelFix = Regex("""var channel_fix = "([a-zA-Z0-9_-]+)";""").find(script)?.groupValues?.get(1)?.trim() ?: ""
                 println("Vn2Provider channelFix: $channelFix")
 
                 val channel2Fix = Regex("""var channel2_fix = "(.*?)";""").find(script)?.groupValues?.get(1)?.trim() ?: ""
@@ -205,24 +206,26 @@ class Vn2Provider : MainAPI() {
                 val nameTapPhim = Regex("""var name_tapphim = "(.*?)";""").find(script)?.groupValues?.get(1)?.trim() ?: ""
                 println("Vn2Provider nameTapPhim: $nameTapPhim")
                 
-                val nameFixId = Regex("""var name_fixid = Number\((.*?)\);""").find(script)?.groupValues?.get(1)?.replace("\"".toRegex(), "")?.trim() ?: ""
-                println("Vn2Provider nameFixId: $nameFixId")
+                // SỬA 2: Lấy 'name_idphim' thay vì 'name_fixid'
+                val nameIdPhim = Regex("""var name_idphim = "(.*?)";""").find(script)?.groupValues?.get(1)?.trim() ?: ""
+                println("Vn2Provider nameIdPhim: $nameIdPhim")
 
-                val totalView = Regex("""var totalview = (.*?);""").find(script)?.groupValues?.get(1)?.replace("\"".toRegex(), "")?.trim() ?: ""
-                // println("Vn2Provider totalView: $totalView") // Biến này quá dài, ẩn đi
+                // SỬA 3: Bỏ qua 'totalView' vì nó được tạo động
+                // val totalView = ... 
                 
                 val nameFixload = Regex("""var name_fixload = '(.*?)';""").find(script)?.groupValues?.get(1)?.trim() ?: ""
                 val domainApi = Regex("""var domain_api = "(.*?)";""").find(script)?.groupValues?.get(1)?.trim() ?: "https://vn2data.com/play"
                 // --- Kết thúc trích xuất biến ---
 
                 // Kiểm tra xem các biến quan trọng có rỗng không
-                if (channelFix.isBlank() || nameTapPhim.isBlank() || nameFixId.isBlank()) {
+                if (channelFix.isBlank() || nameTapPhim.isBlank() || nameIdPhim.isBlank()) {
                     println("Vn2Provider FAILED: Critical variables are blank. Skipping server.")
                     return@amap // Bỏ qua vòng lặp này
                 }
 
                 val numSv = "111" 
-                val idplay = "${nameTapPhim}sv${numSv}id${nameFixId}numview${totalView}chankeynull" 
+                // SỬA 4: Xây dựng idplay mà không cần totalView
+                val idplay = "${nameTapPhim}sv${numSv}id${nameIdPhim}numviewchankeynull" 
                 println("Vn2Provider idplay: $idplay")
 
                 val contentLink1 = channelFix.replace("V8FfiTt0053896624711HQ2", "")
@@ -235,7 +238,7 @@ class Vn2Provider : MainAPI() {
                 val iframeResponseText = app.get(iframeUrl, referer = serverUrl).text
                 println("Vn2Provider iframeResponseText length: ${iframeResponseText.length}")
 
-                // Regex quan trọng (đã sửa ở lần trước)
+                // Regex quan trọng (giữ nguyên)
                 val videoUrl = Regex("""var link_video_sd = "(https?://.*?)";""").find(iframeResponseText)?.groupValues?.get(1)
                 println("Vn2Provider extracted videoUrl: $videoUrl")
 
