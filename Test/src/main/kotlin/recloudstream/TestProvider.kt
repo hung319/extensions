@@ -50,17 +50,13 @@ class Vn2Provider : MainAPI() {
             val href = fixUrl(a.attr("href"))
             val title = a.text()
             val img = element.selectFirst("img.c10")?.attr("src")
-            val episode = element.selectFirst("div.thongtintapphim span.boxtt_tap")?.text()?.trim()
+            // val episode = element.selectFirst("div.thongtintapphim span.boxtt_tap")?.text()?.trim()
 
-            // Dùng newMovieSearchResponse (chuẩn MainAPI)
-            // Lỗi 'AnimeSearchResponse.addDubStatus' là do môi trường build,
-            // code này vẫn dùng 'newMovieSearchResponse'
+            // SỬA: Dùng newMovieSearchResponse (chuẩn MainAPI)
+            // Cấu trúc MovieSearchResponse bạn cung cấp không có addDubStatus.
             newMovieSearchResponse(title, href, TvType.TvSeries) { 
                 posterUrl = fixUrl(img)
-                if (!episode.isNullOrEmpty()) {
-                    val epCount = episode.split('/')?.firstOrNull()?.trim()?.toIntOrNull()
-                    addDubStatus(true, null, epCount, null) 
-                }
+                // ĐÃ LOẠI BỎ addDubStatus GÂY LỖI
             }
         }
         
@@ -80,14 +76,13 @@ class Vn2Provider : MainAPI() {
             val href = fixUrl(a.attr("href"))
             val title = a.text()
             val img = it.selectFirst("img.c10")?.attr("src")
-            val status = it.selectFirst("div.taptk")?.text()?.replace("Tập phim", "")?.trim()
+            // val status = it.selectFirst("div.taptk")?.text()?.replace("Tập phim", "")?.trim()
 
+            // SỬA: Dùng newMovieSearchResponse
+            // Cấu trúc MovieSearchResponse bạn cung cấp không có addDubStatus.
             newMovieSearchResponse(title, href, TvType.TvSeries) {
                 posterUrl = fixUrl(img)
-                if (status != null) {
-                    val epCount = status.split('/')?.firstOrNull()?.trim()?.toIntOrNull()
-                    addDubStatus(true, null, epCount, null)
-                }
+                // ĐÃ LOẠI BỎ addDubStatus GÂY LỖI
             }
         }
     }
@@ -104,12 +99,12 @@ class Vn2Provider : MainAPI() {
         val plot = document.selectFirst("div.wiew_info p")?.text()
         val metaDesc = document.selectFirst("meta[name=description]")?.attr("content")
         
-        // SỬA: Chuyển đổi thành List<Actor> thay vì List<ActorData>
+        // Dùng List<ActorData> (đúng theo cấu trúc MovieLoadResponse)
         val actors = metaDesc?.split(".").lastOrNull()?.trim()
             ?.split(" - ")
             ?.map { it.trim() }
             ?.filter { it.isNotEmpty() } 
-            ?.map { Actor(it) } // Chỉ dùng Actor
+            ?.map { ActorData(Actor(it)) } 
 
         val genre = document.selectFirst("p.fontf1:contains(THỂ LOẠI:) span.fontf8")?.text()?.trim()
 
@@ -126,24 +121,24 @@ class Vn2Provider : MainAPI() {
             }
 
         if (episodes.isNotEmpty()) {
+            // Dùng newTvSeriesLoadResponse
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = fixUrl(poster)
                 this.plot = plot
-                // SỬA: Gán List<Actor>
                 this.actors = actors 
-                // SỬA: Dùng addGenre() thay vì gán this.genres
-                if (genre != null) addGenre(genre)
+                // SỬA: Dùng 'tags' thay vì 'genres'
+                this.tags = if (genre != null) listOf(genre) else null
             }
         } else {
             val movieWatchLink = document.selectFirst("div.playphim a")?.attr("href") ?: url
             
+            // Dùng newMovieLoadResponse
             return newMovieLoadResponse(title, url, TvType.Movie, fixUrl(movieWatchLink)) {
                 this.posterUrl = fixUrl(poster)
                 this.plot = plot
-                // SỬA: Gán List<Actor>
                 this.actors = actors 
-                // SỬA: Dùng addGenre() thay vì gán this.genres
-                if (genre != null) addGenre(genre)
+                // SỬA: Dùng 'tags' thay vì 'genres'
+                this.tags = if (genre != null) listOf(genre) else null
             }
         }
     }
