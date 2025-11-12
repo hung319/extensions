@@ -5,13 +5,12 @@ import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import org.jsoup.nodes.Element
-// import com.lagradost.cloudstream3.network.reCAPTCHAv3 // Đã xóa
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
 
 // import com.lagradost.cloudstream3.utils.ExtractorApiKt.newExtractorLink
 
-// Kế thừa từ MainAPI là chính xác cho trang web này
+// Kế thừa từ MainAPI (chuẩn TV/Movie)
 class Vn2Provider : MainAPI() { 
     override var mainUrl = "https://www.vn2b.my"
     override var name = "Phim Vn2"
@@ -30,46 +29,44 @@ class Vn2Provider : MainAPI() {
 
     // Định nghĩa các mục trên trang chủ
     override val mainPage = mainPageOf(
-        "$mainUrl/phim-moi-vn2-phim-2vn-phim/new.aspx" to "Phim Mới Cập Nhật",
-        "$mainUrl/danh-muc/7/trung-quoc.aspx" to "Phim Trung Quốc",
-        "$mainUrl/danh-muc/10/han-quoc.aspx" to "Phim Hàn Quốc",
-        "$mainUrl/danh-muc/8/thai-lan.aspx" to "Phim Thái Lan",
-        "$mainUrl/the-loai/29/hoat-hinh-anime.aspx" to "Phim Hoạt Hình"
+        // Sử dụng đường dẫn tương đối làm 'data' cho MainPageRequest
+        "phim-moi-vn2-phim-2vn-phim/new.aspx" to "Phim Mới Cập Nhật",
+        "danh-muc/7/trung-quoc.aspx" to "Phim Trung Quốc",
+        "danh-muc/10/han-quoc.aspx" to "Phim Hàn Quốc",
+        "danh-muc/8/thai-lan.aspx" to "Phim Thái Lan",
+        "the-loai/29/hoat-hinh-anime.aspx" to "Phim Hoạt Hình"
     )
 
-    // Dùng mainPageLoad (chính xác cho MainAPI)
-    override suspend fun mainPageLoad(
+    // SỬA: Dùng getMainPage (chuẩn API mới)
+    override suspend fun getMainPage(
         page: Int,
-        mainPageData: MainPageData
+        request: MainPageRequest
     ): HomePageResponse {
-        val url = if (page == 1) mainPageData.data else "${mainPageData.data}?page=$page"
+        val data = request.data // Lấy data (đường dẫn tương đối)
+        val url = if (page == 1) "$mainUrl/$data" else "$mainUrl/$data?page=$page"
+        
         val document = app.get(url).document
         
-        // Trang chủ và trang danh mục dùng chung cấu trúc `div.Form2`
-        val items = document.select("div.Form2").mapNotNull {
-            parseMovieCard(it)
-        }
-        
-        return newHomePageResponse(mainPageData.name, items)
-    }
+        // SỬA: Đã bỏ hàm parseMovieCard và inline logic tại đây
+        val items = document.select("div.Form2").mapNotNull { element ->
+            val a = element.selectFirst("p.Form2Text a") ?: return@mapNotNull null
+            val href = fixUrl(a.attr("href"))
+            val title = a.text()
+            val img = element.selectFirst("img.c10")?.attr("src")
+            val episode = element.selectFirst("div.thongtintapphim span.boxtt_tap")?.text()?.trim()
 
-    // Hàm chung để parse thẻ phim (dùng cho trang chủ, danh mục)
-    private fun parseMovieCard(element: Element): SearchResponse? {
-        val a = element.selectFirst("p.Form2Text a") ?: return null
-        val href = fixUrl(a.attr("href"))
-        val title = a.text()
-        val img = element.selectFirst("img.c10")?.attr("src")
-        val episode = element.selectFirst("div.thongtintapphim span.boxtt_tap")?.text()?.trim()
-
-        // Dùng newMovieSearchResponse (chính xác cho MainAPI)
-        return newMovieSearchResponse(title, href, TvType.TvSeries) { 
-            posterUrl = fixUrl(img)
-            if (!episode.isNullOrEmpty()) {
-                val epCount = episode.split('/')?.firstOrNull()?.trim()?.toIntOrNull()
-                // Dùng addDubStatus của MovieSearchResponse (chính xác)
-                addDubStatus(true, null, epCount, null) // (dubExist, subExist, dubEpisodes, subEpisodes)
+            // Dùng newMovieSearchResponse (chuẩn MainAPI)
+            newMovieSearchResponse(title, href, TvType.TvSeries) { 
+                posterUrl = fixUrl(img)
+                if (!episode.isNullOrEmpty()) {
+                    val epCount = episode.split('/')?.firstOrNull()?.trim()?.toIntOrNull()
+                    // Dùng addDubStatus của MovieSearchResponse
+                    addDubStatus(true, null, epCount, null) 
+                }
             }
         }
+        
+        return newHomePageResponse(request.name, items)
     }
 
     // ================================
@@ -77,11 +74,9 @@ class Vn2Provider : MainAPI() {
     // ================================
 
     override suspend fun search(query: String): List<SearchResponse> {
-        // Trang tìm kiếm dùng URL: /tim-kiem/ten-phim.aspx
         val url = "$mainUrl/tim-kiem/$query.aspx"
         val document = app.get(url).document
 
-        // Trang tìm kiếm dùng cấu trúc `div.boxtk`
         return document.select("div.boxtk").mapNotNull {
             val a = it.selectFirst("p.nametk a") ?: return@mapNotNull null
             val href = fixUrl(a.attr("href"))
@@ -89,12 +84,11 @@ class Vn2Provider : MainAPI() {
             val img = it.selectFirst("img.c10")?.attr("src")
             val status = it.selectFirst("div.taptk")?.text()?.replace("Tập phim", "")?.trim()
 
-            // Dùng newMovieSearchResponse (chính xác cho MainAPI)
+            // Dùng newMovieSearchResponse (chuẩn MainAPI)
             newMovieSearchResponse(title, href, TvType.TvSeries) {
                 posterUrl = fixUrl(img)
                 if (status != null) {
                     val epCount = status.split('/')?.firstOrNull()?.trim()?.toIntOrNull()
-                    // Dùng addDubStatus của MovieSearchResponse (chính xác)
                     addDubStatus(true, null, epCount, null)
                 }
             }
@@ -111,20 +105,17 @@ class Vn2Provider : MainAPI() {
         val title = document.selectFirst("h1.header-title")?.text()?.trim() ?: ""
         val poster = document.selectFirst("img.c13")?.attr("src")
         val plot = document.selectFirst("div.wiew_info p")?.text()
-
-        // Lấy thông tin diễn viên từ meta description
         val metaDesc = document.selectFirst("meta[name=description]")?.attr("content")
         
-        // Chuyển đổi String -> ActorData (chính xác)
+        // Chuyển đổi String -> ActorData (chuẩn MainAPI)
         val actors = metaDesc?.split(".").lastOrNull()?.trim()
             ?.split(" - ")
             ?.map { it.trim() }
-            ?.filter { it.isNotEmpty() } // Lọc bỏ tên rỗng
-            ?.map { ActorData(Actor(it)) } // Chuyển đổi String -> ActorData
+            ?.filter { it.isNotEmpty() } 
+            ?.map { ActorData(Actor(it)) } 
 
         val genre = document.selectFirst("p.fontf1:contains(THỂ LOẠI:) span.fontf8")?.text()?.trim()
 
-        // Lấy danh sách tập
         val episodes = document.select("div.num_film a[href*=/xem/tap-]")
             .mapNotNull { a ->
                 val epHref = fixUrl(a.attr("href"))
@@ -137,26 +128,22 @@ class Vn2Provider : MainAPI() {
                 }
             }
 
-        // Kiểm tra là Phim Lẻ hay Phim Bộ
         if (episodes.isNotEmpty()) {
-            // Dùng newTvSeriesLoadResponse (chính xác)
+            // Dùng newTvSeriesLoadResponse (chuẩn MainAPI)
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = fixUrl(poster)
                 this.plot = plot
                 this.actors = actors 
-                // Gán genres (chính xác cho MainAPI)
                 this.genres = if (genre != null) listOf(genre) else null
             }
         } else {
-            // Nếu không có danh sách tập, đây là phim lẻ.
             val movieWatchLink = document.selectFirst("div.playphim a")?.attr("href") ?: url
             
-            // Dùng newMovieLoadResponse (chính xác)
+            // Dùng newMovieLoadResponse (chuẩn MainAPI)
             return newMovieLoadResponse(title, url, TvType.Movie, fixUrl(movieWatchLink)) {
                 this.posterUrl = fixUrl(poster)
                 this.plot = plot
                 this.actors = actors 
-                // Gán genres (chính xác cho MainAPI)
                 this.genres = if (genre != null) listOf(genre) else null
             }
         }
@@ -167,7 +154,7 @@ class Vn2Provider : MainAPI() {
     // ================================
 
     override suspend fun loadLinks(
-        data: String, // data ở đây là URL đến trang xem phim (ví dụ: /xem/tap-1/...)
+        data: String, 
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
@@ -175,18 +162,13 @@ class Vn2Provider : MainAPI() {
 
         val document = app.get(data).document
 
-        // Dùng amap (thay cho apmap đã cũ)
         document.select("div.num_film2 a").amap { server -> 
             val serverUrl = fixUrl(server.attr("href"))
             val serverName = server.text()
             
             try {
                 val serverDoc = app.get(serverUrl).document
-                
-                // Tìm script chứa thông tin link
                 val script = serverDoc.select("script:contains(channel_fix)").html()
-
-                // Dùng Regex để trích xuất các biến JavaScript quan trọng
                 val channelFix = Regex("""var channel_fix = "(.*?)";""").find(script)?.groupValues?.get(1)
                 val domainData = Regex("""var domain_data = "(.*?)";""").find(script)?.groupValues?.get(1)
 
@@ -197,7 +179,7 @@ class Vn2Provider : MainAPI() {
                         source = serverName,
                         name = serverName,
                         url = hlsUrl,
-                        type = ExtractorLinkType.M3U8 // Dùng M3U8 (chính xác)
+                        type = ExtractorLinkType.M3U8 
                     ) {
                         this.referer = "$mainUrl/"
                         this.quality = Qualities.Unknown.value
@@ -216,7 +198,6 @@ class Vn2Provider : MainAPI() {
     //           HÀM HỖ TRỢ
     // ================================
 
-    // Sửa lỗi URL (thêm domain, https)
     private fun fixUrl(url: String?): String {
         return when {
             url.isNullOrBlank() -> ""
