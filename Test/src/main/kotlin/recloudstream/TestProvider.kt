@@ -188,8 +188,11 @@ class Vn2Provider : MainAPI() {
                 println("Vn2Provider trying server: $serverName, URL: $serverUrl")
                 
                 val serverDoc = app.get(serverUrl).document
-                val script = serverDoc.select("script:contains(channel_fix)").html()
-                println("Vn2Provider script found: ${script.isNotBlank()}")
+                
+                // SỬA: Lấy toàn bộ HTML thay vì dùng selector
+                // Log  cho thấy serverDoc.select("script:contains(channel_fix)") đã thất bại
+                val script = serverDoc.html() 
+                println("Vn2Provider script length: ${script.length}")
 
                 // --- Bắt đầu trích xuất biến ---
                 val channelFix = Regex("""var channel_fix = "(.*?)";""").find(script)?.groupValues?.get(1)?.trim() ?: ""
@@ -211,6 +214,12 @@ class Vn2Provider : MainAPI() {
                 val nameFixload = Regex("""var name_fixload = '(.*?)';""").find(script)?.groupValues?.get(1)?.trim() ?: ""
                 val domainApi = Regex("""var domain_api = "(.*?)";""").find(script)?.groupValues?.get(1)?.trim() ?: "https://vn2data.com/play"
                 // --- Kết thúc trích xuất biến ---
+
+                // Kiểm tra xem các biến quan trọng có rỗng không
+                if (channelFix.isBlank() || nameTapPhim.isBlank() || nameFixId.isBlank()) {
+                    println("Vn2Provider FAILED: Critical variables are blank. Skipping server.")
+                    return@amap // Bỏ qua vòng lặp này
+                }
 
                 val numSv = "111" 
                 val idplay = "${nameTapPhim}sv${numSv}id${nameFixId}numview${totalView}chankeynull" 
