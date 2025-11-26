@@ -4,7 +4,6 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
-// Thêm các import cần thiết cho Coroutines
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -32,7 +31,6 @@ class AnikotoProvider : MainAPI() {
         val posterUrl = this.selectFirst("img")?.attr("src")
         val subText = this.selectFirst(".ep-status.sub span")?.text()
         val dubText = this.selectFirst(".ep-status.dub span")?.text()
-
         return newAnimeSearchResponse(title, fixUrl(href)) {
             this.posterUrl = posterUrl
             if (!subText.isNullOrEmpty()) addQuality("Sub $subText")
@@ -69,11 +67,11 @@ class AnikotoProvider : MainAPI() {
         val description = doc.selectFirst(".synopsis .content")?.text()
         val poster = doc.selectFirst(".binfo .poster img")?.attr("src")
         val ratingText = doc.selectFirst(".meta .rating")?.text()
-        val dataId = doc.selectFirst("#watch-main")?.attr("data-id") ?: throw ErrorLoadingException("Could not find Anime ID")
+        val dataId = doc.selectFirst("#watch-main")?.attr("data-id") ?: throw ErrorLoadingException("No ID")
         
         val ajaxUrl = "$mainUrl/ajax/episode/list/$dataId"
-        val jsonResponse = app.get(ajaxUrl, headers = ajaxHeaders).parsedSafe<AjaxResponse>() ?: throw ErrorLoadingException("Failed to fetch episodes JSON")
-        val episodesDoc = Jsoup.parse(jsonResponse.result)
+        val json = app.get(ajaxUrl, headers = ajaxHeaders).parsedSafe<AjaxResponse>() ?: throw ErrorLoadingException("Failed to fetch episodes JSON")
+        val episodesDoc = Jsoup.parse(json.result)
         
         val episodes = episodesDoc.select("ul.ep-range li a").mapNotNull { element ->
             val epName = element.select("span.d-title").text() ?: "Episode ${element.attr("data-num")}"
@@ -94,10 +92,7 @@ class AnikotoProvider : MainAPI() {
         return newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
             this.posterUrl = poster
             this.plot = description
-            val ratingNum = ratingText?.toDoubleOrNull()
-            if (ratingNum != null) { this.score = Score.from10(ratingNum) }
-            val recommendations = doc.select("#continue-watching .item, #top-anime .item").mapNotNull { it.toSearchResult() }
-            this.recommendations = recommendations
+            if (ratingText != null) this.score = Score.from10(ratingText.toDoubleOrNull() ?: 0.0)
         }
     }
 
@@ -107,8 +102,8 @@ class AnikotoProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val json = app.get(data, headers = ajaxHeaders).parsedSafe<AjaxResponse>()
-        val serverHtml = json?.result ?: return false
+        val json = app.get(data, headers = ajaxHeaders, timeout = 15L).parsedSafe<AjaxResponse>() ?: return false
+        val serverHtml = json.result
         val doc = Jsoup.parse(serverHtml)
 
         // 1. Chuẩn bị danh sách tác vụ
@@ -118,33 +113,39 @@ class AnikotoProvider : MainAPI() {
             
             val serverName = server.text()
             val type = server.parent()?.parent()?.attr("data-type") ?: "sub"
-            
             Triple(linkId, serverName, type)
         }
 
-        // 2. Xử lý song song (Thay thế apmap bằng coroutineScope + async)
-        // coroutineScope đảm bảo chờ tất cả các luồng con chạy xong mới kết thúc hàm
+        // 2. Xử lý song song
         coroutineScope {
             tasks.map { (linkId, serverName, type) ->
                 async {
                     try {
                         val resolveUrl = "$mainUrl/ajax/server?get=$linkId"
-                        val responseText = app.get(resolveUrl, headers = ajaxHeaders).text
+                        
+                        // Gọi API giải mã (Thêm timeout ngắn để tránh treo)
+                        val responseText = app.get(resolveUrl, headers = ajaxHeaders, timeout = 10L).text
                         
                         if (!responseText.trim().startsWith("<")) {
                             val linkJson = AppUtils.parseJson<ServerResponse>(responseText)
                             val embedUrl = linkJson.result?.url
                             
                             if (!embedUrl.isNullOrBlank()) {
-                                val safeServerName = "$serverName ($type)"
-                                loadExtractor(embedUrl, safeServerName, subtitleCallback, callback)
+                                // [DEBUG LOG]
+                                // Nếu tìm thấy link, ném lỗi để in ra màn hình xem link đó là gì
+                                throw ErrorLoadingException("FOUND: $serverName -> $embedUrl")
+                                
+                                // Sau khi debug xong, xóa dòng throw trên và uncomment dòng dưới:
+                                // loadExtractor(embedUrl, "$serverName ($type)", subtitleCallback, callback)
                             }
                         }
+                    } catch (e: ErrorLoadingException) {
+                        throw e // Ném lỗi debug ra ngoài để hiển thị
                     } catch (e: Exception) {
-                        e.printStackTrace()
+                        // e.printStackTrace()
                     }
                 }
-            }.awaitAll() // Chờ tất cả các luồng hoàn thành
+            }.awaitAll()
         }
 
         return true
