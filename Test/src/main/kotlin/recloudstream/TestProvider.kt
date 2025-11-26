@@ -5,7 +5,7 @@ import com.lagradost.cloudstream3.utils.*
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 
-class AnikotoProvider : MainAPI() { // Đã đổi tên class khớp với Plugin
+class AnikotoProvider : MainAPI() {
     override var mainUrl = "https://anikoto.tv"
     override var name = "Anikoto"
     override val hasMainPage = true
@@ -39,7 +39,6 @@ class AnikotoProvider : MainAPI() { // Đã đổi tên class khớp với Plugi
 
         return newAnimeSearchResponse(title, fixUrl(href)) {
             this.posterUrl = posterUrl
-            // FIX LỖI TYPE MISMATCH: Chỉ addQuality nếu text không null
             if (!subText.isNullOrEmpty()) {
                 addQuality("Sub $subText")
             }
@@ -95,8 +94,7 @@ class AnikotoProvider : MainAPI() { // Đã đổi tên class khớp với Plugi
         val description = doc.selectFirst(".synopsis .content")?.text()
         val poster = doc.selectFirst(".binfo .poster img")?.attr("src")
         
-        // FIX LỖI DEPRECATED RATING
-        // Rating được xử lý an toàn, nếu null thì bỏ qua
+        // Lấy text rating (ví dụ: "8.5")
         val ratingText = doc.selectFirst(".meta .rating")?.text()
 
         val dataId = doc.selectFirst("#watch-main")?.attr("data-id")
@@ -132,9 +130,12 @@ class AnikotoProvider : MainAPI() { // Đã đổi tên class khớp với Plugi
         return newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
             this.posterUrl = poster
             this.plot = description
-            // Sử dụng toRatingInt nhưng chấp nhận nó deprecated vì nó tương thích ngược tốt nhất
-            // Hoặc đơn giản là ép kiểu an toàn
-            this.rating = ratingText.toRatingInt() 
+            
+            // --- FIX LỖI DEPRECATED Ở ĐÂY ---
+            // Thay vì: this.rating = ratingText.toRatingInt()
+            // Sử dụng hàm addRating(String?) để thư viện tự xử lý
+            addRating(ratingText)
+            
             val recommendations = doc.select("#continue-watching .item, #top-anime .item").mapNotNull { it.toSearchResult() }
             this.recommendations = recommendations
         }
