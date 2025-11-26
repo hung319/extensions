@@ -33,7 +33,6 @@ class AnikotoProvider : MainAPI() {
                  ?: this.selectFirst(".name")?.text() ?: "Unknown"
         val posterUrl = this.selectFirst("img")?.attr("src")
 
-        // Lấy thông tin sub/dub ra ngoài
         val subText = this.selectFirst(".ep-status.sub span")?.text()
         val dubText = this.selectFirst(".ep-status.dub span")?.text()
 
@@ -94,7 +93,7 @@ class AnikotoProvider : MainAPI() {
         val description = doc.selectFirst(".synopsis .content")?.text()
         val poster = doc.selectFirst(".binfo .poster img")?.attr("src")
         
-        // Lấy text rating (ví dụ: "8.5")
+        // Lấy text rating (ví dụ: "7.03")
         val ratingText = doc.selectFirst(".meta .rating")?.text()
 
         val dataId = doc.selectFirst("#watch-main")?.attr("data-id")
@@ -131,10 +130,12 @@ class AnikotoProvider : MainAPI() {
             this.posterUrl = poster
             this.plot = description
             
-            // --- FIX LỖI DEPRECATED Ở ĐÂY ---
-            // Thay vì: this.rating = ratingText.toRatingInt()
-            // Sử dụng hàm addRating(String?) để thư viện tự xử lý
-            addRating(ratingText)
+            // FIX: Sử dụng API Score.from10() theo tài liệu bạn cung cấp
+            // Hàm này nhận Double và trả về đối tượng Score
+            val ratingNum = ratingText?.toDoubleOrNull()
+            if (ratingNum != null) {
+                this.score = Score.from10(ratingNum)
+            }
             
             val recommendations = doc.select("#continue-watching .item, #top-anime .item").mapNotNull { it.toSearchResult() }
             this.recommendations = recommendations
