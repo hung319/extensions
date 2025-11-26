@@ -18,12 +18,14 @@ class AnikotoProvider : MainAPI() {
         "Referer" to "$mainUrl/"
     )
 
+    // JSON Response cho list server (chứa HTML)
     data class AjaxResponse(
         val status: Int,
         val result: String
     )
 
-    data class ServerLinkResponse(
+    // JSON Response cho resolve link (chứa Object URL)
+    data class ServerResponse(
         val status: Int,
         val result: ServerResult?
     )
@@ -116,7 +118,7 @@ class AnikotoProvider : MainAPI() {
             val epIds = element.attr("data-ids")
             if (epIds.isBlank()) return@mapNotNull null
 
-            // URL ảo để truyền data-ids qua hàm loadLinks
+            // Truyền data-ids vào param 'servers'
             val epUrl = "$mainUrl/ajax/server/list?servers=$epIds"
 
             val isSub = element.attr("data-sub") == "1"
@@ -158,30 +160,23 @@ class AnikotoProvider : MainAPI() {
             val type = server.parent()?.parent()?.attr("data-type") ?: "sub"
 
             if (linkId.isNotBlank()) {
-                val resolveUrl = "$mainUrl/ajax/server/$linkId"
+                // --- FIX QUAN TRỌNG: Dùng parameter 'get' thay vì 'id' ---
+                val resolveUrl = "$mainUrl/ajax/server?get=$linkId"
                 
                 try {
-                    // Lấy text response
                     val responseText = app.get(resolveUrl, headers = ajaxHeaders).text
-
-                    // --- DEBUG START ---
-                    // Nếu nội dung trả về bắt đầu bằng '<', đó là HTML, không phải JSON -> Throw lỗi để xem
-                    if (responseText.trim().startsWith("<")) {
-                        // Lấy 200 ký tự đầu để xem nó là lỗi gì (404, Cloudflare, hay HTML player)
-                        val errorPreview = responseText.take(200)
-                        throw ErrorLoadingException("LỖI API ($serverName): $errorPreview")
-                    }
-                    // --- DEBUG END ---
-
-                    val linkJson = AppUtils.parseJson<ServerLinkResponse>(responseText)
+                    
+                    // Parse JSON kết quả
+                    val linkJson = AppUtils.parseJson<ServerResponse>(responseText)
                     val embedUrl = linkJson.result?.url
                     
                     if (!embedUrl.isNullOrBlank()) {
                         val safeServerName = "$serverName ($type)"
+                        
+                        // Link trả về thường là megaplay.buzz hoặc tương tự
+                        // Cloudstream tự động handle các link này qua loadExtractor
                         loadExtractor(embedUrl, safeServerName, subtitleCallback, callback)
                     }
-                } catch (e: ErrorLoadingException) {
-                    throw e // Ném lỗi này ra màn hình
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }
