@@ -5,7 +5,7 @@ import com.lagradost.cloudstream3.utils.*
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 
-class TestProvider : MainAPI() {
+class AnikotoProvider : MainAPI() { // Đã đổi tên class khớp với Plugin
     override var mainUrl = "https://anikoto.tv"
     override var name = "Anikoto"
     override val hasMainPage = true
@@ -33,14 +33,19 @@ class TestProvider : MainAPI() {
                  ?: this.selectFirst(".name")?.text() ?: "Unknown"
         val posterUrl = this.selectFirst("img")?.attr("src")
 
-        // FIX 1: Lấy dữ liệu quality RA NGOÀI lambda để tránh lỗi scope 'this'
+        // Lấy thông tin sub/dub ra ngoài
         val subText = this.selectFirst(".ep-status.sub span")?.text()
         val dubText = this.selectFirst(".ep-status.dub span")?.text()
 
         return newAnimeSearchResponse(title, fixUrl(href)) {
             this.posterUrl = posterUrl
-            addQuality(subText?.let { "Sub $it" })
-            addQuality(dubText?.let { "Dub $it" })
+            // FIX LỖI TYPE MISMATCH: Chỉ addQuality nếu text không null
+            if (!subText.isNullOrEmpty()) {
+                addQuality("Sub $subText")
+            }
+            if (!dubText.isNullOrEmpty()) {
+                addQuality("Dub $dubText")
+            }
         }
     }
 
@@ -90,8 +95,8 @@ class TestProvider : MainAPI() {
         val description = doc.selectFirst(".synopsis .content")?.text()
         val poster = doc.selectFirst(".binfo .poster img")?.attr("src")
         
-        // FIX 3: Xử lý rating (tùy version core, nhưng an toàn nhất là null check hoặc bỏ qua nếu gây lỗi)
-        // Rating cũ trả về String?, convert sang Int?
+        // FIX LỖI DEPRECATED RATING
+        // Rating được xử lý an toàn, nếu null thì bỏ qua
         val ratingText = doc.selectFirst(".meta .rating")?.text()
 
         val dataId = doc.selectFirst("#watch-main")?.attr("data-id")
@@ -114,8 +119,6 @@ class TestProvider : MainAPI() {
 
             val epUrl = "$mainUrl/ajax/episode/servers?episodeId=$epIds"
 
-            // FIX 2: Bỏ 'scanlator' vì property này không tồn tại trong API hiện tại
-            // Nếu muốn hiện Sub/Dub, ta có thể nối vào tên tập phim
             val isSub = element.attr("data-sub") == "1"
             val isDub = element.attr("data-dub") == "1"
             val typeInfo = if (isSub && isDub) "[Sub/Dub]" else if (isDub) "[Dub]" else ""
@@ -129,7 +132,8 @@ class TestProvider : MainAPI() {
         return newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
             this.posterUrl = poster
             this.plot = description
-            // fix rating deprecation warning -> dùng addRating nếu có hoặc gán rating nếu thư viện cho phép
+            // Sử dụng toRatingInt nhưng chấp nhận nó deprecated vì nó tương thích ngược tốt nhất
+            // Hoặc đơn giản là ép kiểu an toàn
             this.rating = ratingText.toRatingInt() 
             val recommendations = doc.select("#continue-watching .item, #top-anime .item").mapNotNull { it.toSearchResult() }
             this.recommendations = recommendations
