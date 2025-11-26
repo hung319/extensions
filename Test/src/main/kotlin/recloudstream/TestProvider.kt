@@ -2,6 +2,8 @@ package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+// Import ExtractorLinkType
+import com.lagradost.cloudstream3.utils.ExtractorLinkType 
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import kotlinx.coroutines.async
@@ -20,21 +22,20 @@ class AnikotoProvider : MainAPI() {
         "Referer" to "$mainUrl/"
     )
 
-    // --- JSON Models cho Anikoto API ---
     data class AjaxResponse(val status: Int, val result: String)
     data class ServerResponse(val status: Int, val result: ServerResult?)
     data class ServerResult(val url: String?)
-
-    // --- JSON Models cho MewCloud Extractor ---
+    
     data class MewResponse(val time: Long?, val data: MewData?)
     data class MewData(val tracks: List<MewTrack>?, val sources: List<MewSource>?)
     data class MewTrack(val file: String?, val label: String?, val kind: String?)
     data class MewSource(val url: String?)
 
     // =========================================================================
-    //  1. MEW CLOUD EXTRACTOR (Tích hợp sẵn)
+    //  1. MEW CLOUD EXTRACTOR (Dùng newExtractorLink)
     // =========================================================================
-    class MewCloudExtractor : ExtractorApi() {
+    // Thêm từ khóa 'inner' để truy cập được hàm newExtractorLink của MainAPI
+    inner class MewCloudExtractor : ExtractorApi() {
         override val name = "MewCloud"
         override val mainUrl = "https://mewcdn.online"
         override val requiresReferer = false
@@ -45,12 +46,10 @@ class AnikotoProvider : MainAPI() {
             subtitleCallback: (SubtitleFile) -> Unit,
             callback: (ExtractorLink) -> Unit
         ) {
-            // 1. Lấy ID và Type từ URL bằng Regex
             val regex = Regex("""/(\d+)/(sub|dub)""")
             val match = regex.find(url) ?: return
             val (id, type) = match.destructured
             
-            // ID cho API: "157129-sub"
             val pairId = "$id-$type"
             val apiUrl = "$mainUrl/save_data.php?id=$pairId"
             
@@ -64,20 +63,25 @@ class AnikotoProvider : MainAPI() {
                 val response = app.get(apiUrl, headers = headers).parsedSafe<MewResponse>()
                 val data = response?.data ?: return
 
-                // 2. Xử lý Video (M3U8)
+                // Xử lý Video
                 data.sources?.forEach { source ->
                     val m3u8Url = source.url ?: return@forEach
                     
-                    // --- FIX LỖI Ở ĐÂY ---
-                    // Truyền tham số theo thứ tự: source, streamUrl, referer
-                    M3u8Helper.generateM3u8(
-                        this.name,
-                        m3u8Url,
-                        "https://megacloud.bloggy.click/"
-                    ).forEach(callback)
+                    // --- SỬ DỤNG newExtractorLink CHUẨN ---
+                    callback(
+                        newExtractorLink(
+                            source = this.name,
+                            name = this.name,
+                            url = m3u8Url,
+                            type = ExtractorLinkType.M3U8 // Chỉ định rõ loại link là M3U8
+                        ) {
+                            this.referer = "https://megacloud.bloggy.click/"
+                            this.quality = Qualities.Unknown.value
+                        }
+                    )
                 }
 
-                // 3. Xử lý Phụ đề
+                // Xử lý Phụ đề
                 data.tracks?.forEach { track ->
                     if (track.file != null && track.kind == "captions") {
                         subtitleCallback(
@@ -202,6 +206,7 @@ class AnikotoProvider : MainAPI() {
                                 if (embedUrl.contains("megacloud.bloggy.click") || 
                                     embedUrl.contains("vidwish.live") ||
                                     embedUrl.contains("mewcdn.online")) {
+                                    // Sử dụng Custom Extractor (Inner Class)
                                     MewCloudExtractor().getUrl(embedUrl, null, subtitleCallback, callback)
                                 } else {
                                     val safeServerName = "$serverName ($type)"
