@@ -31,6 +31,7 @@ class AnikotoProvider : MainAPI() {
         val posterUrl = this.selectFirst("img")?.attr("src")
         val subText = this.selectFirst(".ep-status.sub span")?.text()
         val dubText = this.selectFirst(".ep-status.dub span")?.text()
+
         return newAnimeSearchResponse(title, fixUrl(href)) {
             this.posterUrl = posterUrl
             if (!subText.isNullOrEmpty()) addQuality("Sub $subText")
@@ -102,52 +103,71 @@ class AnikotoProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val json = app.get(data, headers = ajaxHeaders, timeout = 15L).parsedSafe<AjaxResponse>() ?: return false
+        val json = app.get(data, headers = ajaxHeaders, timeout = 20L).parsedSafe<AjaxResponse>() ?: return false
         val serverHtml = json.result
         val doc = Jsoup.parse(serverHtml)
 
-        // 1. Chuẩn bị danh sách tác vụ
         val tasks = doc.select(".servers .type li").mapNotNull { server ->
             val linkId = server.attr("data-link-id")
             if (linkId.isBlank()) return@mapNotNull null
-            
             val serverName = server.text()
             val type = server.parent()?.parent()?.attr("data-type") ?: "sub"
             Triple(linkId, serverName, type)
         }
 
-        // 2. Xử lý song song
-        coroutineScope {
+        // --- LOGIC DEBUG: Thu thập TẤT CẢ kết quả rồi mới in ---
+        val foundLinks = coroutineScope {
             tasks.map { (linkId, serverName, type) ->
                 async {
                     try {
                         val resolveUrl = "$mainUrl/ajax/server?get=$linkId"
-                        
-                        // Gọi API giải mã (Thêm timeout ngắn để tránh treo)
-                        val responseText = app.get(resolveUrl, headers = ajaxHeaders, timeout = 10L).text
+                        val responseText = app.get(resolveUrl, headers = ajaxHeaders, timeout = 15L).text
                         
                         if (!responseText.trim().startsWith("<")) {
                             val linkJson = AppUtils.parseJson<ServerResponse>(responseText)
                             val embedUrl = linkJson.result?.url
                             
                             if (!embedUrl.isNullOrBlank()) {
-                                // [DEBUG LOG]
-                                // Nếu tìm thấy link, ném lỗi để in ra màn hình xem link đó là gì
-                                throw ErrorLoadingException("FOUND: $serverName -> $embedUrl")
-                                
-                                // Sau khi debug xong, xóa dòng throw trên và uncomment dòng dưới:
-                                // loadExtractor(embedUrl, "$serverName ($type)", subtitleCallback, callback)
+                                // Trả về chuỗi kết quả thành công
+                                return@async "✅ $serverName ($type): $embedUrl"
                             }
                         }
-                    } catch (e: ErrorLoadingException) {
-                        throw e // Ném lỗi debug ra ngoài để hiển thị
+                        return@async "❌ $serverName: Empty URL"
                     } catch (e: Exception) {
-                        // e.printStackTrace()
+                        return@async "❌ $serverName: ${e.message}"
+                    }
+                }
+            }.awaitAll() // Chờ tất cả xong
+        }
+
+        // In toàn bộ danh sách ra màn hình đỏ
+        throw ErrorLoadingException("KẾT QUẢ QUÉT (${foundLinks.size}):\n" + foundLinks.joinToString("\n"))
+
+        /*
+        // --- ĐÂY LÀ CODE FINAL (SAU KHI BẠN CHECK XONG THÌ DÙNG ĐOẠN DƯỚI NÀY) ---
+        coroutineScope {
+            tasks.map { (linkId, serverName, type) ->
+                async {
+                    try {
+                        val resolveUrl = "$mainUrl/ajax/server?get=$linkId"
+                        val responseText = app.get(resolveUrl, headers = ajaxHeaders).text
+                        
+                        if (!responseText.trim().startsWith("<")) {
+                            val linkJson = AppUtils.parseJson<ServerResponse>(responseText)
+                            val embedUrl = linkJson.result?.url
+                            
+                            if (!embedUrl.isNullOrBlank()) {
+                                val safeServerName = "$serverName ($type)"
+                                loadExtractor(embedUrl, safeServerName, subtitleCallback, callback)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
                     }
                 }
             }.awaitAll()
         }
-
         return true
+        */
     }
 }
