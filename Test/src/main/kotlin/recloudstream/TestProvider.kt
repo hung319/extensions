@@ -118,63 +118,51 @@ class AnikotoProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // [DEBUG 1]: Uncomment dòng dưới để xem URL đầu vào có đúng format ajax/server/list không
-        // throw ErrorLoadingException("Step 1 - Data URL: $data")
-
-        // 1. Gọi API lấy danh sách server
-        val responseText = app.get(data, headers = ajaxHeaders).text
-        
-        // [DEBUG 2]: Uncomment dòng dưới để xem JSON gốc trả về từ server list
-        // throw ErrorLoadingException("Step 2 - JSON Response: $responseText")
-
-        val json = AppUtils.parseJson<AjaxResponse>(responseText)
-        val serverHtml = json.result
-        
-        if (serverHtml.isBlank()) {
-             throw ErrorLoadingException("Server HTML is empty")
-        }
-
+        // 1. Lấy danh sách server
+        val json = app.get(data, headers = ajaxHeaders).parsedSafe<AjaxResponse>()
+        val serverHtml = json?.result ?: return false
         val doc = Jsoup.parse(serverHtml)
-        val serverItems = doc.select(".servers .type li")
 
-        // [DEBUG 3]: Kiểm tra xem có tìm thấy thẻ li nào không
-        // if (serverItems.isEmpty()) throw ErrorLoadingException("Step 3 - No server items found. HTML: $serverHtml")
+        val serverItems = doc.select(".servers .type li")
 
         serverItems.forEach { server ->
             val linkId = server.attr("data-link-id")
-            val serverName = server.text() 
+            val serverName = server.text()
             val type = server.parent()?.parent()?.attr("data-type") ?: "sub"
 
             if (linkId.isNotBlank()) {
                 val resolveUrl = "$mainUrl/ajax/server/$linkId"
                 
-                // [DEBUG 4]: Uncomment để xem link resolve và ID server
-                // throw ErrorLoadingException("Step 4 - Resolving ID: $linkId | URL: $resolveUrl")
-
                 try {
-                    val jsonText = app.get(resolveUrl, headers = ajaxHeaders).text
-                    
-                    // [DEBUG 5]: Uncomment để xem kết quả giải mã link server (quan trọng nhất)
-                    // throw ErrorLoadingException("Step 5 - Resolve Result: $jsonText")
+                    // --- SỬA ĐỔI ĐỂ DEBUG ---
+                    // Lấy raw text trước xem nó là gì
+                    val responseText = app.get(resolveUrl, headers = ajaxHeaders).text
 
-                    val linkJson = AppUtils.parseJson<ServerLinkResponse>(jsonText)
-                    val embedUrl = linkJson.result?.url
-                    
-                    if (!embedUrl.isNullOrBlank()) {
-                        // Log ra link cuối cùng tìm thấy
-                        // throw ErrorLoadingException("Step 6 - FOUND LINK: $embedUrl")
-                        
-                        val safeServerName = "$serverName ($type)"
-                        loadExtractor(embedUrl, safeServerName, subtitleCallback, callback)
+                    // DEBUG: Nếu thấy nó bắt đầu bằng < (HTML), throw lỗi lên màn hình để đọc
+                    if (responseText.trim().startsWith("<")) {
+                        // Chỉ throw 1 lần để đọc lỗi, sau này sẽ comment lại
+                        throw ErrorLoadingException("API trả về HTML thay vì JSON: $responseText")
                     }
+
+                    // Nếu không phải HTML, thử parse JSON
+                    val linkJson = AppUtils.parseJson<ServerLinkResponse>(responseText)
+                    val embedUrl = linkJson.result?.url
+
+                    if (!embedUrl.isNullOrBlank()) {
+                        if (embedUrl.contains("megacloud.bloggy.click") || embedUrl.contains("mewcdn.online")) {
+                            MewCloudExtractor().getUrl(embedUrl, null, subtitleCallback, callback)
+                        } else {
+                            val safeServerName = "$serverName ($type)"
+                            loadExtractor(embedUrl, safeServerName, subtitleCallback, callback)
+                        }
+                    }
+                } catch (e: ErrorLoadingException) {
+                    throw e // Ném lỗi debug ra ngoài
                 } catch (e: Exception) {
-                    // Uncomment để xem lỗi nếu API resolve bị chết
-                    // throw ErrorLoadingException("Error resolving link: ${e.message}")
                     e.printStackTrace()
                 }
             }
         }
-
         return true
     }
 }
