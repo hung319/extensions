@@ -2,8 +2,7 @@ package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-// Import ExtractorLinkType
-import com.lagradost.cloudstream3.utils.ExtractorLinkType 
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import kotlinx.coroutines.async
@@ -22,6 +21,7 @@ class AnikotoProvider : MainAPI() {
         "Referer" to "$mainUrl/"
     )
 
+    // --- JSON Models ---
     data class AjaxResponse(val status: Int, val result: String)
     data class ServerResponse(val status: Int, val result: ServerResult?)
     data class ServerResult(val url: String?)
@@ -32,17 +32,17 @@ class AnikotoProvider : MainAPI() {
     data class MewSource(val url: String?)
 
     // =========================================================================
-    //  1. MEW CLOUD EXTRACTOR (Dùng newExtractorLink)
+    //  1. MEW CLOUD EXTRACTOR (Custom Helper)
     // =========================================================================
-    // Thêm từ khóa 'inner' để truy cập được hàm newExtractorLink của MainAPI
     inner class MewCloudExtractor : ExtractorApi() {
         override val name = "MewCloud"
         override val mainUrl = "https://mewcdn.online"
         override val requiresReferer = false
 
-        override suspend fun getUrl(
+        // Đổi tên hàm và thêm tham số serverName để mapping
+        suspend fun getVideos(
             url: String,
-            referer: String?,
+            serverName: String, // <-- Tham số mới: Tên server gốc
             subtitleCallback: (SubtitleFile) -> Unit,
             callback: (ExtractorLink) -> Unit
         ) {
@@ -63,17 +63,16 @@ class AnikotoProvider : MainAPI() {
                 val response = app.get(apiUrl, headers = headers).parsedSafe<MewResponse>()
                 val data = response?.data ?: return
 
-                // Xử lý Video
+                // Xử lý Video: Dùng serverName được truyền vào
                 data.sources?.forEach { source ->
                     val m3u8Url = source.url ?: return@forEach
                     
-                    // --- SỬ DỤNG newExtractorLink CHUẨN ---
                     callback(
                         newExtractorLink(
-                            source = this.name,
-                            name = this.name,
+                            source = serverName, // <-- Dùng tên server gốc (VD: MegaPlay-1)
+                            name = serverName,   // <-- Hiển thị tên này trên player
                             url = m3u8Url,
-                            type = ExtractorLinkType.M3U8 // Chỉ định rõ loại link là M3U8
+                            type = ExtractorLinkType.M3U8
                         ) {
                             this.referer = "https://megacloud.bloggy.click/"
                             this.quality = Qualities.Unknown.value
@@ -203,13 +202,17 @@ class AnikotoProvider : MainAPI() {
                             val embedUrl = linkJson.result?.url
                             
                             if (!embedUrl.isNullOrBlank()) {
+                                val safeServerName = "$serverName ($type)"
+
                                 if (embedUrl.contains("megacloud.bloggy.click") || 
                                     embedUrl.contains("vidwish.live") ||
                                     embedUrl.contains("mewcdn.online")) {
-                                    // Sử dụng Custom Extractor (Inner Class)
-                                    MewCloudExtractor().getUrl(embedUrl, null, subtitleCallback, callback)
+                                    
+                                    // Gọi hàm getVideos mới và truyền safeServerName vào
+                                    MewCloudExtractor().getVideos(embedUrl, safeServerName, subtitleCallback, callback)
+                                    
                                 } else {
-                                    val safeServerName = "$serverName ($type)"
+                                    // Link khác dùng Extractor có sẵn (nó tự lấy name theo tham số name truyền vào)
                                     loadExtractor(embedUrl, safeServerName, subtitleCallback, callback)
                                 }
                             }
