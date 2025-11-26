@@ -20,46 +20,157 @@ class AnikotoProvider : MainAPI() {
         "Referer" to "$mainUrl/"
     )
 
+    // --- JSON Models cho Anikoto API ---
     data class AjaxResponse(val status: Int, val result: String)
     data class ServerResponse(val status: Int, val result: ServerResult?)
     data class ServerResult(val url: String?)
 
-    // --- GIỮ NGUYÊN CÁC HÀM KHÁC (search, load, mainPage) ---
-    // (Copy lại phần search, load, mainPage từ code trước để code gọn)
+    // --- JSON Models cho MewCloud Extractor ---
+    data class MewResponse(val time: Long?, val data: MewData?)
+    data class MewData(val tracks: List<MewTrack>?, val sources: List<MewSource>?)
+    data class MewTrack(val file: String?, val label: String?, val kind: String?)
+    data class MewSource(val url: String?)
+
+    // =========================================================================
+    //  1. MEW CLOUD EXTRACTOR (Tích hợp sẵn)
+    // =========================================================================
+    class MewCloudExtractor : ExtractorApi() {
+        override val name = "MewCloud"
+        override val mainUrl = "https://mewcdn.online"
+        override val requiresReferer = false
+
+        override suspend fun getUrl(
+            url: String,
+            referer: String?,
+            subtitleCallback: (SubtitleFile) -> Unit,
+            callback: (ExtractorLink) -> Unit
+        ) {
+            // url input: https://megacloud.bloggy.click/stream/s-3/157129/sub?autostart=true
+            
+            // 1. Lấy ID và Type từ URL bằng Regex
+            val regex = Regex("""/(\d+)/(sub|dub)""")
+            val match = regex.find(url) ?: return
+            val (id, type) = match.destructured
+            
+            // ID cho API: "157129-sub"
+            val pairId = "$id-$type"
+            val apiUrl = "$mainUrl/save_data.php?id=$pairId"
+            
+            // Headers giả lập trình duyệt (Quan trọng)
+            val headers = mapOf(
+                "Origin" to "https://megacloud.bloggy.click",
+                "Referer" to "https://megacloud.bloggy.click/",
+                "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
+            )
+
+            try {
+                val response = app.get(apiUrl, headers = headers).parsedSafe<MewResponse>()
+                val data = response?.data ?: return
+
+                // 2. Xử lý Video (M3U8)
+                data.sources?.forEach { source ->
+                    val m3u8Url = source.url ?: return@forEach
+                    
+                    // Dùng M3u8Helper để tách các chất lượng (360p, 720p, 1080p)
+                    M3u8Helper.generateM3u8(
+                        sourceName = this.name,
+                        streamUrl = m3u8Url,
+                        referer = "https://megacloud.bloggy.click/"
+                    ).forEach(callback)
+                }
+
+                // 3. Xử lý Phụ đề
+                data.tracks?.forEach { track ->
+                    if (track.file != null && track.kind == "captions") {
+                        subtitleCallback(
+                            SubtitleFile(
+                                lang = track.label ?: "English",
+                                url = track.file
+                            )
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    // =========================================================================
+    //  2. ANIKOTO LOGIC
+    // =========================================================================
+
     private fun Element.toSearchResult(): SearchResponse? {
         val href = this.selectFirst("a")?.attr("href") ?: return null
-        val title = this.selectFirst(".name.d-title")?.text() ?: this.selectFirst(".name")?.text() ?: "Unknown"
+        val title = this.selectFirst(".name.d-title")?.text() 
+                 ?: this.selectFirst(".name")?.text() ?: "Unknown"
         val posterUrl = this.selectFirst("img")?.attr("src")
-        return newAnimeSearchResponse(title, fixUrl(href)) { this.posterUrl = posterUrl }
+        val subText = this.selectFirst(".ep-status.sub span")?.text()
+        val dubText = this.selectFirst(".ep-status.dub span")?.text()
+        return newAnimeSearchResponse(title, fixUrl(href)) {
+            this.posterUrl = posterUrl
+            if (!subText.isNullOrEmpty()) addQuality("Sub $subText")
+            if (!dubText.isNullOrEmpty()) addQuality("Dub $dubText")
+        }
     }
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val doc = app.get("$mainUrl/home").document
+        val hotest = doc.select(".swiper-slide.item").mapNotNull { element ->
+            val title = element.selectFirst(".title.d-title")?.text() ?: return@mapNotNull null
+            val href = element.selectFirst("a.btn.play")?.attr("href") ?: return@mapNotNull null
+            val bgImage = element.selectFirst(".image div")?.attr("style")?.substringAfter("url('")?.substringBefore("')")
+            newAnimeSearchResponse(title, fixUrl(href)) { this.posterUrl = bgImage }
+        }
         val recent = doc.select("#recent-update .ani.items .item").mapNotNull { it.toSearchResult() }
-        return newHomePageResponse(listOf(HomePageList("Recent", recent)), false)
+        val newRelease = doc.select("section[data-name='new-release'] .item").mapNotNull { 
+            val title = it.selectFirst(".name")?.text() ?: return@mapNotNull null
+            val href = it.attr("href")
+            newAnimeSearchResponse(title, fixUrl(href)) { this.posterUrl = it.selectFirst("img")?.attr("src") }
+        }
+        return newHomePageResponse(listOf(HomePageList("Hot", hotest), HomePageList("Recently Updated", recent), HomePageList("New Release", newRelease)), hasNext = false)
     }
+
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/filter?keyword=$query"
         val doc = app.get(url).document
         return doc.select("div.ani.items > div.item").mapNotNull { it.toSearchResult() }
     }
+
     override suspend fun load(url: String): LoadResponse {
         val doc = app.get(url).document
         val title = doc.selectFirst("h1.title.d-title")?.text() ?: "Unknown"
+        val description = doc.selectFirst(".synopsis .content")?.text()
+        val poster = doc.selectFirst(".binfo .poster img")?.attr("src")
+        val ratingText = doc.selectFirst(".meta .rating")?.text()
         val dataId = doc.selectFirst("#watch-main")?.attr("data-id") ?: throw ErrorLoadingException("No ID")
+        
         val ajaxUrl = "$mainUrl/ajax/episode/list/$dataId"
-        val json = app.get(ajaxUrl, headers = ajaxHeaders).parsedSafe<AjaxResponse>()
-        val epDoc = Jsoup.parse(json?.result ?: "")
-        val episodes = epDoc.select("ul.ep-range li a").mapNotNull { 
-            val epIds = it.attr("data-ids")
-            if(epIds.isBlank()) return@mapNotNull null
-            newEpisode("$mainUrl/ajax/server/list?servers=$epIds") {
-                this.name = "Ep ${it.attr("data-num")}"
-                this.episode = it.attr("data-num").toIntOrNull()
+        val json = app.get(ajaxUrl, headers = ajaxHeaders).parsedSafe<AjaxResponse>() ?: throw ErrorLoadingException("Failed to fetch episodes JSON")
+        val episodesDoc = Jsoup.parse(json.result)
+        
+        val episodes = episodesDoc.select("ul.ep-range li a").mapNotNull { element ->
+            val epName = element.select("span.d-title").text() ?: "Episode ${element.attr("data-num")}"
+            val epNum = element.attr("data-num").toFloatOrNull() ?: 1f
+            val epIds = element.attr("data-ids")
+            if (epIds.isBlank()) return@mapNotNull null
+            
+            val epUrl = "$mainUrl/ajax/server/list?servers=$epIds"
+            val isSub = element.attr("data-sub") == "1"
+            val isDub = element.attr("data-dub") == "1"
+            val typeInfo = if (isSub && isDub) "[Sub/Dub]" else if (isDub) "[Dub]" else ""
+            
+            newEpisode(epUrl) {
+                this.name = if(typeInfo.isNotEmpty()) "$epName $typeInfo" else epName
+                this.episode = epNum.toInt()
             }
         }
-        return newTvSeriesLoadResponse(title, url, TvType.Anime, episodes)
+        return newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
+            this.posterUrl = poster
+            this.plot = description
+            if (ratingText != null) this.score = Score.from10(ratingText.toDoubleOrNull() ?: 0.0)
+        }
     }
-    // ---------------------------------------------------------
 
     override suspend fun loadLinks(
         data: String,
@@ -67,67 +178,52 @@ class AnikotoProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Buffer để lưu log, thread-safe
-        val debugLogs = StringBuffer()
-        debugLogs.append("--- BẮT ĐẦU QUÉT ---\n")
-
-        val json = app.get(data, headers = ajaxHeaders, timeout = 15L).parsedSafe<AjaxResponse>() 
-            ?: run { debugLogs.append("❌ Lỗi: Không lấy được Server List HTML\n"); return false }
-        
+        val json = app.get(data, headers = ajaxHeaders).parsedSafe<AjaxResponse>() ?: return false
         val doc = Jsoup.parse(json.result)
 
         val tasks = doc.select(".servers .type li").mapNotNull { server ->
             val linkId = server.attr("data-link-id")
             if (linkId.isBlank()) return@mapNotNull null
+            
             val serverName = server.text()
             val type = server.parent()?.parent()?.attr("data-type") ?: "sub"
             Triple(linkId, serverName, type)
         }
 
+        // Chạy song song để tránh timeout nếu 1 server bị lag
         coroutineScope {
             tasks.map { (linkId, serverName, type) ->
                 async {
-                    val logPrefix = "[$serverName-$type]"
                     try {
-                        // debugLogs.append("$logPrefix 1. Đang gọi API resolve...\n")
                         val resolveUrl = "$mainUrl/ajax/server?get=$linkId"
-                        val responseText = app.get(resolveUrl, headers = ajaxHeaders, timeout = 10L).text
+                        val responseText = app.get(resolveUrl, headers = ajaxHeaders).text
                         
+                        // Kiểm tra sơ bộ xem có phải HTML lỗi không
                         if (!responseText.trim().startsWith("<")) {
                             val linkJson = AppUtils.parseJson<ServerResponse>(responseText)
                             val embedUrl = linkJson.result?.url
                             
                             if (!embedUrl.isNullOrBlank()) {
-                                debugLogs.append("$logPrefix ✅ API OK: $embedUrl\n")
-                                
-                                val safeServerName = "$serverName ($type)"
-                                
-                                // Gọi Extractor và bắt callback để log
-                                var extractorFound = false
-                                loadExtractor(embedUrl, safeServerName, subtitleCallback) { link ->
-                                    extractorFound = true
-                                    debugLogs.append("$logPrefix 🎉 EXTRACTOR SUCCESS: ${link.name} -> ${link.url}\n")
-                                    callback(link)
+                                // --- PHÂN LOẠI XỬ LÝ LINK ---
+                                if (embedUrl.contains("megacloud.bloggy.click") || 
+                                    embedUrl.contains("vidwish.live") ||
+                                    embedUrl.contains("mewcdn.online")) {
+                                    // Dùng Custom Extractor (Tích hợp sẵn ở trên)
+                                    MewCloudExtractor().getUrl(embedUrl, null, subtitleCallback, callback)
+                                } else {
+                                    // Dùng Extractor mặc định của Cloudstream (Vidstream, etc.)
+                                    val safeServerName = "$serverName ($type)"
+                                    loadExtractor(embedUrl, safeServerName, subtitleCallback, callback)
                                 }
-                                
-                                // Lưu ý: Nếu loadExtractor thất bại, nó thường không gọi callback,
-                                // nên ta không log được dòng SUCCESS.
-                            } else {
-                                debugLogs.append("$logPrefix ⚠️ API trả về URL rỗng\n")
                             }
-                        } else {
-                            debugLogs.append("$logPrefix ❌ API trả về HTML (Lỗi)\n")
                         }
                     } catch (e: Exception) {
-                        debugLogs.append("$logPrefix ☠️ Lỗi Exception: ${e.message}\n")
+                        e.printStackTrace()
                     }
                 }
             }.awaitAll()
         }
 
-        // IN TOÀN BỘ LOG RA MÀN HÌNH
-        throw ErrorLoadingException(debugLogs.toString())
-
-        // return true // <-- Khi nào chạy thật thì bỏ throw ở trên và mở comment dòng này
+        return true
     }
 }
