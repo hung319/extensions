@@ -12,19 +12,25 @@ class AnikotoProvider : MainAPI() {
     override var lang = "en"
     override val supportedTypes = setOf(TvType.Anime, TvType.Movie, TvType.OVA)
 
+    // Header giả lập request Ajax để tránh bị chặn
+    private val ajaxHeaders = mapOf(
+        "X-Requested-With" to "XMLHttpRequest",
+        "Referer" to "$mainUrl/"
+    )
+
     data class AjaxResponse(
         val status: Int,
         val result: String
     )
 
-    data class ServerResponse(
+    // Response khi gọi /ajax/server/{linkId}
+    data class ServerLinkResponse(
         val status: Int,
-        val html: String
+        val result: ServerResult?
     )
-
-    data class SourceResponse(
-        val type: String?,
-        val link: String?
+    
+    data class ServerResult(
+        val url: String?
     )
 
     private fun Element.toSearchResult(): SearchResponse? {
@@ -92,16 +98,14 @@ class AnikotoProvider : MainAPI() {
         val title = doc.selectFirst("h1.title.d-title")?.text() ?: "Unknown"
         val description = doc.selectFirst(".synopsis .content")?.text()
         val poster = doc.selectFirst(".binfo .poster img")?.attr("src")
-        
-        // Lấy text rating (ví dụ: "7.03")
         val ratingText = doc.selectFirst(".meta .rating")?.text()
 
         val dataId = doc.selectFirst("#watch-main")?.attr("data-id")
             ?: throw ErrorLoadingException("Could not find Anime ID")
 
+        // 1. Gọi API lấy danh sách tập
         val ajaxUrl = "$mainUrl/ajax/episode/list/$dataId"
-        
-        val jsonResponse = app.get(ajaxUrl, headers = mapOf("X-Requested-With" to "XMLHttpRequest"))
+        val jsonResponse = app.get(ajaxUrl, headers = ajaxHeaders)
                               .parsedSafe<AjaxResponse>() 
                               ?: throw ErrorLoadingException("Failed to fetch episodes JSON")
 
@@ -111,10 +115,14 @@ class AnikotoProvider : MainAPI() {
             val epName = element.select("span.d-title").text() ?: "Episode ${element.attr("data-num")}"
             val epNum = element.attr("data-num").toFloatOrNull() ?: 1f
             
-            val epIds = element.attr("data-ids")
+            // Lấy params quan trọng
+            val epIds = element.attr("data-ids") // Dùng để lấy list server
+            
             if (epIds.isBlank()) return@mapNotNull null
 
-            val epUrl = "$mainUrl/ajax/episode/servers?episodeId=$epIds"
+            // Tạo URL ảo chứa thông tin cần thiết cho loadLinks
+            // Chúng ta truyền thẳng data-ids vào query param 'servers' giống như curl bạn gửi
+            val epUrl = "$mainUrl/ajax/server/list?servers=$epIds"
 
             val isSub = element.attr("data-sub") == "1"
             val isDub = element.attr("data-dub") == "1"
@@ -129,14 +137,10 @@ class AnikotoProvider : MainAPI() {
         return newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
             this.posterUrl = poster
             this.plot = description
-            
-            // FIX: Sử dụng API Score.from10() theo tài liệu bạn cung cấp
-            // Hàm này nhận Double và trả về đối tượng Score
             val ratingNum = ratingText?.toDoubleOrNull()
             if (ratingNum != null) {
                 this.score = Score.from10(ratingNum)
             }
-            
             val recommendations = doc.select("#continue-watching .item, #top-anime .item").mapNotNull { it.toSearchResult() }
             this.recommendations = recommendations
         }
@@ -148,23 +152,37 @@ class AnikotoProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val json = app.get(data, headers = mapOf("X-Requested-With" to "XMLHttpRequest"))
-                      .parsedSafe<ServerResponse>()
+        // data chính là url: "$mainUrl/ajax/server/list?servers=$epIds"
         
-        val serverHtml = json?.html ?: return false
+        // 1. Gọi API lấy danh sách server (trả về JSON chứa HTML)
+        val json = app.get(data, headers = ajaxHeaders).parsedSafe<AjaxResponse>()
+        val serverHtml = json?.result ?: return false
         val doc = Jsoup.parse(serverHtml)
 
-        doc.select(".server-item").forEach { server ->
-            val serverId = server.attr("data-id")
-            val serverName = server.text()
+        // 2. Duyệt qua các server (Vidstream, MegaPlay, etc.)
+        // Selector dựa trên HTML curl: <div class="type" data-type="sub">...<ul><li data-link-id="...">
+        doc.select(".servers .type li").forEach { server ->
+            val linkId = server.attr("data-link-id")
+            val serverName = server.text() // VD: Vidstream-1
+            val type = server.parent()?.parent()?.attr("data-type") ?: "sub" // sub hoặc dub
 
-            val sourceUrl = "$mainUrl/ajax/episode/sources?id=$serverId"
-            val sourceJson = app.get(sourceUrl, headers = mapOf("X-Requested-With" to "XMLHttpRequest"))
-                                .parsedSafe<SourceResponse>()
-
-            val embedUrl = sourceJson?.link ?: return@forEach
-
-            loadExtractor(embedUrl, serverName, subtitleCallback, callback)
+            if (linkId.isNotBlank()) {
+                // 3. Giải mã linkId để lấy link embed thực
+                // Endpoint chuẩn thường là /ajax/server/{linkId} trả về JSON { result: { url: "..." } }
+                val resolveUrl = "$mainUrl/ajax/server/$linkId"
+                try {
+                    val linkJson = app.get(resolveUrl, headers = ajaxHeaders).parsedSafe<ServerLinkResponse>()
+                    val embedUrl = linkJson?.result?.url
+                    
+                    if (!embedUrl.isNullOrBlank()) {
+                        // Dùng Extractor có sẵn của Cloudstream để xử lý link (Vidstream, MegaCloud, etc.)
+                        val safeServerName = "$serverName ($type)"
+                        loadExtractor(embedUrl, safeServerName, subtitleCallback, callback)
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
         }
 
         return true
