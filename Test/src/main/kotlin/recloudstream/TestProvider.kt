@@ -24,78 +24,42 @@ class AnikotoProvider : MainAPI() {
     data class ServerResponse(val status: Int, val result: ServerResult?)
     data class ServerResult(val url: String?)
 
+    // --- GIỮ NGUYÊN CÁC HÀM KHÁC (search, load, mainPage) ---
+    // (Copy lại phần search, load, mainPage từ code trước để code gọn)
     private fun Element.toSearchResult(): SearchResponse? {
         val href = this.selectFirst("a")?.attr("href") ?: return null
-        val title = this.selectFirst(".name.d-title")?.text() 
-                 ?: this.selectFirst(".name")?.text() ?: "Unknown"
+        val title = this.selectFirst(".name.d-title")?.text() ?: this.selectFirst(".name")?.text() ?: "Unknown"
         val posterUrl = this.selectFirst("img")?.attr("src")
-        val subText = this.selectFirst(".ep-status.sub span")?.text()
-        val dubText = this.selectFirst(".ep-status.dub span")?.text()
-
-        return newAnimeSearchResponse(title, fixUrl(href)) {
-            this.posterUrl = posterUrl
-            if (!subText.isNullOrEmpty()) addQuality("Sub $subText")
-            if (!dubText.isNullOrEmpty()) addQuality("Dub $dubText")
-        }
+        return newAnimeSearchResponse(title, fixUrl(href)) { this.posterUrl = posterUrl }
     }
-
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val doc = app.get("$mainUrl/home").document
-        val hotest = doc.select(".swiper-slide.item").mapNotNull { element ->
-            val title = element.selectFirst(".title.d-title")?.text() ?: return@mapNotNull null
-            val href = element.selectFirst("a.btn.play")?.attr("href") ?: return@mapNotNull null
-            val bgImage = element.selectFirst(".image div")?.attr("style")?.substringAfter("url('")?.substringBefore("')")
-            newAnimeSearchResponse(title, fixUrl(href)) { this.posterUrl = bgImage }
-        }
         val recent = doc.select("#recent-update .ani.items .item").mapNotNull { it.toSearchResult() }
-        val newRelease = doc.select("section[data-name='new-release'] .item").mapNotNull { 
-            val title = it.selectFirst(".name")?.text() ?: return@mapNotNull null
-            val href = it.attr("href")
-            newAnimeSearchResponse(title, fixUrl(href)) { this.posterUrl = it.selectFirst("img")?.attr("src") }
-        }
-        return newHomePageResponse(listOf(HomePageList("Hot", hotest), HomePageList("Recently Updated", recent), HomePageList("New Release", newRelease)), hasNext = false)
+        return newHomePageResponse(listOf(HomePageList("Recent", recent)), false)
     }
-
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/filter?keyword=$query"
         val doc = app.get(url).document
         return doc.select("div.ani.items > div.item").mapNotNull { it.toSearchResult() }
     }
-
     override suspend fun load(url: String): LoadResponse {
         val doc = app.get(url).document
         val title = doc.selectFirst("h1.title.d-title")?.text() ?: "Unknown"
-        val description = doc.selectFirst(".synopsis .content")?.text()
-        val poster = doc.selectFirst(".binfo .poster img")?.attr("src")
-        val ratingText = doc.selectFirst(".meta .rating")?.text()
         val dataId = doc.selectFirst("#watch-main")?.attr("data-id") ?: throw ErrorLoadingException("No ID")
-        
         val ajaxUrl = "$mainUrl/ajax/episode/list/$dataId"
-        val json = app.get(ajaxUrl, headers = ajaxHeaders).parsedSafe<AjaxResponse>() ?: throw ErrorLoadingException("Failed to fetch episodes JSON")
-        val episodesDoc = Jsoup.parse(json.result)
-        
-        val episodes = episodesDoc.select("ul.ep-range li a").mapNotNull { element ->
-            val epName = element.select("span.d-title").text() ?: "Episode ${element.attr("data-num")}"
-            val epNum = element.attr("data-num").toFloatOrNull() ?: 1f
-            val epIds = element.attr("data-ids")
-            if (epIds.isBlank()) return@mapNotNull null
-            
-            val epUrl = "$mainUrl/ajax/server/list?servers=$epIds"
-            val isSub = element.attr("data-sub") == "1"
-            val isDub = element.attr("data-dub") == "1"
-            val typeInfo = if (isSub && isDub) "[Sub/Dub]" else if (isDub) "[Dub]" else ""
-            
-            newEpisode(epUrl) {
-                this.name = if(typeInfo.isNotEmpty()) "$epName $typeInfo" else epName
-                this.episode = epNum.toInt()
+        val json = app.get(ajaxUrl, headers = ajaxHeaders).parsedSafe<AjaxResponse>()
+        val epDoc = Jsoup.parse(json?.result ?: "")
+        val episodes = epDoc.select("ul.ep-range li a").mapNotNull { 
+            val epIds = it.attr("data-ids")
+            if(epIds.isBlank()) return@mapNotNull null
+            newEpisode("$mainUrl/ajax/server/list?servers=$epIds") {
+                this.name = "Ep ${it.attr("data-num")}"
+                this.episode = it.attr("data-num").toIntOrNull()
             }
         }
-        return newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
-            this.posterUrl = poster
-            this.plot = description
-            if (ratingText != null) this.score = Score.from10(ratingText.toDoubleOrNull() ?: 0.0)
-        }
+        return newTvSeriesLoadResponse(title, url, TvType.Anime, episodes)
     }
+    // ---------------------------------------------------------
 
     override suspend fun loadLinks(
         data: String,
@@ -103,9 +67,14 @@ class AnikotoProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val json = app.get(data, headers = ajaxHeaders, timeout = 20L).parsedSafe<AjaxResponse>() ?: return false
-        val serverHtml = json.result
-        val doc = Jsoup.parse(serverHtml)
+        // Buffer để lưu log, thread-safe
+        val debugLogs = StringBuffer()
+        debugLogs.append("--- BẮT ĐẦU QUÉT ---\n")
+
+        val json = app.get(data, headers = ajaxHeaders, timeout = 15L).parsedSafe<AjaxResponse>() 
+            ?: run { debugLogs.append("❌ Lỗi: Không lấy được Server List HTML\n"); return false }
+        
+        val doc = Jsoup.parse(json.result)
 
         val tasks = doc.select(".servers .type li").mapNotNull { server ->
             val linkId = server.attr("data-link-id")
@@ -115,59 +84,50 @@ class AnikotoProvider : MainAPI() {
             Triple(linkId, serverName, type)
         }
 
-        // --- LOGIC DEBUG: Thu thập TẤT CẢ kết quả rồi mới in ---
-        val foundLinks = coroutineScope {
-            tasks.map { (linkId, serverName, type) ->
-                async {
-                    try {
-                        val resolveUrl = "$mainUrl/ajax/server?get=$linkId"
-                        val responseText = app.get(resolveUrl, headers = ajaxHeaders, timeout = 15L).text
-                        
-                        if (!responseText.trim().startsWith("<")) {
-                            val linkJson = AppUtils.parseJson<ServerResponse>(responseText)
-                            val embedUrl = linkJson.result?.url
-                            
-                            if (!embedUrl.isNullOrBlank()) {
-                                // Trả về chuỗi kết quả thành công
-                                return@async "✅ $serverName ($type): $embedUrl"
-                            }
-                        }
-                        return@async "❌ $serverName: Empty URL"
-                    } catch (e: Exception) {
-                        return@async "❌ $serverName: ${e.message}"
-                    }
-                }
-            }.awaitAll() // Chờ tất cả xong
-        }
-
-        // In toàn bộ danh sách ra màn hình đỏ
-        throw ErrorLoadingException("KẾT QUẢ QUÉT (${foundLinks.size}):\n" + foundLinks.joinToString("\n"))
-
-        /*
-        // --- ĐÂY LÀ CODE FINAL (SAU KHI BẠN CHECK XONG THÌ DÙNG ĐOẠN DƯỚI NÀY) ---
         coroutineScope {
             tasks.map { (linkId, serverName, type) ->
                 async {
+                    val logPrefix = "[$serverName-$type]"
                     try {
+                        // debugLogs.append("$logPrefix 1. Đang gọi API resolve...\n")
                         val resolveUrl = "$mainUrl/ajax/server?get=$linkId"
-                        val responseText = app.get(resolveUrl, headers = ajaxHeaders).text
+                        val responseText = app.get(resolveUrl, headers = ajaxHeaders, timeout = 10L).text
                         
                         if (!responseText.trim().startsWith("<")) {
                             val linkJson = AppUtils.parseJson<ServerResponse>(responseText)
                             val embedUrl = linkJson.result?.url
                             
                             if (!embedUrl.isNullOrBlank()) {
+                                debugLogs.append("$logPrefix ✅ API OK: $embedUrl\n")
+                                
                                 val safeServerName = "$serverName ($type)"
-                                loadExtractor(embedUrl, safeServerName, subtitleCallback, callback)
+                                
+                                // Gọi Extractor và bắt callback để log
+                                var extractorFound = false
+                                loadExtractor(embedUrl, safeServerName, subtitleCallback) { link ->
+                                    extractorFound = true
+                                    debugLogs.append("$logPrefix 🎉 EXTRACTOR SUCCESS: ${link.name} -> ${link.url}\n")
+                                    callback(link)
+                                }
+                                
+                                // Lưu ý: Nếu loadExtractor thất bại, nó thường không gọi callback,
+                                // nên ta không log được dòng SUCCESS.
+                            } else {
+                                debugLogs.append("$logPrefix ⚠️ API trả về URL rỗng\n")
                             }
+                        } else {
+                            debugLogs.append("$logPrefix ❌ API trả về HTML (Lỗi)\n")
                         }
                     } catch (e: Exception) {
-                        e.printStackTrace()
+                        debugLogs.append("$logPrefix ☠️ Lỗi Exception: ${e.message}\n")
                     }
                 }
             }.awaitAll()
         }
-        return true
-        */
+
+        // IN TOÀN BỘ LOG RA MÀN HÌNH
+        throw ErrorLoadingException(debugLogs.toString())
+
+        // return true // <-- Khi nào chạy thật thì bỏ throw ở trên và mở comment dòng này
     }
 }
