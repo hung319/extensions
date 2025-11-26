@@ -4,6 +4,10 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
+// Thêm các import cần thiết cho Coroutines
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 
 class AnikotoProvider : MainAPI() {
     override var mainUrl = "https://anikoto.tv"
@@ -103,13 +107,11 @@ class AnikotoProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // 1. Lấy HTML danh sách server
         val json = app.get(data, headers = ajaxHeaders).parsedSafe<AjaxResponse>()
         val serverHtml = json?.result ?: return false
         val doc = Jsoup.parse(serverHtml)
 
-        // 2. Chuẩn bị danh sách task để chạy song song
-        // Thu thập tất cả thẻ li có data-link-id
+        // 1. Chuẩn bị danh sách tác vụ
         val tasks = doc.select(".servers .type li").mapNotNull { server ->
             val linkId = server.attr("data-link-id")
             if (linkId.isBlank()) return@mapNotNull null
@@ -117,36 +119,32 @@ class AnikotoProvider : MainAPI() {
             val serverName = server.text()
             val type = server.parent()?.parent()?.attr("data-type") ?: "sub"
             
-            // Trả về bộ 3 dữ liệu để xử lý
             Triple(linkId, serverName, type)
         }
 
-        // 3. Chạy song song (Parallel Execution) dùng apmap
-        // apmap (Async Parallel Map) giúp gọi tất cả API cùng lúc thay vì chờ từng cái
-        tasks.apmap { (linkId, serverName, type) ->
-            try {
-                val resolveUrl = "$mainUrl/ajax/server?get=$linkId"
-                
-                // Gọi API giải mã
-                val responseText = app.get(resolveUrl, headers = ajaxHeaders).text
-                
-                // Kiểm tra nếu không phải HTML lỗi
-                if (!responseText.trim().startsWith("<")) {
-                    val linkJson = AppUtils.parseJson<ServerResponse>(responseText)
-                    val embedUrl = linkJson.result?.url
-                    
-                    if (!embedUrl.isNullOrBlank()) {
-                        val safeServerName = "$serverName ($type)"
+        // 2. Xử lý song song (Thay thế apmap bằng coroutineScope + async)
+        // coroutineScope đảm bảo chờ tất cả các luồng con chạy xong mới kết thúc hàm
+        coroutineScope {
+            tasks.map { (linkId, serverName, type) ->
+                async {
+                    try {
+                        val resolveUrl = "$mainUrl/ajax/server?get=$linkId"
+                        val responseText = app.get(resolveUrl, headers = ajaxHeaders).text
                         
-                        // Load extractor (Cloudstream tự động xử lý lỗi nếu server chết)
-                        loadExtractor(embedUrl, safeServerName, subtitleCallback, callback)
+                        if (!responseText.trim().startsWith("<")) {
+                            val linkJson = AppUtils.parseJson<ServerResponse>(responseText)
+                            val embedUrl = linkJson.result?.url
+                            
+                            if (!embedUrl.isNullOrBlank()) {
+                                val safeServerName = "$serverName ($type)"
+                                loadExtractor(embedUrl, safeServerName, subtitleCallback, callback)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
                     }
                 }
-            } catch (e: Exception) {
-                // Nếu 1 server lỗi (VD: MegaPlay), catch block này sẽ giữ cho app không crash
-                // và các server khác (Vidstream) vẫn chạy bình thường.
-                e.printStackTrace()
-            }
+            }.awaitAll() // Chờ tất cả các luồng hoàn thành
         }
 
         return true
