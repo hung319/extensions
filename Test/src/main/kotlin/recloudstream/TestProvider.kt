@@ -12,18 +12,19 @@ class AnikotoProvider : MainAPI() {
     override var lang = "en"
     override val supportedTypes = setOf(TvType.Anime, TvType.Movie, TvType.OVA)
 
-    // Header giả lập request Ajax để tránh bị chặn
+    // Header giả lập request Ajax
     private val ajaxHeaders = mapOf(
         "X-Requested-With" to "XMLHttpRequest",
         "Referer" to "$mainUrl/"
     )
 
+    // Cấu trúc JSON trả về từ /ajax/server/list (chứa HTML)
     data class AjaxResponse(
         val status: Int,
         val result: String
     )
 
-    // Response khi gọi /ajax/server/{linkId}
+    // Cấu trúc JSON trả về từ /ajax/server/{linkId} (chứa Link Embed)
     data class ServerLinkResponse(
         val status: Int,
         val result: ServerResult?
@@ -33,57 +34,36 @@ class AnikotoProvider : MainAPI() {
         val url: String?
     )
 
+    // Giữ nguyên các hàm search, load, getMainPage như cũ
     private fun Element.toSearchResult(): SearchResponse? {
         val href = this.selectFirst("a")?.attr("href") ?: return null
         val title = this.selectFirst(".name.d-title")?.text() 
                  ?: this.selectFirst(".name")?.text() ?: "Unknown"
         val posterUrl = this.selectFirst("img")?.attr("src")
-
         val subText = this.selectFirst(".ep-status.sub span")?.text()
         val dubText = this.selectFirst(".ep-status.dub span")?.text()
-
         return newAnimeSearchResponse(title, fixUrl(href)) {
             this.posterUrl = posterUrl
-            if (!subText.isNullOrEmpty()) {
-                addQuality("Sub $subText")
-            }
-            if (!dubText.isNullOrEmpty()) {
-                addQuality("Dub $dubText")
-            }
+            if (!subText.isNullOrEmpty()) addQuality("Sub $subText")
+            if (!dubText.isNullOrEmpty()) addQuality("Dub $dubText")
         }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val doc = app.get("$mainUrl/home").document
-        
         val hotest = doc.select(".swiper-slide.item").mapNotNull { element ->
             val title = element.selectFirst(".title.d-title")?.text() ?: return@mapNotNull null
             val href = element.selectFirst("a.btn.play")?.attr("href") ?: return@mapNotNull null
-            val bgImage = element.selectFirst(".image div")?.attr("style")
-                ?.substringAfter("url('")?.substringBefore("')")
-            
-            newAnimeSearchResponse(title, fixUrl(href)) {
-                this.posterUrl = bgImage
-            }
+            val bgImage = element.selectFirst(".image div")?.attr("style")?.substringAfter("url('")?.substringBefore("')")
+            newAnimeSearchResponse(title, fixUrl(href)) { this.posterUrl = bgImage }
         }
-
         val recent = doc.select("#recent-update .ani.items .item").mapNotNull { it.toSearchResult() }
         val newRelease = doc.select("section[data-name='new-release'] .item").mapNotNull { 
             val title = it.selectFirst(".name")?.text() ?: return@mapNotNull null
             val href = it.attr("href")
-            newAnimeSearchResponse(title, fixUrl(href)) {
-                this.posterUrl = it.selectFirst("img")?.attr("src")
-            }
+            newAnimeSearchResponse(title, fixUrl(href)) { this.posterUrl = it.selectFirst("img")?.attr("src") }
         }
-
-        return newHomePageResponse(
-            listOf(
-                HomePageList("Hot", hotest),
-                HomePageList("Recently Updated", recent),
-                HomePageList("New Release", newRelease)
-            ), 
-            hasNext = false
-        )
+        return newHomePageResponse(listOf(HomePageList("Hot", hotest), HomePageList("Recently Updated", recent), HomePageList("New Release", newRelease)), hasNext = false)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -94,92 +74,102 @@ class AnikotoProvider : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse {
         val doc = app.get(url).document
-
         val title = doc.selectFirst("h1.title.d-title")?.text() ?: "Unknown"
         val description = doc.selectFirst(".synopsis .content")?.text()
         val poster = doc.selectFirst(".binfo .poster img")?.attr("src")
         val ratingText = doc.selectFirst(".meta .rating")?.text()
-
-        val dataId = doc.selectFirst("#watch-main")?.attr("data-id")
-            ?: throw ErrorLoadingException("Could not find Anime ID")
-
-        // 1. Gọi API lấy danh sách tập
+        val dataId = doc.selectFirst("#watch-main")?.attr("data-id") ?: throw ErrorLoadingException("Could not find Anime ID")
+        
         val ajaxUrl = "$mainUrl/ajax/episode/list/$dataId"
-        val jsonResponse = app.get(ajaxUrl, headers = ajaxHeaders)
-                              .parsedSafe<AjaxResponse>() 
-                              ?: throw ErrorLoadingException("Failed to fetch episodes JSON")
-
+        val jsonResponse = app.get(ajaxUrl, headers = ajaxHeaders).parsedSafe<AjaxResponse>() ?: throw ErrorLoadingException("Failed to fetch episodes JSON")
         val episodesDoc = Jsoup.parse(jsonResponse.result)
         
         val episodes = episodesDoc.select("ul.ep-range li a").mapNotNull { element ->
             val epName = element.select("span.d-title").text() ?: "Episode ${element.attr("data-num")}"
             val epNum = element.attr("data-num").toFloatOrNull() ?: 1f
-            
-            // Lấy params quan trọng
-            val epIds = element.attr("data-ids") // Dùng để lấy list server
-            
+            val epIds = element.attr("data-ids")
             if (epIds.isBlank()) return@mapNotNull null
-
-            // Tạo URL ảo chứa thông tin cần thiết cho loadLinks
-            // Chúng ta truyền thẳng data-ids vào query param 'servers' giống như curl bạn gửi
+            
+            // Truyen data-ids qua tham số servers
             val epUrl = "$mainUrl/ajax/server/list?servers=$epIds"
-
+            
             val isSub = element.attr("data-sub") == "1"
             val isDub = element.attr("data-dub") == "1"
             val typeInfo = if (isSub && isDub) "[Sub/Dub]" else if (isDub) "[Dub]" else ""
-            
             newEpisode(epUrl) {
                 this.name = if(typeInfo.isNotEmpty()) "$epName $typeInfo" else epName
                 this.episode = epNum.toInt()
             }
         }
-
         return newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
             this.posterUrl = poster
             this.plot = description
             val ratingNum = ratingText?.toDoubleOrNull()
-            if (ratingNum != null) {
-                this.score = Score.from10(ratingNum)
-            }
+            if (ratingNum != null) { this.score = Score.from10(ratingNum) }
             val recommendations = doc.select("#continue-watching .item, #top-anime .item").mapNotNull { it.toSearchResult() }
             this.recommendations = recommendations
         }
     }
 
+    // --- DEBUGGING LOADLINKS START ---
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // data chính là url: "$mainUrl/ajax/server/list?servers=$epIds"
-        
-        // 1. Gọi API lấy danh sách server (trả về JSON chứa HTML)
-        val json = app.get(data, headers = ajaxHeaders).parsedSafe<AjaxResponse>()
-        val serverHtml = json?.result ?: return false
-        val doc = Jsoup.parse(serverHtml)
+        // [DEBUG 1]: Uncomment dòng dưới để xem URL đầu vào có đúng format ajax/server/list không
+        // throw ErrorLoadingException("Step 1 - Data URL: $data")
 
-        // 2. Duyệt qua các server (Vidstream, MegaPlay, etc.)
-        // Selector dựa trên HTML curl: <div class="type" data-type="sub">...<ul><li data-link-id="...">
-        doc.select(".servers .type li").forEach { server ->
+        // 1. Gọi API lấy danh sách server
+        val responseText = app.get(data, headers = ajaxHeaders).text
+        
+        // [DEBUG 2]: Uncomment dòng dưới để xem JSON gốc trả về từ server list
+        // throw ErrorLoadingException("Step 2 - JSON Response: $responseText")
+
+        val json = AppUtils.parseJson<AjaxResponse>(responseText)
+        val serverHtml = json.result
+        
+        if (serverHtml.isBlank()) {
+             throw ErrorLoadingException("Server HTML is empty")
+        }
+
+        val doc = Jsoup.parse(serverHtml)
+        val serverItems = doc.select(".servers .type li")
+
+        // [DEBUG 3]: Kiểm tra xem có tìm thấy thẻ li nào không
+        // if (serverItems.isEmpty()) throw ErrorLoadingException("Step 3 - No server items found. HTML: $serverHtml")
+
+        serverItems.forEach { server ->
             val linkId = server.attr("data-link-id")
-            val serverName = server.text() // VD: Vidstream-1
-            val type = server.parent()?.parent()?.attr("data-type") ?: "sub" // sub hoặc dub
+            val serverName = server.text() 
+            val type = server.parent()?.parent()?.attr("data-type") ?: "sub"
 
             if (linkId.isNotBlank()) {
-                // 3. Giải mã linkId để lấy link embed thực
-                // Endpoint chuẩn thường là /ajax/server/{linkId} trả về JSON { result: { url: "..." } }
                 val resolveUrl = "$mainUrl/ajax/server/$linkId"
+                
+                // [DEBUG 4]: Uncomment để xem link resolve và ID server
+                // throw ErrorLoadingException("Step 4 - Resolving ID: $linkId | URL: $resolveUrl")
+
                 try {
-                    val linkJson = app.get(resolveUrl, headers = ajaxHeaders).parsedSafe<ServerLinkResponse>()
-                    val embedUrl = linkJson?.result?.url
+                    val jsonText = app.get(resolveUrl, headers = ajaxHeaders).text
+                    
+                    // [DEBUG 5]: Uncomment để xem kết quả giải mã link server (quan trọng nhất)
+                    // throw ErrorLoadingException("Step 5 - Resolve Result: $jsonText")
+
+                    val linkJson = AppUtils.parseJson<ServerLinkResponse>(jsonText)
+                    val embedUrl = linkJson.result?.url
                     
                     if (!embedUrl.isNullOrBlank()) {
-                        // Dùng Extractor có sẵn của Cloudstream để xử lý link (Vidstream, MegaCloud, etc.)
+                        // Log ra link cuối cùng tìm thấy
+                        // throw ErrorLoadingException("Step 6 - FOUND LINK: $embedUrl")
+                        
                         val safeServerName = "$serverName ($type)"
                         loadExtractor(embedUrl, safeServerName, subtitleCallback, callback)
                     }
                 } catch (e: Exception) {
+                    // Uncomment để xem lỗi nếu API resolve bị chết
+                    // throw ErrorLoadingException("Error resolving link: ${e.message}")
                     e.printStackTrace()
                 }
             }
