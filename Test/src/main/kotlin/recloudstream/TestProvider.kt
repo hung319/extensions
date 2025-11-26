@@ -45,8 +45,6 @@ class AnikotoProvider : MainAPI() {
             subtitleCallback: (SubtitleFile) -> Unit,
             callback: (ExtractorLink) -> Unit
         ) {
-            // url input: https://megacloud.bloggy.click/stream/s-3/157129/sub?autostart=true
-            
             // 1. Lấy ID và Type từ URL bằng Regex
             val regex = Regex("""/(\d+)/(sub|dub)""")
             val match = regex.find(url) ?: return
@@ -56,7 +54,6 @@ class AnikotoProvider : MainAPI() {
             val pairId = "$id-$type"
             val apiUrl = "$mainUrl/save_data.php?id=$pairId"
             
-            // Headers giả lập trình duyệt (Quan trọng)
             val headers = mapOf(
                 "Origin" to "https://megacloud.bloggy.click",
                 "Referer" to "https://megacloud.bloggy.click/",
@@ -71,11 +68,12 @@ class AnikotoProvider : MainAPI() {
                 data.sources?.forEach { source ->
                     val m3u8Url = source.url ?: return@forEach
                     
-                    // Dùng M3u8Helper để tách các chất lượng (360p, 720p, 1080p)
+                    // --- FIX LỖI Ở ĐÂY ---
+                    // Truyền tham số theo thứ tự: source, streamUrl, referer
                     M3u8Helper.generateM3u8(
-                        sourceName = this.name,
-                        streamUrl = m3u8Url,
-                        referer = "https://megacloud.bloggy.click/"
+                        this.name,
+                        m3u8Url,
+                        "https://megacloud.bloggy.click/"
                     ).forEach(callback)
                 }
 
@@ -184,13 +182,11 @@ class AnikotoProvider : MainAPI() {
         val tasks = doc.select(".servers .type li").mapNotNull { server ->
             val linkId = server.attr("data-link-id")
             if (linkId.isBlank()) return@mapNotNull null
-            
             val serverName = server.text()
             val type = server.parent()?.parent()?.attr("data-type") ?: "sub"
             Triple(linkId, serverName, type)
         }
 
-        // Chạy song song để tránh timeout nếu 1 server bị lag
         coroutineScope {
             tasks.map { (linkId, serverName, type) ->
                 async {
@@ -198,20 +194,16 @@ class AnikotoProvider : MainAPI() {
                         val resolveUrl = "$mainUrl/ajax/server?get=$linkId"
                         val responseText = app.get(resolveUrl, headers = ajaxHeaders).text
                         
-                        // Kiểm tra sơ bộ xem có phải HTML lỗi không
                         if (!responseText.trim().startsWith("<")) {
                             val linkJson = AppUtils.parseJson<ServerResponse>(responseText)
                             val embedUrl = linkJson.result?.url
                             
                             if (!embedUrl.isNullOrBlank()) {
-                                // --- PHÂN LOẠI XỬ LÝ LINK ---
                                 if (embedUrl.contains("megacloud.bloggy.click") || 
                                     embedUrl.contains("vidwish.live") ||
                                     embedUrl.contains("mewcdn.online")) {
-                                    // Dùng Custom Extractor (Tích hợp sẵn ở trên)
                                     MewCloudExtractor().getUrl(embedUrl, null, subtitleCallback, callback)
                                 } else {
-                                    // Dùng Extractor mặc định của Cloudstream (Vidstream, etc.)
                                     val safeServerName = "$serverName ($type)"
                                     loadExtractor(embedUrl, safeServerName, subtitleCallback, callback)
                                 }
