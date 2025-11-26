@@ -21,7 +21,7 @@ class AnikotoProvider : MainAPI() {
     )
 
     // ---------------------------------------------------------
-    // Main Page
+    // Main Page (Fixed)
     // ---------------------------------------------------------
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val items = listOf(
@@ -43,7 +43,8 @@ class AnikotoProvider : MainAPI() {
             }
         }
 
-        return HomePageResponse(homePageList)
+        // SỬA LỖI TẠI ĐÂY: Dùng newHomePageResponse thay vì constructor
+        return newHomePageResponse(homePageList)
     }
 
     // ---------------------------------------------------------
