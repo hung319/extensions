@@ -5,14 +5,13 @@ import com.lagradost.cloudstream3.utils.*
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 
-class AnikotoProvider : MainAPI() {
+class TestProvider : MainAPI() {
     override var mainUrl = "https://anikoto.tv"
     override var name = "Anikoto"
     override val hasMainPage = true
     override var lang = "en"
     override val supportedTypes = setOf(TvType.Anime, TvType.Movie, TvType.OVA)
 
-    // Data class để parse JSON response từ API episode list
     data class AjaxResponse(
         val status: Int,
         val result: String
@@ -34,10 +33,14 @@ class AnikotoProvider : MainAPI() {
                  ?: this.selectFirst(".name")?.text() ?: "Unknown"
         val posterUrl = this.selectFirst("img")?.attr("src")
 
+        // FIX 1: Lấy dữ liệu quality RA NGOÀI lambda để tránh lỗi scope 'this'
+        val subText = this.selectFirst(".ep-status.sub span")?.text()
+        val dubText = this.selectFirst(".ep-status.dub span")?.text()
+
         return newAnimeSearchResponse(title, fixUrl(href)) {
             this.posterUrl = posterUrl
-            addQuality(this.selectFirst(".ep-status.sub span")?.text()?.let { "Sub $it" })
-            addQuality(this.selectFirst(".ep-status.dub span")?.text()?.let { "Dub $it" })
+            addQuality(subText?.let { "Sub $it" })
+            addQuality(dubText?.let { "Dub $it" })
         }
     }
 
@@ -86,24 +89,22 @@ class AnikotoProvider : MainAPI() {
         val title = doc.selectFirst("h1.title.d-title")?.text() ?: "Unknown"
         val description = doc.selectFirst(".synopsis .content")?.text()
         val poster = doc.selectFirst(".binfo .poster img")?.attr("src")
-        val rating = doc.selectFirst(".meta .rating")?.text()
         
-        // Lấy data-id từ HTML gốc
+        // FIX 3: Xử lý rating (tùy version core, nhưng an toàn nhất là null check hoặc bỏ qua nếu gây lỗi)
+        // Rating cũ trả về String?, convert sang Int?
+        val ratingText = doc.selectFirst(".meta .rating")?.text()
+
         val dataId = doc.selectFirst("#watch-main")?.attr("data-id")
             ?: throw ErrorLoadingException("Could not find Anime ID")
 
-        // 1. Gọi API lấy list tập
         val ajaxUrl = "$mainUrl/ajax/episode/list/$dataId"
         
-        // 2. Parse JSON response
         val jsonResponse = app.get(ajaxUrl, headers = mapOf("X-Requested-With" to "XMLHttpRequest"))
                               .parsedSafe<AjaxResponse>() 
                               ?: throw ErrorLoadingException("Failed to fetch episodes JSON")
 
-        // 3. Parse HTML bên trong JSON "result"
         val episodesDoc = Jsoup.parse(jsonResponse.result)
         
-        // 4. Select thẻ a trong ul.ep-range và lấy 'data-ids'
         val episodes = episodesDoc.select("ul.ep-range li a").mapNotNull { element ->
             val epName = element.select("span.d-title").text() ?: "Episode ${element.attr("data-num")}"
             val epNum = element.attr("data-num").toFloatOrNull() ?: 1f
@@ -111,22 +112,25 @@ class AnikotoProvider : MainAPI() {
             val epIds = element.attr("data-ids")
             if (epIds.isBlank()) return@mapNotNull null
 
-            // Link ảo chứa data-ids
             val epUrl = "$mainUrl/ajax/episode/servers?episodeId=$epIds"
 
+            // FIX 2: Bỏ 'scanlator' vì property này không tồn tại trong API hiện tại
+            // Nếu muốn hiện Sub/Dub, ta có thể nối vào tên tập phim
+            val isSub = element.attr("data-sub") == "1"
+            val isDub = element.attr("data-dub") == "1"
+            val typeInfo = if (isSub && isDub) "[Sub/Dub]" else if (isDub) "[Dub]" else ""
+            
             newEpisode(epUrl) {
-                this.name = epName
+                this.name = if(typeInfo.isNotEmpty()) "$epName $typeInfo" else epName
                 this.episode = epNum.toInt()
-                val isSub = element.attr("data-sub") == "1"
-                val isDub = element.attr("data-dub") == "1"
-                this.scanlator = if (isSub && isDub) "Sub & Dub" else if (isDub) "Dub" else "Sub"
             }
         }
 
         return newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
             this.posterUrl = poster
             this.plot = description
-            this.rating = rating.toRatingInt()
+            // fix rating deprecation warning -> dùng addRating nếu có hoặc gán rating nếu thư viện cho phép
+            this.rating = ratingText.toRatingInt() 
             val recommendations = doc.select("#continue-watching .item, #top-anime .item").mapNotNull { it.toSearchResult() }
             this.recommendations = recommendations
         }
@@ -138,28 +142,22 @@ class AnikotoProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // data = "$mainUrl/ajax/episode/servers?episodeId=$epIds"
-        
-        // 1. Gọi API lấy danh sách server (trả về JSON { html: "..." })
         val json = app.get(data, headers = mapOf("X-Requested-With" to "XMLHttpRequest"))
                       .parsedSafe<ServerResponse>()
         
         val serverHtml = json?.html ?: return false
         val doc = Jsoup.parse(serverHtml)
 
-        // 2. Loop qua các server
         doc.select(".server-item").forEach { server ->
             val serverId = server.attr("data-id")
             val serverName = server.text()
 
-            // 3. Gọi API lấy Source (Embed Link)
             val sourceUrl = "$mainUrl/ajax/episode/sources?id=$serverId"
             val sourceJson = app.get(sourceUrl, headers = mapOf("X-Requested-With" to "XMLHttpRequest"))
                                 .parsedSafe<SourceResponse>()
 
             val embedUrl = sourceJson?.link ?: return@forEach
 
-            // 4. Load Extractor
             loadExtractor(embedUrl, serverName, subtitleCallback, callback)
         }
 
