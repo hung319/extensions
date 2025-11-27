@@ -8,6 +8,7 @@ import org.jsoup.nodes.Element
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import android.util.Base64 // Cần import để giải mã Base64
 
 class AnikotoProvider : MainAPI() {
     override var mainUrl = "https://anikoto.tv"
@@ -32,45 +33,70 @@ class AnikotoProvider : MainAPI() {
     data class MewSource(val url: String?)
 
     // =========================================================================
-    //  1. MEW CLOUD EXTRACTOR (Custom Helper)
+    //  1. MEW CLOUD EXTRACTOR (Cập nhật xử lý plyr.php)
     // =========================================================================
     inner class MewCloudExtractor : ExtractorApi() {
         override val name = "MewCloud"
         override val mainUrl = "https://mewcdn.online"
         override val requiresReferer = false
 
-        // Đổi tên hàm và thêm tham số serverName để mapping
         suspend fun getVideos(
             url: String,
-            serverName: String, // <-- Tham số mới: Tên server gốc
+            serverName: String,
             subtitleCallback: (SubtitleFile) -> Unit,
             callback: (ExtractorLink) -> Unit
         ) {
-            val regex = Regex("""/(\d+)/(sub|dub)""")
-            val match = regex.find(url) ?: return
-            val (id, type) = match.destructured
-            
-            val pairId = "$id-$type"
-            val apiUrl = "$mainUrl/save_data.php?id=$pairId"
-            
-            val headers = mapOf(
-                "Origin" to "https://megacloud.bloggy.click",
-                "Referer" to "https://megacloud.bloggy.click/",
-                "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
-            )
-
             try {
+                // --- CASE 1: Xử lý link trực tiếp dạng plyr.php#BASE64 ---
+                if (url.contains("/player/plyr.php")) {
+                    // URL mẫu: https://mewcdn.online/player/plyr.php#aHR0...#?autostart=true
+                    // Lấy chuỗi giữa 2 dấu #
+                    val base64String = url.substringAfter("#").substringBefore("#")
+                    
+                    if (base64String.isNotBlank()) {
+                        val decodedUrl = String(Base64.decode(base64String, Base64.DEFAULT))
+                        
+                        if (decodedUrl.startsWith("http")) {
+                            callback(
+                                newExtractorLink(
+                                    source = serverName,
+                                    name = serverName,
+                                    url = decodedUrl,
+                                    type = ExtractorLinkType.M3U8
+                                ) {
+                                    this.referer = url
+                                    this.quality = Qualities.Unknown.value
+                                }
+                            )
+                        }
+                    }
+                    return // Dừng xử lý, không chạy logic phía dưới
+                }
+
+                // --- CASE 2: Xử lý qua API save_data.php (MegaCloud/VidWish) ---
+                val regex = Regex("""/(\d+)/(sub|dub)""")
+                val match = regex.find(url) ?: return
+                val (id, type) = match.destructured
+                
+                val pairId = "$id-$type"
+                val apiUrl = "$mainUrl/save_data.php?id=$pairId"
+                
+                val headers = mapOf(
+                    "Origin" to "https://megacloud.bloggy.click",
+                    "Referer" to "https://megacloud.bloggy.click/",
+                    "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
+                )
+
                 val response = app.get(apiUrl, headers = headers).parsedSafe<MewResponse>()
                 val data = response?.data ?: return
 
-                // Xử lý Video: Dùng serverName được truyền vào
+                // Video
                 data.sources?.forEach { source ->
                     val m3u8Url = source.url ?: return@forEach
-                    
                     callback(
                         newExtractorLink(
-                            source = serverName, // <-- Dùng tên server gốc (VD: MegaPlay-1)
-                            name = serverName,   // <-- Hiển thị tên này trên player
+                            source = serverName,
+                            name = serverName,
                             url = m3u8Url,
                             type = ExtractorLinkType.M3U8
                         ) {
@@ -80,7 +106,7 @@ class AnikotoProvider : MainAPI() {
                     )
                 }
 
-                // Xử lý Phụ đề
+                // Phụ đề
                 data.tracks?.forEach { track ->
                     if (track.file != null && track.kind == "captions") {
                         subtitleCallback(
@@ -204,15 +230,17 @@ class AnikotoProvider : MainAPI() {
                             if (!embedUrl.isNullOrBlank()) {
                                 val safeServerName = "$serverName ($type)"
 
-                                if (embedUrl.contains("megacloud.bloggy.click") || 
+                                // Logic định tuyến
+                                if (embedUrl.contains("/player/plyr.php") || // Link mới
+                                    embedUrl.contains("megacloud.bloggy.click") || 
                                     embedUrl.contains("vidwish.live") ||
                                     embedUrl.contains("mewcdn.online")) {
                                     
-                                    // Gọi hàm getVideos mới và truyền safeServerName vào
+                                    // Dùng Custom Extractor
                                     MewCloudExtractor().getVideos(embedUrl, safeServerName, subtitleCallback, callback)
                                     
                                 } else {
-                                    // Link khác dùng Extractor có sẵn (nó tự lấy name theo tham số name truyền vào)
+                                    // Dùng Extractor mặc định
                                     loadExtractor(embedUrl, safeServerName, subtitleCallback, callback)
                                 }
                             }
