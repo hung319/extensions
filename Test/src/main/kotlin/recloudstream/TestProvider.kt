@@ -3,12 +3,14 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.mvvm.logError
 import java.net.URLEncoder
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch // Cần import launch
 
 class Kuudere : MainAPI() {
     override var mainUrl = "https://kuudere.to"
@@ -17,8 +19,6 @@ class Kuudere : MainAPI() {
     override var hasChromecastSupport = true
     override var hasDownloadSupport = true
     override var supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
-    
-    // THAY ĐỔI 1: Đổi ngôn ngữ sang tiếng Anh
     override var lang = "en"
 
     private val commonHeaders = mapOf(
@@ -31,16 +31,12 @@ class Kuudere : MainAPI() {
     )
 
     // ================= DATA CLASSES =================
-
-    // Home API
     data class HomeResult(val success: Boolean, val data: List<HomeItem>?)
     data class HomeItem(val title: String, val image: String?, val url: String, val stats: Map<String, Int>?)
 
-    // Search API
     data class SearchResult(val success: Boolean, val results: List<SearchItem>?)
     data class SearchItem(val id: String, val title: String, val details: String?, val coverImage: String?)
 
-    // Details API
     data class DetailsResult(val success: Boolean, val data: AnimeInfo?)
     data class AnimeInfo(
         val id: String,
@@ -56,29 +52,14 @@ class Kuudere : MainAPI() {
         val epCount: Int?
     )
 
-    // Recommendation API
-    data class RecommendationResponse(
-        val success: Boolean,
-        val recommendations: List<RecommendationItem>?
-    )
+    data class RecommendationResponse(val success: Boolean, val recommendations: List<RecommendationItem>?)
     data class RecommendationItem(
-        val id: String,
-        val title: String,
-        val cover: String?,
-        val type: String?,
-        val year: Int?,
-        val status: String?,
-        val averageScore: Int?
+        val id: String, val title: String, val cover: String?, val type: String?, val year: Int?, val status: String?, val averageScore: Int?
     )
 
-    // Player API (SvelteKit)
     data class SvelteResponse(val body: String)
     data class PlayerData(val episode_links: List<PlayerLink>?)
-    data class PlayerLink(
-        val serverName: String,
-        val dataLink: String,
-        val dataType: String
-    )
+    data class PlayerLink(val serverName: String, val dataLink: String, val dataType: String)
 
     // ================= MAIN PAGE =================
     override val mainPage = mainPageOf(
@@ -89,7 +70,6 @@ class Kuudere : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val json = app.get(request.data, headers = commonHeaders).parsedSafe<HomeResult>()
-        
         val home = json?.data?.map { item ->
             newAnimeSearchResponse(item.title, "$mainUrl${item.url}", TvType.Anime) {
                 this.posterUrl = item.image
@@ -98,7 +78,6 @@ class Kuudere : MainAPI() {
                 addQuality("Sub: $sub | Dub: $dub")
             }
         } ?: listOf()
-
         return newHomePageResponse(request.name, home)
     }
 
@@ -106,13 +85,10 @@ class Kuudere : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
         val url = "$mainUrl/api/search?q=$encodedQuery"
-        
         val json = app.get(url, headers = commonHeaders).parsedSafe<SearchResult>()
-        
         return json?.results?.map { item ->
             val href = "$mainUrl/anime/${item.id}"
             val year = item.details?.substringBefore("•")?.trim()?.toIntOrNull()
-            
             newAnimeSearchResponse(item.title, href, TvType.Anime) {
                 this.posterUrl = item.coverImage
                 this.year = year
@@ -134,7 +110,6 @@ class Kuudere : MainAPI() {
             else -> null
         }
 
-        // Recommendations
         val recUrl = "$mainUrl/api/anime/${data.id}/recommendations"
         val recJson = app.get(recUrl, headers = commonHeaders).parsedSafe<RecommendationResponse>()
         val recommendations = recJson?.recommendations?.map { item ->
@@ -145,10 +120,8 @@ class Kuudere : MainAPI() {
             }
         }
 
-        // Episodes
         val watchUrl = "$mainUrl/watch/${data.id}/1"
         val doc = app.get(watchUrl, headers = commonHeaders).document
-        
         var htmlEpisodes = doc.select(".episodes-list a, .list-episodes a, #episodes-page-1 a")
         if (htmlEpisodes.isEmpty()) {
              val detailDoc = app.get("$mainUrl/anime/${data.id}", headers = commonHeaders).document
@@ -161,13 +134,10 @@ class Kuudere : MainAPI() {
                 ?: element.select(".num").text().toIntOrNull()
                 ?: href.substringAfterLast("/").toIntOrNull()
                 ?: return@mapNotNull null
-            
             val rawName = element.attr("title").ifEmpty { element.select(".name").text() }
             val finalName = if (rawName.isNotBlank() && rawName != "Episode $epNum") rawName else "Episode $epNum"
-            
             val isDub = element.hasClass("dub") || href.contains("lang=dub") || element.text().contains("Dub", true)
             val tag = if (isDub) "[DUB]" else "[SUB]"
-
             newEpisode(href) {
                 this.episode = epNum
                 this.name = "$finalName $tag"
@@ -196,18 +166,15 @@ class Kuudere : MainAPI() {
         }
     }
 
-
-    // ================= LOAD LINKS (PARALLEL + DEBUG LOG) =================
+    // ================= LOAD LINKS (UPDATED) =================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean = coroutineScope { 
-        // StringBuilder để tích lũy log
         val debugLog = StringBuilder()
         debugLog.append("Target: $data\n")
-
         val htmlHeaders = commonHeaders.toMutableMap()
         htmlHeaders["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
         
@@ -215,8 +182,6 @@ class Kuudere : MainAPI() {
 
         try {
             val doc = app.get(data, headers = htmlHeaders).document
-            
-            // 1. Tìm thẻ Script SvelteKit
             val scriptTag = doc.select("script[data-sveltekit-fetched]").find { 
                 it.attr("data-url").contains("/api/watch/") 
             }
@@ -225,8 +190,6 @@ class Kuudere : MainAPI() {
                 debugLog.append("❌ Error: Svelte script tag NOT found.\n")
             } else {
                 debugLog.append("✅ Svelte script tag found.\n")
-                
-                // Parse JSON
                 val svelteResponse = AppUtils.parseJson<SvelteResponse>(scriptTag.data())
                 val playerData = AppUtils.parseJson<PlayerData>(svelteResponse.body)
                 val links = playerData.episode_links
@@ -235,14 +198,11 @@ class Kuudere : MainAPI() {
                     debugLog.append("⚠️ JSON parsed but 'episode_links' is empty/null.\n")
                 } else {
                     debugLog.append("Processing ${links.size} links in parallel...\n")
-
-                    // --- XỬ LÝ SONG SONG (Parallel) ---
-                    // Chạy tất cả các task loadExtractor cùng lúc
+                    
                     links.map { link ->
                         async {
                             val rawLink = link.dataLink
                             val serverName = "${link.serverName} [${link.dataType.uppercase()}]"
-                            
                             debugLog.append("Found: $serverName -> $rawLink\n")
 
                             if (rawLink.startsWith("http")) {
@@ -250,31 +210,33 @@ class Kuudere : MainAPI() {
                                 
                                 // Gọi loadExtractor
                                 val handled = loadExtractor(fixedLink, data, subtitleCallback) { extractorLink ->
-                                    // Callback khi trích xuất thành công
                                     linksFound++
-                                    callback(
-                                        ExtractorLink(
+                                    
+                                    // SỬ DỤNG newExtractorLink (trong launch vì nó là suspend)
+                                    launch {
+                                        val type = if (extractorLink.isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                                        
+                                        val newLink = newExtractorLink(
                                             source = extractorLink.source,
                                             name = "$serverName ${extractorLink.name}",
                                             url = extractorLink.url,
-                                            referer = extractorLink.referer,
-                                            quality = extractorLink.quality,
-                                            isM3u8 = extractorLink.isM3u8,
-                                            headers = extractorLink.headers
-                                        )
-                                    )
+                                            type = type
+                                        ) {
+                                            this.referer = extractorLink.referer
+                                            this.quality = extractorLink.quality
+                                            this.headers = extractorLink.headers
+                                        }
+                                        callback(newLink)
+                                    }
                                 }
                                 
-                                if (!handled) {
-                                    debugLog.append("  ⚠️ No extractor found for: $fixedLink\n")
-                                }
+                                if (!handled) debugLog.append("  ⚠️ No extractor found for: $fixedLink\n")
                             }
                         }
-                    }.awaitAll() // Đợi tất cả chạy xong
+                    }.awaitAll()
                 }
             }
 
-            // 2. Fallback Iframe (Nếu script không ra gì)
             if (linksFound == 0) {
                 debugLog.append("Checking fallback Iframes...\n")
                 val iframes = doc.select("iframe")
@@ -297,9 +259,7 @@ class Kuudere : MainAPI() {
             e.printStackTrace()
         }
 
-        // --- CHECK KẾT QUẢ ---
         if (linksFound == 0) {
-            // Throw lỗi kèm toàn bộ Log để xem trên màn hình điện thoại
             throw ErrorLoadingException("No links found!\nLOGS:\n$debugLog")
         }
 
