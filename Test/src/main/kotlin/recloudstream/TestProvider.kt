@@ -6,6 +6,9 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.mvvm.logError
 import java.net.URLEncoder
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 
 class Kuudere : MainAPI() {
     override var mainUrl = "https://kuudere.to"
@@ -193,57 +196,113 @@ class Kuudere : MainAPI() {
         }
     }
 
-    // ================= LOAD LINKS =================
+
+    // ================= LOAD LINKS (PARALLEL + DEBUG LOG) =================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
-    ): Boolean {
+    ): Boolean = coroutineScope { 
+        // StringBuilder để tích lũy log
+        val debugLog = StringBuilder()
+        debugLog.append("Target: $data\n")
+
         val htmlHeaders = commonHeaders.toMutableMap()
         htmlHeaders["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
         
-        val doc = app.get(data, headers = htmlHeaders).document
-        var linksFound = 0 // THAY ĐỔI 2: Biến đếm số link tìm được
+        var linksFound = 0
 
-        // 1. SvelteKit Script Parsing
-        val scriptTag = doc.select("script[data-sveltekit-fetched]").find { 
-            it.attr("data-url").contains("/api/watch/") 
-        }
+        try {
+            val doc = app.get(data, headers = htmlHeaders).document
+            
+            // 1. Tìm thẻ Script SvelteKit
+            val scriptTag = doc.select("script[data-sveltekit-fetched]").find { 
+                it.attr("data-url").contains("/api/watch/") 
+            }
 
-        if (scriptTag != null) {
-            try {
+            if (scriptTag == null) {
+                debugLog.append("❌ Error: Svelte script tag NOT found.\n")
+            } else {
+                debugLog.append("✅ Svelte script tag found.\n")
+                
+                // Parse JSON
                 val svelteResponse = AppUtils.parseJson<SvelteResponse>(scriptTag.data())
                 val playerData = AppUtils.parseJson<PlayerData>(svelteResponse.body)
+                val links = playerData.episode_links
 
-                playerData.episode_links?.forEach { link ->
-                    if (link.dataLink.startsWith("http")) {
-                        loadExtractor(fixUrl(link.dataLink), data, subtitleCallback, callback)
-                        linksFound++ // Tăng biến đếm
+                if (links.isNullOrEmpty()) {
+                    debugLog.append("⚠️ JSON parsed but 'episode_links' is empty/null.\n")
+                } else {
+                    debugLog.append("Processing ${links.size} links in parallel...\n")
+
+                    // --- XỬ LÝ SONG SONG (Parallel) ---
+                    // Chạy tất cả các task loadExtractor cùng lúc
+                    links.map { link ->
+                        async {
+                            val rawLink = link.dataLink
+                            val serverName = "${link.serverName} [${link.dataType.uppercase()}]"
+                            
+                            debugLog.append("Found: $serverName -> $rawLink\n")
+
+                            if (rawLink.startsWith("http")) {
+                                val fixedLink = fixUrl(rawLink)
+                                
+                                // Gọi loadExtractor
+                                val handled = loadExtractor(fixedLink, data, subtitleCallback) { extractorLink ->
+                                    // Callback khi trích xuất thành công
+                                    linksFound++
+                                    callback(
+                                        ExtractorLink(
+                                            source = extractorLink.source,
+                                            name = "$serverName ${extractorLink.name}",
+                                            url = extractorLink.url,
+                                            referer = extractorLink.referer,
+                                            quality = extractorLink.quality,
+                                            isM3u8 = extractorLink.isM3u8,
+                                            headers = extractorLink.headers
+                                        )
+                                    )
+                                }
+                                
+                                if (!handled) {
+                                    debugLog.append("  ⚠️ No extractor found for: $fixedLink\n")
+                                }
+                            }
+                        }
+                    }.awaitAll() // Đợi tất cả chạy xong
+                }
+            }
+
+            // 2. Fallback Iframe (Nếu script không ra gì)
+            if (linksFound == 0) {
+                debugLog.append("Checking fallback Iframes...\n")
+                val iframes = doc.select("iframe")
+                iframes.map { iframe ->
+                    async {
+                        val src = iframe.attr("src")
+                        if (src.isNotBlank() && src.startsWith("http")) {
+                            debugLog.append("Iframe found: $src\n")
+                            loadExtractor(src, data, subtitleCallback) { link ->
+                                linksFound++
+                                callback(link)
+                            }
+                        }
                     }
-                }
-            } catch (e: Exception) {
-                logError(e)
-                // THAY ĐỔI 2: Nếu lỗi parse JSON, log lỗi nhưng không return false vội, để fallback chạy tiếp
+                }.awaitAll()
             }
+
+        } catch (e: Exception) {
+            debugLog.append("🔥 Exception: ${e.message}\n")
+            e.printStackTrace()
         }
 
-        // 2. Fallback Iframe (Nếu script parse lỗi hoặc không tìm thấy)
+        // --- CHECK KẾT QUẢ ---
         if (linksFound == 0) {
-            doc.select("iframe").forEach { iframe ->
-                val src = iframe.attr("src")
-                if (src.isNotBlank() && src.startsWith("http")) {
-                    loadExtractor(src, data, subtitleCallback, callback)
-                    linksFound++
-                }
-            }
+            // Throw lỗi kèm toàn bộ Log để xem trên màn hình điện thoại
+            throw ErrorLoadingException("No links found!\nLOGS:\n$debugLog")
         }
 
-        // THAY ĐỔI 2: Nếu sau tất cả các bước mà vẫn không có link -> Throw Error
-        if (linksFound == 0) {
-            throw ErrorLoadingException("No video links found on Kuudere")
-        }
-
-        return true
+        return@coroutineScope true
     }
 }
