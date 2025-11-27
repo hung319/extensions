@@ -11,7 +11,7 @@ import kotlinx.coroutines.coroutineScope
 import android.util.Base64
 import com.fasterxml.jackson.databind.ObjectMapper
 
-// [ADD] Imports cho Toast
+// Imports cho Toast & UI
 import com.lagradost.cloudstream3.CommonActivity
 import com.lagradost.cloudstream3.CommonActivity.showToast
 import android.widget.Toast
@@ -42,7 +42,7 @@ class AnikotoProvider : MainAPI() {
     data class MewSource(val url: String?)
 
     // =========================================================================
-    //  1. MEW CLOUD EXTRACTOR (UPDATED)
+    //  1. MEW CLOUD EXTRACTOR (Final Fix)
     // =========================================================================
     inner class MewCloudExtractor : ExtractorApi() {
         override val name = "MewCloud"
@@ -56,7 +56,7 @@ class AnikotoProvider : MainAPI() {
             callback: (ExtractorLink) -> Unit
         ) {
             try {
-                // CASE 1: Link trực tiếp dạng plyr.php#BASE64# (Giữ nguyên logic cũ)
+                // CASE 1: Link trực tiếp dạng plyr.php#BASE64#
                 if (url.contains("/player/plyr.php")) {
                     val fragments = url.split("#")
                     if (fragments.size > 1) {
@@ -83,7 +83,7 @@ class AnikotoProvider : MainAPI() {
                     }
                 }
 
-                // CASE 2: API save_data.php (Cập nhật theo CURL)
+                // CASE 2: API save_data.php
                 val regex = Regex("""/(\d+)/(sub|dub)""")
                 val match = regex.find(url) ?: return
                 val (id, type) = match.destructured
@@ -91,7 +91,7 @@ class AnikotoProvider : MainAPI() {
                 val pairId = "$id-$type"
                 val apiUrl = "$mainUrl/save_data.php?id=$pairId"
                 
-                // [UPDATE] Headers chuẩn từ CURL
+                // Headers chuẩn từ CURL
                 val headers = mapOf(
                     "Authority" to "mewcdn.online",
                     "Accept" to "application/json, text/javascript, */*; q=0.01",
@@ -113,23 +113,24 @@ class AnikotoProvider : MainAPI() {
                             url = m3u8Url,
                             type = ExtractorLinkType.M3U8
                         ) {
-                            // M3U8 cũng cần referer này
-                            this.referer = "https://megacloud.bloggy.click/" 
+                            this.referer = "https://megacloud.bloggy.click/"
                             this.quality = Qualities.Unknown.value
                         }
                     )
                 }
 
-                // 2. Xử lý Subtitle (Cập nhật quan trọng)
+                // 2. Xử lý Subtitle (Fix using initializer lambda)
                 data.tracks?.forEach { track ->
                     val trackUrl = track.file
                     val label = track.label ?: "English"
                     
-                    if (!trackUrl.isNullOrBlank()) {
-                        // [FIX] Thêm headers vào SubtitleFile để Player tải được file .vtt
-                        // Nếu không có headers này, request tải sub sẽ bị 403 Forbidden
-                        val subFile = newSubtitleFile(trackUrl, label).copy(headers = headers)
-                        subtitleCallback(subFile)
+                    if (!trackUrl.isNullOrBlank() && track.kind == "captions") {
+                        // [FIX] Dùng newSubtitleFile với lambda initializer để set headers
+                        subtitleCallback(
+                            newSubtitleFile(lang = label, url = trackUrl) {
+                                this.headers = headers
+                            }
+                        )
                     }
                 }
             } catch (e: Exception) {
@@ -164,7 +165,7 @@ class AnikotoProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // [ADD] Toast Logic: Chỉ hiện khi page == 1
+        // Toast chỉ hiện ở trang 1
         if (page == 1) {
             withContext(Dispatchers.Main) {
                 CommonActivity.activity?.let { activity ->
@@ -207,7 +208,6 @@ class AnikotoProvider : MainAPI() {
         return doc.select("div.ani.items > div.item").mapNotNull { it.toSearchResult() }
     }
 
-    // [UPDATE] Hàm load với logic Tên gốc + Sub/Dub tags
     override suspend fun load(url: String): LoadResponse {
         val doc = app.get(url).document
         val title = doc.selectFirst("h1.title.d-title")?.text() ?: "Unknown"
@@ -216,7 +216,7 @@ class AnikotoProvider : MainAPI() {
         val ratingText = doc.selectFirst(".meta .rating")?.text()
         val dataId = doc.selectFirst("#watch-main")?.attr("data-id") ?: throw ErrorLoadingException("No ID")
         
-        // 1. Kiểm tra Sub/Dub tag từ trang chi tiết
+        // Logic Sub/Dub Tags
         val hasSub = doc.select(".meta .sub").isNotEmpty()
         val hasDub = doc.select(".meta .dub").isNotEmpty()
         val typeTag = when {
@@ -234,7 +234,7 @@ class AnikotoProvider : MainAPI() {
             val epNumStr = element.attr("data-num")
             val epNum = epNumStr.toFloatOrNull() ?: 1f
             
-            // 2. Lấy tên gốc, fallback về số tập, nối thêm tag
+            // Logic Tên gốc
             val rawName = element.select("span.d-title").text()
             val epName = if (rawName.isNotBlank()) rawName else "Episode $epNumStr"
             val finalName = "$epName $typeTag".trim()
@@ -362,3 +362,12 @@ class AnikotoProvider : MainAPI() {
         return true
     }
 }
+```
+
+### Tại sao dùng `newSubtitleFile` là tốt nhất?
+Hàm này (`newSubtitleFile(lang, url) { ... }`) cho phép bạn:
+1.  Truyền `label` và `url` một cách rõ ràng.
+2.  Mở một lambda block (scope của object `SubtitleFile` vừa tạo).
+3.  Bên trong lambda đó, bạn có thể gán `this.headers = headers` một cách hợp lệ mà không cần gọi constructor trực tiếp hay dùng `copy`. Đây là cách "Kotlin idiomatic" mà CloudStream hướng tới.
+
+Bây giờ bạn có thể build lại mà không gặp lỗi `deprecated` hay `private access`.
