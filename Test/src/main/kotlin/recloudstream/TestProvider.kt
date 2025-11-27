@@ -16,7 +16,6 @@ class Kuudere : MainAPI() {
     override var supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
     override var lang = "vi"
 
-    // Headers mặc định (JSON preference)
     private val commonHeaders = mapOf(
         "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
         "Referer" to "$mainUrl/",
@@ -67,13 +66,13 @@ class Kuudere : MainAPI() {
         val averageScore: Int?
     )
 
-    // Player API (SvelteKit Hydration)
-    data class SvelteResponse(val body: String) // JSON string lồng bên trong
+    // Player API (SvelteKit)
+    data class SvelteResponse(val body: String)
     data class PlayerData(val episode_links: List<PlayerLink>?)
     data class PlayerLink(
         val serverName: String,
         val dataLink: String,
-        val dataType: String // "sub" | "dub"
+        val dataType: String
     )
 
     // ================= MAIN PAGE =================
@@ -117,9 +116,8 @@ class Kuudere : MainAPI() {
         } ?: emptyList()
     }
 
-    // ================= LOAD (DETAILS + RECS + EPISODES) =================
+    // ================= LOAD =================
     override suspend fun load(url: String): LoadResponse {
-        // 1. API Metadata
         val response = app.get(url, headers = commonHeaders)
         val json = response.parsedSafe<DetailsResult>()
         val data = json?.data ?: throw ErrorLoadingException("Không thể tải thông tin phim")
@@ -131,7 +129,7 @@ class Kuudere : MainAPI() {
             else -> null
         }
 
-        // 2. API Recommendations
+        // Recommendations
         val recUrl = "$mainUrl/api/anime/${data.id}/recommendations"
         val recJson = app.get(recUrl, headers = commonHeaders).parsedSafe<RecommendationResponse>()
         val recommendations = recJson?.recommendations?.map { item ->
@@ -142,12 +140,11 @@ class Kuudere : MainAPI() {
             }
         }
 
-        // 3. HTML Parsing cho Episodes (Trang Watch)
+        // Episodes
         val watchUrl = "$mainUrl/watch/${data.id}/1"
         val doc = app.get(watchUrl, headers = commonHeaders).document
         
         var htmlEpisodes = doc.select(".episodes-list a, .list-episodes a, #episodes-page-1 a")
-        // Fallback về trang details nếu trang watch chưa có tập 1 (phim sắp chiếu)
         if (htmlEpisodes.isEmpty()) {
              val detailDoc = app.get("$mainUrl/anime/${data.id}", headers = commonHeaders).document
              htmlEpisodes = detailDoc.select(".episodes-list a, .list-episodes a")
@@ -172,7 +169,6 @@ class Kuudere : MainAPI() {
             }
         }.reversed()
 
-        // Fallback: Lazy Generation nếu parse HTML thất bại
         val finalEpisodes = if (episodesList.isNotEmpty()) episodesList else {
             val count = data.epCount ?: 0
             (1..count).map { epNum ->
@@ -195,39 +191,33 @@ class Kuudere : MainAPI() {
         }
     }
 
-    // ================= LOAD LINKS (SVELTE JSON) =================
+    // ================= LOAD LINKS =================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Ép buộc server trả về HTML để parse thẻ script
+        // Headers ép buộc lấy HTML để có script data
         val htmlHeaders = commonHeaders.toMutableMap()
         htmlHeaders["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
         
         val doc = app.get(data, headers = htmlHeaders).document
 
-        // Tìm thẻ script data-sveltekit-fetched chứa info API watch
+        // 1. SvelteKit Script Parsing
         val scriptTag = doc.select("script[data-sveltekit-fetched]").find { 
             it.attr("data-url").contains("/api/watch/") 
         }
 
         if (scriptTag != null) {
             try {
-                // Svelte wrap data trong 1 JSON wrapper
                 val svelteResponse = AppUtils.parseJson<SvelteResponse>(scriptTag.data())
-                // Bên trong body là 1 JSON string nữa -> Parse tiếp
                 val playerData = AppUtils.parseJson<PlayerData>(svelteResponse.body)
 
                 playerData.episode_links?.forEach { link ->
                     if (link.dataLink.startsWith("http")) {
-                        val serverName = "${link.serverName} [${link.dataType.uppercase()}]"
-                        val fixedLink = fixUrl(link.dataLink)
-
-                        loadExtractor(fixedLink, data, subtitleCallback) { extractorLink ->
-                            callback(extractorLink.copy(name = "$serverName ${extractorLink.name}"))
-                        }
+                        // Gọi thẳng loadExtractor, Cloudstream tự xử lý tên và luồng
+                        loadExtractor(fixUrl(link.dataLink), data, subtitleCallback, callback)
                     }
                 }
                 return true
@@ -236,7 +226,7 @@ class Kuudere : MainAPI() {
             }
         }
 
-        // Fallback: Tìm iframe truyền thống nếu Svelte parse lỗi
+        // 2. Fallback Iframe (dự phòng)
         doc.select("iframe").forEach { iframe ->
             val src = iframe.attr("src")
             if (src.isNotBlank() && src.startsWith("http")) {
