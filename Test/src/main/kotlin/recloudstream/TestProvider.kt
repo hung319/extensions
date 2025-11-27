@@ -7,7 +7,7 @@ import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.mvvm.logError
 import java.net.URLEncoder // Fix lỗi encodeUri
 
-class TestProvider : MainAPI() { // Tên class giữ nguyên theo file của bạn
+class Kuudere : MainAPI() { // Tên class giữ nguyên theo file của bạn
     override var mainUrl = "https://kuudere.to"
     override var name = "Kuudere"
     override var hasMainPage = true
