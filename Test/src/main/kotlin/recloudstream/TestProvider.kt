@@ -35,7 +35,7 @@ class AnikotoProvider : MainAPI() {
     data class MewSource(val url: String?)
 
     // =========================================================================
-    //  1. MEW CLOUD EXTRACTOR (Giữ nguyên logic đã fix)
+    //  1. MEW CLOUD EXTRACTOR (AIO LINK)
     // =========================================================================
     inner class MewCloudExtractor : ExtractorApi() {
         override val name = "MewCloud"
@@ -59,11 +59,18 @@ class AnikotoProvider : MainAPI() {
                             val decodedUrl = String(decodedBytes).trim()
 
                             if (decodedUrl.startsWith("http")) {
-                                M3u8Helper.generateM3u8(
-                                    sourceName = serverName,
-                                    streamUrl = decodedUrl,
-                                    referer = url
-                                ).forEach(callback)
+                                // --- DÙNG newExtractorLink CHO LINK AIO ---
+                                callback(
+                                    newExtractorLink(
+                                        source = serverName,
+                                        name = serverName,
+                                        url = decodedUrl,
+                                        type = ExtractorLinkType.M3U8
+                                    ) {
+                                        this.referer = url
+                                        this.quality = Qualities.Unknown.value // Unknown = Auto/AIO
+                                    }
+                                )
                                 return
                             }
                         } catch (e: Exception) {}
@@ -89,11 +96,18 @@ class AnikotoProvider : MainAPI() {
 
                 data.sources?.forEach { source ->
                     val m3u8Url = source.url ?: return@forEach
-                    M3u8Helper.generateM3u8(
-                        sourceName = serverName,
-                        streamUrl = m3u8Url,
-                        referer = "https://megacloud.bloggy.click/"
-                    ).forEach(callback)
+                    // --- DÙNG newExtractorLink CHO LINK AIO ---
+                    callback(
+                        newExtractorLink(
+                            source = serverName,
+                            name = serverName,
+                            url = m3u8Url,
+                            type = ExtractorLinkType.M3U8
+                        ) {
+                            this.referer = "https://megacloud.bloggy.click/"
+                            this.quality = Qualities.Unknown.value // Unknown = Auto/AIO
+                        }
+                    )
                 }
 
                 data.tracks?.forEach { track ->
@@ -113,7 +127,6 @@ class AnikotoProvider : MainAPI() {
 
     private fun Element.toSearchResult(): SearchResponse? {
         val href = this.selectFirst("a")?.attr("href") ?: return null
-        // Fix: Một số item có class .d-title, một số chỉ có .name
         val title = this.selectFirst(".name.d-title")?.text() 
                  ?: this.selectFirst(".name")?.text() 
                  ?: this.selectFirst(".d-title")?.text()
@@ -134,13 +147,12 @@ class AnikotoProvider : MainAPI() {
     }
 
     // =========================================================================
-    //  3. MAIN PROVIDER LOGIC (Update Main Page & Load)
+    //  3. MAIN PROVIDER LOGIC
     // =========================================================================
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val doc = app.get("$mainUrl/home").document
         
-        // 1. Slider Hot
         val hotest = doc.select(".swiper-slide.item").mapNotNull { element ->
             val title = element.selectFirst(".title.d-title")?.text() ?: return@mapNotNull null
             val href = element.selectFirst("a.btn.play")?.attr("href") ?: return@mapNotNull null
@@ -148,19 +160,10 @@ class AnikotoProvider : MainAPI() {
             newAnimeSearchResponse(title, fixUrl(href)) { this.posterUrl = bgImage }
         }
 
-        // 2. Recently Updated (Mới cập nhật)
         val recent = doc.select("#recent-update .ani.items .item").mapNotNull { it.toSearchResult() }
-        
-        // 3. New Release (Mới phát hành)
         val newRelease = doc.select("section[data-name='new-release'] .item").mapNotNull { it.toSearchResult() }
-
-        // 4. Newly Added (Mới thêm vào web) - NEW
         val newAdded = doc.select("section[data-name='new-added'] .item").mapNotNull { it.toSearchResult() }
-
-        // 5. Just Completed (Vừa hết bộ) - NEW
         val completed = doc.select("section[data-name='completed'] .item").mapNotNull { it.toSearchResult() }
-
-        // 6. Top Anime Day (Top ngày) - NEW
         val topDay = doc.select("#top-anime .tab-content[data-name='day'] .item").mapNotNull { it.toSearchResult() }
 
         return newHomePageResponse(
@@ -190,7 +193,6 @@ class AnikotoProvider : MainAPI() {
         val ratingText = doc.selectFirst(".meta .rating")?.text()
         val dataId = doc.selectFirst("#watch-main")?.attr("data-id") ?: throw ErrorLoadingException("No ID")
         
-        // --- Lấy Episodes ---
         val ajaxUrl = "$mainUrl/ajax/episode/list/$dataId"
         val json = app.get(ajaxUrl, headers = ajaxHeaders).parsedSafe<AjaxResponse>() ?: throw ErrorLoadingException("Failed to fetch episodes JSON")
         val episodesDoc = Jsoup.parse(json.result)
@@ -199,14 +201,14 @@ class AnikotoProvider : MainAPI() {
             val epName = element.select("span.d-title").text() ?: "Episode ${element.attr("data-num")}"
             val epNum = element.attr("data-num").toFloatOrNull() ?: 1f
             
-            // Lấy data-ids và các params khác để gom
             val epIds = element.attr("data-ids")
+            
+            // Lấy params bổ sung nếu cần (để sau này mở rộng)
             val malId = element.attr("data-mal")
             val timestamp = element.attr("data-timestamp")
             
             if (epIds.isBlank()) return@mapNotNull null
             
-            // Gom ID vào URL ảo
             val epUrl = "$mainUrl/ajax/server/list?servers=$epIds&mal=$malId&time=$timestamp&ep=${element.attr("data-num")}"
             
             newEpisode(epUrl) {
@@ -214,9 +216,7 @@ class AnikotoProvider : MainAPI() {
                 this.episode = epNum.toInt()
             }
         }
-
-        // --- Lấy Recommendations (Gợi ý) - NEW ---
-        // Web này thường để recommendations ở sidebar (.w-side-section) hoặc dưới player (#recent-update)
+        
         val recommendations = doc.select(".w-side-section .item, #recent-update .item").mapNotNull { 
             it.toSearchResult() 
         }
@@ -229,7 +229,6 @@ class AnikotoProvider : MainAPI() {
         }
     }
 
-    // --- LOAD LINKS (Giữ nguyên logic gom ID và giải mã) ---
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -237,64 +236,24 @@ class AnikotoProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val urlObj = android.net.Uri.parse(data)
-        val malId = urlObj.getQueryParameter("mal")
-        val timestamp = urlObj.getQueryParameter("time")
-        val epNum = urlObj.getQueryParameter("ep")
-        
-        val linkTasks = mutableListOf<Triple<String, String, String>>() 
+        // Các tham số này dành cho future use hoặc nếu bạn muốn dùng lại Mapper API
+        // val malId = urlObj.getQueryParameter("mal")
+        // val timestamp = urlObj.getQueryParameter("time")
+        // val epNum = urlObj.getQueryParameter("ep")
+
+        val json = app.get(data, headers = ajaxHeaders).parsedSafe<AjaxResponse>() ?: return false
+        val doc = Jsoup.parse(json.result)
+
+        val tasks = doc.select(".servers .type li").mapNotNull { server ->
+            val linkId = server.attr("data-link-id")
+            if (linkId.isBlank()) return@mapNotNull null
+            val serverName = server.text()
+            val type = server.parent()?.parent()?.attr("data-type") ?: "sub"
+            Triple(linkId, serverName, type)
+        }
 
         coroutineScope {
-            // 1. Get ID from Server List
-            val taskAnikoto = async {
-                try {
-                    val json = app.get(data, headers = ajaxHeaders).parsedSafe<AjaxResponse>()
-                    if (json != null) {
-                        val doc = Jsoup.parse(json.result)
-                        doc.select(".servers .type li").forEach { server ->
-                            val linkId = server.attr("data-link-id")
-                            val serverName = server.text()
-                            val type = server.parent()?.parent()?.attr("data-type") ?: "sub"
-                            if (linkId.isNotBlank()) {
-                                linkTasks.add(Triple(linkId, serverName, type))
-                            }
-                        }
-                    }
-                } catch (e: Exception) { e.printStackTrace() }
-            }
-
-            // 2. Get ID from Mapper API
-            val taskMapper = async {
-                if (!malId.isNullOrBlank() && !timestamp.isNullOrBlank()) {
-                    try {
-                        val mapperUrl = "https://mapper.mewcdn.online/api/mal/$malId/$epNum/$timestamp"
-                        val mapperHeaders = mapOf(
-                            "Origin" to mainUrl,
-                            "Referer" to "$mainUrl/",
-                            "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
-                        )
-                        val responseText = app.get(mapperUrl, headers = mapperHeaders).text
-                        val mapperJson = ObjectMapper().readTree(responseText)
-                        val fields = mapperJson.fieldNames()
-                        while (fields.hasNext()) {
-                            val serverKey = fields.next()
-                            val serverNode = mapperJson.get(serverKey)
-                            if (serverNode.has("sub")) {
-                                val id = serverNode.get("sub").get("url").asText()
-                                linkTasks.add(Triple(id, "$serverKey", "sub"))
-                            }
-                            if (serverNode.has("dub")) {
-                                val id = serverNode.get("dub").get("url").asText()
-                                linkTasks.add(Triple(id, "$serverKey", "dub"))
-                            }
-                        }
-                    } catch (e: Exception) { e.printStackTrace() }
-                }
-            }
-
-            awaitAll(taskAnikoto, taskMapper)
-
-            // 3. Resolve IDs
-            linkTasks.map { (linkId, serverName, type) ->
+            tasks.map { (linkId, serverName, type) ->
                 async {
                     try {
                         val resolveUrl = "$mainUrl/ajax/server?get=$linkId"
