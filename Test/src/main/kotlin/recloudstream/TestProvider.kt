@@ -8,7 +8,7 @@ import org.jsoup.nodes.Element
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import android.util.Base64 // Cần import để giải mã Base64
+import android.util.Base64 
 
 class AnikotoProvider : MainAPI() {
     override var mainUrl = "https://anikoto.tv"
@@ -33,7 +33,7 @@ class AnikotoProvider : MainAPI() {
     data class MewSource(val url: String?)
 
     // =========================================================================
-    //  1. MEW CLOUD EXTRACTOR (Cập nhật xử lý plyr.php)
+    //  1. MEW CLOUD EXTRACTOR (Đã update xử lý plyr.php)
     // =========================================================================
     inner class MewCloudExtractor : ExtractorApi() {
         override val name = "MewCloud"
@@ -47,30 +47,37 @@ class AnikotoProvider : MainAPI() {
             callback: (ExtractorLink) -> Unit
         ) {
             try {
-                // --- CASE 1: Xử lý link trực tiếp dạng plyr.php#BASE64 ---
+                // --- CASE 1: Xử lý link trực tiếp dạng plyr.php#BASE64# ---
+                // URL mẫu: https://mewcdn.online/player/plyr.php#aHR0...#?autostart=true
                 if (url.contains("/player/plyr.php")) {
-                    // URL mẫu: https://mewcdn.online/player/plyr.php#aHR0...#?autostart=true
-                    // Lấy chuỗi giữa 2 dấu #
-                    val base64String = url.substringAfter("#").substringBefore("#")
+                    val fragments = url.split("#")
                     
-                    if (base64String.isNotBlank()) {
-                        val decodedUrl = String(Base64.decode(base64String, Base64.DEFAULT))
-                        
-                        if (decodedUrl.startsWith("http")) {
-                            callback(
-                                newExtractorLink(
-                                    source = serverName,
-                                    name = serverName,
-                                    url = decodedUrl,
-                                    type = ExtractorLinkType.M3U8
-                                ) {
-                                    this.referer = url
-                                    this.quality = Qualities.Unknown.value
-                                }
-                            )
+                    // Chuỗi Base64 thường nằm ở giữa 2 dấu # (index 1)
+                    if (fragments.size > 1) {
+                        val base64String = fragments[1]
+                        try {
+                            val decodedBytes = Base64.decode(base64String, Base64.DEFAULT)
+                            val decodedUrl = String(decodedBytes)
+
+                            if (decodedUrl.startsWith("http")) {
+                                callback(
+                                    newExtractorLink(
+                                        source = serverName,
+                                        name = serverName,
+                                        url = decodedUrl,
+                                        type = ExtractorLinkType.M3U8
+                                    ) {
+                                        this.referer = url
+                                        this.quality = Qualities.Unknown.value
+                                    }
+                                )
+                                return // Tìm thấy thì dừng luôn
+                            }
+                        } catch (e: Exception) {
+                           // Nếu giải mã lỗi thì bỏ qua, chạy tiếp logic dưới (nếu có)
+                           // e.printStackTrace()
                         }
                     }
-                    return // Dừng xử lý, không chạy logic phía dưới
                 }
 
                 // --- CASE 2: Xử lý qua API save_data.php (MegaCloud/VidWish) ---
@@ -230,17 +237,14 @@ class AnikotoProvider : MainAPI() {
                             if (!embedUrl.isNullOrBlank()) {
                                 val safeServerName = "$serverName ($type)"
 
-                                // Logic định tuyến
-                                if (embedUrl.contains("/player/plyr.php") || // Link mới
-                                    embedUrl.contains("megacloud.bloggy.click") || 
+                                if (embedUrl.contains("megacloud.bloggy.click") || 
                                     embedUrl.contains("vidwish.live") ||
-                                    embedUrl.contains("mewcdn.online")) {
+                                    embedUrl.contains("mewcdn.online") ||
+                                    embedUrl.contains("/player/plyr.php")) { // Thêm điều kiện plyr.php
                                     
-                                    // Dùng Custom Extractor
                                     MewCloudExtractor().getVideos(embedUrl, safeServerName, subtitleCallback, callback)
                                     
                                 } else {
-                                    // Dùng Extractor mặc định
                                     loadExtractor(embedUrl, safeServerName, subtitleCallback, callback)
                                 }
                             }
