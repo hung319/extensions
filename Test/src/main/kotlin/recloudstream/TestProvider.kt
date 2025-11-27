@@ -93,8 +93,10 @@ class Kuudere : MainAPI() { // Tên class giữ nguyên theo file của bạn
         } ?: emptyList()
     }
 
-    // ================= LOAD DETAILS =================
+    // ================= LOAD DETAILS (UPDATED) =================
     override suspend fun load(url: String): LoadResponse {
+        // Bước 1: Gọi API JSON để lấy metadata chính xác (Title, Desc, Banner...)
+        // url input: https://kuudere.to/anime/{id}
         val response = app.get(url, headers = commonHeaders)
         val json = response.parsedSafe<DetailsResult>()
         val data = json?.data ?: throw ErrorLoadingException("Không thể tải thông tin phim")
@@ -106,14 +108,78 @@ class Kuudere : MainAPI() { // Tên class giữ nguyên theo file của bạn
             else -> null
         }
 
-        val epCount = data.epCount ?: 0
-        val episodesList = (1..epCount).map { epNum ->
-            val watchUrl = "$mainUrl/watch/${data.id}/$epNum"
-            newEpisode(watchUrl) {
+        // Bước 2: Gọi HTML trang Watch để lấy (1) List tập chi tiết và (2) Recommendations
+        // Lý do: API details không trả về tên tập hay list recommendations đầy đủ hình ảnh.
+        // Ta thử gọi vào tập 1. Nếu phim chưa có tập 1, fallback về trang details HTML.
+        val watchUrl = "$mainUrl/watch/${data.id}/1"
+        val doc = app.get(watchUrl, headers = commonHeaders).document
+
+        // --- Xử lý Episodes ---
+        // Tìm list tập trong HTML (thường nằm trong .episodes-list hoặc sidebar)
+        var htmlEpisodes = doc.select(".episodes-list a, .list-episodes a, #episodes-page-1 a")
+        
+        // Nếu không tìm thấy ở trang watch (do phim chưa ra tập 1), thử parse ở trang details gốc
+        if (htmlEpisodes.isEmpty()) {
+             val detailDoc = app.get("$mainUrl/anime/${data.id}", headers = commonHeaders).document
+             htmlEpisodes = detailDoc.select(".episodes-list a, .list-episodes a")
+        }
+
+        val episodesList = htmlEpisodes.mapNotNull { element ->
+            val href = fixUrl(element.attr("href"))
+            // Lấy số tập
+            val epNum = element.attr("data-num").toIntOrNull() 
+                ?: element.select(".num").text().toIntOrNull()
+                ?: href.substringAfterLast("/").toIntOrNull()
+                ?: return@mapNotNull null
+            
+            // Lấy tên gốc (Title)
+            // Ưu tiên lấy trong title attribute, hoặc text bên cạnh số tập
+            val rawName = element.attr("title").ifEmpty { 
+                element.select(".name").text() 
+            }
+            val finalName = if (rawName.isNotBlank() && rawName != "Episode $epNum") {
+                rawName // Tên gốc xịn (VD: "The Beginning")
+            } else {
+                "Episode $epNum" // Tên mặc định
+            }
+
+            // Xử lý TAG [SUB] / [DUB]
+            // Logic: Check class hoặc URL params. Nếu không rõ, dựa vào stats từ JSON API.
+            val isDub = element.hasClass("dub") || href.contains("lang=dub") || element.text().contains("Dub", true)
+            // Nếu JSON báo có dubbedCount > 0 và episode này ko xác định, mặc định hiển thị cả 2 hoặc SUB.
+            // Ở đây tôi sẽ gắn tag cứng dựa trên check sơ bộ.
+            val tag = if (isDub) "[DUB]" else "[SUB]"
+
+            newEpisode(href) {
                 this.episode = epNum
-                this.name = "Episode $epNum"
+                this.name = "$finalName $tag" // VD: "Episode 1 - Start [SUB]"
             }
         }.reversed()
+
+        // Fallback: Nếu parse HTML thất bại (không tìm thấy CSS selector), dùng lại cách lazy cũ
+        val finalEpisodes = if (episodesList.isNotEmpty()) episodesList else {
+            val count = data.epCount ?: 0
+            (1..count).map { epNum ->
+                newEpisode("$mainUrl/watch/${data.id}/$epNum") {
+                    this.episode = epNum
+                    this.name = "Episode $epNum [SUB]"
+                }
+            }.reversed()
+        }
+
+        // --- Xử lý Recommendations ---
+        // Tìm trong vùng "Related", "Recommended" hoặc "Trending" bên sidebar trang watch
+        val recommendations = doc.select(".related-anime .item, .recommendations .item, .sidebar-content .item").mapNotNull { item ->
+            val recTitle = item.select(".title, .name").text().trim()
+            val recHref = item.select("a").attr("href")
+            val recImg = item.select("img").attr("src").ifEmpty { item.select("img").attr("data-src") }
+            
+            if (recTitle.isBlank() || recHref.isBlank()) return@mapNotNull null
+
+            newAnimeSearchResponse(recTitle, fixUrl(recHref), TvType.Anime) {
+                this.posterUrl = recImg
+            }
+        }
 
         return newAnimeLoadResponse(title, url, TvType.Anime) {
             this.posterUrl = data.cover
@@ -123,11 +189,13 @@ class Kuudere : MainAPI() { // Tên class giữ nguyên theo file của bạn
             this.year = data.year
             this.showStatus = showStatus
             
-            // FIX 3: Gán episodes vào MutableMap<DubStatus, List<Episode>>
-            // Mặc định gán vào Subbed, nếu site có dub riêng thì cần logic tách sau.
+            // Map episodes vào Subbed (Cloudstream sẽ tự gộp nếu sau này tách dub riêng)
             this.episodes = mutableMapOf(
-                DubStatus.Subbed to episodesList
+                DubStatus.Subbed to finalEpisodes
             )
+            
+            // Thêm list đề xuất
+            this.recommendations = recommendations.ifEmpty { null }
         }
     }
 
