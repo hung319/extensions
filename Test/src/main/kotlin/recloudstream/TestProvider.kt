@@ -14,7 +14,9 @@ class Kuudere : MainAPI() {
     override var hasChromecastSupport = true
     override var hasDownloadSupport = true
     override var supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
-    override var lang = "vi"
+    
+    // THAY ĐỔI 1: Đổi ngôn ngữ sang tiếng Anh
+    override var lang = "en"
 
     private val commonHeaders = mapOf(
         "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
@@ -198,11 +200,11 @@ class Kuudere : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Headers ép buộc lấy HTML để có script data
         val htmlHeaders = commonHeaders.toMutableMap()
         htmlHeaders["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
         
         val doc = app.get(data, headers = htmlHeaders).document
+        var linksFound = 0 // THAY ĐỔI 2: Biến đếm số link tìm được
 
         // 1. SvelteKit Script Parsing
         val scriptTag = doc.select("script[data-sveltekit-fetched]").find { 
@@ -216,22 +218,30 @@ class Kuudere : MainAPI() {
 
                 playerData.episode_links?.forEach { link ->
                     if (link.dataLink.startsWith("http")) {
-                        // Gọi thẳng loadExtractor, Cloudstream tự xử lý tên và luồng
                         loadExtractor(fixUrl(link.dataLink), data, subtitleCallback, callback)
+                        linksFound++ // Tăng biến đếm
                     }
                 }
-                return true
             } catch (e: Exception) {
                 logError(e)
+                // THAY ĐỔI 2: Nếu lỗi parse JSON, log lỗi nhưng không return false vội, để fallback chạy tiếp
             }
         }
 
-        // 2. Fallback Iframe (dự phòng)
-        doc.select("iframe").forEach { iframe ->
-            val src = iframe.attr("src")
-            if (src.isNotBlank() && src.startsWith("http")) {
-                loadExtractor(src, data, subtitleCallback, callback)
+        // 2. Fallback Iframe (Nếu script parse lỗi hoặc không tìm thấy)
+        if (linksFound == 0) {
+            doc.select("iframe").forEach { iframe ->
+                val src = iframe.attr("src")
+                if (src.isNotBlank() && src.startsWith("http")) {
+                    loadExtractor(src, data, subtitleCallback, callback)
+                    linksFound++
+                }
             }
+        }
+
+        // THAY ĐỔI 2: Nếu sau tất cả các bước mà vẫn không có link -> Throw Error
+        if (linksFound == 0) {
+            throw ErrorLoadingException("No video links found on Kuudere")
         }
 
         return true
