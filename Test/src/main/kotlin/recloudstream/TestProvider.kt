@@ -42,7 +42,7 @@ class AnikotoProvider : MainAPI() {
     data class MewSource(val url: String?)
 
     // =========================================================================
-    //  1. MEW CLOUD EXTRACTOR (Final Fix)
+    //  1. MEW CLOUD EXTRACTOR (Final Fix with Dedup)
     // =========================================================================
     inner class MewCloudExtractor : ExtractorApi() {
         override val name = "MewCloud"
@@ -91,7 +91,7 @@ class AnikotoProvider : MainAPI() {
                 val pairId = "$id-$type"
                 val apiUrl = "$mainUrl/save_data.php?id=$pairId"
                 
-                // Headers chuẩn từ CURL
+                // Headers chuẩn từ CURL để bypass 403
                 val headers = mapOf(
                     "Authority" to "mewcdn.online",
                     "Accept" to "application/json, text/javascript, */*; q=0.01",
@@ -119,20 +119,22 @@ class AnikotoProvider : MainAPI() {
                     )
                 }
 
-                // 2. Xử lý Subtitle (Fix using initializer lambda)
-                data.tracks?.forEach { track ->
-                    val trackUrl = track.file
-                    val label = track.label ?: "English"
-                    
-                    if (!trackUrl.isNullOrBlank() && track.kind == "captions") {
-                        // [FIX] Dùng newSubtitleFile với lambda initializer để set headers
+                // 2. Xử lý Subtitle (Đã lọc trùng lặp)
+                // Lọc những track là captions, có URL, và loại bỏ các URL trùng nhau
+                data.tracks
+                    ?.filter { it.kind == "captions" && !it.file.isNullOrBlank() }
+                    ?.distinctBy { it.file } // <-- FIX: Lọc trùng lặp dựa trên URL file
+                    ?.forEach { track ->
+                        val trackUrl = track.file!!
+                        val label = track.label ?: "English"
+                        
                         subtitleCallback(
                             newSubtitleFile(lang = label, url = trackUrl) {
                                 this.headers = headers
                             }
                         )
                     }
-                }
+
             } catch (e: Exception) {
                 e.printStackTrace()
             }
