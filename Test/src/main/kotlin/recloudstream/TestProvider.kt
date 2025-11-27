@@ -23,19 +23,19 @@ class AnikotoProvider : MainAPI() {
         "Referer" to "$mainUrl/"
     )
 
-    // --- Models ---
+    // --- JSON Models ---
     data class AjaxResponse(val status: Int, val result: String)
     data class ServerResponse(val status: Int, val result: ServerResult?)
     data class ServerResult(val url: String?)
-
-    // MewCloud Extractor Models
+    
+    // MewCloud Models
     data class MewResponse(val time: Long?, val data: MewData?)
     data class MewData(val tracks: List<MewTrack>?, val sources: List<MewSource>?)
     data class MewTrack(val file: String?, val label: String?, val kind: String?)
     data class MewSource(val url: String?)
 
     // =========================================================================
-    //  1. MEW CLOUD EXTRACTOR (Xử lý link embed cuối cùng)
+    //  1. MEW CLOUD EXTRACTOR (Giữ nguyên logic đã fix)
     // =========================================================================
     inner class MewCloudExtractor : ExtractorApi() {
         override val name = "MewCloud"
@@ -49,7 +49,7 @@ class AnikotoProvider : MainAPI() {
             callback: (ExtractorLink) -> Unit
         ) {
             try {
-                // CASE 1: plyr.php (Link chứa Base64 M3U8)
+                // CASE 1: Link trực tiếp dạng plyr.php#BASE64#
                 if (url.contains("/player/plyr.php")) {
                     val fragments = url.split("#")
                     if (fragments.size > 1) {
@@ -59,28 +59,22 @@ class AnikotoProvider : MainAPI() {
                             val decodedUrl = String(decodedBytes).trim()
 
                             if (decodedUrl.startsWith("http")) {
-                                // Trả về link M3U8 gốc (AIO)
-                                callback(
-                                    newExtractorLink(
-                                        source = serverName,
-                                        name = serverName,
-                                        url = decodedUrl,
-                                        type = ExtractorLinkType.M3U8
-                                    ) {
-                                        this.referer = url
-                                        this.quality = Qualities.Unknown.value
-                                    }
-                                )
+                                M3u8Helper.generateM3u8(
+                                    sourceName = serverName,
+                                    streamUrl = decodedUrl,
+                                    referer = url
+                                ).forEach(callback)
                                 return
                             }
                         } catch (e: Exception) {}
                     }
                 }
 
-                // CASE 2: API save_data.php (Cho link MegaCloud/VidWish dạng cũ)
+                // CASE 2: API save_data.php
                 val regex = Regex("""/(\d+)/(sub|dub)""")
                 val match = regex.find(url) ?: return
                 val (id, type) = match.destructured
+                
                 val pairId = "$id-$type"
                 val apiUrl = "$mainUrl/save_data.php?id=$pairId"
                 
@@ -95,17 +89,11 @@ class AnikotoProvider : MainAPI() {
 
                 data.sources?.forEach { source ->
                     val m3u8Url = source.url ?: return@forEach
-                    callback(
-                        newExtractorLink(
-                            source = serverName,
-                            name = serverName,
-                            url = m3u8Url,
-                            type = ExtractorLinkType.M3U8
-                        ) {
-                            this.referer = "https://megacloud.bloggy.click/"
-                            this.quality = Qualities.Unknown.value
-                        }
-                    )
+                    M3u8Helper.generateM3u8(
+                        sourceName = serverName,
+                        streamUrl = m3u8Url,
+                        referer = "https://megacloud.bloggy.click/"
+                    ).forEach(callback)
                 }
 
                 data.tracks?.forEach { track ->
@@ -120,33 +108,72 @@ class AnikotoProvider : MainAPI() {
     }
 
     // =========================================================================
-    //  2. MAIN PROVIDER LOGIC
+    //  2. HELPER FUNCTIONS
     // =========================================================================
 
     private fun Element.toSearchResult(): SearchResponse? {
         val href = this.selectFirst("a")?.attr("href") ?: return null
+        // Fix: Một số item có class .d-title, một số chỉ có .name
         val title = this.selectFirst(".name.d-title")?.text() 
-                 ?: this.selectFirst(".name")?.text() ?: "Unknown"
+                 ?: this.selectFirst(".name")?.text() 
+                 ?: this.selectFirst(".d-title")?.text()
+                 ?: "Unknown"
+        
         val posterUrl = this.selectFirst("img")?.attr("src")
+        
         val subText = this.selectFirst(".ep-status.sub span")?.text()
         val dubText = this.selectFirst(".ep-status.dub span")?.text()
+        val epTotal = this.selectFirst(".ep-status.total span")?.text()
+
         return newAnimeSearchResponse(title, fixUrl(href)) {
             this.posterUrl = posterUrl
             if (!subText.isNullOrEmpty()) addQuality("Sub $subText")
             if (!dubText.isNullOrEmpty()) addQuality("Dub $dubText")
+            if (!epTotal.isNullOrEmpty()) addQuality("Total $epTotal")
         }
     }
 
+    // =========================================================================
+    //  3. MAIN PROVIDER LOGIC (Update Main Page & Load)
+    // =========================================================================
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val doc = app.get("$mainUrl/home").document
+        
+        // 1. Slider Hot
         val hotest = doc.select(".swiper-slide.item").mapNotNull { element ->
             val title = element.selectFirst(".title.d-title")?.text() ?: return@mapNotNull null
             val href = element.selectFirst("a.btn.play")?.attr("href") ?: return@mapNotNull null
             val bgImage = element.selectFirst(".image div")?.attr("style")?.substringAfter("url('")?.substringBefore("')")
             newAnimeSearchResponse(title, fixUrl(href)) { this.posterUrl = bgImage }
         }
+
+        // 2. Recently Updated (Mới cập nhật)
         val recent = doc.select("#recent-update .ani.items .item").mapNotNull { it.toSearchResult() }
-        return newHomePageResponse(listOf(HomePageList("Hot", hotest), HomePageList("Recently Updated", recent)), false)
+        
+        // 3. New Release (Mới phát hành)
+        val newRelease = doc.select("section[data-name='new-release'] .item").mapNotNull { it.toSearchResult() }
+
+        // 4. Newly Added (Mới thêm vào web) - NEW
+        val newAdded = doc.select("section[data-name='new-added'] .item").mapNotNull { it.toSearchResult() }
+
+        // 5. Just Completed (Vừa hết bộ) - NEW
+        val completed = doc.select("section[data-name='completed'] .item").mapNotNull { it.toSearchResult() }
+
+        // 6. Top Anime Day (Top ngày) - NEW
+        val topDay = doc.select("#top-anime .tab-content[data-name='day'] .item").mapNotNull { it.toSearchResult() }
+
+        return newHomePageResponse(
+            listOf(
+                HomePageList("Hot", hotest),
+                HomePageList("Recently Updated", recent),
+                HomePageList("New Release", newRelease),
+                HomePageList("Newly Added", newAdded),
+                HomePageList("Just Completed", completed),
+                HomePageList("Top Anime (Day)", topDay)
+            ), 
+            hasNext = false
+        )
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -163,38 +190,46 @@ class AnikotoProvider : MainAPI() {
         val ratingText = doc.selectFirst(".meta .rating")?.text()
         val dataId = doc.selectFirst("#watch-main")?.attr("data-id") ?: throw ErrorLoadingException("No ID")
         
-        // Lấy danh sách tập
+        // --- Lấy Episodes ---
         val ajaxUrl = "$mainUrl/ajax/episode/list/$dataId"
-        val json = app.get(ajaxUrl, headers = ajaxHeaders).parsedSafe<AjaxResponse>() ?: throw ErrorLoadingException("Failed fetch episodes")
+        val json = app.get(ajaxUrl, headers = ajaxHeaders).parsedSafe<AjaxResponse>() ?: throw ErrorLoadingException("Failed to fetch episodes JSON")
         val episodesDoc = Jsoup.parse(json.result)
         
         val episodes = episodesDoc.select("ul.ep-range li a").mapNotNull { element ->
             val epName = element.select("span.d-title").text() ?: "Episode ${element.attr("data-num")}"
             val epNum = element.attr("data-num").toFloatOrNull() ?: 1f
             
-            // Lấy các tham số cần thiết cho bước loadLinks
-            val epIds = element.attr("data-ids") // Cho Server List cũ
-            val malId = element.attr("data-mal") // Cho Mapper API
-            val timestamp = element.attr("data-timestamp") // Cho Mapper API
+            // Lấy data-ids và các params khác để gom
+            val epIds = element.attr("data-ids")
+            val malId = element.attr("data-mal")
+            val timestamp = element.attr("data-timestamp")
             
             if (epIds.isBlank()) return@mapNotNull null
             
-            // Gom tất cả vào URL ảo
+            // Gom ID vào URL ảo
             val epUrl = "$mainUrl/ajax/server/list?servers=$epIds&mal=$malId&time=$timestamp&ep=${element.attr("data-num")}"
             
             newEpisode(epUrl) {
-                this.name = epName
+                this.name = if(epName.contains("Episode")) epName else "Ep ${element.attr("data-num")} - $epName"
                 this.episode = epNum.toInt()
             }
         }
+
+        // --- Lấy Recommendations (Gợi ý) - NEW ---
+        // Web này thường để recommendations ở sidebar (.w-side-section) hoặc dưới player (#recent-update)
+        val recommendations = doc.select(".w-side-section .item, #recent-update .item").mapNotNull { 
+            it.toSearchResult() 
+        }
+
         return newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
             this.posterUrl = poster
             this.plot = description
             if (ratingText != null) this.score = Score.from10(ratingText.toDoubleOrNull() ?: 0.0)
+            this.recommendations = recommendations
         }
     }
 
-    // --- HÀM QUAN TRỌNG NHẤT ---
+    // --- LOAD LINKS (Giữ nguyên logic gom ID và giải mã) ---
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -206,11 +241,10 @@ class AnikotoProvider : MainAPI() {
         val timestamp = urlObj.getQueryParameter("time")
         val epNum = urlObj.getQueryParameter("ep")
         
-        // Danh sách chứa tất cả các Task (Server ID) cần giải mã
-        val linkTasks = mutableListOf<Triple<String, String, String>>() // ID, Name, Type
+        val linkTasks = mutableListOf<Triple<String, String, String>>() 
 
         coroutineScope {
-            // 1. Lấy ID từ Anikoto Server List (Nguồn 1)
+            // 1. Get ID from Server List
             val taskAnikoto = async {
                 try {
                     val json = app.get(data, headers = ajaxHeaders).parsedSafe<AjaxResponse>()
@@ -228,7 +262,7 @@ class AnikotoProvider : MainAPI() {
                 } catch (e: Exception) { e.printStackTrace() }
             }
 
-            // 2. Lấy ID từ Mapper API (Nguồn 2)
+            // 2. Get ID from Mapper API
             val taskMapper = async {
                 if (!malId.isNullOrBlank() && !timestamp.isNullOrBlank()) {
                     try {
@@ -238,23 +272,16 @@ class AnikotoProvider : MainAPI() {
                             "Referer" to "$mainUrl/",
                             "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
                         )
-                        
-                        // Parse JSON động (vì key thay đổi: Kiwi-Stream-360p, etc.)
                         val responseText = app.get(mapperUrl, headers = mapperHeaders).text
                         val mapperJson = ObjectMapper().readTree(responseText)
-                        
-                        // Duyệt qua các Key (VD: Kiwi-Stream-360p)
                         val fields = mapperJson.fieldNames()
                         while (fields.hasNext()) {
-                            val serverKey = fields.next() // VD: Kiwi-Stream-360p
+                            val serverKey = fields.next()
                             val serverNode = mapperJson.get(serverKey)
-                            
-                            // Check Sub
                             if (serverNode.has("sub")) {
                                 val id = serverNode.get("sub").get("url").asText()
                                 linkTasks.add(Triple(id, "$serverKey", "sub"))
                             }
-                            // Check Dub
                             if (serverNode.has("dub")) {
                                 val id = serverNode.get("dub").get("url").asText()
                                 linkTasks.add(Triple(id, "$serverKey", "dub"))
@@ -264,14 +291,12 @@ class AnikotoProvider : MainAPI() {
                 }
             }
 
-            // Chờ lấy đủ ID từ 2 nguồn
             awaitAll(taskAnikoto, taskMapper)
 
-            // 3. GIẢI MÃ ID -> URL EMBED (Chạy song song tất cả ID thu được)
+            // 3. Resolve IDs
             linkTasks.map { (linkId, serverName, type) ->
                 async {
                     try {
-                        // Gọi chung 1 API giải mã cho tất cả các ID
                         val resolveUrl = "$mainUrl/ajax/server?get=$linkId"
                         val responseText = app.get(resolveUrl, headers = ajaxHeaders).text
                         
@@ -287,11 +312,9 @@ class AnikotoProvider : MainAPI() {
                                     embedUrl.contains("mewcdn.online") ||
                                     embedUrl.contains("/player/plyr.php")) {
                                     
-                                    // Dùng Extractor MewCloud (Xử lý plyr.php + save_data.php)
                                     MewCloudExtractor().getVideos(embedUrl, safeServerName, subtitleCallback, callback)
                                     
                                 } else {
-                                    // Dùng Extractor mặc định
                                     loadExtractor(embedUrl, safeServerName, subtitleCallback, callback)
                                 }
                             }
