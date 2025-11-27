@@ -362,12 +362,3 @@ class AnikotoProvider : MainAPI() {
         return true
     }
 }
-```
-
-### Tại sao dùng `newSubtitleFile` là tốt nhất?
-Hàm này (`newSubtitleFile(lang, url) { ... }`) cho phép bạn:
-1.  Truyền `label` và `url` một cách rõ ràng.
-2.  Mở một lambda block (scope của object `SubtitleFile` vừa tạo).
-3.  Bên trong lambda đó, bạn có thể gán `this.headers = headers` một cách hợp lệ mà không cần gọi constructor trực tiếp hay dùng `copy`. Đây là cách "Kotlin idiomatic" mà CloudStream hướng tới.
-
-Bây giờ bạn có thể build lại mà không gặp lỗi `deprecated` hay `private access`.
