@@ -42,7 +42,7 @@ class AnikotoProvider : MainAPI() {
     data class MewSource(val url: String?)
 
     // =========================================================================
-    //  1. MEW CLOUD EXTRACTOR
+    //  1. MEW CLOUD EXTRACTOR (UPDATED)
     // =========================================================================
     inner class MewCloudExtractor : ExtractorApi() {
         override val name = "MewCloud"
@@ -56,7 +56,7 @@ class AnikotoProvider : MainAPI() {
             callback: (ExtractorLink) -> Unit
         ) {
             try {
-                // CASE 1: Link trực tiếp dạng plyr.php#BASE64#
+                // CASE 1: Link trực tiếp dạng plyr.php#BASE64# (Giữ nguyên logic cũ)
                 if (url.contains("/player/plyr.php")) {
                     val fragments = url.split("#")
                     if (fragments.size > 1) {
@@ -83,7 +83,7 @@ class AnikotoProvider : MainAPI() {
                     }
                 }
 
-                // CASE 2: API save_data.php (Backup)
+                // CASE 2: API save_data.php (Cập nhật theo CURL)
                 val regex = Regex("""/(\d+)/(sub|dub)""")
                 val match = regex.find(url) ?: return
                 val (id, type) = match.destructured
@@ -91,7 +91,10 @@ class AnikotoProvider : MainAPI() {
                 val pairId = "$id-$type"
                 val apiUrl = "$mainUrl/save_data.php?id=$pairId"
                 
+                // [UPDATE] Headers chuẩn từ CURL
                 val headers = mapOf(
+                    "Authority" to "mewcdn.online",
+                    "Accept" to "application/json, text/javascript, */*; q=0.01",
                     "Origin" to "https://megacloud.bloggy.click",
                     "Referer" to "https://megacloud.bloggy.click/",
                     "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
@@ -100,6 +103,7 @@ class AnikotoProvider : MainAPI() {
                 val response = app.get(apiUrl, headers = headers).parsedSafe<MewResponse>()
                 val data = response?.data ?: return
 
+                // 1. Xử lý Video Source
                 data.sources?.forEach { source ->
                     val m3u8Url = source.url ?: return@forEach
                     callback(
@@ -109,19 +113,23 @@ class AnikotoProvider : MainAPI() {
                             url = m3u8Url,
                             type = ExtractorLinkType.M3U8
                         ) {
-                            this.referer = "https://megacloud.bloggy.click/"
+                            // M3U8 cũng cần referer này
+                            this.referer = "https://megacloud.bloggy.click/" 
                             this.quality = Qualities.Unknown.value
                         }
                     )
                 }
 
-                // [FIX] Sửa lỗi constructor SubtitleFile deprecated
+                // 2. Xử lý Subtitle (Cập nhật quan trọng)
                 data.tracks?.forEach { track ->
                     val trackUrl = track.file
-                    if (trackUrl != null && track.kind == "captions") {
-                        subtitleCallback(
-                            newSubtitleFile(trackUrl, track.label ?: "English")
-                        )
+                    val label = track.label ?: "English"
+                    
+                    if (!trackUrl.isNullOrBlank()) {
+                        // [FIX] Thêm headers vào SubtitleFile để Player tải được file .vtt
+                        // Nếu không có headers này, request tải sub sẽ bị 403 Forbidden
+                        val subFile = newSubtitleFile(trackUrl, label).copy(headers = headers)
+                        subtitleCallback(subFile)
                     }
                 }
             } catch (e: Exception) {
