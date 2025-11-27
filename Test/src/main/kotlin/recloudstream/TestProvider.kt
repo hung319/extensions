@@ -9,6 +9,14 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import android.util.Base64
+import com.fasterxml.jackson.databind.ObjectMapper
+
+// [ADD] Imports cho Toast
+import com.lagradost.cloudstream3.CommonActivity
+import com.lagradost.cloudstream3.CommonActivity.showToast
+import android.widget.Toast
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 class AnikotoProvider : MainAPI() {
     override var mainUrl = "https://anikoto.tv"
@@ -34,7 +42,7 @@ class AnikotoProvider : MainAPI() {
     data class MewSource(val url: String?)
 
     // =========================================================================
-    //  1. MEW CLOUD EXTRACTOR (AIO LINK)
+    //  1. MEW CLOUD EXTRACTOR
     // =========================================================================
     inner class MewCloudExtractor : ExtractorApi() {
         override val name = "MewCloud"
@@ -75,7 +83,7 @@ class AnikotoProvider : MainAPI() {
                     }
                 }
 
-                // CASE 2: API save_data.php
+                // CASE 2: API save_data.php (Backup)
                 val regex = Regex("""/(\d+)/(sub|dub)""")
                 val match = regex.find(url) ?: return
                 val (id, type) = match.destructured
@@ -107,9 +115,13 @@ class AnikotoProvider : MainAPI() {
                     )
                 }
 
+                // [FIX] Sửa lỗi constructor SubtitleFile deprecated
                 data.tracks?.forEach { track ->
-                    if (track.file != null && track.kind == "captions") {
-                        subtitleCallback(SubtitleFile(track.label ?: "English", track.file))
+                    val trackUrl = track.file
+                    if (trackUrl != null && track.kind == "captions") {
+                        subtitleCallback(
+                            newSubtitleFile(trackUrl, track.label ?: "English")
+                        )
                     }
                 }
             } catch (e: Exception) {
@@ -119,7 +131,7 @@ class AnikotoProvider : MainAPI() {
     }
 
     // =========================================================================
-    //  2. HELPER FUNCTIONS
+    //  2. MAIN PROVIDER LOGIC
     // =========================================================================
 
     private fun Element.toSearchResult(): SearchResponse? {
@@ -143,11 +155,16 @@ class AnikotoProvider : MainAPI() {
         }
     }
 
-    // =========================================================================
-    //  3. MAIN PROVIDER LOGIC
-    // =========================================================================
-
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        // [ADD] Toast Logic: Chỉ hiện khi page == 1
+        if (page == 1) {
+            withContext(Dispatchers.Main) {
+                CommonActivity.activity?.let { activity ->
+                    showToast(activity, "Free Repo From H4RS", Toast.LENGTH_LONG)
+                }
+            }
+        }
+
         val doc = app.get("$mainUrl/home").document
         
         val hotest = doc.select(".swiper-slide.item").mapNotNull { element ->
@@ -182,6 +199,7 @@ class AnikotoProvider : MainAPI() {
         return doc.select("div.ani.items > div.item").mapNotNull { it.toSearchResult() }
     }
 
+    // [UPDATE] Hàm load với logic Tên gốc + Sub/Dub tags
     override suspend fun load(url: String): LoadResponse {
         val doc = app.get(url).document
         val title = doc.selectFirst("h1.title.d-title")?.text() ?: "Unknown"
@@ -190,24 +208,39 @@ class AnikotoProvider : MainAPI() {
         val ratingText = doc.selectFirst(".meta .rating")?.text()
         val dataId = doc.selectFirst("#watch-main")?.attr("data-id") ?: throw ErrorLoadingException("No ID")
         
+        // 1. Kiểm tra Sub/Dub tag từ trang chi tiết
+        val hasSub = doc.select(".meta .sub").isNotEmpty()
+        val hasDub = doc.select(".meta .dub").isNotEmpty()
+        val typeTag = when {
+            hasSub && hasDub -> "[Sub/Dub]"
+            hasSub -> "[Sub]"
+            hasDub -> "[Dub]"
+            else -> ""
+        }
+
         val ajaxUrl = "$mainUrl/ajax/episode/list/$dataId"
         val json = app.get(ajaxUrl, headers = ajaxHeaders).parsedSafe<AjaxResponse>() ?: throw ErrorLoadingException("Failed to fetch episodes JSON")
         val episodesDoc = Jsoup.parse(json.result)
         
         val episodes = episodesDoc.select("ul.ep-range li a").mapNotNull { element ->
-            // FIX: Lấy tên tập phim gốc từ web
-            val epName = element.select("span.d-title").text() ?: "Episode ${element.attr("data-num")}"
-            val epNum = element.attr("data-num").toFloatOrNull() ?: 1f
+            val epNumStr = element.attr("data-num")
+            val epNum = epNumStr.toFloatOrNull() ?: 1f
             
+            // 2. Lấy tên gốc, fallback về số tập, nối thêm tag
+            val rawName = element.select("span.d-title").text()
+            val epName = if (rawName.isNotBlank()) rawName else "Episode $epNumStr"
+            val finalName = "$epName $typeTag".trim()
+
             val epIds = element.attr("data-ids")
-            if (epIds.isBlank()) return@mapNotNull null
-            
             val malId = element.attr("data-mal")
             val timestamp = element.attr("data-timestamp")
-            val epUrl = "$mainUrl/ajax/server/list?servers=$epIds&mal=$malId&time=$timestamp&ep=${element.attr("data-num")}"
+            
+            if (epIds.isBlank()) return@mapNotNull null
+            
+            val epUrl = "$mainUrl/ajax/server/list?servers=$epIds&mal=$malId&time=$timestamp&ep=$epNumStr"
             
             newEpisode(epUrl) {
-                this.name = epName // Giữ nguyên tên gốc
+                this.name = finalName
                 this.episode = epNum.toInt()
             }
         }
@@ -230,19 +263,63 @@ class AnikotoProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val json = app.get(data, headers = ajaxHeaders).parsedSafe<AjaxResponse>() ?: return false
-        val doc = Jsoup.parse(json.result)
-
-        val tasks = doc.select(".servers .type li").mapNotNull { server ->
-            val linkId = server.attr("data-link-id")
-            if (linkId.isBlank()) return@mapNotNull null
-            val serverName = server.text()
-            val type = server.parent()?.parent()?.attr("data-type") ?: "sub"
-            Triple(linkId, serverName, type)
-        }
+        val urlObj = android.net.Uri.parse(data)
+        val malId = urlObj.getQueryParameter("mal")
+        val timestamp = urlObj.getQueryParameter("time")
+        val epNum = urlObj.getQueryParameter("ep")
+        
+        val linkTasks = mutableListOf<Triple<String, String, String>>() 
 
         coroutineScope {
-            tasks.map { (linkId, serverName, type) ->
+            val taskAnikoto = async {
+                try {
+                    val json = app.get(data, headers = ajaxHeaders).parsedSafe<AjaxResponse>()
+                    if (json != null) {
+                        val doc = Jsoup.parse(json.result)
+                        doc.select(".servers .type li").forEach { server ->
+                            val linkId = server.attr("data-link-id")
+                            val serverName = server.text()
+                            val type = server.parent()?.parent()?.attr("data-type") ?: "sub"
+                            if (linkId.isNotBlank()) {
+                                linkTasks.add(Triple(linkId, serverName, type))
+                            }
+                        }
+                    }
+                } catch (e: Exception) { e.printStackTrace() }
+            }
+
+            val taskMapper = async {
+                if (!malId.isNullOrBlank() && !timestamp.isNullOrBlank()) {
+                    try {
+                        val mapperUrl = "https://mapper.mewcdn.online/api/mal/$malId/$epNum/$timestamp"
+                        val mapperHeaders = mapOf(
+                            "Origin" to mainUrl,
+                            "Referer" to "$mainUrl/",
+                            "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
+                        )
+                        val responseText = app.get(mapperUrl, headers = mapperHeaders).text
+                        val mapperJson = ObjectMapper().readTree(responseText)
+                        val fields = mapperJson.fieldNames()
+                        while (fields.hasNext()) {
+                            val serverKey = fields.next()
+                            val serverNode = mapperJson.get(serverKey)
+                            
+                            if (serverNode.has("sub")) {
+                                val id = serverNode.get("sub").get("url").asText()
+                                linkTasks.add(Triple(id, "$serverKey", "sub"))
+                            }
+                            if (serverNode.has("dub")) {
+                                val id = serverNode.get("dub").get("url").asText()
+                                linkTasks.add(Triple(id, "$serverKey", "dub"))
+                            }
+                        }
+                    } catch (e: Exception) { e.printStackTrace() }
+                }
+            }
+
+            awaitAll(taskAnikoto, taskMapper)
+
+            linkTasks.map { (linkId, serverName, type) ->
                 async {
                     try {
                         val resolveUrl = "$mainUrl/ajax/server?get=$linkId"
