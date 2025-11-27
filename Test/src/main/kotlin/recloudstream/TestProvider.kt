@@ -22,16 +22,13 @@ class AnikotoProvider : MainAPI() {
         "Referer" to "$mainUrl/"
     )
 
+    // JSON Models
     data class AjaxResponse(val status: Int, val result: String)
     data class ServerResponse(val status: Int, val result: ServerResult?)
     data class ServerResult(val url: String?)
-    data class MewResponse(val time: Long?, val data: MewData?)
-    data class MewData(val tracks: List<MewTrack>?, val sources: List<MewSource>?)
-    data class MewTrack(val file: String?, val label: String?, val kind: String?)
-    data class MewSource(val url: String?)
 
     // =========================================================================
-    //  1. MEW CLOUD EXTRACTOR (Kèm Log Debug)
+    //  1. MEW CLOUD EXTRACTOR (Chỉ xử lý plyr.php)
     // =========================================================================
     inner class MewCloudExtractor : ExtractorApi() {
         override val name = "MewCloud"
@@ -42,30 +39,20 @@ class AnikotoProvider : MainAPI() {
             url: String,
             serverName: String,
             subtitleCallback: (SubtitleFile) -> Unit,
-            callback: (ExtractorLink) -> Unit,
-            logs: StringBuffer // Thêm tham số để ghi log
+            callback: (ExtractorLink) -> Unit
         ) {
-            logs.append("\n--- MewCloud: $serverName ---\nINPUT: $url\n")
-            
             try {
-                // --- CASE 1: Link trực tiếp dạng plyr.php ---
+                // Case: https://mewcdn.online/player/plyr.php#BASE64#
                 if (url.contains("/player/plyr.php")) {
-                    logs.append(">> Detect: PLYR.PHP Direct Link\n")
                     val fragments = url.split("#")
-                    logs.append(">> Split Size: ${fragments.size}\n")
-                    
+                    // Chuỗi Base64 nằm giữa 2 dấu # (index 1)
                     if (fragments.size > 1) {
                         val base64String = fragments[1]
-                        logs.append(">> Base64 Raw: $base64String\n")
-                        
                         try {
-                            // Thử decode
                             val decodedBytes = Base64.decode(base64String, Base64.DEFAULT)
-                            val decodedUrl = String(decodedBytes)
-                            logs.append(">> Decoded URL: $decodedUrl\n")
+                            val decodedUrl = String(decodedBytes).trim()
 
                             if (decodedUrl.startsWith("http")) {
-                                logs.append(">> ✅ URL Valid! Returning ExtractorLink...\n")
                                 callback(
                                     newExtractorLink(
                                         source = serverName,
@@ -73,71 +60,20 @@ class AnikotoProvider : MainAPI() {
                                         url = decodedUrl,
                                         type = ExtractorLinkType.M3U8
                                     ) {
-                                        this.referer = url
+                                        this.referer = url // Referer là link plyr gốc
                                         this.quality = Qualities.Unknown.value
                                     }
                                 )
-                                return
-                            } else {
-                                logs.append(">> ⚠️ Decoded URL does not start with http\n")
                             }
                         } catch (e: Exception) {
-                            logs.append(">> ❌ Base64 Decode Error: ${e.message}\n")
+                           e.printStackTrace()
                         }
-                    } else {
-                        logs.append(">> ⚠️ URL does not contain hash fragment (#)\n")
                     }
-                    // Không return ở đây để lỡ nó fail thì chạy thử logic dưới (dù ít khả năng)
-                }
-
-                // --- CASE 2: API save_data.php ---
-                logs.append(">> Fallback to save_data.php logic...\n")
-                val regex = Regex("""/(\d+)/(sub|dub)""")
-                val match = regex.find(url)
-                
-                if (match == null) {
-                    logs.append(">> ❌ Regex ID not found in URL\n")
-                    return
-                }
-                
-                val (id, type) = match.destructured
-                val pairId = "$id-$type"
-                val apiUrl = "$mainUrl/save_data.php?id=$pairId"
-                logs.append(">> API URL: $apiUrl\n")
-                
-                val headers = mapOf(
-                    "Origin" to "https://megacloud.bloggy.click",
-                    "Referer" to "https://megacloud.bloggy.click/",
-                    "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
-                )
-
-                val textRes = app.get(apiUrl, headers = headers).text
-                logs.append(">> API Response: $textRes\n") // Log nội dung trả về
-
-                val response = AppUtils.parseJson<MewResponse>(textRes)
-                val data = response.data ?: run {
-                    logs.append(">> ⚠️ Data null in response\n")
-                    return
-                }
-
-                data.sources?.forEach { source ->
-                    val m3u8Url = source.url ?: return@forEach
-                    logs.append(">> ✅ Found Source: $m3u8Url\n")
-                    callback(
-                        newExtractorLink(
-                            source = serverName,
-                            name = serverName,
-                            url = m3u8Url,
-                            type = ExtractorLinkType.M3U8
-                        ) {
-                            this.referer = "https://megacloud.bloggy.click/"
-                            this.quality = Qualities.Unknown.value
-                        }
-                    )
-                }
-                
+                } 
+                // Các trường hợp khác (megacloud.bloggy.click...)
+                // Nếu server trả về link embed cũ thì dùng loadExtractor mặc định
+                // hoặc bổ sung logic save_data.php ở đây nếu cần thiết sau này.
             } catch (e: Exception) {
-                logs.append(">> ☠️ Exception in getVideos: ${e.message}\n")
                 e.printStackTrace()
             }
         }
@@ -146,52 +82,85 @@ class AnikotoProvider : MainAPI() {
     // =========================================================================
     //  2. ANIKOTO LOGIC
     // =========================================================================
-    
-    // (Copy lại các hàm toSearchResult, getMainPage, search, load y hệt code cũ)
+
     private fun Element.toSearchResult(): SearchResponse? {
         val href = this.selectFirst("a")?.attr("href") ?: return null
-        val title = this.selectFirst(".name.d-title")?.text() ?: this.selectFirst(".name")?.text() ?: "Unknown"
+        val title = this.selectFirst(".name.d-title")?.text() 
+                 ?: this.selectFirst(".name")?.text() ?: "Unknown"
         val posterUrl = this.selectFirst("img")?.attr("src")
-        return newAnimeSearchResponse(title, fixUrl(href)) { this.posterUrl = posterUrl }
+        val subText = this.selectFirst(".ep-status.sub span")?.text()
+        val dubText = this.selectFirst(".ep-status.dub span")?.text()
+        return newAnimeSearchResponse(title, fixUrl(href)) {
+            this.posterUrl = posterUrl
+            if (!subText.isNullOrEmpty()) addQuality("Sub $subText")
+            if (!dubText.isNullOrEmpty()) addQuality("Dub $dubText")
+        }
     }
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val doc = app.get("$mainUrl/home").document
+        val hotest = doc.select(".swiper-slide.item").mapNotNull { element ->
+            val title = element.selectFirst(".title.d-title")?.text() ?: return@mapNotNull null
+            val href = element.selectFirst("a.btn.play")?.attr("href") ?: return@mapNotNull null
+            val bgImage = element.selectFirst(".image div")?.attr("style")?.substringAfter("url('")?.substringBefore("')")
+            newAnimeSearchResponse(title, fixUrl(href)) { this.posterUrl = bgImage }
+        }
         val recent = doc.select("#recent-update .ani.items .item").mapNotNull { it.toSearchResult() }
-        return newHomePageResponse(listOf(HomePageList("Recent", recent)), false)
+        val newRelease = doc.select("section[data-name='new-release'] .item").mapNotNull { 
+            val title = it.selectFirst(".name")?.text() ?: return@mapNotNull null
+            val href = it.attr("href")
+            newAnimeSearchResponse(title, fixUrl(href)) { this.posterUrl = it.selectFirst("img")?.attr("src") }
+        }
+        return newHomePageResponse(listOf(HomePageList("Hot", hotest), HomePageList("Recently Updated", recent), HomePageList("New Release", newRelease)), hasNext = false)
     }
+
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/filter?keyword=$query"
         val doc = app.get(url).document
         return doc.select("div.ani.items > div.item").mapNotNull { it.toSearchResult() }
     }
+
     override suspend fun load(url: String): LoadResponse {
         val doc = app.get(url).document
         val title = doc.selectFirst("h1.title.d-title")?.text() ?: "Unknown"
+        val description = doc.selectFirst(".synopsis .content")?.text()
+        val poster = doc.selectFirst(".binfo .poster img")?.attr("src")
+        val ratingText = doc.selectFirst(".meta .rating")?.text()
         val dataId = doc.selectFirst("#watch-main")?.attr("data-id") ?: throw ErrorLoadingException("No ID")
+        
         val ajaxUrl = "$mainUrl/ajax/episode/list/$dataId"
-        val json = app.get(ajaxUrl, headers = ajaxHeaders).parsedSafe<AjaxResponse>()
-        val epDoc = Jsoup.parse(json?.result ?: "")
-        val episodes = epDoc.select("ul.ep-range li a").mapNotNull { 
-            val epIds = it.attr("data-ids")
-            if(epIds.isBlank()) return@mapNotNull null
-            newEpisode("$mainUrl/ajax/server/list?servers=$epIds") {
-                this.name = "Ep ${it.attr("data-num")}"
-                this.episode = it.attr("data-num").toIntOrNull()
+        val json = app.get(ajaxUrl, headers = ajaxHeaders).parsedSafe<AjaxResponse>() ?: throw ErrorLoadingException("Failed to fetch episodes JSON")
+        val episodesDoc = Jsoup.parse(json.result)
+        
+        val episodes = episodesDoc.select("ul.ep-range li a").mapNotNull { element ->
+            val epName = element.select("span.d-title").text() ?: "Episode ${element.attr("data-num")}"
+            val epNum = element.attr("data-num").toFloatOrNull() ?: 1f
+            val epIds = element.attr("data-ids")
+            if (epIds.isBlank()) return@mapNotNull null
+            
+            val epUrl = "$mainUrl/ajax/server/list?servers=$epIds"
+            val isSub = element.attr("data-sub") == "1"
+            val isDub = element.attr("data-dub") == "1"
+            val typeInfo = if (isSub && isDub) "[Sub/Dub]" else if (isDub) "[Dub]" else ""
+            
+            newEpisode(epUrl) {
+                this.name = if(typeInfo.isNotEmpty()) "$epName $typeInfo" else epName
+                this.episode = epNum.toInt()
             }
         }
-        return newTvSeriesLoadResponse(title, url, TvType.Anime, episodes)
+        return newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
+            this.posterUrl = poster
+            this.plot = description
+            if (ratingText != null) this.score = Score.from10(ratingText.toDoubleOrNull() ?: 0.0)
+        }
     }
 
-    // --- LOAD LINKS VỚI LOGGING ---
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val logs = StringBuffer() // Thread-safe string builder
-        logs.append("=== START LOAD LINKS ===\n")
-
         val json = app.get(data, headers = ajaxHeaders).parsedSafe<AjaxResponse>() ?: return false
         val doc = Jsoup.parse(json.result)
 
@@ -217,30 +186,23 @@ class AnikotoProvider : MainAPI() {
                             if (!embedUrl.isNullOrBlank()) {
                                 val safeServerName = "$serverName ($type)"
                                 
-                                if (embedUrl.contains("megacloud.bloggy.click") || 
-                                    embedUrl.contains("vidwish.live") ||
-                                    embedUrl.contains("mewcdn.online") ||
-                                    embedUrl.contains("/player/plyr.php")) {
-                                    
-                                    // Gọi Extractor và truyền logs vào để ghi lại
-                                    MewCloudExtractor().getVideos(embedUrl, safeServerName, subtitleCallback, callback, logs)
-                                    
-                                } else {
-                                    logs.append("Normal Extractor: $embedUrl\n")
+                                // Chỉ bắt các link có chứa plyr.php (Link chứa Base64)
+                                if (embedUrl.contains("/player/plyr.php")) {
+                                    MewCloudExtractor().getVideos(embedUrl, safeServerName, subtitleCallback, callback)
+                                } 
+                                // Các link khác (Vidstream, MegaCloud cũ)
+                                else {
                                     loadExtractor(embedUrl, safeServerName, subtitleCallback, callback)
                                 }
                             }
                         }
                     } catch (e: Exception) {
-                         logs.append("Error in task: ${e.message}\n")
+                        e.printStackTrace()
                     }
                 }
             }.awaitAll()
         }
-        
-        // --- THROW LOG RA MÀN HÌNH ĐỂ DEBUG ---
-        throw ErrorLoadingException(logs.toString())
-        
-        // return true // <-- Bỏ comment dòng này khi chạy thật
+
+        return true
     }
 }
