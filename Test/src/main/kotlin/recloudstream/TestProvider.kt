@@ -7,6 +7,8 @@ import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.LoadResponse.Companion.addDuration
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.CommonActivity
+// Import Jackson để thay thế AppUtils.toJson
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
@@ -39,6 +41,9 @@ class AnimeVietsubProvider : MainAPI() {
     override val hasMainPage = true
 
     // ================== CẤU HÌNH GIẢI MÃ & BIẾN CỤC BỘ ==================
+    // Khởi tạo Mapper của Jackson để xử lý JSON thủ công
+    private val mapper = jacksonObjectMapper()
+    
     private val m3u8Contents = mutableMapOf<String, String>()
     private val keyStringB64 = "ZG1fdGhhbmdfc3VjX3ZhdF9nZXRfbGlua19hbl9kYnQ="
     private val aesKeyBytes: ByteArray by lazy {
@@ -116,7 +121,6 @@ class AnimeVietsubProvider : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Fix: Thêm <Unit> để compiler hiểu kiểu trả về và gọi CommonActivity.showToast
         withContext<Unit>(Dispatchers.Main) {
             CommonActivity.activity?.let { activity ->
                 CommonActivity.showToast(activity, "Free Repo From H4RS", Toast.LENGTH_LONG)
@@ -388,10 +392,9 @@ class AnimeVietsubProvider : MainAPI() {
                 val isMovie = finalTvType == TvType.Movie || finalTvType == TvType.AnimeMovie || episodes.size <= 1
 
                 if (isMovie) {
-                    // Tạo data cho phim lẻ dùng ServerInfo
-                    // Fix: Gọi tường minh AppUtils.toJson
+                    // FIX: Sử dụng mapper.writeValueAsString thay vì AppUtils.toJson
                     val data = episodes.firstOrNull()?.data
-                        ?: AppUtils.toJson(listOf(
+                        ?: mapper.writeValueAsString(listOf(
                                 ServerInfo(
                                     hash = "", 
                                     id = this@toLoadResponse.getDataIdFallback(infoUrl) ?: "",
@@ -558,8 +561,8 @@ class AnimeVietsubProvider : MainAPI() {
 
         // Chuyển đổi Map thành List<Episode> của Cloudstream
         return episodeMap.map { (epName, serverList) ->
-            // Fix: Gọi tường minh AppUtils.toJson
-            newEpisode(AppUtils.toJson(serverList)) {
+            // FIX: Dùng mapper.writeValueAsString thay vì AppUtils.toJson
+            newEpisode(mapper.writeValueAsString(serverList)) {
                 this.name = epName
             }
         }
