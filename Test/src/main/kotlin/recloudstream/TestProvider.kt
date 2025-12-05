@@ -400,8 +400,8 @@ class AnimeVietsubProvider : MainAPI() {
                     val data = episodes.firstOrNull()?.data
                         ?: run {
                             val id = this@toLoadResponse.getDataIdFallback(infoUrl) ?: ""
-                            // Fallback tạo server mặc định
-                            AppUtils.toJson(listOf(ServerData("Default", "", id)))
+                            // Fallback tạo server mặc định, SỬA LỖI Ở ĐÂY: Dùng extension function .toJson()
+                            listOf(ServerData("Default", "", id)).toJson()
                         }
 
                     val movieEpisode = newEpisode(data) {
@@ -559,7 +559,8 @@ class AnimeVietsubProvider : MainAPI() {
         // Chuyển đổi Map thành List<Episode> của CloudStream
         return episodeMap.map { (epName, serverList) ->
             // Serialize danh sách server data thành JSON
-            val dataJson = AppUtils.toJson(serverList)
+            // SỬA LỖI Ở ĐÂY: Dùng extension function .toJson() thay vì AppUtils.toJson(obj)
+            val dataJson = serverList.toJson()
             newEpisode(dataJson) {
                 this.name = epName
                 this.episode = epName.filter { it.isDigit() }.toIntOrNull()
