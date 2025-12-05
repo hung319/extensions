@@ -6,6 +6,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.LoadResponse.Companion.addDuration
 import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.CommonActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
@@ -115,9 +116,10 @@ class AnimeVietsubProvider : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        withContext(Dispatchers.Main) {
+        // Fix: Thêm <Unit> để compiler hiểu kiểu trả về và gọi CommonActivity.showToast
+        withContext<Unit>(Dispatchers.Main) {
             CommonActivity.activity?.let { activity ->
-                showToast(activity, "Free Repo From H4RS", Toast.LENGTH_LONG)
+                CommonActivity.showToast(activity, "Free Repo From H4RS", Toast.LENGTH_LONG)
             }
         }
         val baseUrl = getBaseUrl()
@@ -387,6 +389,7 @@ class AnimeVietsubProvider : MainAPI() {
 
                 if (isMovie) {
                     // Tạo data cho phim lẻ dùng ServerInfo
+                    // Fix: Gọi tường minh AppUtils.toJson
                     val data = episodes.firstOrNull()?.data
                         ?: AppUtils.toJson(listOf(
                                 ServerInfo(
@@ -555,7 +558,7 @@ class AnimeVietsubProvider : MainAPI() {
 
         // Chuyển đổi Map thành List<Episode> của Cloudstream
         return episodeMap.map { (epName, serverList) ->
-            // Serialize danh sách server thành chuỗi JSON để lưu vào data của Episode
+            // Fix: Gọi tường minh AppUtils.toJson
             newEpisode(AppUtils.toJson(serverList)) {
                 this.name = epName
             }
