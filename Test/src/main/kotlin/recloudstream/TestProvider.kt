@@ -28,9 +28,11 @@ import com.lagradost.cloudstream3.CommonActivity.showToast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import android.widget.Toast
-// Thêm imports cho xử lý song song
+// Imports cho xử lý song song và thread-safe
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 class AnimeVietsubProvider : MainAPI() {
 
@@ -46,7 +48,9 @@ class AnimeVietsubProvider : MainAPI() {
 
     // ================== LOGIC GIẢI MÃ & BIẾN TOÀN CỤC ==================
     
-    private val m3u8Contents = mutableMapOf<String, String>()
+    // SỬA LỖI: Dùng ConcurrentHashMap để tránh lỗi khi xử lý song song
+    private val m3u8Contents = ConcurrentHashMap<String, String>()
+    
     private val keyStringB64 = "ZG1fdGhhbmdfc3VjX3ZhdF9nZXRfbGlua19hbl9kYnQ="
     private val aesKeyBytes: ByteArray by lazy {
         val decodedKeyBytes = Base64.getDecoder().decode(keyStringB64)
@@ -88,8 +92,10 @@ class AnimeVietsubProvider : MainAPI() {
             val request = chain.request()
             val url = request.url.toString()
             if (url.contains("hdev.io/animevietsub")) {
+                // Lấy key từ URL (đã được fix là UUID nên không lo ký tự đặc biệt)
                 val key = url.substringAfterLast("/")
                 val m3u8Content = m3u8Contents[key]
+                
                 if (m3u8Content != null) {
                     val responseBody =
                         m3u8Content.toResponseBody("application/vnd.apple.mpegurl".toMediaTypeOrNull())
@@ -304,7 +310,7 @@ class AnimeVietsubProvider : MainAPI() {
             val actors = this.extractActors(baseUrl)
             val recommendations = this.extractRecommendations(provider, baseUrl)
             
-            // [UPDATE] Parse episodes với logic gộp nguồn
+            // Xử lý episodes với logic gộp nguồn
             val episodes = watchPageDoc?.parseEpisodes(baseUrl) ?: emptyList()
             
             val status = this.getShowStatus(episodes.size)
@@ -335,7 +341,6 @@ class AnimeVietsubProvider : MainAPI() {
                 val isMovie = finalTvType == TvType.Movie || finalTvType == TvType.AnimeMovie || episodes.size <= 1
 
                 if (isMovie) {
-                    // [UPDATE] Fallback cho Movie sử dụng cấu trúc EpisodeData mới
                     val episodeDataStr = if (episodes.isNotEmpty()) {
                         episodes.first().data
                     } else {
@@ -361,12 +366,11 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
 
-    // [UPDATE] Logic gộp các nguồn (server) cho cùng 1 tập phim
+    // Logic gộp các nguồn (server) cho cùng 1 tập phim
     private fun Document.parseEpisodes(baseUrl: String): List<Episode> {
         val episodeMap = mutableMapOf<String, MutableList<ServerInfo>>()
-        val orderedNames = mutableListOf<String>() // Giữ thứ tự tập
+        val orderedNames = mutableListOf<String>()
 
-        // Duyệt qua từng nhóm server
         this.select("div.server.server-group").forEach { serverGroup ->
             val serverName = serverGroup.selectFirst("h3.server-name")?.text()?.trim() ?: "Server"
             
@@ -385,7 +389,6 @@ class AnimeVietsubProvider : MainAPI() {
             }
         }
 
-        // Convert map thành List<Episode> của Cloudstream
         return orderedNames.mapNotNull { epName ->
             val servers = episodeMap[epName] ?: return@mapNotNull null
             val data = EpisodeData(servers).toJson()
@@ -395,7 +398,7 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
 
-    // ================== LOAD LINKS (PARALLEL) ==================
+    // ================== LOAD LINKS (PARALLEL + FIX 404) ==================
 
     override suspend fun loadLinks(
         data: String,
@@ -403,7 +406,7 @@ class AnimeVietsubProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // [UPDATE] Parse data kiểu mới, fallback kiểu cũ nếu cache cũ còn
+        // Parse data, fallback nếu cache cũ
         val episodeData = try {
             AppUtils.parseJson<EpisodeData>(data)
         } catch (e: Exception) {
@@ -417,7 +420,7 @@ class AnimeVietsubProvider : MainAPI() {
 
         val baseUrl = getBaseUrl()
 
-        // [UPDATE] Xử lý song song tất cả các server
+        // Xử lý song song tất cả các server
         withContext(Dispatchers.IO) {
             episodeData.servers.map { server ->
                 async {
@@ -435,15 +438,17 @@ class AnimeVietsubProvider : MainAPI() {
                         if (response.contains("[{\"file\":\"")) {
                             val encrypted = response.substringAfter("[{\"file\":\"").substringBefore("\"}")
                             val decryptedM3u8 = decryptAndDecompress(encrypted)
-                            val key = "${server.hash}${server.id}"
+                            
+                            // SỬA LỖI: Dùng UUID làm key thay vì hash để tránh URL encoding gây lỗi 404
+                            val key = UUID.randomUUID().toString()
 
                             if (decryptedM3u8 != null) {
                                 m3u8Contents[key] = decryptedM3u8
                                 callback.invoke(
                                     newExtractorLink(
-                                        source = server.name, // Tên nguồn từ web (e.g., AnimeVsub, Kanefusa...)
+                                        source = server.name,
                                         name = "${this@AnimeVietsubProvider.name} - ${server.name}",
-                                        url = "https://hdev.io/animevietsub/$key",
+                                        url = "https://hdev.io/animevietsub/$key", // URL sạch sẽ không chứa ký tự đặc biệt
                                         type = ExtractorLinkType.M3U8
                                     ) {
                                         this.quality = Qualities.Unknown.value
@@ -456,12 +461,12 @@ class AnimeVietsubProvider : MainAPI() {
                         e.printStackTrace()
                     }
                 }
-            }.awaitAll() // Đợi tất cả request hoàn tất
+            }.awaitAll()
         }
         return true
     }
 
-    // ================== HELPER METHODS (GIỮ NGUYÊN) ==================
+    // ================== HELPER METHODS ==================
 
     private fun Document.extractPosterUrl(baseUrl: String): String? {
         val selectors = listOf(
@@ -586,8 +591,7 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
 
-    // ================== DATA CLASSES MỚI ==================
-    // Giữ class cũ để backward compatibility (tránh crash cache)
+    // ================== DATA CLASSES ==================
     data class LinkDataOld(val hash: String, val id: String)
 
     data class ServerInfo(
