@@ -28,7 +28,6 @@ import com.lagradost.cloudstream3.CommonActivity.showToast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import android.widget.Toast
-// Imports cho xử lý song song và thread-safe
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import java.util.UUID
@@ -46,10 +45,14 @@ class AnimeVietsubProvider : MainAPI() {
     override var lang = "vi"
     override val hasMainPage = true
 
-    // ================== LOGIC GIẢI MÃ & BIẾN TOÀN CỤC ==================
-    
-    // SỬA LỖI: Dùng ConcurrentHashMap để tránh lỗi khi xử lý song song
-    private val m3u8Contents = ConcurrentHashMap<String, String>()
+    // ================== COMPANION OBJECT (QUAN TRỌNG) ==================
+    // Chuyển m3u8Contents vào đây để đảm bảo dữ liệu tồn tại xuyên suốt vòng đời app
+    companion object {
+        private val m3u8Contents = ConcurrentHashMap<String, String>()
+        private const val FAKE_HOST = "mock.animevietsub"
+    }
+
+    // ================== LOGIC GIẢI MÃ ==================
     
     private val keyStringB64 = "ZG1fdGhhbmdfc3VjX3ZhdF9nZXRfbGlua19hbl9kYnQ="
     private val aesKeyBytes: ByteArray by lazy {
@@ -87,22 +90,34 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
 
+    // ================== INTERCEPTOR ==================
+
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor {
         return Interceptor { chain ->
             val request = chain.request()
             val url = request.url.toString()
-            if (url.contains("hdev.io/animevietsub")) {
-                // Lấy key từ URL (đã được fix là UUID nên không lo ký tự đặc biệt)
-                val key = url.substringAfterLast("/")
+            
+            // Debug Log: Kiểm tra xem interceptor có chạy không
+            // println("AnimeVietsub_DEBUG: Checking URL: $url")
+
+            if (url.contains(FAKE_HOST)) {
+                // Lấy UUID từ URL: https://mock.animevietsub/{uuid}.m3u8
+                val key = url.substringAfter(FAKE_HOST).substringAfter("/").substringBefore(".m3u8")
+                
                 val m3u8Content = m3u8Contents[key]
                 
                 if (m3u8Content != null) {
+                    println("AnimeVietsub_DEBUG: HIT! Found content for key: $key")
                     val responseBody =
                         m3u8Content.toResponseBody("application/vnd.apple.mpegurl".toMediaTypeOrNull())
+                    
                     chain.proceed(request).newBuilder()
-                        .code(200).message("OK").body(responseBody)
+                        .code(200)
+                        .message("OK")
+                        .body(responseBody)
                         .build()
                 } else {
+                    println("AnimeVietsub_DEBUG: MISS! No content found for key: $key")
                     chain.proceed(request)
                 }
             } else {
@@ -310,7 +325,6 @@ class AnimeVietsubProvider : MainAPI() {
             val actors = this.extractActors(baseUrl)
             val recommendations = this.extractRecommendations(provider, baseUrl)
             
-            // Xử lý episodes với logic gộp nguồn
             val episodes = watchPageDoc?.parseEpisodes(baseUrl) ?: emptyList()
             
             val status = this.getShowStatus(episodes.size)
@@ -366,7 +380,6 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
 
-    // Logic gộp các nguồn (server) cho cùng 1 tập phim
     private fun Document.parseEpisodes(baseUrl: String): List<Episode> {
         val episodeMap = mutableMapOf<String, MutableList<ServerInfo>>()
         val orderedNames = mutableListOf<String>()
@@ -398,7 +411,7 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
 
-    // ================== LOAD LINKS (PARALLEL + FIX 404) ==================
+    // ================== LOAD LINKS ==================
 
     override suspend fun loadLinks(
         data: String,
@@ -406,7 +419,6 @@ class AnimeVietsubProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Parse data, fallback nếu cache cũ
         val episodeData = try {
             AppUtils.parseJson<EpisodeData>(data)
         } catch (e: Exception) {
@@ -420,7 +432,6 @@ class AnimeVietsubProvider : MainAPI() {
 
         val baseUrl = getBaseUrl()
 
-        // Xử lý song song tất cả các server
         withContext(Dispatchers.IO) {
             episodeData.servers.map { server ->
                 async {
@@ -439,16 +450,20 @@ class AnimeVietsubProvider : MainAPI() {
                             val encrypted = response.substringAfter("[{\"file\":\"").substringBefore("\"}")
                             val decryptedM3u8 = decryptAndDecompress(encrypted)
                             
-                            // SỬA LỖI: Dùng UUID làm key thay vì hash để tránh URL encoding gây lỗi 404
+                            // Sử dụng UUID để tạo key ngẫu nhiên an toàn cho URL
                             val key = UUID.randomUUID().toString()
 
                             if (decryptedM3u8 != null) {
+                                // Lưu vào companion object map
                                 m3u8Contents[key] = decryptedM3u8
+                                println("AnimeVietsub_DEBUG: Saved M3U8 for key: $key")
+                                
                                 callback.invoke(
                                     newExtractorLink(
                                         source = server.name,
                                         name = "${this@AnimeVietsubProvider.name} - ${server.name}",
-                                        url = "https://hdev.io/animevietsub/$key", // URL sạch sẽ không chứa ký tự đặc biệt
+                                        // Thêm đuôi .m3u8 vào URL giả lập
+                                        url = "https://$FAKE_HOST/$key.m3u8",
                                         type = ExtractorLinkType.M3U8
                                     ) {
                                         this.quality = Qualities.Unknown.value
