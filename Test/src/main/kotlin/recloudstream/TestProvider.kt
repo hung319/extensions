@@ -28,9 +28,10 @@ import com.lagradost.cloudstream3.CommonActivity.showToast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import android.widget.Toast
-// Imports mới cho xử lý song song và static map
+// Imports quan trọng cho xử lý song song và Map tĩnh
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 class AnimeVietsubProvider : MainAPI() {
@@ -45,10 +46,12 @@ class AnimeVietsubProvider : MainAPI() {
     override var lang = "vi"
     override val hasMainPage = true
 
-    // ================== COMPANION OBJECT (FIX LỖI 404) ==================
-    // Dữ liệu này phải là STATIC để tồn tại giữa các phiên load và play
+    // ================== COMPANION OBJECT (FIX LỖI 404 & MẤT DATA) ==================
     companion object {
+        // Dùng ConcurrentHashMap để an toàn khi xử lý song song
+        // Dùng static (companion object) để data không bị mất khi chuyển màn hình
         private val m3u8Contents = ConcurrentHashMap<String, String>()
+        private const val FAKE_HOST = "mock.animevietsub" // Host giả định để Interceptor bắt
     }
 
     // ================== LOGIC GIẢI MÃ ==================
@@ -89,31 +92,35 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
 
-    // ================== INTERCEPTOR ==================
+    // ================== INTERCEPTOR (BẮT LINK GIẢ) ==================
 
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor {
         return Interceptor { chain ->
             val request = chain.request()
             val url = request.url.toString()
             
-            // Logic gốc: kiểm tra domain giả
-            if (url.contains("hdev.io/animevietsub")) {
-                val key = url.substringAfterLast("/")
+            // Chỉ bắt các link có chứa host giả định
+            if (url.contains(FAKE_HOST)) {
+                // Link dạng: https://mock.animevietsub/{UUID}.m3u8
+                val key = url.substringAfter(FAKE_HOST).substringAfter("/").substringBefore(".m3u8")
                 
-                // Lấy từ companion object map
+                // Lấy nội dung từ bộ nhớ tĩnh
                 val m3u8Content = m3u8Contents[key]
                 
                 if (m3u8Content != null) {
+                    println("AnimeVietsub_DEBUG: Interceptor HIT key=$key")
                     val responseBody =
                         m3u8Content.toResponseBody("application/vnd.apple.mpegurl".toMediaTypeOrNull())
+                    
                     chain.proceed(request).newBuilder()
                         .code(200)
                         .message("OK")
                         .body(responseBody)
                         .build()
                 } else {
-                    // Nếu không tìm thấy trong map (lỗi 404 thật), vẫn proceed để log lỗi
-                    chain.proceed(request)
+                    println("AnimeVietsub_DEBUG: Interceptor MISS key=$key")
+                    // Nếu không tìm thấy, trả về lỗi 404 (hoặc để chain tiếp tục và fail tự nhiên)
+                    chain.proceed(request) 
                 }
             } else {
                 chain.proceed(request)
@@ -121,7 +128,7 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
 
-    // ================== DOMAIN RESOLVER (LOGIC GỐC) ==================
+    // ================== DOMAIN RESOLVER ==================
 
     private val bitlyResolverUrl = "https://bit.ly/animevietsubtv"
     private val secondaryFallbackDomain = "https://animevietsub.link"
@@ -166,7 +173,7 @@ class AnimeVietsubProvider : MainAPI() {
         return currentActiveUrl
     }
 
-    // ================== MAIN PAGE & SEARCH (LOGIC GỐC) ==================
+    // ================== MAIN PAGE & SEARCH ==================
 
     override val mainPage = mainPageOf(
         "/anime-moi/" to "Mới Cập Nhật",
@@ -288,7 +295,7 @@ class AnimeVietsubProvider : MainAPI() {
                     val watchPageUrl = if (url.endsWith("/")) "${url}xem-phim.html" else "$url/xem-phim.html"
                     app.get(watchPageUrl, referer = url).document
                 } catch (e: Exception) {
-                    System.out.println("Failed to load watch page. Error: ${e.message}")
+                    println("Failed to load watch page. Error: ${e.message}")
                     null
                 }
             } else {
@@ -320,7 +327,7 @@ class AnimeVietsubProvider : MainAPI() {
             val actors = this.extractActors(baseUrl)
             val recommendations = this.extractRecommendations(provider, baseUrl)
             
-            // Xử lý episodes với logic gộp nguồn mới
+            // Parse episodes với logic gộp server
             val episodes = watchPageDoc?.parseEpisodes(baseUrl) ?: emptyList()
             
             val status = this.getShowStatus(episodes.size)
@@ -351,7 +358,6 @@ class AnimeVietsubProvider : MainAPI() {
                 val isMovie = finalTvType == TvType.Movie || finalTvType == TvType.AnimeMovie || episodes.size <= 1
 
                 if (isMovie) {
-                    // Logic tạo episode cho phim lẻ dựa trên cấu trúc mới
                     val episodeDataStr = if (episodes.isNotEmpty()) {
                         episodes.first().data
                     } else {
@@ -377,7 +383,6 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
 
-    // Logic gộp các nguồn (server)
     private fun Document.parseEpisodes(baseUrl: String): List<Episode> {
         val episodeMap = mutableMapOf<String, MutableList<ServerInfo>>()
         val orderedNames = mutableListOf<String>()
@@ -409,7 +414,7 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
 
-    // ================== LOAD LINKS (PARALLEL) ==================
+    // ================== LOAD LINKS (PARALLEL & UUID FIX) ==================
 
     override suspend fun loadLinks(
         data: String,
@@ -417,11 +422,12 @@ class AnimeVietsubProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Parse data theo cấu trúc mới, fallback nếu dữ liệu cũ
+        // Parse data theo cấu trúc mới
         val episodeData = try {
             AppUtils.parseJson<EpisodeData>(data)
         } catch (e: Exception) {
             try {
+                // Fallback nếu data là định dạng cũ
                 val oldData = AppUtils.parseJson<LinkDataOld>(data)
                 EpisodeData(listOf(ServerInfo("Server Chính", oldData.hash, oldData.id)))
             } catch (ex: Exception) {
@@ -431,7 +437,6 @@ class AnimeVietsubProvider : MainAPI() {
 
         val baseUrl = getBaseUrl()
 
-        // Xử lý song song bằng async/await
         withContext(Dispatchers.IO) {
             episodeData.servers.map { server ->
                 async {
@@ -450,18 +455,20 @@ class AnimeVietsubProvider : MainAPI() {
                             val encrypted = response.substringAfter("[{\"file\":\"").substringBefore("\"}")
                             val decryptedM3u8 = decryptAndDecompress(encrypted)
                             
-                            // Tạo key giống hệt logic gốc để Interceptor bắt được
-                            val key = "${server.hash}${server.id}"
-
                             if (decryptedM3u8 != null) {
-                                // Lưu vào STATIC map
-                                m3u8Contents[key] = decryptedM3u8
+                                // TẠO UUID MỚI CHO MỖI LINK - QUAN TRỌNG ĐỂ TRÁNH LỖI URL ENCODING
+                                val uuidKey = UUID.randomUUID().toString()
                                 
+                                // Lưu vào map tĩnh
+                                m3u8Contents[uuidKey] = decryptedM3u8
+                                println("AnimeVietsub_DEBUG: Saved content with UUID: $uuidKey")
+
                                 callback.invoke(
                                     newExtractorLink(
                                         source = server.name,
                                         name = "${this@AnimeVietsubProvider.name} - ${server.name}",
-                                        url = "https://hdev.io/animevietsub/$key",
+                                        // Sử dụng URL giả định sạch sẽ
+                                        url = "https://$FAKE_HOST/$uuidKey.m3u8", 
                                         type = ExtractorLinkType.M3U8
                                     ) {
                                         this.quality = Qualities.Unknown.value
@@ -474,12 +481,12 @@ class AnimeVietsubProvider : MainAPI() {
                         e.printStackTrace()
                     }
                 }
-            }.awaitAll() // Chờ tất cả request hoàn thành
+            }.awaitAll()
         }
         return true
     }
 
-    // ================== HELPER METHODS (LOGIC GỐC) ==================
+    // ================== HELPER METHODS ==================
 
     private fun Document.extractPosterUrl(baseUrl: String): String? {
         val selectors = listOf(
