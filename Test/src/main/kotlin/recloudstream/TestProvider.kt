@@ -28,11 +28,8 @@ import com.lagradost.cloudstream3.CommonActivity.showToast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import android.widget.Toast
-// Imports quan trọng cho xử lý song song và Map tĩnh
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
+// Imports
+import kotlinx.coroutines.runBlocking
 
 class AnimeVietsubProvider : MainAPI() {
 
@@ -46,12 +43,9 @@ class AnimeVietsubProvider : MainAPI() {
     override var lang = "vi"
     override val hasMainPage = true
 
-    // ================== COMPANION OBJECT (FIX LỖI 404 & MẤT DATA) ==================
     companion object {
-        // Dùng ConcurrentHashMap để an toàn khi xử lý song song
-        // Dùng static (companion object) để data không bị mất khi chuyển màn hình
-        private val m3u8Contents = ConcurrentHashMap<String, String>()
-        private const val FAKE_HOST = "mock.animevietsub" // Host giả định để Interceptor bắt
+        // Host giả định để Interceptor bắt
+        private const val FAKE_HOST = "mock.animevietsub" 
     }
 
     // ================== LOGIC GIẢI MÃ ==================
@@ -92,40 +86,73 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
 
-    // ================== INTERCEPTOR (BẮT LINK GIẢ) ==================
+    // ================== INTERCEPTOR (XỬ LÝ API TRỰC TIẾP) ==================
 
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor {
         return Interceptor { chain ->
             val request = chain.request()
-            val url = request.url.toString()
+            val url = request.url
             
-            // Chỉ bắt các link có chứa host giả định
-            if (url.contains(FAKE_HOST)) {
-                // Link dạng: https://mock.animevietsub/{UUID}.m3u8
-                val key = url.substringAfter(FAKE_HOST).substringAfter("/").substringBefore(".m3u8")
-                
-                // Lấy nội dung từ bộ nhớ tĩnh
-                val m3u8Content = m3u8Contents[key]
-                
-                if (m3u8Content != null) {
-                    println("AnimeVietsub_DEBUG: Interceptor HIT key=$key")
-                    val responseBody =
-                        m3u8Content.toResponseBody("application/vnd.apple.mpegurl".toMediaTypeOrNull())
-                    
-                    chain.proceed(request).newBuilder()
-                        .code(200)
-                        .message("OK")
-                        .body(responseBody)
-                        .build()
-                } else {
-                    println("AnimeVietsub_DEBUG: Interceptor MISS key=$key")
-                    // Nếu không tìm thấy, trả về lỗi 404 (hoặc để chain tiếp tục và fail tự nhiên)
-                    chain.proceed(request) 
+            // Kiểm tra xem có phải là host giả định không
+            if (url.host == FAKE_HOST) {
+                // Lấy params hash và id trực tiếp từ URL
+                val hash = url.queryParameter("hash")
+                val id = url.queryParameter("id")
+
+                if (hash != null && id != null) {
+                    try {
+                        // Gọi API lấy M3U8 ngay lập tức (Synchronous/Blocking)
+                        // Sử dụng runBlocking vì Interceptor chạy trong background thread của ExoPlayer
+                        val m3u8Content = runBlocking {
+                            fetchM3u8Content(hash, id)
+                        }
+
+                        if (m3u8Content != null) {
+                            val responseBody = m3u8Content.toResponseBody("application/vnd.apple.mpegurl".toMediaTypeOrNull())
+                            
+                            return@Interceptor chain.proceed(request).newBuilder()
+                                .code(200)
+                                .message("OK")
+                                .body(responseBody)
+                                .build()
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
                 }
-            } else {
-                chain.proceed(request)
+                // Nếu lỗi, trả về 404
+                return@Interceptor chain.proceed(request).newBuilder()
+                    .code(404)
+                    .message("Not Found")
+                    .build()
             }
+            
+            chain.proceed(request)
         }
+    }
+
+    // Hàm phụ trợ để gọi API lấy nội dung M3U8
+    private suspend fun fetchM3u8Content(hash: String, id: String): String? {
+        val baseUrl = getBaseUrl()
+        try {
+            val response = app.post(
+                "$baseUrl/ajax/player",
+                headers = mapOf(
+                    "content-type" to "application/x-www-form-urlencoded; charset=UTF-8",
+                    "x-requested-with" to "XMLHttpRequest",
+                    "Referer" to baseUrl,
+                ),
+                data = mapOf("link" to hash, "id" to id)
+            ).text
+
+            if (response.contains("[{\"file\":\"")) {
+                val encrypted = response.substringAfter("[{\"file\":\"").substringBefore("\"}")
+                return decryptAndDecompress(encrypted)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        return null
     }
 
     // ================== DOMAIN RESOLVER ==================
@@ -327,7 +354,6 @@ class AnimeVietsubProvider : MainAPI() {
             val actors = this.extractActors(baseUrl)
             val recommendations = this.extractRecommendations(provider, baseUrl)
             
-            // Parse episodes với logic gộp server
             val episodes = watchPageDoc?.parseEpisodes(baseUrl) ?: emptyList()
             
             val status = this.getShowStatus(episodes.size)
@@ -414,7 +440,7 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
 
-    // ================== LOAD LINKS (PARALLEL & UUID FIX) ==================
+    // ================== LOAD LINKS (TẠO LINK CHỨA PARAM) ==================
 
     override suspend fun loadLinks(
         data: String,
@@ -422,12 +448,10 @@ class AnimeVietsubProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Parse data theo cấu trúc mới
         val episodeData = try {
             AppUtils.parseJson<EpisodeData>(data)
         } catch (e: Exception) {
             try {
-                // Fallback nếu data là định dạng cũ
                 val oldData = AppUtils.parseJson<LinkDataOld>(data)
                 EpisodeData(listOf(ServerInfo("Server Chính", oldData.hash, oldData.id)))
             } catch (ex: Exception) {
@@ -437,52 +461,31 @@ class AnimeVietsubProvider : MainAPI() {
 
         val baseUrl = getBaseUrl()
 
-        withContext(Dispatchers.IO) {
-            episodeData.servers.map { server ->
-                async {
-                    try {
-                        val response = app.post(
-                            "$baseUrl/ajax/player",
-                            headers = mapOf(
-                                "content-type" to "application/x-www-form-urlencoded; charset=UTF-8",
-                                "x-requested-with" to "XMLHttpRequest",
-                                "Referer" to baseUrl,
-                            ),
-                            data = mapOf("link" to server.hash, "id" to server.id)
-                        ).text
+        // Không cần gọi API ở đây nữa!
+        // Chỉ cần tạo Link chứa Hash + ID và trả về ngay lập tức.
+        // Interceptor sẽ lo phần còn lại khi Player bắt đầu chạy.
+        
+        episodeData.servers.forEach { server ->
+            // URL có dạng: https://mock.animevietsub/playlist.m3u8?hash=...&id=...
+            // Encode để đảm bảo an toàn URL
+            val encodedHash = URLEncoder.encode(server.hash, "UTF-8")
+            val encodedId = URLEncoder.encode(server.id, "UTF-8")
+            
+            val mockUrl = "https://$FAKE_HOST/playlist.m3u8?hash=$encodedHash&id=$encodedId"
 
-                        if (response.contains("[{\"file\":\"")) {
-                            val encrypted = response.substringAfter("[{\"file\":\"").substringBefore("\"}")
-                            val decryptedM3u8 = decryptAndDecompress(encrypted)
-                            
-                            if (decryptedM3u8 != null) {
-                                // TẠO UUID MỚI CHO MỖI LINK - QUAN TRỌNG ĐỂ TRÁNH LỖI URL ENCODING
-                                val uuidKey = UUID.randomUUID().toString()
-                                
-                                // Lưu vào map tĩnh
-                                m3u8Contents[uuidKey] = decryptedM3u8
-                                println("AnimeVietsub_DEBUG: Saved content with UUID: $uuidKey")
-
-                                callback.invoke(
-                                    newExtractorLink(
-                                        source = server.name,
-                                        name = "${this@AnimeVietsubProvider.name} - ${server.name}",
-                                        // Sử dụng URL giả định sạch sẽ
-                                        url = "https://$FAKE_HOST/$uuidKey.m3u8", 
-                                        type = ExtractorLinkType.M3U8
-                                    ) {
-                                        this.quality = Qualities.Unknown.value
-                                        this.referer = baseUrl
-                                    }
-                                )
-                            }
-                        }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
+            callback.invoke(
+                newExtractorLink(
+                    source = server.name,
+                    name = "${this@AnimeVietsubProvider.name} - ${server.name}",
+                    url = mockUrl,
+                    type = ExtractorLinkType.M3U8
+                ) {
+                    this.quality = Qualities.Unknown.value
+                    this.referer = baseUrl
                 }
-            }.awaitAll()
+            )
         }
+        
         return true
     }
 
