@@ -1,7 +1,6 @@
 package recloudstream
 
 import android.util.Log
-import android.widget.Toast
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addDuration
 import com.lagradost.cloudstream3.utils.AppUtils
@@ -10,11 +9,9 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.withContext
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.ResponseBody.Companion.toResponseBody
@@ -43,7 +40,7 @@ class AnimeVietsubProvider : MainAPI() {
     override var lang = "vi"
     override val hasMainPage = true
 
-    // ================== LOGIC GIẢI MÃ & INTERCEPTOR (GIỮ NGUYÊN) ==================
+    // ================== LOGIC GIẢI MÃ & INTERCEPTOR ==================
     
     private val m3u8Contents = mutableMapOf<String, String>()
     private val keyStringB64 = "ZG1fdGhhbmdfc3VjX3ZhdF9nZXRfbGlua19hbl9kYnQ="
@@ -102,7 +99,7 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
 
-    // ================== LOGIC DOMAIN RESOLVER (GIỮ NGUYÊN) ==================
+    // ================== LOGIC DOMAIN RESOLVER ==================
 
     private val bitlyResolverUrl = "https://bit.ly/animevietsubtv"
     private val secondaryFallbackDomain = "https://animevietsub.link"
@@ -140,7 +137,7 @@ class AnimeVietsubProvider : MainAPI() {
         return currentActiveUrl
     }
 
-    // ================== PHẦN MAIN PAGE & SEARCH (GIỮ NGUYÊN CƠ BẢN) ==================
+    // ================== MAIN PAGE ==================
 
     override val mainPage = mainPageOf(
         "/anime-moi/" to "Mới Cập Nhật",
@@ -149,11 +146,7 @@ class AnimeVietsubProvider : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        withContext(Dispatchers.Main) {
-            CommonActivity.activity?.let { activity ->
-                showToast(activity, "Provider Updated: Multi-Server Support", Toast.LENGTH_SHORT)
-            }
-        }
+        // Đã xóa phần withContext(Dispatchers.Main) gây lỗi showToast
         val baseUrl = getBaseUrl()
         val url = if (page == 1) {
             "$baseUrl${request.data}"
@@ -201,7 +194,7 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
 
-    // ================== PHẦN LOAD DETAILS (CẬP NHẬT GỌI HÀM PARSE) ==================
+    // ================== LOAD DETAILS ==================
 
     override suspend fun load(url: String): LoadResponse? {
         val baseUrl = getBaseUrl()
@@ -209,7 +202,6 @@ class AnimeVietsubProvider : MainAPI() {
             val infoDocument = app.get(url, headers = mapOf("Referer" to baseUrl)).document
             val genres = infoDocument.getGenres()
             
-            // Logic cũ: Chỉ load trang xem phim nếu không phải "Sắp chiếu"
             val watchPageDoc = if (!genres.any { it.equals("Anime sắp chiếu", ignoreCase = true) }) {
                 try {
                     val watchPageUrl = if (url.endsWith("/")) "${url}xem-phim.html" else "$url/xem-phim.html"
@@ -226,30 +218,27 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
 
-    // ================== [LOGIC MỚI QUAN TRỌNG] PARSE EPISODES ĐA NGUỒN ==================
+    // ================== LOGIC ĐA NGUỒN (MULTI-SOURCE) ==================
 
-    // Model dữ liệu mới
+    // Data classes
     data class ServerData(val serverName: String, val hash: String, val id: String)
     data class LinkData(val sources: List<ServerData>)
 
     private fun Document.parseEpisodes(baseUrl: String): List<Episode> {
         val episodesMap = mutableMapOf<String, MutableList<ServerData>>()
         
-        // 1. Quét qua từng nhóm server (div.server-group)
+        // 1. Quét qua từng nhóm server
         this.select("div.server.server-group").forEach { group ->
-            // Lấy tên server, vd: "AnimeVsub", "Kanefusa Fansub"
             val serverName = group.select("h3.server-name").text().trim().ifBlank { "VIP" }
             
-            // 2. Lấy danh sách tập trong server đó
+            // 2. Lấy danh sách tập
             group.select("ul.list-episode li a.btn-episode").forEach { epEl ->
-                val epNum = epEl.attr("title").ifBlank { epEl.text() }.trim() // Vd: "Tập 01" hoặc "01"
+                val epNum = epEl.attr("title").ifBlank { epEl.text() }.trim()
                 val id = epEl.attr("data-id")
                 val hash = epEl.attr("data-hash")
                 
                 if (id.isNotBlank() && hash.isNotBlank()) {
                     val svData = ServerData(serverName, hash, id)
-                    
-                    // Gom nhóm theo tên tập (key)
                     if (episodesMap.containsKey(epNum)) {
                         episodesMap[epNum]?.add(svData)
                     } else {
@@ -259,17 +248,14 @@ class AnimeVietsubProvider : MainAPI() {
             }
         }
 
-        // 3. Chuyển đổi Map thành List<Episode> của Cloudstream
+        // 3. Map to Episode
         return episodesMap.map { (epName, sourceList) ->
-            // sourceList chứa tất cả server của tập đó
             val dataJson = LinkData(sourceList).toJson()
             newEpisode(dataJson) {
                 this.name = epName
             }
         }
     }
-
-    // ================== [LOGIC MỚI QUAN TRỌNG] LOAD LINKS SONG SONG ==================
 
     override suspend fun loadLinks(
         data: String,
@@ -280,7 +266,7 @@ class AnimeVietsubProvider : MainAPI() {
         val linkData = AppUtils.parseJson<LinkData>(data)
         val baseUrl = getBaseUrl()
 
-        // Sử dụng coroutineScope để chạy song song (Parallel) các request
+        // Load song song
         coroutineScope {
             linkData.sources.map { source ->
                 async {
@@ -298,8 +284,6 @@ class AnimeVietsubProvider : MainAPI() {
                         if (response.contains("[{\"file\":\"")) {
                             val encrypted = response.substringAfter("[{\"file\":\"").substringBefore("\"}")
                             val decryptedM3u8 = decryptAndDecompress(encrypted)
-                            
-                            // Key duy nhất cho interceptor
                             val key = "${source.hash}${source.id}"
 
                             if (decryptedM3u8 != null) {
@@ -307,7 +291,6 @@ class AnimeVietsubProvider : MainAPI() {
                                 callback.invoke(
                                     newExtractorLink(
                                         source = name,
-                                        // Đặt tên nguồn bao gồm tên Server gốc (Vd: AnimeVietsub - Kanefusa Fansub)
                                         name = "$name - ${source.serverName}", 
                                         url = "https://hdev.io/animevietsub/$key",
                                         type = ExtractorLinkType.M3U8
@@ -322,12 +305,12 @@ class AnimeVietsubProvider : MainAPI() {
                         Log.e(name, "Error loading link for server ${source.serverName}", e)
                     }
                 }
-            }.awaitAll() // Đợi tất cả request hoàn tất
+            }.awaitAll()
         }
         return true
     }
 
-    // ================== HELPER FUNCTIONS & PARSING CHI TIẾT (GIỮ NGUYÊN/UPDATE NHẸ) ==================
+    // ================== HELPER FUNCTIONS ==================
 
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): SearchResponse? {
         return try {
@@ -371,7 +354,6 @@ class AnimeVietsubProvider : MainAPI() {
             val actors = this.extractActors(baseUrl)
             val recommendations = this.extractRecommendations(provider, baseUrl)
             
-            // Gọi hàm parseEpisodes mới
             val episodes = watchPageDoc?.parseEpisodes(baseUrl) ?: emptyList()
             
             val status = this.getShowStatus(episodes.size)
@@ -397,15 +379,10 @@ class AnimeVietsubProvider : MainAPI() {
                 val isMovie = finalTvType == TvType.Movie || finalTvType == TvType.AnimeMovie || episodes.size <= 1
 
                 if (isMovie) {
-                    // Logic xử lý phim lẻ: Nếu có episodes (từ parseEpisodes), dùng nó. 
-                    // Nếu không (trang info), fallback tạo data giả (cần check kỹ nếu trang info ko có link server)
                     if (episodes.isNotEmpty()) {
                         this.episodes = mutableMapOf(DubStatus.Subbed to episodes)
                     } else {
-                        // Fallback logic cũ cho phim lẻ nếu không tìm thấy list tập
-                        val dataId = this@toLoadResponse.getDataIdFallback(infoUrl) ?: ""
-                        // Lưu ý: Fallback này có thể không hoạt động với logic Multi-server mới nếu không có hash
-                        // Nên ở đây ta giả định parseEpisodes đã làm việc tốt ở trang watchPageDoc
+                        // Logic fallback cho phim lẻ nếu không parse được episodes (hiếm khi xảy ra)
                     }
                     val duration = this@toLoadResponse.extractDuration()
                     duration?.let { addDuration(it.toString()) }
@@ -486,13 +463,6 @@ class AnimeVietsubProvider : MainAPI() {
             genres.any { it.contains("hoạt hình", true) } -> TvType.Cartoon
             else -> TvType.Anime
         }
-    }
-
-    private fun Document.getDataIdFallback(infoUrl: String): String? {
-        return this.selectFirst("a.watch_button_more[href*=xem-phim]")?.attr("href")
-            ?.substringAfterLast("a")?.substringBefore("/")
-            ?: infoUrl.substringAfterLast("/")?.substringBefore("-")?.filter { it.isDigit() }
-                ?.ifEmpty { infoUrl.substringAfterLast("-")?.filter { it.isDigit() } }?.takeIf { it.isNotBlank() }
     }
 
     private fun String?.encodeUri(): String {
