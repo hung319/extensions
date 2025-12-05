@@ -1,17 +1,12 @@
 package recloudstream
 
-import android.util.Log
+import android.widget.Toast
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addDuration
-import com.lagradost.cloudstream3.utils.AppUtils
+import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.newExtractorLink
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
+import com.lagradost.cloudstream3.CommonActivity.showToast
+import kotlinx.coroutines.*
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.ResponseBody.Companion.toResponseBody
@@ -21,8 +16,7 @@ import java.io.ByteArrayOutputStream
 import java.net.URL
 import java.net.URLEncoder
 import java.security.MessageDigest
-import java.util.Base64
-import java.util.EnumSet
+import java.util.*
 import java.util.zip.Inflater
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
@@ -72,7 +66,6 @@ class AnimeVietsubProvider : MainAPI() {
             m3u8ContentRaw = m3u8ContentRaw.trim().replace(Regex("^\"|\"$"), "")
             m3u8ContentRaw.replace("\\n", "\n")
         } catch (e: Exception) {
-            e.printStackTrace()
             null
         }
     }
@@ -146,7 +139,13 @@ class AnimeVietsubProvider : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Đã xóa phần withContext(Dispatchers.Main) gây lỗi showToast
+        // [TOAST ADDED] Hiển thị thông báo khi load trang chủ
+        withContext(Dispatchers.Main) {
+            CommonActivity.activity?.let { activity ->
+                showToast(activity, "Provider Updated: Multi-Server Support", Toast.LENGTH_SHORT)
+            }
+        }
+
         val baseUrl = getBaseUrl()
         val url = if (page == 1) {
             "$baseUrl${request.data}"
@@ -213,7 +212,6 @@ class AnimeVietsubProvider : MainAPI() {
 
             return infoDocument.toLoadResponse(this, url, baseUrl, watchPageDoc)
         } catch (e: Exception) {
-            Log.e(name, "FATAL Error loading main info page ($url): ${e.message}", e)
             return null
         }
     }
@@ -302,7 +300,7 @@ class AnimeVietsubProvider : MainAPI() {
                             }
                         }
                     } catch (e: Exception) {
-                        Log.e(name, "Error loading link for server ${source.serverName}", e)
+                        // Log removed as requested
                     }
                 }
             }.awaitAll()
@@ -381,8 +379,6 @@ class AnimeVietsubProvider : MainAPI() {
                 if (isMovie) {
                     if (episodes.isNotEmpty()) {
                         this.episodes = mutableMapOf(DubStatus.Subbed to episodes)
-                    } else {
-                        // Logic fallback cho phim lẻ nếu không parse được episodes (hiếm khi xảy ra)
                     }
                     val duration = this@toLoadResponse.extractDuration()
                     duration?.let { addDuration(it.toString()) }
