@@ -44,8 +44,9 @@ class AnimeVietsubProvider : MainAPI() {
     override var lang = "vi"
     override val hasMainPage = true
 
-    // ================== STATIC STORAGE ==================
+    // ================== STATIC STORAGE (QUAN TRỌNG) ==================
     companion object {
+        // Dùng ConcurrentHashMap để an toàn khi chạy đa luồng
         private val m3u8Contents = ConcurrentHashMap<String, String>()
         
         private val keyStringB64 = "ZG1fdGhhbmdfc3VjX3ZhdF9nZXRfbGlua19hbl9kYnQ="
@@ -88,25 +89,32 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
 
-    // ================== INTERCEPTOR ==================
+    // ================== INTERCEPTOR (LOGIC FIX) ==================
 
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor {
         return Interceptor { chain ->
             val request = chain.request()
             val url = request.url.toString()
             
-            if (url.contains("hdev.io/animevietsub")) {
-                // Logic gốc: lấy key sau dấu gạch chéo cuối cùng
-                val key = url.substringAfterLast("/")
-                val m3u8Content = m3u8Contents[key]
+            // Domain ảo chúng ta tự định nghĩa
+            if (url.contains("hdev.io/animevietsub/")) {
+                // Lấy phần Key Base64 URL-Safe từ URL
+                // Cắt bỏ query params nếu có (ví dụ ?foo=bar)
+                val safeKey = url.substringAfter("animevietsub/").substringBefore("?")
+                
+                val m3u8Content = m3u8Contents[safeKey]
+                
                 if (m3u8Content != null) {
                     val responseBody =
                         m3u8Content.toResponseBody("application/vnd.apple.mpegurl".toMediaTypeOrNull())
-                    // Logic gốc: proceed request rồi đè response
+                    
                     chain.proceed(request).newBuilder()
-                        .code(200).message("OK").body(responseBody)
+                        .code(200)
+                        .message("OK")
+                        .body(responseBody)
                         .build()
                 } else {
+                    // Nếu không tìm thấy trong map (lỗi logic hoặc hết hạn), request sẽ đi tiếp và gặp lỗi 404
                     chain.proceed(request)
                 }
             } else {
@@ -257,7 +265,7 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
 
-    // ================== LOAD LINKS (ĐÃ FIX VỊ TRÍ) ==================
+    // ================== LOAD LINKS (FIX KEY MISMATCH) ==================
 
     override suspend fun loadLinks(
         data: String,
@@ -292,18 +300,21 @@ class AnimeVietsubProvider : MainAPI() {
                         if (response.contains("[{\"file\":\"")) {
                             val encrypted = response.substringAfter("[{\"file\":\"").substringBefore("\"}")
                             val decryptedM3u8 = decryptAndDecompress(encrypted)
-                            val key = "${server.hash}${server.id}"
+                            
+                            // Tạo Key duy nhất và an toàn cho URL (Base64 URL Safe)
+                            val rawKey = "${server.hash}${server.id}"
+                            val safeKey = Base64.getUrlEncoder().withoutPadding().encodeToString(rawKey.toByteArray())
 
                             if (decryptedM3u8 != null) {
-                                // Lưu vào map dùng chung
-                                m3u8Contents[key] = decryptedM3u8
+                                // Lưu vào map
+                                m3u8Contents[safeKey] = decryptedM3u8
                                 
                                 callback.invoke(
                                     newExtractorLink(
                                         source = "AVS: ${server.serverName}",
                                         name = "AVS: ${server.serverName}",
-                                        // URL khớp với logic substringAfterLast("/") ở Interceptor
-                                        url = "https://hdev.io/animevietsub/$key",
+                                        // Dùng safeKey trong URL để Interceptor bắt được chính xác
+                                        url = "https://hdev.io/animevietsub/$safeKey",
                                         type = ExtractorLinkType.M3U8
                                     ) {
                                         this.quality = Qualities.Unknown.value
@@ -370,7 +381,7 @@ class AnimeVietsubProvider : MainAPI() {
             val actors = this.extractActors(baseUrl)
             val recommendations = this.extractRecommendations(provider, baseUrl)
             
-            // FIX: Truyền provider vào để parseEpisodes gọi được newEpisode
+            // Pass provider to helper
             val episodes = watchPageDoc?.parseEpisodes(baseUrl, provider) ?: emptyList()
             
             val status = this.getShowStatus(episodes.size)
@@ -407,7 +418,6 @@ class AnimeVietsubProvider : MainAPI() {
                             listOf(ServerData("Default", "", id)).toJson()
                         }
 
-                    // FIX: Gọi provider.newEpisode
                     val movieEpisode = provider.newEpisode(data) {
                         name = title 
                     }
@@ -534,9 +544,8 @@ class AnimeVietsubProvider : MainAPI() {
                 ?.takeIf { it.isNotBlank() }
     }
 
-    // ================== PARSE EPISODES (ĐÃ FIX) ==================
+    // ================== PARSE EPISODES (GOM NHÓM) ==================
 
-    // FIX: Thêm tham số provider: MainAPI để gọi được newEpisode
     private fun Document.parseEpisodes(baseUrl: String, provider: MainAPI): List<Episode> {
         val episodeMap = mutableMapOf<String, MutableList<ServerData>>()
 
@@ -559,7 +568,7 @@ class AnimeVietsubProvider : MainAPI() {
 
         return episodeMap.map { (epName, serverList) ->
             val dataJson = serverList.toJson()
-            // FIX: Gọi provider.newEpisode
+            // Dùng provider.newEpisode để tạo episode
             provider.newEpisode(dataJson) {
                 this.name = epName
                 this.episode = epName.filter { it.isDigit() }.toIntOrNull()
