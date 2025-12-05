@@ -22,6 +22,7 @@ import java.security.MessageDigest
 import java.util.Base64
 import java.util.EnumSet
 import java.util.zip.Inflater
+import java.util.concurrent.ConcurrentHashMap // Quan trọng cho xử lý song song
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
@@ -45,7 +46,9 @@ class AnimeVietsubProvider : MainAPI() {
 
     // ================== LOGIC GIẢI MÃ & CONFIG ==================
     
-    private val m3u8Contents = mutableMapOf<String, String>()
+    // SỬA LỖI: Dùng ConcurrentHashMap để tránh mất dữ liệu khi loadLinks chạy song song
+    private val m3u8Contents = ConcurrentHashMap<String, String>()
+    
     private val keyStringB64 = "ZG1fdGhhbmdfc3VjX3ZhdF9nZXRfbGlua19hbl9kYnQ="
     private val aesKeyBytes: ByteArray by lazy {
         val decodedKeyBytes = Base64.getDecoder().decode(keyStringB64)
@@ -83,7 +86,7 @@ class AnimeVietsubProvider : MainAPI() {
         }
     }
 
-    // Logic Interceptor gốc để xử lý link ảo hdev.io
+    // LOGIC GỐC TỪ FILE: Đảm bảo khớp hoàn toàn với mã nguồn bạn cung cấp
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor {
         return Interceptor { chain ->
             val request = chain.request()
@@ -94,7 +97,6 @@ class AnimeVietsubProvider : MainAPI() {
                 if (m3u8Content != null) {
                     val responseBody =
                         m3u8Content.toResponseBody("application/vnd.apple.mpegurl".toMediaTypeOrNull())
-                    // Logic gốc: proceed request sau đó đè response
                     chain.proceed(request).newBuilder()
                         .code(200).message("OK").body(responseBody)
                         .build()
@@ -122,7 +124,6 @@ class AnimeVietsubProvider : MainAPI() {
 
         var resolvedDomain: String? = null
 
-        // Attempt 1: HEAD request
         try {
             val response = app.head(secondaryFallbackDomain, allowRedirects = false)
             val location = response.headers["Location"]
@@ -132,7 +133,6 @@ class AnimeVietsubProvider : MainAPI() {
             }
         } catch (_: Exception) { }
 
-        // Attempt 2: Bit.ly redirect
         if (resolvedDomain == null) {
             try {
                 val response = app.get(bitlyResolverUrl, allowRedirects = true, timeout = 10_000)
@@ -288,11 +288,14 @@ class AnimeVietsubProvider : MainAPI() {
                             val key = "${server.hash}${server.id}"
 
                             if (decryptedM3u8 != null) {
+                                // Lưu vào map an toàn luồng
                                 m3u8Contents[key] = decryptedM3u8
+                                
                                 callback.invoke(
                                     newExtractorLink(
                                         source = "AVS: ${server.serverName}",
                                         name = "AVS: ${server.serverName}",
+                                        // Link này phải khớp logic key trong Interceptor
                                         url = "https://hdev.io/animevietsub/$key",
                                         type = ExtractorLinkType.M3U8
                                     ) {
@@ -393,7 +396,6 @@ class AnimeVietsubProvider : MainAPI() {
                     val data = episodes.firstOrNull()?.data
                         ?: run {
                             val id = this@toLoadResponse.getDataIdFallback(infoUrl) ?: ""
-                            // SỬA LỖI: Dùng extension function .toJson() cho List
                             listOf(ServerData("Default", "", id)).toJson()
                         }
 
@@ -546,7 +548,6 @@ class AnimeVietsubProvider : MainAPI() {
         }
 
         return episodeMap.map { (epName, serverList) ->
-            // SỬA LỖI: Dùng extension function .toJson() cho List
             val dataJson = serverList.toJson()
             newEpisode(dataJson) {
                 this.name = epName
