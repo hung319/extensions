@@ -22,7 +22,7 @@ class AnikotoProvider : MainAPI() {
     override var lang = "en"
     override val supportedTypes = setOf(TvType.Anime, TvType.Movie, TvType.OVA)
 
-    // Headers chung, bổ sung X-Requested-With cho các request AJAX
+    // Headers chung
     private val ajaxHeaders = mapOf(
         "X-Requested-With" to "XMLHttpRequest",
         "Referer" to "$mainUrl/",
@@ -41,7 +41,7 @@ class AnikotoProvider : MainAPI() {
     data class MewSource(val url: String?)
 
     // =========================================================================
-    //  1. MEW CLOUD EXTRACTOR (Fixed & Optimized)
+    //  1. MEW CLOUD EXTRACTOR
     // =========================================================================
     inner class MewCloudExtractor : ExtractorApi() {
         override val name = "MewCloud"
@@ -90,7 +90,6 @@ class AnikotoProvider : MainAPI() {
                 val pairId = "$id-$type"
                 val apiUrl = "$mainUrl/save_data.php?id=$pairId"
                 
-                // Headers chuẩn từ CURL để bypass 403
                 val headers = mapOf(
                     "Authority" to "mewcdn.online",
                     "Accept" to "application/json, text/javascript, */*; q=0.01",
@@ -102,7 +101,6 @@ class AnikotoProvider : MainAPI() {
                 val response = app.get(apiUrl, headers = headers).parsedSafe<MewResponse>()
                 val data = response?.data ?: return
 
-                // 1. Xử lý Video Source
                 data.sources?.forEach { source ->
                     val m3u8Url = source.url ?: return@forEach
                     callback(
@@ -118,10 +116,9 @@ class AnikotoProvider : MainAPI() {
                     )
                 }
 
-                // 2. Xử lý Subtitle (Đã lọc trùng lặp)
                 data.tracks
                     ?.filter { it.kind == "captions" && !it.file.isNullOrBlank() }
-                    ?.distinctBy { it.file } // <-- FIX: Lọc trùng lặp dựa trên URL file
+                    ?.distinctBy { it.file }
                     ?.forEach { track ->
                         val trackUrl = track.file!!
                         val label = track.label ?: "English"
@@ -140,10 +137,9 @@ class AnikotoProvider : MainAPI() {
     }
 
     // =========================================================================
-    //  2. MAIN PROVIDER LOGIC (Updated with Pagination)
+    //  2. MAIN PROVIDER LOGIC
     // =========================================================================
 
-    // Cấu hình các tab chính hỗ trợ phân trang
     override val mainPage = mainPageOf(
         "$mainUrl/ajax/home/widget/updated-all?page=" to "Recently Updated",
         "$mainUrl/new-release?page=" to "New Added",
@@ -154,7 +150,6 @@ class AnikotoProvider : MainAPI() {
 
     private fun Element.toSearchResult(): SearchResponse? {
         val href = this.selectFirst("a")?.attr("href") ?: return null
-        // Ưu tiên lấy title từ nhiều class khác nhau
         val title = this.selectFirst(".name.d-title")?.text() 
                  ?: this.selectFirst(".name")?.text() 
                  ?: this.selectFirst(".d-title")?.text()
@@ -175,43 +170,37 @@ class AnikotoProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // --- TOAST SECTION (Giữ nguyên theo yêu cầu) ---
-        // Toast chỉ hiện ở trang 1
+        // [FIXED] Sửa lỗi showToast: Dùng Toast.makeText trực tiếp thay vì import CommonActivity
         if (page == 1) {
             withContext(Dispatchers.Main) {
                 CommonActivity.activity?.let { activity ->
-                    showToast(activity, "Free Repo From H4RS", Toast.LENGTH_LONG)
+                    try {
+                        Toast.makeText(activity, "Free Repo From H4RS", Toast.LENGTH_LONG).show()
+                    } catch (e: Exception) {}
                 }
             }
         }
-        // ------------------------------------------------
 
-        // Tạo URL cho trang hiện tại
         val url = request.data + page
 
         val doc = if (url.contains("/ajax/")) {
-            // CASE A: API AJAX (JSON) - Ví dụ: Recently Updated
             val jsonText = app.get(url, headers = ajaxHeaders).text
             val jsonResponse = parseJson<AjaxResponse>(jsonText)
-            // Parse HTML nằm trong trường 'result' của JSON
             Jsoup.parse(jsonResponse.result)
         } else {
-            // CASE B: Trang HTML thường (New Release, Most Viewed...)
             app.get(url, headers = ajaxHeaders).document
         }
         
-        // Selector chung cho cả AJAX và HTML Page (.ani.items .item HOẶC .item)
         val elements = doc.select(".ani.items .item, .item")
-        
         val homeList = elements.mapNotNull { it.toSearchResult() }
 
         return newHomePageResponse(
             list = HomePageList(
                 name = request.name,
                 list = homeList,
-                isHorizontalImages = false // False để hiện dạng Poster dọc
+                isHorizontalImages = false 
             ), 
-            hasNext = homeList.isNotEmpty() // Nếu có dữ liệu trả về -> Còn trang sau
+            hasNext = homeList.isNotEmpty()
         )
     }
 
@@ -229,7 +218,6 @@ class AnikotoProvider : MainAPI() {
         val ratingText = doc.selectFirst(".meta .rating")?.text()
         val dataId = doc.selectFirst("#watch-main")?.attr("data-id") ?: throw ErrorLoadingException("No ID")
         
-        // Logic Sub/Dub Tags
         val hasSub = doc.select(".meta .sub").isNotEmpty()
         val hasDub = doc.select(".meta .dub").isNotEmpty()
         val typeTag = when {
@@ -247,7 +235,6 @@ class AnikotoProvider : MainAPI() {
             val epNumStr = element.attr("data-num")
             val epNum = epNumStr.toFloatOrNull() ?: 1f
             
-            // Logic Tên gốc
             val rawName = element.select("span.d-title").text()
             val epName = if (rawName.isNotBlank()) rawName else "Episode $epNumStr"
             val finalName = "$epName $typeTag".trim()
@@ -289,6 +276,7 @@ class AnikotoProvider : MainAPI() {
         val timestamp = urlObj.getQueryParameter("time")
         val epNum = urlObj.getQueryParameter("ep")
         
+        // Khai báo rõ kiểu dữ liệu để compiler dễ hiểu
         val linkTasks = mutableListOf<Triple<String, String, String>>() 
 
         coroutineScope {
@@ -340,9 +328,12 @@ class AnikotoProvider : MainAPI() {
 
             awaitAll(taskAnikoto, taskMapper)
 
-            linkTasks.map { (linkId, serverName, type) ->
+            // [FIXED] Sửa lỗi Cannot Infer Type: Không destructuring trực tiếp trong lambda arguments
+            linkTasks.map { item ->
                 async {
                     try {
+                        val (linkId, serverName, type) = item // Destructuring ở đây an toàn hơn
+                        
                         val resolveUrl = "$mainUrl/ajax/server?get=$linkId"
                         val responseText = app.get(resolveUrl, headers = ajaxHeaders).text
                         
