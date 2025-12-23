@@ -22,10 +22,8 @@ class AnikotoProvider : MainAPI() {
     override var lang = "en"
     override val supportedTypes = setOf(TvType.Anime, TvType.Movie, TvType.OVA)
 
-    // Common User-Agent
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
 
-    // 1. Headers chung
     private fun getBaseHeaders(referer: String = "$mainUrl/") = mapOf(
         "Accept-Language" to "vi-VN,vi;q=0.9",
         "Sec-Ch-Ua" to "\"Chromium\";v=\"137\", \"Not/A)Brand\";v=\"24\"",
@@ -38,7 +36,7 @@ class AnikotoProvider : MainAPI() {
         "Referer" to referer
     )
 
-    // --- JSON Models ---
+    // --- Models ---
     data class AjaxResponse(val status: Int, val result: String)
     data class ServerResponse(val status: Int, val result: ServerResult?)
     data class ServerResult(val url: String?)
@@ -48,21 +46,15 @@ class AnikotoProvider : MainAPI() {
     data class MewSource(val url: String?)
 
     // =========================================================================
-    //  1. MEW CLOUD EXTRACTOR
+    //  MEW CLOUD EXTRACTOR
     // =========================================================================
     inner class MewCloudExtractor : ExtractorApi() {
         override val name = "MewCloud"
         override val mainUrl = "https://mewcdn.online"
         override val requiresReferer = false
 
-        suspend fun getVideos(
-            url: String,
-            serverName: String,
-            subtitleCallback: (SubtitleFile) -> Unit,
-            callback: (ExtractorLink) -> Unit
-        ) {
+        suspend fun getVideos(url: String, serverName: String, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
             try {
-                // CASE 1: Plyr Base64
                 if (url.contains("/player/plyr.php")) {
                     val fragments = url.split("#")
                     if (fragments.size > 1) {
@@ -70,24 +62,16 @@ class AnikotoProvider : MainAPI() {
                             val decodedBytes = Base64.decode(fragments[1], Base64.DEFAULT)
                             val decodedUrl = String(decodedBytes).trim()
                             if (decodedUrl.startsWith("http")) {
-                                // [FIXED] Sử dụng newExtractorLink đúng chuẩn mới
-                                val link = newExtractorLink(
-                                    source = serverName,
-                                    name = serverName,
-                                    url = decodedUrl,
-                                    type = ExtractorLinkType.M3U8
-                                ) {
+                                callback(newExtractorLink(serverName, serverName, decodedUrl, ExtractorLinkType.M3U8) {
                                     this.referer = url
                                     this.quality = Qualities.Unknown.value
-                                }
-                                callback(link)
+                                })
                                 return
                             }
                         } catch (e: Exception) {}
                     }
                 }
 
-                // CASE 2: API save_data.php
                 val regex = Regex("""/(\d+)/(sub|dub)""")
                 val match = regex.find(url) ?: return
                 val (id, type) = match.destructured
@@ -105,17 +89,10 @@ class AnikotoProvider : MainAPI() {
 
                 response.sources?.forEach { source ->
                     source.url?.let { m3u8 ->
-                        // [FIXED] Sử dụng newExtractorLink đúng chuẩn mới
-                        val link = newExtractorLink(
-                            source = serverName,
-                            name = serverName,
-                            url = m3u8,
-                            type = ExtractorLinkType.M3U8
-                        ) {
+                        callback(newExtractorLink(serverName, serverName, m3u8, ExtractorLinkType.M3U8) {
                             this.referer = "https://megacloud.bloggy.click/"
                             this.quality = Qualities.Unknown.value
-                        }
-                        callback(link)
+                        })
                     }
                 }
 
@@ -131,9 +108,10 @@ class AnikotoProvider : MainAPI() {
     }
 
     // =========================================================================
-    //  2. MAIN PROVIDER LOGIC
+    //  MAIN LOGIC
     // =========================================================================
 
+    // Xóa ?page= ở URL config
     override val mainPage = mainPageOf(
         "$mainUrl/ajax/home/widget/updated-all" to "Recently Updated",
         "$mainUrl/new-release" to "New Added",
@@ -167,10 +145,20 @@ class AnikotoProvider : MainAPI() {
             }
         }
 
-        val url = request.data
+        // [LOGIC URL THỦ CÔNG - QUAN TRỌNG]
+        // 1. Lấy URL gốc
+        var url = request.data
+        
+        // 2. Chỉ thêm ?page=X nếu page > 1
+        if (page > 1) {
+            val separator = if (url.contains("?")) "&" else "?"
+            url = "$url${separator}page=$page"
+        }
+
         val isAjax = url.contains("/ajax/")
         
-        val headers = getBaseHeaders(referer = url).toMutableMap()
+        // Headers
+        val headers = getBaseHeaders(referer = request.data).toMutableMap() // Referer trỏ về trang gốc
         
         if (isAjax) {
             headers["Accept"] = "application/json, text/javascript, */*; q=0.01"
@@ -183,12 +171,13 @@ class AnikotoProvider : MainAPI() {
             headers["Sec-Fetch-Dest"] = "document"
         }
 
+        // Gọi request KHÔNG dùng params map
         val doc = if (isAjax) {
-            val jsonText = app.get(url, headers = headers, params = mapOf("page" to page.toString())).text
+            val jsonText = app.get(url, headers = headers).text
             val jsonResponse = parseJson<AjaxResponse>(jsonText)
             Jsoup.parse(jsonResponse.result)
         } else {
-            app.get(url, headers = headers, params = mapOf("page" to page.toString())).document
+            app.get(url, headers = headers).document
         }
 
         val homeList = doc.select(".ani.items .item, .item").mapNotNull { it.toSearchResult() }
@@ -200,8 +189,9 @@ class AnikotoProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$mainUrl/filter"
-        val doc = app.get(url, headers = getBaseHeaders(), params = mapOf("keyword" to query)).document
+        // Search cũng nên làm thủ công cho chắc
+        val url = "$mainUrl/filter?keyword=$query"
+        val doc = app.get(url, headers = getBaseHeaders()).document
         return doc.select("div.ani.items > div.item").mapNotNull { it.toSearchResult() }
     }
 
@@ -230,7 +220,6 @@ class AnikotoProvider : MainAPI() {
             val epNumStr = element.attr("data-num")
             val epIds = element.attr("data-ids")
             if (epIds.isBlank()) return@mapNotNull null
-
             val epName = element.select("span.d-title").text().takeIf { it.isNotBlank() } ?: "Episode $epNumStr"
             
             val epUrl = "$mainUrl/ajax/server/list?servers=$epIds&mal=${element.attr("data-mal")}&time=${element.attr("data-timestamp")}&ep=$epNumStr"
