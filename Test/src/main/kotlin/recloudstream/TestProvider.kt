@@ -108,7 +108,7 @@ class AnikotoProvider : MainAPI() {
     }
 
     // =========================================================================
-    //  2. MEGAPLAY EXTRACTOR (UPDATED - Fix JSON Object vs Array)
+    //  2. MEGAPLAY EXTRACTOR (UPDATED HEADERS)
     // =========================================================================
     inner class MegaplayExtractor : ExtractorApi() {
         override val name = "Megaplay"
@@ -117,54 +117,57 @@ class AnikotoProvider : MainAPI() {
 
         suspend fun getVideos(url: String, serverName: String, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
             try {
-                // 1. Tải HTML trang embed để lấy data-id
+                // 1. Headers để stream video (Quan trọng cho m3u8 và ts/jpg segment)
+                // Copy chuẩn từ CURL
+                val streamHeaders = mapOf(
+                    "Referer" to "https://megaplay.buzz/",
+                    "User-Agent" to userAgent,
+                    "Sec-Ch-Ua" to "\"Chromium\";v=\"137\", \"Not/A)Brand\";v=\"24\"",
+                    "Sec-Ch-Ua-Mobile" to "?1",
+                    "Sec-Ch-Ua-Platform" to "\"Android\""
+                )
+
+                // 2. Tải HTML trang embed
                 val doc = app.get(url, headers = mapOf("Referer" to "https://anikoto.tv/", "User-Agent" to userAgent)).document
                 
                 val playerDiv = doc.selectFirst("#megaplay-player")
                 val dataId = playerDiv?.attr("data-id") ?: return
 
-                // 2. Gọi API /stream/getSources
+                // 3. Gọi API getSources
                 val apiUrl = "$mainUrl/stream/getSources?id=$dataId"
-                val headers = mapOf(
+                val apiHeaders = mapOf(
                     "X-Requested-With" to "XMLHttpRequest",
-                    "Referer" to url, // Quan trọng: Referer là link embed
+                    "Referer" to url, 
                     "User-Agent" to userAgent,
                     "Accept" to "application/json, text/javascript, */*; q=0.01"
                 )
 
-                val textResponse = app.get(apiUrl, headers = headers).text
+                val textResponse = app.get(apiUrl, headers = apiHeaders).text
                 
-                // 3. Parse JSON linh hoạt bằng Jackson (ObjectMapper)
-                // Lý do: "sources" có thể là Object {"file": "..."} hoặc Array [{"file": "..."}]
+                // 4. Parse JSON
                 val mapper = ObjectMapper()
                 val jsonNode = mapper.readTree(textResponse)
                 val sourcesNode = jsonNode.get("sources")
 
-                // Xử lý Sources
+                // Hàm local để add link với header chuẩn
+                fun addLink(file: String) {
+                    callback(newExtractorLink(serverName, serverName, file, ExtractorLinkType.M3U8) {
+                        this.headers = streamHeaders // Inject headers vào đây
+                        this.quality = Qualities.Unknown.value
+                    })
+                }
+
+                // Xử lý Sources (Object hoặc Array)
                 if (sourcesNode != null) {
                     if (sourcesNode.isArray) {
-                        // Nếu là mảng (cấu trúc cũ/thường gặp)
                         sourcesNode.forEach { source ->
-                            val file = source.get("file")?.asText()
-                            if (!file.isNullOrBlank()) {
-                                callback(newExtractorLink(serverName, serverName, file, ExtractorLinkType.M3U8) {
-                                    this.referer = mainUrl
-                                    this.quality = Qualities.Unknown.value
-                                })
-                            }
+                            source.get("file")?.asText()?.let { if (it.isNotBlank()) addLink(it) }
                         }
                     } else if (sourcesNode.isObject) {
-                        // [FIX CHO MEGACLO.BUZZ] Nếu là object (như curl log bạn gửi)
-                        val file = sourcesNode.get("file")?.asText()
-                        if (!file.isNullOrBlank()) {
-                            callback(newExtractorLink(serverName, serverName, file, ExtractorLinkType.M3U8) {
-                                this.referer = mainUrl
-                                this.quality = Qualities.Unknown.value
-                            })
-                        }
+                        sourcesNode.get("file")?.asText()?.let { if (it.isNotBlank()) addLink(it) }
                     }
                 } else if (jsonNode.get("encrypted")?.asBoolean() == true) {
-                    // Fallback decryption
+                    // Fallback
                     loadExtractor(url, serverName, subtitleCallback, callback)
                 }
 
