@@ -22,15 +22,32 @@ class AnikotoProvider : MainAPI() {
     override var lang = "en"
     override val supportedTypes = setOf(TvType.Anime, TvType.Movie, TvType.OVA)
 
-    // 1. Headers cơ bản (Cho duyệt web thông thường) -> FIX lỗi phân trang
-    private val baseHeaders = mapOf(
-        "Referer" to "$mainUrl/",
-        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
+    // 1. HEADERS CHO TRANG HTML (New Release, Most Viewed...)
+    // Copy chuẩn từ CURL của bạn để giả lập hành vi "Navigate" của trình duyệt
+    private val documentHeaders = mapOf(
+        "Authority" to "anikoto.tv",
+        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        "Accept-Language" to "vi-VN,vi;q=0.9",
+        "Sec-Ch-Ua" to "\"Chromium\";v=\"137\", \"Not/A)Brand\";v=\"24\"",
+        "Sec-Ch-Ua-Mobile" to "?1",
+        "Sec-Ch-Ua-Platform" to "\"Android\"",
+        "Sec-Fetch-Dest" to "document",
+        "Sec-Fetch-Mode" to "navigate",
+        "Sec-Fetch-Site" to "same-origin",
+        "Sec-Fetch-User" to "?1",
+        "Upgrade-Insecure-Requests" to "1",
+        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
+        "Referer" to "$mainUrl/"
     )
 
-    // 2. Headers cho API/AJAX (Thêm X-Requested-With)
-    private val ajaxHeaders = baseHeaders + mapOf(
-        "X-Requested-With" to "XMLHttpRequest"
+    // 2. HEADERS CHO API/AJAX (Recently Updated, Episode List...)
+    // Thay đổi Accept và thêm X-Requested-With
+    private val ajaxHeaders = mapOf(
+        "Authority" to "anikoto.tv",
+        "Accept" to "application/json, text/javascript, */*; q=0.01",
+        "X-Requested-With" to "XMLHttpRequest",
+        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
+        "Referer" to "$mainUrl/"
     )
 
     // --- JSON Models ---
@@ -59,7 +76,7 @@ class AnikotoProvider : MainAPI() {
             callback: (ExtractorLink) -> Unit
         ) {
             try {
-                // CASE 1: Link trực tiếp dạng plyr.php#BASE64#
+                // CASE 1: Plyr Base64
                 if (url.contains("/player/plyr.php")) {
                     val fragments = url.split("#")
                     if (fragments.size > 1) {
@@ -94,13 +111,12 @@ class AnikotoProvider : MainAPI() {
                 val pairId = "$id-$type"
                 val apiUrl = "$mainUrl/save_data.php?id=$pairId"
                 
-                // Headers riêng cho MewCloud (giả lập request từ web player)
                 val headers = mapOf(
                     "Authority" to "mewcdn.online",
                     "Accept" to "application/json, text/javascript, */*; q=0.01",
                     "Origin" to "https://megacloud.bloggy.click",
                     "Referer" to "https://megacloud.bloggy.click/",
-                    "User-Agent" to baseHeaders["User-Agent"]!!
+                    "User-Agent" to documentHeaders["User-Agent"]!!
                 )
 
                 val response = app.get(apiUrl, headers = headers).parsedSafe<MewResponse>()
@@ -188,16 +204,16 @@ class AnikotoProvider : MainAPI() {
 
         val url = request.data + page
 
-        // [LOGIC QUAN TRỌNG] Tách xử lý headers
+        // --- PHÂN LOẠI REQUEST ---
         val doc = if (url.contains("/ajax/")) {
-            // Case A: API AJAX -> Dùng ajaxHeaders
+            // Loại 1: API AJAX (JSON) - Dùng ajaxHeaders (có X-Requested-With)
             val jsonText = app.get(url, headers = ajaxHeaders).text
             val jsonResponse = parseJson<AjaxResponse>(jsonText)
             Jsoup.parse(jsonResponse.result)
         } else {
-            // Case B: Trang HTML thường (New Release, Most Viewed...) -> Dùng baseHeaders
-            // Nếu dùng ajaxHeaders ở đây, server sẽ trả về trang 1 mặc định -> Lỗi spam trang 1
-            app.get(url, headers = baseHeaders).document
+            // Loại 2: HTML Page (New Release...) - Dùng documentHeaders (như trình duyệt)
+            // QUAN TRỌNG: Không được gửi X-Requested-With ở đây
+            app.get(url, headers = documentHeaders).document
         }
         
         val elements = doc.select(".ani.items .item, .item")
@@ -215,14 +231,14 @@ class AnikotoProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/filter?keyword=$query"
-        // Search là trang thường -> Dùng baseHeaders
-        val doc = app.get(url, headers = baseHeaders).document
+        // Search là trang HTML thường -> Dùng documentHeaders
+        val doc = app.get(url, headers = documentHeaders).document
         return doc.select("div.ani.items > div.item").mapNotNull { it.toSearchResult() }
     }
 
     override suspend fun load(url: String): LoadResponse {
-        // Load trang chi tiết -> Trang thường -> Dùng baseHeaders
-        val doc = app.get(url, headers = baseHeaders).document
+        // Load trang chi tiết (HTML) -> Dùng documentHeaders
+        val doc = app.get(url, headers = documentHeaders).document
         val title = doc.selectFirst("h1.title.d-title")?.text() ?: "Unknown"
         val description = doc.selectFirst(".synopsis .content")?.text()
         val poster = doc.selectFirst(".binfo .poster img")?.attr("src")
@@ -238,7 +254,7 @@ class AnikotoProvider : MainAPI() {
             else -> ""
         }
 
-        // Gọi API lấy tập phim -> API -> Dùng ajaxHeaders
+        // Lấy danh sách tập (API AJAX) -> Dùng ajaxHeaders
         val ajaxUrl = "$mainUrl/ajax/episode/list/$dataId"
         val json = app.get(ajaxUrl, headers = ajaxHeaders).parsedSafe<AjaxResponse>() ?: throw ErrorLoadingException("Failed to fetch episodes JSON")
         val episodesDoc = Jsoup.parse(json.result)
@@ -257,7 +273,6 @@ class AnikotoProvider : MainAPI() {
             
             if (epIds.isBlank()) return@mapNotNull null
             
-            // URL này chưa gọi ngay, chỉ lưu lại để loadLinks gọi
             val epUrl = "$mainUrl/ajax/server/list?servers=$epIds&mal=$malId&time=$timestamp&ep=$epNumStr"
             
             newEpisode(epUrl) {
@@ -292,7 +307,7 @@ class AnikotoProvider : MainAPI() {
         val linkTasks = mutableListOf<Triple<String, String, String>>() 
 
         coroutineScope {
-            // Task lấy server gốc -> API -> Dùng ajaxHeaders
+            // Task Server List (API AJAX) -> Dùng ajaxHeaders
             val taskAnikoto = async {
                 try {
                     val json = app.get(data, headers = ajaxHeaders).parsedSafe<AjaxResponse>()
@@ -310,7 +325,6 @@ class AnikotoProvider : MainAPI() {
                 } catch (e: Exception) { e.printStackTrace() }
             }
 
-            // Task Mapper -> External API -> Dùng headers riêng
             val taskMapper = async {
                 if (!malId.isNullOrBlank() && !timestamp.isNullOrBlank()) {
                     try {
@@ -318,7 +332,7 @@ class AnikotoProvider : MainAPI() {
                         val mapperHeaders = mapOf(
                             "Origin" to mainUrl,
                             "Referer" to "$mainUrl/",
-                            "User-Agent" to baseHeaders["User-Agent"]!!
+                            "User-Agent" to documentHeaders["User-Agent"]!!
                         )
                         val responseText = app.get(mapperUrl, headers = mapperHeaders).text
                         val mapperJson = ObjectMapper().readTree(responseText)
@@ -347,8 +361,8 @@ class AnikotoProvider : MainAPI() {
                     try {
                         val (linkId, serverName, type) = item 
                         
+                        // Resolve Server (API AJAX) -> Dùng ajaxHeaders
                         val resolveUrl = "$mainUrl/ajax/server?get=$linkId"
-                        // Resolve Server -> API -> Dùng ajaxHeaders
                         val responseText = app.get(resolveUrl, headers = ajaxHeaders).text
                         
                         if (!responseText.trim().startsWith("<")) {
