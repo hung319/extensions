@@ -108,7 +108,7 @@ class AnikotoProvider : MainAPI() {
     }
 
     // =========================================================================
-    //  2. MEGAPLAY EXTRACTOR (FIXED SUSPEND ERROR)
+    //  2. MEGAPLAY / KIWISTREAM EXTRACTOR (DYNAMIC DOMAIN)
     // =========================================================================
     inner class MegaplayExtractor : ExtractorApi() {
         override val name = "Megaplay"
@@ -117,41 +117,45 @@ class AnikotoProvider : MainAPI() {
 
         suspend fun getVideos(url: String, serverName: String, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
             try {
-                // 1. Headers để stream video
-                val streamHeaders = mapOf(
-                    "Referer" to "https://megaplay.buzz/",
+                // 1. Xác định Domain gốc (Megaplay hay Kiwistream)
+                val uri = android.net.Uri.parse(url)
+                val domain = "${uri.scheme}://${uri.host}"
+
+                // 2. Headers chung giả lập trình duyệt
+                val commonHeaders = mapOf(
                     "User-Agent" to userAgent,
+                    "Referer" to "$domain/",
                     "Sec-Ch-Ua" to "\"Chromium\";v=\"137\", \"Not/A)Brand\";v=\"24\"",
                     "Sec-Ch-Ua-Mobile" to "?1",
                     "Sec-Ch-Ua-Platform" to "\"Android\""
                 )
 
-                // 2. Tải HTML trang embed
+                // 3. Tải HTML trang embed để lấy data-id
                 val doc = app.get(url, headers = mapOf("Referer" to "https://anikoto.tv/", "User-Agent" to userAgent)).document
                 
-                val playerDiv = doc.selectFirst("#megaplay-player")
+                val playerDiv = doc.selectFirst("#megaplay-player, #player") // Hỗ trợ cả id #player nếu có
                 val dataId = playerDiv?.attr("data-id") ?: return
 
-                // 3. Gọi API getSources
-                val apiUrl = "$mainUrl/stream/getSources?id=$dataId"
-                val apiHeaders = mapOf(
+                // 4. Gọi API getSources
+                val apiUrl = "$domain/stream/getSources?id=$dataId"
+                
+                val apiHeaders = commonHeaders + mapOf(
                     "X-Requested-With" to "XMLHttpRequest",
-                    "Referer" to url, 
-                    "User-Agent" to userAgent,
+                    "Referer" to url, // Referer là link embed
                     "Accept" to "application/json, text/javascript, */*; q=0.01"
                 )
 
                 val textResponse = app.get(apiUrl, headers = apiHeaders).text
                 
-                // 4. Parse JSON
+                // 5. Parse JSON
                 val mapper = ObjectMapper()
                 val jsonNode = mapper.readTree(textResponse)
                 val sourcesNode = jsonNode.get("sources")
 
-                // [FIXED] Thêm từ khóa suspend để gọi được newExtractorLink
+                // Hàm local suspend để add link
                 suspend fun addLink(file: String) {
                     callback(newExtractorLink(serverName, serverName, file, ExtractorLinkType.M3U8) {
-                        this.headers = streamHeaders 
+                        this.headers = commonHeaders // Inject headers chuẩn
                         this.quality = Qualities.Unknown.value
                     })
                 }
@@ -159,18 +163,13 @@ class AnikotoProvider : MainAPI() {
                 // Xử lý Sources
                 if (sourcesNode != null) {
                     if (sourcesNode.isArray) {
-                        // [FIXED] Dùng vòng lặp for thay vì forEach để hỗ trợ suspend function
                         for (source in sourcesNode) {
                             val file = source.get("file")?.asText()
-                            if (!file.isNullOrBlank()) {
-                                addLink(file)
-                            }
+                            if (!file.isNullOrBlank()) addLink(file)
                         }
                     } else if (sourcesNode.isObject) {
                         val file = sourcesNode.get("file")?.asText()
-                        if (!file.isNullOrBlank()) {
-                            addLink(file)
-                        }
+                        if (!file.isNullOrBlank()) addLink(file)
                     }
                 } else if (jsonNode.get("encrypted")?.asBoolean() == true) {
                     // Fallback
@@ -374,8 +373,8 @@ class AnikotoProvider : MainAPI() {
                             if (!embedUrl.isNullOrBlank()) {
                                 val safeName = "$serverName ($type)"
                                 
-                                // Logic định tuyến Extractor
-                                if (embedUrl.contains("megaplay.buzz")) {
+                                // Logic định tuyến mới hỗ trợ cả Megaplay và Kiwistream
+                                if (embedUrl.contains("megaplay") || embedUrl.contains("kiwi")) {
                                     MegaplayExtractor().getVideos(embedUrl, safeName, subtitleCallback, callback)
                                 } else if (embedUrl.contains("mewcdn") || embedUrl.contains("megacloud") || embedUrl.contains("plyr.php")) {
                                     MewCloudExtractor().getVideos(embedUrl, safeName, subtitleCallback, callback)
