@@ -22,11 +22,15 @@ class AnikotoProvider : MainAPI() {
     override var lang = "en"
     override val supportedTypes = setOf(TvType.Anime, TvType.Movie, TvType.OVA)
 
-    // Headers chung
-    private val ajaxHeaders = mapOf(
-        "X-Requested-With" to "XMLHttpRequest",
+    // 1. Headers cơ bản (Cho duyệt web thông thường) -> FIX lỗi phân trang
+    private val baseHeaders = mapOf(
         "Referer" to "$mainUrl/",
         "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
+    )
+
+    // 2. Headers cho API/AJAX (Thêm X-Requested-With)
+    private val ajaxHeaders = baseHeaders + mapOf(
+        "X-Requested-With" to "XMLHttpRequest"
     )
 
     // --- JSON Models ---
@@ -90,12 +94,13 @@ class AnikotoProvider : MainAPI() {
                 val pairId = "$id-$type"
                 val apiUrl = "$mainUrl/save_data.php?id=$pairId"
                 
+                // Headers riêng cho MewCloud (giả lập request từ web player)
                 val headers = mapOf(
                     "Authority" to "mewcdn.online",
                     "Accept" to "application/json, text/javascript, */*; q=0.01",
                     "Origin" to "https://megacloud.bloggy.click",
                     "Referer" to "https://megacloud.bloggy.click/",
-                    "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
+                    "User-Agent" to baseHeaders["User-Agent"]!!
                 )
 
                 val response = app.get(apiUrl, headers = headers).parsedSafe<MewResponse>()
@@ -170,7 +175,7 @@ class AnikotoProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // [FIXED] Sửa lỗi showToast: Dùng Toast.makeText trực tiếp thay vì import CommonActivity
+        // TOAST Message
         if (page == 1) {
             withContext(Dispatchers.Main) {
                 CommonActivity.activity?.let { activity ->
@@ -183,12 +188,16 @@ class AnikotoProvider : MainAPI() {
 
         val url = request.data + page
 
+        // [LOGIC QUAN TRỌNG] Tách xử lý headers
         val doc = if (url.contains("/ajax/")) {
+            // Case A: API AJAX -> Dùng ajaxHeaders
             val jsonText = app.get(url, headers = ajaxHeaders).text
             val jsonResponse = parseJson<AjaxResponse>(jsonText)
             Jsoup.parse(jsonResponse.result)
         } else {
-            app.get(url, headers = ajaxHeaders).document
+            // Case B: Trang HTML thường (New Release, Most Viewed...) -> Dùng baseHeaders
+            // Nếu dùng ajaxHeaders ở đây, server sẽ trả về trang 1 mặc định -> Lỗi spam trang 1
+            app.get(url, headers = baseHeaders).document
         }
         
         val elements = doc.select(".ani.items .item, .item")
@@ -206,12 +215,14 @@ class AnikotoProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/filter?keyword=$query"
-        val doc = app.get(url, headers = ajaxHeaders).document
+        // Search là trang thường -> Dùng baseHeaders
+        val doc = app.get(url, headers = baseHeaders).document
         return doc.select("div.ani.items > div.item").mapNotNull { it.toSearchResult() }
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val doc = app.get(url, headers = ajaxHeaders).document
+        // Load trang chi tiết -> Trang thường -> Dùng baseHeaders
+        val doc = app.get(url, headers = baseHeaders).document
         val title = doc.selectFirst("h1.title.d-title")?.text() ?: "Unknown"
         val description = doc.selectFirst(".synopsis .content")?.text()
         val poster = doc.selectFirst(".binfo .poster img")?.attr("src")
@@ -227,6 +238,7 @@ class AnikotoProvider : MainAPI() {
             else -> ""
         }
 
+        // Gọi API lấy tập phim -> API -> Dùng ajaxHeaders
         val ajaxUrl = "$mainUrl/ajax/episode/list/$dataId"
         val json = app.get(ajaxUrl, headers = ajaxHeaders).parsedSafe<AjaxResponse>() ?: throw ErrorLoadingException("Failed to fetch episodes JSON")
         val episodesDoc = Jsoup.parse(json.result)
@@ -245,6 +257,7 @@ class AnikotoProvider : MainAPI() {
             
             if (epIds.isBlank()) return@mapNotNull null
             
+            // URL này chưa gọi ngay, chỉ lưu lại để loadLinks gọi
             val epUrl = "$mainUrl/ajax/server/list?servers=$epIds&mal=$malId&time=$timestamp&ep=$epNumStr"
             
             newEpisode(epUrl) {
@@ -276,10 +289,10 @@ class AnikotoProvider : MainAPI() {
         val timestamp = urlObj.getQueryParameter("time")
         val epNum = urlObj.getQueryParameter("ep")
         
-        // Khai báo rõ kiểu dữ liệu để compiler dễ hiểu
         val linkTasks = mutableListOf<Triple<String, String, String>>() 
 
         coroutineScope {
+            // Task lấy server gốc -> API -> Dùng ajaxHeaders
             val taskAnikoto = async {
                 try {
                     val json = app.get(data, headers = ajaxHeaders).parsedSafe<AjaxResponse>()
@@ -297,6 +310,7 @@ class AnikotoProvider : MainAPI() {
                 } catch (e: Exception) { e.printStackTrace() }
             }
 
+            // Task Mapper -> External API -> Dùng headers riêng
             val taskMapper = async {
                 if (!malId.isNullOrBlank() && !timestamp.isNullOrBlank()) {
                     try {
@@ -304,7 +318,7 @@ class AnikotoProvider : MainAPI() {
                         val mapperHeaders = mapOf(
                             "Origin" to mainUrl,
                             "Referer" to "$mainUrl/",
-                            "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
+                            "User-Agent" to baseHeaders["User-Agent"]!!
                         )
                         val responseText = app.get(mapperUrl, headers = mapperHeaders).text
                         val mapperJson = ObjectMapper().readTree(responseText)
@@ -328,13 +342,13 @@ class AnikotoProvider : MainAPI() {
 
             awaitAll(taskAnikoto, taskMapper)
 
-            // [FIXED] Sửa lỗi Cannot Infer Type: Không destructuring trực tiếp trong lambda arguments
             linkTasks.map { item ->
                 async {
                     try {
-                        val (linkId, serverName, type) = item // Destructuring ở đây an toàn hơn
+                        val (linkId, serverName, type) = item 
                         
                         val resolveUrl = "$mainUrl/ajax/server?get=$linkId"
+                        // Resolve Server -> API -> Dùng ajaxHeaders
                         val responseText = app.get(resolveUrl, headers = ajaxHeaders).text
                         
                         if (!responseText.trim().startsWith("<")) {
