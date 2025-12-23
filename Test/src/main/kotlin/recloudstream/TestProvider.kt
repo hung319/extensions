@@ -25,7 +25,7 @@ class AnikotoProvider : MainAPI() {
     // Common User-Agent
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
 
-    // 1. Headers chung (Không set Authority)
+    // 1. Headers chung
     private fun getBaseHeaders(referer: String = "$mainUrl/") = mapOf(
         "Accept-Language" to "vi-VN,vi;q=0.9",
         "Sec-Ch-Ua" to "\"Chromium\";v=\"137\", \"Not/A)Brand\";v=\"24\"",
@@ -70,9 +70,17 @@ class AnikotoProvider : MainAPI() {
                             val decodedBytes = Base64.decode(fragments[1], Base64.DEFAULT)
                             val decodedUrl = String(decodedBytes).trim()
                             if (decodedUrl.startsWith("http")) {
-                                callback(newExtractorLink(serverName, serverName, decodedUrl, ExtractorLinkType.M3U8, Qualities.Unknown.value) {
+                                // [FIXED] Sử dụng newExtractorLink đúng chuẩn mới
+                                val link = newExtractorLink(
+                                    source = serverName,
+                                    name = serverName,
+                                    url = decodedUrl,
+                                    type = ExtractorLinkType.M3U8
+                                ) {
                                     this.referer = url
-                                })
+                                    this.quality = Qualities.Unknown.value
+                                }
+                                callback(link)
                                 return
                             }
                         } catch (e: Exception) {}
@@ -97,9 +105,17 @@ class AnikotoProvider : MainAPI() {
 
                 response.sources?.forEach { source ->
                     source.url?.let { m3u8 ->
-                        callback(newExtractorLink(serverName, serverName, m3u8, ExtractorLinkType.M3U8, Qualities.Unknown.value) {
+                        // [FIXED] Sử dụng newExtractorLink đúng chuẩn mới
+                        val link = newExtractorLink(
+                            source = serverName,
+                            name = serverName,
+                            url = m3u8,
+                            type = ExtractorLinkType.M3U8
+                        ) {
                             this.referer = "https://megacloud.bloggy.click/"
-                        })
+                            this.quality = Qualities.Unknown.value
+                        }
+                        callback(link)
                     }
                 }
 
@@ -118,8 +134,6 @@ class AnikotoProvider : MainAPI() {
     //  2. MAIN PROVIDER LOGIC
     // =========================================================================
 
-    // [QUAN TRỌNG] Xóa bỏ "?page=" ở cuối URL. 
-    // Chúng ta sẽ dùng tham số `params` để CloudStream tự nối chuỗi đúng chuẩn.
     override val mainPage = mainPageOf(
         "$mainUrl/ajax/home/widget/updated-all" to "Recently Updated",
         "$mainUrl/new-release" to "New Added",
@@ -147,17 +161,15 @@ class AnikotoProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Toast chỉ trang 1
         if (page == 1) {
             withContext(Dispatchers.Main) {
                 try { CommonActivity.activity?.let { Toast.makeText(it, "Free Repo From H4RS", Toast.LENGTH_LONG).show() } } catch (e: Exception) {}
             }
         }
 
-        val url = request.data // URL gốc không có page
+        val url = request.data
         val isAjax = url.contains("/ajax/")
         
-        // [FIX LOGIC HEADERS]
         val headers = getBaseHeaders(referer = url).toMutableMap()
         
         if (isAjax) {
@@ -171,8 +183,6 @@ class AnikotoProvider : MainAPI() {
             headers["Sec-Fetch-Dest"] = "document"
         }
 
-        // [FIX LOGIC REQUEST] Dùng params map để tự động xử lý ?page= hay &page=
-        // CloudStream sẽ tự nối: url + "?page=2" hoặc url + "&page=2"
         val doc = if (isAjax) {
             val jsonText = app.get(url, headers = headers, params = mapOf("page" to page.toString())).text
             val jsonResponse = parseJson<AjaxResponse>(jsonText)
@@ -191,7 +201,6 @@ class AnikotoProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/filter"
-        // Dùng params cho search luôn cho chuẩn
         val doc = app.get(url, headers = getBaseHeaders(), params = mapOf("keyword" to query)).document
         return doc.select("div.ani.items > div.item").mapNotNull { it.toSearchResult() }
     }
@@ -224,7 +233,6 @@ class AnikotoProvider : MainAPI() {
 
             val epName = element.select("span.d-title").text().takeIf { it.isNotBlank() } ?: "Episode $epNumStr"
             
-            // Xây dựng URL chứa tham số để loadLinks xử lý
             val epUrl = "$mainUrl/ajax/server/list?servers=$epIds&mal=${element.attr("data-mal")}&time=${element.attr("data-timestamp")}&ep=$epNumStr"
             
             newEpisode(epUrl) {
