@@ -22,40 +22,26 @@ class AnikotoProvider : MainAPI() {
     override var lang = "en"
     override val supportedTypes = setOf(TvType.Anime, TvType.Movie, TvType.OVA)
 
-    // 1. HEADERS CHO TRANG HTML (New Release, Most Viewed...)
-    // Copy chuẩn từ CURL của bạn để giả lập hành vi "Navigate" của trình duyệt
-    private val documentHeaders = mapOf(
-        "Authority" to "anikoto.tv",
-        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+    // Common User-Agent
+    private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
+
+    // 1. Headers chung (Không set Authority)
+    private fun getBaseHeaders(referer: String = "$mainUrl/") = mapOf(
         "Accept-Language" to "vi-VN,vi;q=0.9",
         "Sec-Ch-Ua" to "\"Chromium\";v=\"137\", \"Not/A)Brand\";v=\"24\"",
         "Sec-Ch-Ua-Mobile" to "?1",
         "Sec-Ch-Ua-Platform" to "\"Android\"",
-        "Sec-Fetch-Dest" to "document",
-        "Sec-Fetch-Mode" to "navigate",
         "Sec-Fetch-Site" to "same-origin",
         "Sec-Fetch-User" to "?1",
         "Upgrade-Insecure-Requests" to "1",
-        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
-        "Referer" to "$mainUrl/"
-    )
-
-    // 2. HEADERS CHO API/AJAX (Recently Updated, Episode List...)
-    // Thay đổi Accept và thêm X-Requested-With
-    private val ajaxHeaders = mapOf(
-        "Authority" to "anikoto.tv",
-        "Accept" to "application/json, text/javascript, */*; q=0.01",
-        "X-Requested-With" to "XMLHttpRequest",
-        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
-        "Referer" to "$mainUrl/"
+        "User-Agent" to userAgent,
+        "Referer" to referer
     )
 
     // --- JSON Models ---
     data class AjaxResponse(val status: Int, val result: String)
     data class ServerResponse(val status: Int, val result: ServerResult?)
     data class ServerResult(val url: String?)
-    
-    // MewCloud Models
     data class MewResponse(val time: Long?, val data: MewData?)
     data class MewData(val tracks: List<MewTrack>?, val sources: List<MewSource>?)
     data class MewTrack(val file: String?, val label: String?, val kind: String?)
@@ -80,23 +66,13 @@ class AnikotoProvider : MainAPI() {
                 if (url.contains("/player/plyr.php")) {
                     val fragments = url.split("#")
                     if (fragments.size > 1) {
-                        val base64String = fragments[1]
                         try {
-                            val decodedBytes = Base64.decode(base64String, Base64.DEFAULT)
+                            val decodedBytes = Base64.decode(fragments[1], Base64.DEFAULT)
                             val decodedUrl = String(decodedBytes).trim()
-
                             if (decodedUrl.startsWith("http")) {
-                                callback(
-                                    newExtractorLink(
-                                        source = serverName,
-                                        name = serverName,
-                                        url = decodedUrl,
-                                        type = ExtractorLinkType.M3U8
-                                    ) {
-                                        this.referer = url
-                                        this.quality = Qualities.Unknown.value
-                                    }
-                                )
+                                callback(newExtractorLink(serverName, serverName, decodedUrl, ExtractorLinkType.M3U8, Qualities.Unknown.value) {
+                                    this.referer = url
+                                })
                                 return
                             }
                         } catch (e: Exception) {}
@@ -107,53 +83,34 @@ class AnikotoProvider : MainAPI() {
                 val regex = Regex("""/(\d+)/(sub|dub)""")
                 val match = regex.find(url) ?: return
                 val (id, type) = match.destructured
-                
-                val pairId = "$id-$type"
-                val apiUrl = "$mainUrl/save_data.php?id=$pairId"
+                val apiUrl = "$mainUrl/save_data.php?id=$id-$type"
                 
                 val headers = mapOf(
                     "Authority" to "mewcdn.online",
                     "Accept" to "application/json, text/javascript, */*; q=0.01",
                     "Origin" to "https://megacloud.bloggy.click",
                     "Referer" to "https://megacloud.bloggy.click/",
-                    "User-Agent" to documentHeaders["User-Agent"]!!
+                    "User-Agent" to userAgent
                 )
 
-                val response = app.get(apiUrl, headers = headers).parsedSafe<MewResponse>()
-                val data = response?.data ?: return
+                val response = app.get(apiUrl, headers = headers).parsedSafe<MewResponse>()?.data ?: return
 
-                data.sources?.forEach { source ->
-                    val m3u8Url = source.url ?: return@forEach
-                    callback(
-                        newExtractorLink(
-                            source = serverName,
-                            name = serverName,
-                            url = m3u8Url,
-                            type = ExtractorLinkType.M3U8
-                        ) {
+                response.sources?.forEach { source ->
+                    source.url?.let { m3u8 ->
+                        callback(newExtractorLink(serverName, serverName, m3u8, ExtractorLinkType.M3U8, Qualities.Unknown.value) {
                             this.referer = "https://megacloud.bloggy.click/"
-                            this.quality = Qualities.Unknown.value
-                        }
-                    )
+                        })
+                    }
                 }
 
-                data.tracks
-                    ?.filter { it.kind == "captions" && !it.file.isNullOrBlank() }
+                response.tracks?.filter { it.kind == "captions" && !it.file.isNullOrBlank() }
                     ?.distinctBy { it.file }
                     ?.forEach { track ->
-                        val trackUrl = track.file!!
-                        val label = track.label ?: "English"
-                        
-                        subtitleCallback(
-                            newSubtitleFile(lang = label, url = trackUrl) {
-                                this.headers = headers
-                            }
-                        )
+                        subtitleCallback(newSubtitleFile(track.label ?: "English", track.file!!) {
+                            this.headers = headers
+                        })
                     }
-
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
+            } catch (e: Exception) { e.printStackTrace() }
         }
     }
 
@@ -161,23 +118,22 @@ class AnikotoProvider : MainAPI() {
     //  2. MAIN PROVIDER LOGIC
     // =========================================================================
 
+    // [QUAN TRỌNG] Xóa bỏ "?page=" ở cuối URL. 
+    // Chúng ta sẽ dùng tham số `params` để CloudStream tự nối chuỗi đúng chuẩn.
     override val mainPage = mainPageOf(
-        "$mainUrl/ajax/home/widget/updated-all?page=" to "Recently Updated",
-        "$mainUrl/new-release?page=" to "New Added",
-        "$mainUrl/most-viewed?page=" to "Most Popular",
-        "$mainUrl/status/currently-airing?page=" to "Ongoing",
-        "$mainUrl/status/finished-airing?page=" to "Completed"
+        "$mainUrl/ajax/home/widget/updated-all" to "Recently Updated",
+        "$mainUrl/new-release" to "New Added",
+        "$mainUrl/most-viewed" to "Most Popular",
+        "$mainUrl/status/currently-airing" to "Ongoing",
+        "$mainUrl/status/finished-airing" to "Completed"
     )
 
     private fun Element.toSearchResult(): SearchResponse? {
         val href = this.selectFirst("a")?.attr("href") ?: return null
         val title = this.selectFirst(".name.d-title")?.text() 
                  ?: this.selectFirst(".name")?.text() 
-                 ?: this.selectFirst(".d-title")?.text()
-                 ?: "Unknown"
-        
+                 ?: this.selectFirst(".d-title")?.text() ?: "Unknown"
         val posterUrl = this.selectFirst("img")?.attr("src")
-        
         val subText = this.selectFirst(".ep-status.sub span")?.text()
         val dubText = this.selectFirst(".ep-status.dub span")?.text()
         val epTotal = this.selectFirst(".ep-status.total span")?.text()
@@ -191,206 +147,161 @@ class AnikotoProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // TOAST Message
+        // Toast chỉ trang 1
         if (page == 1) {
             withContext(Dispatchers.Main) {
-                CommonActivity.activity?.let { activity ->
-                    try {
-                        Toast.makeText(activity, "Free Repo From H4RS", Toast.LENGTH_LONG).show()
-                    } catch (e: Exception) {}
-                }
+                try { CommonActivity.activity?.let { Toast.makeText(it, "Free Repo From H4RS", Toast.LENGTH_LONG).show() } } catch (e: Exception) {}
             }
         }
 
-        val url = request.data + page
+        val url = request.data // URL gốc không có page
+        val isAjax = url.contains("/ajax/")
+        
+        // [FIX LOGIC HEADERS]
+        val headers = getBaseHeaders(referer = url).toMutableMap()
+        
+        if (isAjax) {
+            headers["Accept"] = "application/json, text/javascript, */*; q=0.01"
+            headers["X-Requested-With"] = "XMLHttpRequest"
+            headers["Sec-Fetch-Mode"] = "cors"
+            headers["Sec-Fetch-Dest"] = "empty"
+        } else {
+            headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+            headers["Sec-Fetch-Mode"] = "navigate"
+            headers["Sec-Fetch-Dest"] = "document"
+        }
 
-        // --- PHÂN LOẠI REQUEST ---
-        val doc = if (url.contains("/ajax/")) {
-            // Loại 1: API AJAX (JSON) - Dùng ajaxHeaders (có X-Requested-With)
-            val jsonText = app.get(url, headers = ajaxHeaders).text
+        // [FIX LOGIC REQUEST] Dùng params map để tự động xử lý ?page= hay &page=
+        // CloudStream sẽ tự nối: url + "?page=2" hoặc url + "&page=2"
+        val doc = if (isAjax) {
+            val jsonText = app.get(url, headers = headers, params = mapOf("page" to page.toString())).text
             val jsonResponse = parseJson<AjaxResponse>(jsonText)
             Jsoup.parse(jsonResponse.result)
         } else {
-            // Loại 2: HTML Page (New Release...) - Dùng documentHeaders (như trình duyệt)
-            // QUAN TRỌNG: Không được gửi X-Requested-With ở đây
-            app.get(url, headers = documentHeaders).document
+            app.get(url, headers = headers, params = mapOf("page" to page.toString())).document
         }
-        
-        val elements = doc.select(".ani.items .item, .item")
-        val homeList = elements.mapNotNull { it.toSearchResult() }
+
+        val homeList = doc.select(".ani.items .item, .item").mapNotNull { it.toSearchResult() }
 
         return newHomePageResponse(
-            list = HomePageList(
-                name = request.name,
-                list = homeList,
-                isHorizontalImages = false 
-            ), 
+            list = HomePageList(request.name, homeList, isHorizontalImages = false), 
             hasNext = homeList.isNotEmpty()
         )
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$mainUrl/filter?keyword=$query"
-        // Search là trang HTML thường -> Dùng documentHeaders
-        val doc = app.get(url, headers = documentHeaders).document
+        val url = "$mainUrl/filter"
+        // Dùng params cho search luôn cho chuẩn
+        val doc = app.get(url, headers = getBaseHeaders(), params = mapOf("keyword" to query)).document
         return doc.select("div.ani.items > div.item").mapNotNull { it.toSearchResult() }
     }
 
     override suspend fun load(url: String): LoadResponse {
-        // Load trang chi tiết (HTML) -> Dùng documentHeaders
-        val doc = app.get(url, headers = documentHeaders).document
+        val doc = app.get(url, headers = getBaseHeaders(referer = url)).document
         val title = doc.selectFirst("h1.title.d-title")?.text() ?: "Unknown"
         val description = doc.selectFirst(".synopsis .content")?.text()
         val poster = doc.selectFirst(".binfo .poster img")?.attr("src")
         val ratingText = doc.selectFirst(".meta .rating")?.text()
         val dataId = doc.selectFirst("#watch-main")?.attr("data-id") ?: throw ErrorLoadingException("No ID")
         
-        val hasSub = doc.select(".meta .sub").isNotEmpty()
-        val hasDub = doc.select(".meta .dub").isNotEmpty()
         val typeTag = when {
-            hasSub && hasDub -> "[Sub/Dub]"
-            hasSub -> "[Sub]"
-            hasDub -> "[Dub]"
+            doc.select(".meta .sub").isNotEmpty() && doc.select(".meta .dub").isNotEmpty() -> "[Sub/Dub]"
+            doc.select(".meta .sub").isNotEmpty() -> "[Sub]"
+            doc.select(".meta .dub").isNotEmpty() -> "[Dub]"
             else -> ""
         }
 
-        // Lấy danh sách tập (API AJAX) -> Dùng ajaxHeaders
         val ajaxUrl = "$mainUrl/ajax/episode/list/$dataId"
-        val json = app.get(ajaxUrl, headers = ajaxHeaders).parsedSafe<AjaxResponse>() ?: throw ErrorLoadingException("Failed to fetch episodes JSON")
-        val episodesDoc = Jsoup.parse(json.result)
+        val ajaxHeaders = getBaseHeaders(referer = url) + mapOf("X-Requested-With" to "XMLHttpRequest")
         
-        val episodes = episodesDoc.select("ul.ep-range li a").mapNotNull { element ->
+        val json = app.get(ajaxUrl, headers = ajaxHeaders).parsedSafe<AjaxResponse>() 
+            ?: throw ErrorLoadingException("Failed to fetch episodes")
+        
+        val episodes = Jsoup.parse(json.result).select("ul.ep-range li a").mapNotNull { element ->
             val epNumStr = element.attr("data-num")
-            val epNum = epNumStr.toFloatOrNull() ?: 1f
-            
-            val rawName = element.select("span.d-title").text()
-            val epName = if (rawName.isNotBlank()) rawName else "Episode $epNumStr"
-            val finalName = "$epName $typeTag".trim()
-
             val epIds = element.attr("data-ids")
-            val malId = element.attr("data-mal")
-            val timestamp = element.attr("data-timestamp")
-            
             if (epIds.isBlank()) return@mapNotNull null
+
+            val epName = element.select("span.d-title").text().takeIf { it.isNotBlank() } ?: "Episode $epNumStr"
             
-            val epUrl = "$mainUrl/ajax/server/list?servers=$epIds&mal=$malId&time=$timestamp&ep=$epNumStr"
+            // Xây dựng URL chứa tham số để loadLinks xử lý
+            val epUrl = "$mainUrl/ajax/server/list?servers=$epIds&mal=${element.attr("data-mal")}&time=${element.attr("data-timestamp")}&ep=$epNumStr"
             
             newEpisode(epUrl) {
-                this.name = finalName
-                this.episode = epNum.toInt()
+                this.name = "$epName $typeTag".trim()
+                this.episode = epNumStr.toFloatOrNull()?.toInt()
             }
         }
         
-        val recommendations = doc.select(".w-side-section .item, #recent-update .item").mapNotNull { 
-            it.toSearchResult() 
-        }
+        val recommendations = doc.select(".w-side-section .item").mapNotNull { it.toSearchResult() }
 
         return newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
             this.posterUrl = poster
             this.plot = description
-            if (ratingText != null) this.score = Score.from10(ratingText.toDoubleOrNull() ?: 0.0)
+            this.score = Score.from10(ratingText?.toDoubleOrNull() ?: 0.0)
             this.recommendations = recommendations
         }
     }
 
-    override suspend fun loadLinks(
-        data: String,
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
+    override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
         val urlObj = android.net.Uri.parse(data)
         val malId = urlObj.getQueryParameter("mal")
         val timestamp = urlObj.getQueryParameter("time")
         val epNum = urlObj.getQueryParameter("ep")
         
         val linkTasks = mutableListOf<Triple<String, String, String>>() 
+        val ajaxHeaders = getBaseHeaders() + mapOf("X-Requested-With" to "XMLHttpRequest")
 
         coroutineScope {
-            // Task Server List (API AJAX) -> Dùng ajaxHeaders
             val taskAnikoto = async {
                 try {
-                    val json = app.get(data, headers = ajaxHeaders).parsedSafe<AjaxResponse>()
-                    if (json != null) {
-                        val doc = Jsoup.parse(json.result)
-                        doc.select(".servers .type li").forEach { server ->
+                    app.get(data, headers = ajaxHeaders).parsedSafe<AjaxResponse>()?.result?.let { html ->
+                        Jsoup.parse(html).select(".servers .type li").forEach { server ->
                             val linkId = server.attr("data-link-id")
-                            val serverName = server.text()
-                            val type = server.parent()?.parent()?.attr("data-type") ?: "sub"
                             if (linkId.isNotBlank()) {
-                                linkTasks.add(Triple(linkId, serverName, type))
+                                linkTasks.add(Triple(linkId, server.text(), server.parent()?.parent()?.attr("data-type") ?: "sub"))
                             }
                         }
                     }
-                } catch (e: Exception) { e.printStackTrace() }
+                } catch (e: Exception) {}
             }
 
             val taskMapper = async {
                 if (!malId.isNullOrBlank() && !timestamp.isNullOrBlank()) {
                     try {
                         val mapperUrl = "https://mapper.mewcdn.online/api/mal/$malId/$epNum/$timestamp"
-                        val mapperHeaders = mapOf(
-                            "Origin" to mainUrl,
-                            "Referer" to "$mainUrl/",
-                            "User-Agent" to documentHeaders["User-Agent"]!!
-                        )
-                        val responseText = app.get(mapperUrl, headers = mapperHeaders).text
-                        val mapperJson = ObjectMapper().readTree(responseText)
-                        val fields = mapperJson.fieldNames()
-                        while (fields.hasNext()) {
-                            val serverKey = fields.next()
-                            val serverNode = mapperJson.get(serverKey)
-                            
-                            if (serverNode.has("sub")) {
-                                val id = serverNode.get("sub").get("url").asText()
-                                linkTasks.add(Triple(id, "$serverKey", "sub"))
-                            }
-                            if (serverNode.has("dub")) {
-                                val id = serverNode.get("dub").get("url").asText()
-                                linkTasks.add(Triple(id, "$serverKey", "dub"))
-                            }
+                        val json = app.get(mapperUrl, headers = mapOf("Origin" to mainUrl, "Referer" to "$mainUrl/")).text
+                        val mapperJson = ObjectMapper().readTree(json)
+                        mapperJson.fieldNames().forEach { key ->
+                            val node = mapperJson.get(key)
+                            if (node.has("sub")) linkTasks.add(Triple(node.get("sub").get("url").asText(), key, "sub"))
+                            if (node.has("dub")) linkTasks.add(Triple(node.get("dub").get("url").asText(), key, "dub"))
                         }
-                    } catch (e: Exception) { e.printStackTrace() }
+                    } catch (e: Exception) {}
                 }
             }
-
             awaitAll(taskAnikoto, taskMapper)
 
-            linkTasks.map { item ->
+            linkTasks.map { (linkId, serverName, type) ->
                 async {
                     try {
-                        val (linkId, serverName, type) = item 
-                        
-                        // Resolve Server (API AJAX) -> Dùng ajaxHeaders
                         val resolveUrl = "$mainUrl/ajax/server?get=$linkId"
                         val responseText = app.get(resolveUrl, headers = ajaxHeaders).text
-                        
                         if (!responseText.trim().startsWith("<")) {
-                            val linkJson = AppUtils.parseJson<ServerResponse>(responseText)
-                            val embedUrl = linkJson.result?.url
-                            
+                            val embedUrl = parseJson<ServerResponse>(responseText).result?.url
                             if (!embedUrl.isNullOrBlank()) {
-                                val safeServerName = "$serverName ($type)"
-
-                                if (embedUrl.contains("megacloud.bloggy.click") || 
-                                    embedUrl.contains("vidwish.live") ||
-                                    embedUrl.contains("mewcdn.online") ||
-                                    embedUrl.contains("/player/plyr.php")) {
-                                    
-                                    MewCloudExtractor().getVideos(embedUrl, safeServerName, subtitleCallback, callback)
-                                    
+                                val safeName = "$serverName ($type)"
+                                if (embedUrl.contains("mewcdn") || embedUrl.contains("megacloud") || embedUrl.contains("plyr.php")) {
+                                    MewCloudExtractor().getVideos(embedUrl, safeName, subtitleCallback, callback)
                                 } else {
-                                    loadExtractor(embedUrl, safeServerName, subtitleCallback, callback)
+                                    loadExtractor(embedUrl, safeName, subtitleCallback, callback)
                                 }
                             }
                         }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
+                    } catch (e: Exception) {}
                 }
             }.awaitAll()
         }
-
         return true
     }
 }
