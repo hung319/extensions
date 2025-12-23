@@ -9,10 +9,7 @@ import org.jsoup.nodes.Element
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import android.util.Base64
-import android.widget.Toast
 import com.fasterxml.jackson.databind.ObjectMapper
 
 class AnikotoProvider : MainAPI() {
@@ -24,6 +21,7 @@ class AnikotoProvider : MainAPI() {
 
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
 
+    // Hàm tạo Header chuẩn cho từng Request
     private fun getBaseHeaders(referer: String = "$mainUrl/") = mapOf(
         "Accept-Language" to "vi-VN,vi;q=0.9",
         "Sec-Ch-Ua" to "\"Chromium\";v=\"137\", \"Not/A)Brand\";v=\"24\"",
@@ -111,7 +109,6 @@ class AnikotoProvider : MainAPI() {
     //  MAIN LOGIC
     // =========================================================================
 
-    // Xóa ?page= ở URL config
     override val mainPage = mainPageOf(
         "$mainUrl/ajax/home/widget/updated-all" to "Recently Updated",
         "$mainUrl/new-release" to "New Added",
@@ -139,17 +136,10 @@ class AnikotoProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        if (page == 1) {
-            withContext(Dispatchers.Main) {
-                try { CommonActivity.activity?.let { Toast.makeText(it, "Free Repo From H4RS", Toast.LENGTH_LONG).show() } } catch (e: Exception) {}
-            }
-        }
-
-        // [LOGIC URL THỦ CÔNG - QUAN TRỌNG]
-        // 1. Lấy URL gốc
-        var url = request.data
+        // [QUAN TRỌNG] Đã xóa Toast để tránh lỗi Thread Exception
         
-        // 2. Chỉ thêm ?page=X nếu page > 1
+        // Logic ghép URL thủ công (Tránh redirect trang 1)
+        var url = request.data
         if (page > 1) {
             val separator = if (url.contains("?")) "&" else "?"
             url = "$url${separator}page=$page"
@@ -157,8 +147,8 @@ class AnikotoProvider : MainAPI() {
 
         val isAjax = url.contains("/ajax/")
         
-        // Headers
-        val headers = getBaseHeaders(referer = request.data).toMutableMap() // Referer trỏ về trang gốc
+        // Headers riêng biệt cho từng loại request
+        val headers = getBaseHeaders(referer = request.data).toMutableMap()
         
         if (isAjax) {
             headers["Accept"] = "application/json, text/javascript, */*; q=0.01"
@@ -171,7 +161,6 @@ class AnikotoProvider : MainAPI() {
             headers["Sec-Fetch-Dest"] = "document"
         }
 
-        // Gọi request KHÔNG dùng params map
         val doc = if (isAjax) {
             val jsonText = app.get(url, headers = headers).text
             val jsonResponse = parseJson<AjaxResponse>(jsonText)
@@ -189,7 +178,6 @@ class AnikotoProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        // Search cũng nên làm thủ công cho chắc
         val url = "$mainUrl/filter?keyword=$query"
         val doc = app.get(url, headers = getBaseHeaders()).document
         return doc.select("div.ani.items > div.item").mapNotNull { it.toSearchResult() }
