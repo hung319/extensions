@@ -108,7 +108,7 @@ class AnikotoProvider : MainAPI() {
     }
 
     // =========================================================================
-    //  2. MEGAPLAY EXTRACTOR (UPDATED HEADERS)
+    //  2. MEGAPLAY EXTRACTOR (FIXED SUSPEND ERROR)
     // =========================================================================
     inner class MegaplayExtractor : ExtractorApi() {
         override val name = "Megaplay"
@@ -117,8 +117,7 @@ class AnikotoProvider : MainAPI() {
 
         suspend fun getVideos(url: String, serverName: String, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
             try {
-                // 1. Headers để stream video (Quan trọng cho m3u8 và ts/jpg segment)
-                // Copy chuẩn từ CURL
+                // 1. Headers để stream video
                 val streamHeaders = mapOf(
                     "Referer" to "https://megaplay.buzz/",
                     "User-Agent" to userAgent,
@@ -149,22 +148,29 @@ class AnikotoProvider : MainAPI() {
                 val jsonNode = mapper.readTree(textResponse)
                 val sourcesNode = jsonNode.get("sources")
 
-                // Hàm local để add link với header chuẩn
-                fun addLink(file: String) {
+                // [FIXED] Thêm từ khóa suspend để gọi được newExtractorLink
+                suspend fun addLink(file: String) {
                     callback(newExtractorLink(serverName, serverName, file, ExtractorLinkType.M3U8) {
-                        this.headers = streamHeaders // Inject headers vào đây
+                        this.headers = streamHeaders 
                         this.quality = Qualities.Unknown.value
                     })
                 }
 
-                // Xử lý Sources (Object hoặc Array)
+                // Xử lý Sources
                 if (sourcesNode != null) {
                     if (sourcesNode.isArray) {
-                        sourcesNode.forEach { source ->
-                            source.get("file")?.asText()?.let { if (it.isNotBlank()) addLink(it) }
+                        // [FIXED] Dùng vòng lặp for thay vì forEach để hỗ trợ suspend function
+                        for (source in sourcesNode) {
+                            val file = source.get("file")?.asText()
+                            if (!file.isNullOrBlank()) {
+                                addLink(file)
+                            }
                         }
                     } else if (sourcesNode.isObject) {
-                        sourcesNode.get("file")?.asText()?.let { if (it.isNotBlank()) addLink(it) }
+                        val file = sourcesNode.get("file")?.asText()
+                        if (!file.isNullOrBlank()) {
+                            addLink(file)
+                        }
                     }
                 } else if (jsonNode.get("encrypted")?.asBoolean() == true) {
                     // Fallback
@@ -174,7 +180,7 @@ class AnikotoProvider : MainAPI() {
                 // Xử lý Subtitles
                 val tracksNode = jsonNode.get("tracks")
                 if (tracksNode != null && tracksNode.isArray) {
-                    tracksNode.forEach { track ->
+                    for (track in tracksNode) {
                         val kind = track.get("kind")?.asText()
                         val file = track.get("file")?.asText()
                         val label = track.get("label")?.asText() ?: "English"
