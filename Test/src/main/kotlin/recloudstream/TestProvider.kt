@@ -14,6 +14,7 @@ import kotlinx.coroutines.withContext
 import android.util.Base64
 import android.widget.Toast
 import com.fasterxml.jackson.databind.ObjectMapper
+import android.net.Uri
 
 class AnikotoProvider : MainAPI() {
     override var mainUrl = "https://anikoto.tv"
@@ -22,6 +23,7 @@ class AnikotoProvider : MainAPI() {
     override var lang = "en"
     override val supportedTypes = setOf(TvType.Anime, TvType.Movie, TvType.OVA)
 
+    // User-Agent cố định để đồng bộ giữa API call và Video Player
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
 
     private fun getBaseHeaders(referer: String = "$mainUrl/") = mapOf(
@@ -108,7 +110,7 @@ class AnikotoProvider : MainAPI() {
     }
 
     // =========================================================================
-    //  2. MEGAPLAY / KIWISTREAM EXTRACTOR (DYNAMIC DOMAIN)
+    //  2. MEGAPLAY / KIWISTREAM EXTRACTOR (FIX BAD HTTP STATUS)
     // =========================================================================
     inner class MegaplayExtractor : ExtractorApi() {
         override val name = "Megaplay"
@@ -117,14 +119,18 @@ class AnikotoProvider : MainAPI() {
 
         suspend fun getVideos(url: String, serverName: String, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
             try {
-                // 1. Xác định Domain gốc (Megaplay hay Kiwistream)
-                val uri = android.net.Uri.parse(url)
-                val domain = "${uri.scheme}://${uri.host}"
+                // 1. Xác định chính xác Domain gốc (ví dụ: https://megaplay.buzz hoặc https://kiwistream.com)
+                // Cắt bỏ phần path, chỉ lấy scheme + host
+                val uri = Uri.parse(url)
+                val hostUrl = "${uri.scheme}://${uri.host}" // Kết quả: https://megaplay.buzz
+                val refererUrl = "$hostUrl/" // Kết quả: https://megaplay.buzz/
 
-                // 2. Headers chung giả lập trình duyệt
-                val commonHeaders = mapOf(
+                // 2. Tạo bộ Header chuẩn cho Player (Video Stream)
+                // Đây là bộ header sẽ gửi kèm request lấy file .m3u8 và .ts
+                val playerHeaders = mapOf(
+                    "Origin" to hostUrl,           // QUAN TRỌNG: Tránh lỗi CORS
+                    "Referer" to refererUrl,       // QUAN TRỌNG: Server check cái này
                     "User-Agent" to userAgent,
-                    "Referer" to "$domain/",
                     "Sec-Ch-Ua" to "\"Chromium\";v=\"137\", \"Not/A)Brand\";v=\"24\"",
                     "Sec-Ch-Ua-Mobile" to "?1",
                     "Sec-Ch-Ua-Platform" to "\"Android\""
@@ -133,15 +139,15 @@ class AnikotoProvider : MainAPI() {
                 // 3. Tải HTML trang embed để lấy data-id
                 val doc = app.get(url, headers = mapOf("Referer" to "https://anikoto.tv/", "User-Agent" to userAgent)).document
                 
-                val playerDiv = doc.selectFirst("#megaplay-player, #player") // Hỗ trợ cả id #player nếu có
+                val playerDiv = doc.selectFirst("#megaplay-player, #player")
                 val dataId = playerDiv?.attr("data-id") ?: return
 
                 // 4. Gọi API getSources
-                val apiUrl = "$domain/stream/getSources?id=$dataId"
-                
-                val apiHeaders = commonHeaders + mapOf(
+                val apiUrl = "$hostUrl/stream/getSources?id=$dataId"
+                val apiHeaders = mapOf(
                     "X-Requested-With" to "XMLHttpRequest",
-                    "Referer" to url, // Referer là link embed
+                    "Referer" to url, // Referer của API phải là link embed đầy đủ
+                    "User-Agent" to userAgent,
                     "Accept" to "application/json, text/javascript, */*; q=0.01"
                 )
 
@@ -152,15 +158,16 @@ class AnikotoProvider : MainAPI() {
                 val jsonNode = mapper.readTree(textResponse)
                 val sourcesNode = jsonNode.get("sources")
 
-                // Hàm local suspend để add link
+                // Hàm local suspend để add link vào callback
                 suspend fun addLink(file: String) {
                     callback(newExtractorLink(serverName, serverName, file, ExtractorLinkType.M3U8) {
-                        this.headers = commonHeaders // Inject headers chuẩn
+                        this.headers = playerHeaders // Inject bộ header chuẩn vào đây
+                        this.referer = refererUrl    // Set cứng referer cho chắc chắn
                         this.quality = Qualities.Unknown.value
                     })
                 }
 
-                // Xử lý Sources
+                // Xử lý Sources (Hỗ trợ cả Array và Object)
                 if (sourcesNode != null) {
                     if (sourcesNode.isArray) {
                         for (source in sourcesNode) {
@@ -325,7 +332,7 @@ class AnikotoProvider : MainAPI() {
     }
 
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
-        val urlObj = android.net.Uri.parse(data)
+        val urlObj = Uri.parse(data)
         val malId = urlObj.getQueryParameter("mal")
         val timestamp = urlObj.getQueryParameter("time")
         val epNum = urlObj.getQueryParameter("ep")
