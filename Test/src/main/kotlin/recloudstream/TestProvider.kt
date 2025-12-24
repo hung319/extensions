@@ -14,7 +14,6 @@ import kotlinx.coroutines.withContext
 import android.util.Base64
 import android.widget.Toast
 import com.fasterxml.jackson.databind.ObjectMapper
-import android.net.Uri
 
 class AnikotoProvider : MainAPI() {
     override var mainUrl = "https://anikoto.tv"
@@ -23,7 +22,6 @@ class AnikotoProvider : MainAPI() {
     override var lang = "en"
     override val supportedTypes = setOf(TvType.Anime, TvType.Movie, TvType.OVA)
 
-    // User-Agent chuẩn từ CURL
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
 
     private fun getBaseHeaders(referer: String = "$mainUrl/") = mapOf(
@@ -46,9 +44,9 @@ class AnikotoProvider : MainAPI() {
     data class MewData(val tracks: List<MewTrack>?, val sources: List<MewSource>?)
     data class MewTrack(val file: String?, val label: String?, val kind: String?)
     data class MewSource(val url: String?)
-    
+
     // =========================================================================
-    //  1. MEW CLOUD EXTRACTOR
+    //  1. MEW CLOUD EXTRACTOR (Giữ lại vì hoạt động tốt)
     // =========================================================================
     inner class MewCloudExtractor : ExtractorApi() {
         override val name = "MewCloud"
@@ -57,6 +55,7 @@ class AnikotoProvider : MainAPI() {
 
         suspend fun getVideos(url: String, serverName: String, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
             try {
+                // CASE 1: Plyr Base64
                 if (url.contains("/player/plyr.php")) {
                     val fragments = url.split("#")
                     if (fragments.size > 1) {
@@ -74,6 +73,7 @@ class AnikotoProvider : MainAPI() {
                     }
                 }
 
+                // CASE 2: API save_data.php
                 val regex = Regex("""/(\d+)/(sub|dub)""")
                 val match = regex.find(url) ?: return
                 val (id, type) = match.destructured
@@ -110,96 +110,6 @@ class AnikotoProvider : MainAPI() {
     }
 
     // =========================================================================
-    //  2. MEGAPLAY / KIWISTREAM EXTRACTOR (STRICT HEADERS)
-    // =========================================================================
-    inner class MegaplayExtractor : ExtractorApi() {
-        override val name = "Megaplay"
-        override val mainUrl = "https://megaplay.buzz"
-        override val requiresReferer = false
-
-        suspend fun getVideos(url: String, serverName: String, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
-            try {
-                // 1. Xác định Domain (Megaplay hoặc Kiwi)
-                val uri = Uri.parse(url)
-                val hostUrl = "${uri.scheme}://${uri.host}" // Vd: https://megaplay.buzz
-                val refererUrl = "$hostUrl/" // Vd: https://megaplay.buzz/
-
-                // 2. HEADERS CHUẨN TỪ CURL (Dùng cho Player để tải video)
-                // Lưu ý: Không thêm "Origin" vì CURL không có.
-                val streamHeaders = mapOf(
-                    "sec-ch-ua" to "\"Chromium\";v=\"137\", \"Not/A)Brand\";v=\"24\"",
-                    "Referer" to refererUrl, // Quan trọng: https://megaplay.buzz/
-                    "sec-ch-ua-mobile" to "?1",
-                    "User-Agent" to userAgent,
-                    "sec-ch-ua-platform" to "\"Android\""
-                )
-
-                // 3. Lấy data-id từ trang Embed
-                val doc = app.get(url, headers = mapOf("Referer" to "https://anikoto.tv/", "User-Agent" to userAgent)).document
-                val playerDiv = doc.selectFirst("#megaplay-player, #player")
-                val dataId = playerDiv?.attr("data-id") ?: return
-
-                // 4. Gọi API lấy Source (Headers riêng cho API call)
-                val apiUrl = "$hostUrl/stream/getSources?id=$dataId"
-                val apiHeaders = mapOf(
-                    "X-Requested-With" to "XMLHttpRequest",
-                    "Referer" to url, // Referer lúc gọi API là link embed
-                    "User-Agent" to userAgent,
-                    "Accept" to "application/json, text/javascript, */*; q=0.01"
-                )
-
-                val textResponse = app.get(apiUrl, headers = apiHeaders).text
-                
-                // 5. Parse JSON
-                val mapper = ObjectMapper()
-                val jsonNode = mapper.readTree(textResponse)
-                val sourcesNode = jsonNode.get("sources")
-
-                // Hàm local suspend để add link
-                suspend fun addLink(file: String) {
-                    callback(newExtractorLink(serverName, serverName, file, ExtractorLinkType.M3U8) {
-                        this.headers = streamHeaders // Inject bộ header chuẩn CURL vào ExtractorLink
-                        this.quality = Qualities.Unknown.value
-                    })
-                }
-
-                // Xử lý Sources
-                if (sourcesNode != null) {
-                    if (sourcesNode.isArray) {
-                        for (source in sourcesNode) {
-                            val file = source.get("file")?.asText()
-                            if (!file.isNullOrBlank()) addLink(file)
-                        }
-                    } else if (sourcesNode.isObject) {
-                        val file = sourcesNode.get("file")?.asText()
-                        if (!file.isNullOrBlank()) addLink(file)
-                    }
-                } else if (jsonNode.get("encrypted")?.asBoolean() == true) {
-                    // Fallback
-                    loadExtractor(url, serverName, subtitleCallback, callback)
-                }
-
-                // Xử lý Subtitles
-                val tracksNode = jsonNode.get("tracks")
-                if (tracksNode != null && tracksNode.isArray) {
-                    for (track in tracksNode) {
-                        val kind = track.get("kind")?.asText()
-                        val file = track.get("file")?.asText()
-                        val label = track.get("label")?.asText() ?: "English"
-                        
-                        if (kind == "captions" && !file.isNullOrBlank()) {
-                            subtitleCallback(newSubtitleFile(label, file))
-                        }
-                    }
-                }
-
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
-    }
-
-    // =========================================================================
     //  MAIN LOGIC
     // =========================================================================
 
@@ -230,6 +140,7 @@ class AnikotoProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        // [TOAST] Giữ nguyên theo yêu cầu
         if (page == 1) {
             withContext(Dispatchers.Main) {
                 try { 
@@ -240,24 +151,17 @@ class AnikotoProvider : MainAPI() {
             }
         }
 
-        var url = request.data
-        if (page > 1) {
-            val separator = if (url.contains("?")) "&" else "?"
-            url = "$url${separator}page=$page"
-        }
-
+        // [NO PAGINATION] Chỉ tải URL gốc, bỏ qua tham số page
+        val url = request.data 
         val isAjax = url.contains("/ajax/")
+        
         val headers = getBaseHeaders(referer = request.data).toMutableMap()
         
         if (isAjax) {
             headers["Accept"] = "application/json, text/javascript, */*; q=0.01"
             headers["X-Requested-With"] = "XMLHttpRequest"
-            headers["Sec-Fetch-Mode"] = "cors"
-            headers["Sec-Fetch-Dest"] = "empty"
         } else {
             headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
-            headers["Sec-Fetch-Mode"] = "navigate"
-            headers["Sec-Fetch-Dest"] = "document"
         }
 
         val doc = if (isAjax) {
@@ -272,7 +176,7 @@ class AnikotoProvider : MainAPI() {
 
         return newHomePageResponse(
             list = HomePageList(request.name, homeList, isHorizontalImages = false), 
-            hasNext = homeList.isNotEmpty()
+            hasNext = false // Tắt hoàn toàn phân trang
         )
     }
 
@@ -328,7 +232,7 @@ class AnikotoProvider : MainAPI() {
     }
 
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
-        val urlObj = Uri.parse(data)
+        val urlObj = android.net.Uri.parse(data)
         val malId = urlObj.getQueryParameter("mal")
         val timestamp = urlObj.getQueryParameter("time")
         val epNum = urlObj.getQueryParameter("ep")
@@ -376,10 +280,9 @@ class AnikotoProvider : MainAPI() {
                             if (!embedUrl.isNullOrBlank()) {
                                 val safeName = "$serverName ($type)"
                                 
-                                // Logic định tuyến Extractor
-                                if (embedUrl.contains("megaplay") || embedUrl.contains("kiwi")) {
-                                    MegaplayExtractor().getVideos(embedUrl, safeName, subtitleCallback, callback)
-                                } else if (embedUrl.contains("mewcdn") || embedUrl.contains("megacloud") || embedUrl.contains("plyr.php")) {
+                                // [SIMPLIFIED] Chỉ dùng MewCloudExtractor hoặc Fallback mặc định
+                                // Đã xóa MegaplayExtractor theo yêu cầu
+                                if (embedUrl.contains("mewcdn") || embedUrl.contains("megacloud") || embedUrl.contains("plyr.php")) {
                                     MewCloudExtractor().getVideos(embedUrl, safeName, subtitleCallback, callback)
                                 } else {
                                     loadExtractor(embedUrl, safeName, subtitleCallback, callback)
