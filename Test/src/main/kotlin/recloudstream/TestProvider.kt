@@ -13,7 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import android.util.Base64
 import android.widget.Toast
-import com.fasterxml.jackson.databind.ObjectMapper
+import android.net.Uri
 
 class AnikotoProvider : MainAPI() {
     override var mainUrl = "https://anikoto.tv"
@@ -46,7 +46,7 @@ class AnikotoProvider : MainAPI() {
     data class MewSource(val url: String?)
 
     // =========================================================================
-    //  1. MEW CLOUD EXTRACTOR (Giữ lại vì hoạt động tốt)
+    //  1. MEW CLOUD EXTRACTOR (Chỉ giữ lại cái này)
     // =========================================================================
     inner class MewCloudExtractor : ExtractorApi() {
         override val name = "MewCloud"
@@ -140,7 +140,7 @@ class AnikotoProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // [TOAST] Giữ nguyên theo yêu cầu
+        // [TOAST]
         if (page == 1) {
             withContext(Dispatchers.Main) {
                 try { 
@@ -151,12 +151,11 @@ class AnikotoProvider : MainAPI() {
             }
         }
 
-        // [NO PAGINATION] Chỉ tải URL gốc, bỏ qua tham số page
-        val url = request.data 
+        // Chỉ lấy URL gốc, không xử lý page > 1
+        val url = request.data
         val isAjax = url.contains("/ajax/")
         
         val headers = getBaseHeaders(referer = request.data).toMutableMap()
-        
         if (isAjax) {
             headers["Accept"] = "application/json, text/javascript, */*; q=0.01"
             headers["X-Requested-With"] = "XMLHttpRequest"
@@ -176,7 +175,7 @@ class AnikotoProvider : MainAPI() {
 
         return newHomePageResponse(
             list = HomePageList(request.name, homeList, isHorizontalImages = false), 
-            hasNext = false // Tắt hoàn toàn phân trang
+            hasNext = false // Disable Pagination
         )
     }
 
@@ -213,7 +212,8 @@ class AnikotoProvider : MainAPI() {
             if (epIds.isBlank()) return@mapNotNull null
             val epName = element.select("span.d-title").text().takeIf { it.isNotBlank() } ?: "Episode $epNumStr"
             
-            val epUrl = "$mainUrl/ajax/server/list?servers=$epIds&mal=${element.attr("data-mal")}&time=${element.attr("data-timestamp")}&ep=$epNumStr"
+            // Xây dựng URL đơn giản, bỏ các tham số timestamp/mal không cần thiết cho native load
+            val epUrl = "$mainUrl/ajax/server/list?servers=$epIds"
             
             newEpisode(epUrl) {
                 this.name = "$epName $typeTag".trim()
@@ -232,64 +232,49 @@ class AnikotoProvider : MainAPI() {
     }
 
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
-        val urlObj = android.net.Uri.parse(data)
-        val malId = urlObj.getQueryParameter("mal")
-        val timestamp = urlObj.getQueryParameter("time")
-        val epNum = urlObj.getQueryParameter("ep")
-        
+        // [CLEANED] Bỏ hoàn toàn logic Mapper bên thứ 3 và các tham số phức tạp
         val linkTasks = mutableListOf<Triple<String, String, String>>() 
         val ajaxHeaders = getBaseHeaders() + mapOf("X-Requested-With" to "XMLHttpRequest")
 
-        coroutineScope {
-            val taskAnikoto = async {
-                try {
-                    app.get(data, headers = ajaxHeaders).parsedSafe<AjaxResponse>()?.result?.let { html ->
-                        Jsoup.parse(html).select(".servers .type li").forEach { server ->
-                            val linkId = server.attr("data-link-id")
-                            if (linkId.isNotBlank()) {
-                                linkTasks.add(Triple(linkId, server.text(), server.parent()?.parent()?.attr("data-type") ?: "sub"))
-                            }
-                        }
+        // 1. Chỉ gọi 1 nguồn duy nhất: Anikoto Server List
+        try {
+            app.get(data, headers = ajaxHeaders).parsedSafe<AjaxResponse>()?.result?.let { html ->
+                Jsoup.parse(html).select(".servers .type li").forEach { server ->
+                    val linkId = server.attr("data-link-id")
+                    if (linkId.isNotBlank()) {
+                        linkTasks.add(Triple(linkId, server.text(), server.parent()?.parent()?.attr("data-type") ?: "sub"))
                     }
-                } catch (e: Exception) {}
-            }
-
-            val taskMapper = async {
-                if (!malId.isNullOrBlank() && !timestamp.isNullOrBlank()) {
-                    try {
-                        val mapperUrl = "https://mapper.mewcdn.online/api/mal/$malId/$epNum/$timestamp"
-                        val json = app.get(mapperUrl, headers = mapOf("Origin" to mainUrl, "Referer" to "$mainUrl/")).text
-                        val mapperJson = ObjectMapper().readTree(json)
-                        mapperJson.fieldNames().forEach { key ->
-                            val node = mapperJson.get(key)
-                            if (node.has("sub")) linkTasks.add(Triple(node.get("sub").get("url").asText(), key, "sub"))
-                            if (node.has("dub")) linkTasks.add(Triple(node.get("dub").get("url").asText(), key, "dub"))
-                        }
-                    } catch (e: Exception) {}
                 }
             }
-            awaitAll(taskAnikoto, taskMapper)
+        } catch (e: Exception) { e.printStackTrace() }
 
+        // 2. Resolve Link song song
+        coroutineScope {
             linkTasks.map { (linkId, serverName, type) ->
                 async {
                     try {
                         val resolveUrl = "$mainUrl/ajax/server?get=$linkId"
                         val responseText = app.get(resolveUrl, headers = ajaxHeaders).text
+                        
                         if (!responseText.trim().startsWith("<")) {
                             val embedUrl = parseJson<ServerResponse>(responseText).result?.url
+                            
                             if (!embedUrl.isNullOrBlank()) {
                                 val safeName = "$serverName ($type)"
                                 
-                                // [SIMPLIFIED] Chỉ dùng MewCloudExtractor hoặc Fallback mặc định
-                                // Đã xóa MegaplayExtractor theo yêu cầu
-                                if (embedUrl.contains("mewcdn") || embedUrl.contains("megacloud") || embedUrl.contains("plyr.php")) {
+                                // [FILTER] Chặn tuyệt đối Megaplay và Kiwistream
+                                if (embedUrl.contains("megaplay") || embedUrl.contains("kiwi")) {
+                                    // Do nothing (Skip)
+                                } 
+                                // Chỉ xử lý MewCloud/MegaCloud hoặc Native
+                                else if (embedUrl.contains("mewcdn") || embedUrl.contains("megacloud") || embedUrl.contains("plyr.php")) {
                                     MewCloudExtractor().getVideos(embedUrl, safeName, subtitleCallback, callback)
                                 } else {
                                     loadExtractor(embedUrl, safeName, subtitleCallback, callback)
                                 }
                             }
                         }
-                    } catch (e: Exception) {}
+                    } catch (e: Exception) { e.printStackTrace() }
                 }
             }.awaitAll()
         }
