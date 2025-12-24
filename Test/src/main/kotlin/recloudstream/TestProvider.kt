@@ -23,7 +23,7 @@ class AnikotoProvider : MainAPI() {
     override var lang = "en"
     override val supportedTypes = setOf(TvType.Anime, TvType.Movie, TvType.OVA)
 
-    // User-Agent cố định để đồng bộ giữa API call và Video Player
+    // User-Agent chuẩn từ CURL
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
 
     private fun getBaseHeaders(referer: String = "$mainUrl/") = mapOf(
@@ -110,7 +110,7 @@ class AnikotoProvider : MainAPI() {
     }
 
     // =========================================================================
-    //  2. MEGAPLAY / KIWISTREAM EXTRACTOR (FIX BAD HTTP STATUS)
+    //  2. MEGAPLAY / KIWISTREAM EXTRACTOR (STRICT HEADERS)
     // =========================================================================
     inner class MegaplayExtractor : ExtractorApi() {
         override val name = "Megaplay"
@@ -119,34 +119,31 @@ class AnikotoProvider : MainAPI() {
 
         suspend fun getVideos(url: String, serverName: String, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
             try {
-                // 1. Xác định chính xác Domain gốc (ví dụ: https://megaplay.buzz hoặc https://kiwistream.com)
-                // Cắt bỏ phần path, chỉ lấy scheme + host
+                // 1. Xác định Domain (Megaplay hoặc Kiwi)
                 val uri = Uri.parse(url)
-                val hostUrl = "${uri.scheme}://${uri.host}" // Kết quả: https://megaplay.buzz
-                val refererUrl = "$hostUrl/" // Kết quả: https://megaplay.buzz/
+                val hostUrl = "${uri.scheme}://${uri.host}" // Vd: https://megaplay.buzz
+                val refererUrl = "$hostUrl/" // Vd: https://megaplay.buzz/
 
-                // 2. Tạo bộ Header chuẩn cho Player (Video Stream)
-                // Đây là bộ header sẽ gửi kèm request lấy file .m3u8 và .ts
-                val playerHeaders = mapOf(
-                    "Origin" to hostUrl,           // QUAN TRỌNG: Tránh lỗi CORS
-                    "Referer" to refererUrl,       // QUAN TRỌNG: Server check cái này
+                // 2. HEADERS CHUẨN TỪ CURL (Dùng cho Player để tải video)
+                // Lưu ý: Không thêm "Origin" vì CURL không có.
+                val streamHeaders = mapOf(
+                    "sec-ch-ua" to "\"Chromium\";v=\"137\", \"Not/A)Brand\";v=\"24\"",
+                    "Referer" to refererUrl, // Quan trọng: https://megaplay.buzz/
+                    "sec-ch-ua-mobile" to "?1",
                     "User-Agent" to userAgent,
-                    "Sec-Ch-Ua" to "\"Chromium\";v=\"137\", \"Not/A)Brand\";v=\"24\"",
-                    "Sec-Ch-Ua-Mobile" to "?1",
-                    "Sec-Ch-Ua-Platform" to "\"Android\""
+                    "sec-ch-ua-platform" to "\"Android\""
                 )
 
-                // 3. Tải HTML trang embed để lấy data-id
+                // 3. Lấy data-id từ trang Embed
                 val doc = app.get(url, headers = mapOf("Referer" to "https://anikoto.tv/", "User-Agent" to userAgent)).document
-                
                 val playerDiv = doc.selectFirst("#megaplay-player, #player")
                 val dataId = playerDiv?.attr("data-id") ?: return
 
-                // 4. Gọi API getSources
+                // 4. Gọi API lấy Source (Headers riêng cho API call)
                 val apiUrl = "$hostUrl/stream/getSources?id=$dataId"
                 val apiHeaders = mapOf(
                     "X-Requested-With" to "XMLHttpRequest",
-                    "Referer" to url, // Referer của API phải là link embed đầy đủ
+                    "Referer" to url, // Referer lúc gọi API là link embed
                     "User-Agent" to userAgent,
                     "Accept" to "application/json, text/javascript, */*; q=0.01"
                 )
@@ -158,16 +155,15 @@ class AnikotoProvider : MainAPI() {
                 val jsonNode = mapper.readTree(textResponse)
                 val sourcesNode = jsonNode.get("sources")
 
-                // Hàm local suspend để add link vào callback
+                // Hàm local suspend để add link
                 suspend fun addLink(file: String) {
                     callback(newExtractorLink(serverName, serverName, file, ExtractorLinkType.M3U8) {
-                        this.headers = playerHeaders // Inject bộ header chuẩn vào đây
-                        this.referer = refererUrl    // Set cứng referer cho chắc chắn
+                        this.headers = streamHeaders // Inject bộ header chuẩn CURL vào ExtractorLink
                         this.quality = Qualities.Unknown.value
                     })
                 }
 
-                // Xử lý Sources (Hỗ trợ cả Array và Object)
+                // Xử lý Sources
                 if (sourcesNode != null) {
                     if (sourcesNode.isArray) {
                         for (source in sourcesNode) {
@@ -380,7 +376,7 @@ class AnikotoProvider : MainAPI() {
                             if (!embedUrl.isNullOrBlank()) {
                                 val safeName = "$serverName ($type)"
                                 
-                                // Logic định tuyến mới hỗ trợ cả Megaplay và Kiwistream
+                                // Logic định tuyến Extractor
                                 if (embedUrl.contains("megaplay") || embedUrl.contains("kiwi")) {
                                     MegaplayExtractor().getVideos(embedUrl, safeName, subtitleCallback, callback)
                                 } else if (embedUrl.contains("mewcdn") || embedUrl.contains("megacloud") || embedUrl.contains("plyr.php")) {
