@@ -52,11 +52,15 @@ class AnimetProvider : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        withContext(Dispatchers.Main) {
-            CommonActivity.activity?.let { activity ->
-                showToast(activity, "Free Repo From H4RS", Toast.LENGTH_LONG)
+        // Chỉ hiện Toast ở trang 1
+        if (page == 1) {
+            withContext(Dispatchers.Main) {
+                CommonActivity.activity?.let { activity ->
+                    showToast(activity, "Free Repo From H4RS", Toast.LENGTH_LONG)
+                }
             }
         }
+        
         val currentBaseUrl = try { getBaseUrl() } catch (e: Exception) { return null }
 
         val path = request.data
@@ -109,11 +113,9 @@ class AnimetProvider : MainAPI() {
         }
     }
 
-    // --- Cập nhật logic getBaseUrl: Thêm dự phòng check redirect từ anime12.site ---
     private suspend fun getBaseUrl(): String {
         baseUrlMutex.withLock {
             if (baseUrl == null) {
-                // Cách 1: Thử lấy từ biến MAIN_URL trong script của trang chủ (animet.org)
                 try {
                     val response = app.get(mainUrl, timeout = 15_000L).text
                     val scriptMainUrl = Regex("var MAIN_URL\\s*=\\s*['\"]([^'\"]+)['\"]").find(response)?.groupValues?.get(1)
@@ -125,11 +127,8 @@ class AnimetProvider : MainAPI() {
                     Log.e(name, "Lỗi khi lấy MAIN_URL từ script: ${e.message}")
                 }
 
-                // Cách 2 (Dự phòng): Nếu cách 1 fail, check redirect từ domain cũ (anime12.site)
                 if (baseUrl == null) {
                     try {
-                        // Gọi đến domain cũ, app.get sẽ tự động follow redirect 301
-                        // response.url sẽ trả về URL cuối cùng (ví dụ: https://anime13.site/)
                         val redirectResponse = app.get("https://anime12.site")
                         baseUrl = redirectResponse.url.removeSuffix("/")
                         Log.d(name, "Đã lấy baseUrl từ redirect anime12.site: $baseUrl")
@@ -138,9 +137,8 @@ class AnimetProvider : MainAPI() {
                     }
                 }
 
-                // Cách 3 (Fallback cứng): Nếu cả 2 cách trên đều fail
                 if (baseUrl == null) {
-                    baseUrl = "https://anime13.site" // Domain mới nhất được biết
+                    baseUrl = "https://anime13.site"
                 }
             }
         }
@@ -234,15 +232,12 @@ class AnimetProvider : MainAPI() {
                 statusText?.contains("Hoàn thành", ignoreCase = true) == true -> ShowStatus.Completed
                 else -> null
             }
-            val genres =
-                mainDocument.select("div#MvTb-Info div.mvici-left ul.InfoList li:contains(Thể loại) a")
-                    .mapNotNull { it.text()?.trim()?.takeIf { tag -> tag.isNotBlank() } }
+            
+            val genreElements = mainDocument.select("div#MvTb-Info div.mvici-left ul.InfoList li:contains(Thể loại) a")
+            val genres = genreElements.mapNotNull { it.text()?.trim()?.takeIf { tag -> tag.isNotBlank() } }
 
             val isDonghuaGenre = genres.any {
-                it.equals("CN Animation", ignoreCase = true) || it.equals(
-                    "Hoạt hình Trung Quốc",
-                    ignoreCase = true
-                ) || it.equals("Donghua", ignoreCase = true)
+                it.equals("CN Animation", ignoreCase = true) || it.equals("Hoạt hình Trung Quốc", ignoreCase = true) || it.equals("Donghua", ignoreCase = true)
             }
             val isDonghuaTitle = displayTitle.contains("Donghua", ignoreCase = true) || displayTitle.contains("(CN)", ignoreCase = true)
             val isDonghuaUrl = url.contains("/cn-animation/", ignoreCase = true)
@@ -255,6 +250,30 @@ class AnimetProvider : MainAPI() {
                 isMovieUrl || genres.any { it.equals("Movie & OVA", ignoreCase = true) } -> TvType.AnimeMovie
                 genres.any { it.equals("OVA", ignoreCase = true) } -> TvType.OVA
                 else -> TvType.Anime
+            }
+
+            var recommendations: List<SearchResponse>? = null
+            
+            val firstGenreLink = genreElements.firstOrNull()?.attr("href")?.let { fixUrlBased(it) }
+
+            if (!firstGenreLink.isNullOrBlank()) {
+                try {
+                    val genreDoc = app.get(firstGenreLink, referer = url).document
+                    val genreMovies = genreDoc.select("ul.MovieList li.TPostMv").mapNotNull { 
+                        mapElementToSearchResponse(it, currentBaseUrl) 
+                    }
+                    if (genreMovies.isNotEmpty()) {
+                        recommendations = genreMovies.shuffled().take(12)
+                    }
+                } catch (e: Exception) {
+                    Log.e(name, "Lỗi khi lấy recommendation từ genre: $firstGenreLink", e)
+                }
+            }
+
+            if (recommendations.isNullOrEmpty()) {
+                recommendations = mainDocument.select("div.MovieListRelated ul.MovieList li.TPostMv").mapNotNull {
+                    mapElementToSearchResponse(it, currentBaseUrl)
+                }
             }
 
             val watchPageUrl =
@@ -301,10 +320,6 @@ class AnimetProvider : MainAPI() {
                 }
             }
             
-            val recommendations = mainDocument.select("div.MovieListRelated ul.MovieList li.TPostMv").mapNotNull {
-                mapElementToSearchResponse(it, currentBaseUrl)
-            }
-
             return newTvSeriesLoadResponse(displayTitle, url, tvType, episodes) {
                 this.apiName = this@AnimetProvider.name
                 this.posterUrl = finalPosterUrl
@@ -342,7 +357,6 @@ class AnimetProvider : MainAPI() {
                             val responseText = app.get(source.url).text
                             val doc = Jsoup.parse(responseText)
 
-                            // Regex hỗ trợ cả ' và "
                             val movieId = Regex("MovieId\\s*=\\s*['\"](\\d+)['\"]").find(responseText)?.groupValues?.get(1)
                             val episodeId = Regex("EpisodeId\\s*=\\s*['\"](\\d+)['\"]").find(responseText)?.groupValues?.get(1)
 
@@ -375,7 +389,6 @@ class AnimetProvider : MainAPI() {
                                                 val m3u8Url = Uri.parse(iframeSrc).getQueryParameter("v")
                                                 
                                                 if (!m3u8Url.isNullOrBlank()) {
-                                                    // Sử dụng newExtractorLink như yêu cầu
                                                     callback.invoke(
                                                         newExtractorLink(
                                                             source = this@AnimetProvider.name,
