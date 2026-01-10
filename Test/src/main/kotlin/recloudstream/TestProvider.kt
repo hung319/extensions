@@ -1,5 +1,6 @@
 package recloudstream
 
+import android.net.Uri // Cần thiết cho việc parse URL Dailymotion
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
@@ -12,10 +13,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import android.widget.Toast
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.lagradost.cloudstream3.utils.loadExtractor
 
 class HHNinjaProvider : MainAPI() {
     // 1. Đặt https://hhtq.me/ làm mainUrl gốc
-    override var mainUrl = "https://hhtq.me" 
+    override var mainUrl = "https://hhtq.me"
     override var name = "HHNinja"
     override val hasMainPage = true
     override var lang = "vi"
@@ -35,7 +37,7 @@ class HHNinjaProvider : MainAPI() {
         return try {
             // allowRedirects = false để chặn tự động chuyển hướng, giúp bắt được header location (status 301/302)
             val response = app.get(mainUrl, allowRedirects = false)
-            
+
             if (response.code == 301 || response.code == 302) {
                 // Lấy header location
                 val location = response.headers["location"] ?: response.headers["Location"]
@@ -71,14 +73,14 @@ class HHNinjaProvider : MainAPI() {
                 showToast(activity, "Free Repo From H4RS", Toast.LENGTH_LONG)
             }
         }
-        
+
         // 3. Lấy domain thực tế
         val currentDomain = getBaseUrl()
-        
+
         // Thay thế mainUrl cũ (hhtq.me) trong request data bằng domain thực tế (ví dụ: hh3dtq3.net)
         // Vì request.data được khởi tạo từ biến mainPage ở trên nên nó vẫn chứa mainUrl cũ
         val url = (request.data.replace(mainUrl, currentDomain)) + page
-        
+
         val document = app.get(url).document
         val home = document.select("div.movies-list div.movie-item").mapNotNull {
             it.toSearchResult()
@@ -132,8 +134,6 @@ class HHNinjaProvider : MainAPI() {
 
     // --- HÀM load ---
     override suspend fun load(url: String): LoadResponse? {
-        // url truyền vào load thường đã được xử lý fixUrl, 
-        // nhưng nếu nó là link tương đối hoặc cần domain chính xác, document sẽ tự xử lý
         val document = app.get(url).document
 
         val title = document.selectFirst("h1.heading_movie")?.text()?.trim() ?: return null
@@ -203,19 +203,17 @@ class HHNinjaProvider : MainAPI() {
         @JsonProperty("Movie_Vote") val movieVote: String?,
         @JsonProperty("Movie_Year") val movieYear: String?
     )
+    
+    // Đã cập nhật Data Class để map đúng JSON trả về từ Ajax
     private data class InitialPlayerResponse(
         @JsonProperty("code") val code: Int?,
         @JsonProperty("info") val info: InitialPlayerResponseInfo?,
         @JsonProperty("message") val message: String?,
-        @JsonProperty("src_fbk") val srcFbk: String?,
-        @JsonProperty("src_vip_1") val srcVip1: String?,
-        @JsonProperty("src_vip_2") val srcVip2: String?,
-        @JsonProperty("src_vip_3") val srcVip3: String?,
-        @JsonProperty("src_hyd") val srcHyd: String?,
-        @JsonProperty("src_dlm") val srcDlm: String? = null,
-        @JsonProperty("src_vip_4") val srcVip4: String? = null,
-        @JsonProperty("src_vip_5") val srcVip5: String? = null,
-        @JsonProperty("src_vip_6") val srcVip6: String? = null
+        @JsonProperty("src_vip") val srcVip: String?,     // Vidmmo
+        @JsonProperty("src_ssp") val srcSsp: String?,     // SSPlay
+        @JsonProperty("src_dlm") val srcDlm: String?,     // DLM (hh4d/Dailymotion)
+        @JsonProperty("src_hyd") val srcHyd: String?,     // Short.icu
+        @JsonProperty("src_vip_6") val srcVip6: String?   // Vevocloud
     )
 
     override suspend fun loadLinks(
@@ -226,11 +224,16 @@ class HHNinjaProvider : MainAPI() {
     ): Boolean {
         // 5. Sử dụng getBaseUrl để tạo link ajax player chính xác
         val currentDomain = getBaseUrl()
-        
+
+        // 1. Tải trang để lấy CSRF Token và MovieID
         val episodePageDocument = app.get(data, referer = data).document
+        // Quan trọng: lấy x-csrf-token
+        val csrfToken = episodePageDocument.select("meta[name=csrf-token]").attr("content")
 
         val episodeIdRegex = Regex("""episode-id-(\d+)""")
-        val episodeId = episodeIdRegex.find(data)?.groupValues?.get(1) ?: return false
+        val episodeId = episodeIdRegex.find(data)?.groupValues?.get(1)
+            ?: episodePageDocument.selectFirst("input[name=Episode_id]")?.attr("value")
+            ?: return false
 
         var movieId = episodePageDocument.selectFirst("form#episode_error input[name=movie_id]")?.attr("value")
         if (movieId == null) {
@@ -241,41 +244,117 @@ class HHNinjaProvider : MainAPI() {
         }
         if (movieId == null) return false
 
-        // Dùng currentDomain thay vì mainUrl
         val ajaxUrl = "$currentDomain/server/ajax/player"
-        
+
+        // 2. Gửi Request lấy danh sách server với header x-csrf-token
         val initialAjaxResponse = app.post(
             ajaxUrl,
             data = mapOf("MovieID" to movieId, "EpisodeID" to episodeId),
             referer = data,
-            headers = mapOf("X-Requested-With" to "XMLHttpRequest")
+            headers = mapOf(
+                "X-Requested-With" to "XMLHttpRequest",
+                "x-csrf-token" to csrfToken,
+                "Origin" to currentDomain
+            )
         ).parsedSafe<InitialPlayerResponse>()
 
         if (initialAjaxResponse?.code != 200) {
             return false
         }
 
-        var foundStream = false
-        val serverSources = mutableListOf<Pair<String, String>>()
-        initialAjaxResponse.srcFbk?.takeIf { it.isNotBlank() }?.let { serverSources.add(it to "FBK") }
-        initialAjaxResponse.srcVip1?.takeIf { it.isNotBlank() }?.let { serverSources.add(it to "VIP_1") }
+        // 3. Xử lý danh sách server
+        val serverSources = listOfNotNull(
+            initialAjaxResponse.srcVip to "VIP (Vidmmo)",
+            initialAjaxResponse.srcVip6 to "VIP 6 (Vevocloud)",
+            initialAjaxResponse.srcSsp to "SSP",
+            initialAjaxResponse.srcDlm to "DLM",
+            initialAjaxResponse.srcHyd to "HYD"
+        )
 
-        for ((videoUrl, serverName) in serverSources) {
-            if (videoUrl.endsWith(".m3u8", ignoreCase = true)) {
-                
-                val link = newExtractorLink(
-                    source = "${this.name} - $serverName",
-                    name = "${this.name} - $serverName M3U8",
-                    url = videoUrl,
-                    type = ExtractorLinkType.M3U8
-                ) {
-                    // Dùng currentDomain làm referer
-                    this.referer = currentDomain
-                    this.quality = Qualities.Unknown.value
+        var foundStream = false
+
+        for ((url, name) in serverSources) {
+            if (url.isBlank()) continue
+
+            // --- 1. XỬ LÝ VIDMMO ---
+            if (url.contains("vidmmo.com") || name.contains("Vidmmo", true)) {
+                try {
+                    val vidmmoResponse = app.get(url, referer = currentDomain).text
+                    val hlsMatch = Regex("""hlsUrl\s*:\s*"(.*?)"""").find(vidmmoResponse)
+                    val hlsRaw = hlsMatch?.groupValues?.get(1)
+
+                    if (hlsRaw != null) {
+                        var masterUrl = hlsRaw.replace("\\/", "/")
+                        if (masterUrl.startsWith("/")) {
+                            masterUrl = "https://vidmmo.com$masterUrl"
+                        }
+                        val link = newExtractorLink(
+                            source = "${this.name} - $name",
+                            name = "${this.name} - $name",
+                            url = masterUrl,
+                            type = ExtractorLinkType.M3U8
+                        ) {
+                            this.referer = url
+                            this.quality = Qualities.Unknown.value
+                        }
+                        callback(link)
+                        foundStream = true
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
                 }
-                callback(link)
-                
-                foundStream = true
+            }
+            // --- 2. XỬ LÝ VEVOCLOUD ---
+            else if (url.contains("vevocloud.com")) {
+                try {
+                    val vevoResponse = app.get(url, referer = currentDomain).text
+                    val sourceMatch = Regex("""\"sourceUrl\":\"(https:[^\"]+)\"""").find(vevoResponse)
+                    val sourceUrl = sourceMatch?.groupValues?.get(1)
+
+                    if (sourceUrl != null) {
+                        val masterUrl = sourceUrl.replace("\\/", "/")
+
+                        val link = newExtractorLink(
+                            source = "${this.name} - $name",
+                            name = "${this.name} - $name",
+                            url = masterUrl,
+                            type = ExtractorLinkType.M3U8
+                        ) {
+                            // Cần Origin để vevocloud cho phép phát
+                            this.referer = url
+                            this.headers = mapOf(
+                                "Origin" to "https://vevocloud.com"
+                            )
+                            this.quality = Qualities.Unknown.value
+                        }
+                        callback(link)
+                        foundStream = true
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+            // --- 3. XỬ LÝ DLM (hh4d.site / Dailymotion) ---
+            else if (url.contains("hh4d.site") && url.contains("dlm.php")) {
+                try {
+                    val dlmId = Uri.parse(url).getQueryParameter("url")
+                    if (!dlmId.isNullOrBlank()) {
+                        val dailymotionUrl = "https://www.dailymotion.com/video/$dlmId"
+                        loadExtractor(dailymotionUrl, data, subtitleCallback) { link ->
+                            callback(link.copy(source = "${this.name} - DLM (Dailymotion)"))
+                            foundStream = true
+                        }
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+            // --- 4. CÁC SERVER KHÁC (SSP, HYD...) ---
+            else if (url.startsWith("http")) {
+                loadExtractor(url, data, subtitleCallback) { link ->
+                    callback(link.copy(source = "${this.name} - $name"))
+                    foundStream = true
+                }
             }
         }
         return foundStream
