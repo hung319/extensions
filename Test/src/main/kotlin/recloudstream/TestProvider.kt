@@ -161,6 +161,7 @@ class AnimeHayProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         try {
             val document = app.get(url).document
+            // Truyền thêm hàm load ở đây để fetch nội dung bên trong
             return document.toLoadResponse(this, url, getBaseUrl())
         } catch (e: Exception) {
             Log.e("AnimeHayProvider", "Error load", e)
@@ -235,7 +236,6 @@ class AnimeHayProvider : MainAPI() {
     // === Helpers ===
 
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): AnimeSearchResponse? {
-        // RunCatching để đảm bảo một item lỗi không làm hỏng cả list
         return runCatching {
             val linkElement = this.selectFirst("> a[href], a[href*=thong-tin-phim]") ?: return null
             val href = fixUrl(linkElement.attr("href"), baseUrl) ?: return null
@@ -258,10 +258,15 @@ class AnimeHayProvider : MainAPI() {
         }.getOrNull()
     }
 
+    // === START EDIT: Cập nhật hàm toLoadResponse để fetch Genre ===
     private suspend fun Document.toLoadResponse(provider: MainAPI, url: String, baseUrl: String): LoadResponse? {
         val title = this.selectFirst("h1.heading_movie")?.text()?.trim() ?: return null
         
-        val genres = this.select("div.list_cate div:nth-child(2) a").mapNotNull { it.text()?.trim() }
+        // Lấy danh sách thể loại và Link thể loại đầu tiên
+        val genreElements = this.select("div.list_cate div:nth-child(2) a")
+        val genres = genreElements.mapNotNull { it.text()?.trim() }
+        val genreUrl = genreElements.firstOrNull()?.attr("href")?.let { fixUrl(it, baseUrl) } // Lấy URL thể loại
+        
         val isChineseAnimation = genres.any { it.contains("CN Animation", ignoreCase = true) }
         
         val posterUrl = fixUrl(this.selectFirst("div.head div.first img")?.attr("src"), baseUrl)
@@ -275,9 +280,7 @@ class AnimeHayProvider : MainAPI() {
             else -> ShowStatus.Ongoing
         }
 
-        // FIX LỖI CRASH TẠI ĐÂY: Xử lý NaN
         val ratingText = this.selectFirst("div.score div:nth-child(2)")?.text()?.trim()
-        // Chỉ lấy số nếu nó không phải là NaN
         val rating = ratingText?.split("||")?.firstOrNull()?.trim()?.toFloatOrNull()?.takeIf { !it.isNaN() }
 
         val episodeElements = this.select("div.list-item-episode a")
@@ -289,7 +292,12 @@ class AnimeHayProvider : MainAPI() {
             val epUrl = fixUrl(episodeLink.attr("href"), baseUrl)
             val epNameSpan = episodeLink.selectFirst("span")?.text()?.trim()
             val epNum = epNameSpan?.filter { it.isDigit() }?.toIntOrNull()
-            val finalEpName = epNameSpan ?: "Tập $epNum"
+            
+            val finalEpName = when {
+                epNameSpan.isNullOrBlank() -> "Tập $epNum"
+                epNameSpan.all { it.isDigit() } -> "Tập $epNameSpan"
+                else -> epNameSpan 
+            }
 
             if (epUrl != null) {
                 newEpisode(data = epUrl) {
@@ -299,17 +307,38 @@ class AnimeHayProvider : MainAPI() {
             } else null
         }.reversed()
 
-        // Thêm runCatching cho recommendations
-        val recommendations = this.select("div.movie-recommend div.movie-item").mapNotNull {
+        // === LOGIC RECOMMENDATION MỚI ===
+        // 1. Thử lấy recommendation có sẵn từ web
+        var recommendations = this.select("div.movie-recommend div.movie-item").mapNotNull {
             it.toSearchResponse(provider, baseUrl)
         }
+
+        // 2. Nếu web không có, tự fetch từ trang Genre (random)
+        if (recommendations.isEmpty() && !genreUrl.isNullOrBlank()) {
+            try {
+                // Fetch trang thể loại
+                val genreDoc = app.get(genreUrl).document
+                // Parse danh sách phim từ trang thể loại
+                val genreItems = genreDoc.select("div.movies-list div.movie-item")
+                
+                recommendations = genreItems.mapNotNull { 
+                    it.toSearchResponse(provider, baseUrl) 
+                }
+                .filter { it.url != url } // Loại bỏ phim hiện tại
+                .shuffled() // Xáo trộn ngẫu nhiên
+                .take(12) // Lấy 12 phim
+                
+            } catch (e: Exception) {
+                Log.e("AnimeHayProvider", "Failed to fetch random recommendations from genre", e)
+            }
+        }
+        // ==============================
 
         return provider.newAnimeLoadResponse(title, url, mainTvType) {
             this.posterUrl = posterUrl
             this.plot = description
             this.tags = genres
             this.year = year
-            // Chỉ set score nếu rating hợp lệ
             this.score = rating?.let { Score.from10(it) }
             this.showStatus = status
             this.recommendations = recommendations
@@ -325,6 +354,7 @@ class AnimeHayProvider : MainAPI() {
             }
         }
     }
+    // === END EDIT ===
 
     private fun String?.encodeUri(): String {
         return try {
