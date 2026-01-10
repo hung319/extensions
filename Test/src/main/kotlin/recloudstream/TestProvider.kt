@@ -3,11 +3,11 @@ package recloudstream
 // Import các lớp cần thiết
 import android.util.Log
 import android.widget.Toast
-import android.net.Uri // Import mới để parse URL parameter
+import android.net.Uri
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.utils.AppUtils.toJson // Import tuyệt đối từ AppUtils
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import java.net.URLEncoder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -322,8 +322,6 @@ class AnimetProvider : MainAPI() {
     ): Boolean {
         try {
             val sources = AppUtils.parseJson<List<EpisodeSource>>(data)
-            
-            // Lọc các URL trùng lặp để tránh request nhiều lần vào cùng 1 trang
             val uniqueSources = sources.distinctBy { it.url }
 
             coroutineScope {
@@ -331,26 +329,20 @@ class AnimetProvider : MainAPI() {
                     async {
                         try {
                             val currentBaseUrl = getBaseUrl()
-                            // 1. Vào trang xem phim để lấy thông tin mới nhất (ID, danh sách server)
                             val responseText = app.get(source.url).text
                             val doc = Jsoup.parse(responseText)
 
-                            // 2. Lấy MovieId và EpisodeId từ biến script trong HTML
-                            // Format: var MovieId = '6117', EpisodeId = '170431',
                             val movieId = Regex("MovieId\\s*=\\s*'(\\d+)'").find(responseText)?.groupValues?.get(1)
                             val episodeId = Regex("EpisodeId\\s*=\\s*'(\\d+)'").find(responseText)?.groupValues?.get(1)
 
                             if (movieId != null && episodeId != null) {
-                                // 3. Quét danh sách server khả dụng từ element .list-server1
-                                // Element mẫu: <span class="..." data-index="tik-0">Tik #1</span>
                                 val serverElements = doc.select(".list-server1 .server-item span[data-index]")
 
                                 serverElements.map { element ->
                                     async {
-                                        val svId = element.attr("data-index") // ví dụ: tik-0, 0
-                                        val serverName = element.text().trim() // ví dụ: Tik #1, HRX #1
+                                        val svId = element.attr("data-index") 
+                                        val serverName = element.text().trim() 
 
-                                        // 4. Gọi API mới: /ajax/LoadPlayer_photov2
                                         val ajaxUrl = "$currentBaseUrl/ajax/LoadPlayer_photov2"
                                         val postData = mapOf(
                                             "id" to movieId,
@@ -366,25 +358,22 @@ class AnimetProvider : MainAPI() {
 
                                         try {
                                             val ajaxResponse = app.post(ajaxUrl, data = postData, headers = headers).text
-
-                                            // 5. Parse lấy src của iframe
-                                            // <iframe src="https://api.anime3s.com/Get_Stream_HLS.php?v=...&..."></iframe>
                                             val iframeSrc = Jsoup.parse(ajaxResponse).select("iframe").attr("src")
 
-                                            // 6. Lấy tham số 'v' từ url iframe -> đây là link m3u8
                                             if (iframeSrc.isNotEmpty()) {
                                                 val m3u8Url = Uri.parse(iframeSrc).getQueryParameter("v")
                                                 
                                                 if (!m3u8Url.isNullOrBlank()) {
+                                                    // SỬ DỤNG newExtractorLink như yêu cầu
                                                     callback.invoke(
-                                                        ExtractorLink(
+                                                        newExtractorLink(
                                                             source = this@AnimetProvider.name,
                                                             name = serverName,
                                                             url = m3u8Url,
-                                                            referer = "", // Thường link này không cần referer hoặc referer là chính nó
-                                                            quality = Qualities.Unknown.value,
                                                             type = ExtractorLinkType.M3U8
-                                                        )
+                                                        ) {
+                                                            this.referer = currentBaseUrl // Set referer trong initializer nếu cần
+                                                        }
                                                     )
                                                 }
                                             }
