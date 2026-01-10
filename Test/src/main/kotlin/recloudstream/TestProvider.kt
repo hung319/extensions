@@ -247,7 +247,11 @@ class AnimeHayProvider : MainAPI() {
             this.dubStatus = EnumSet.of(DubStatus.Subbed)
             val episodeText = this@toSearchResponse.selectFirst("div.episode-latest span")?.text()?.trim()
             if (episodeText != null && !episodeText.contains("phút", ignoreCase = true)) {
-                this.episodes[DubStatus.Subbed] = episodeText.substringBefore("/").substringBefore("-").filter { it.isDigit() }.toIntOrNull()
+                // SỬA LỖI Ở ĐÂY: Kiểm tra null trước khi gán
+                val epCount = episodeText.substringBefore("/").substringBefore("-").filter { it.isDigit() }.toIntOrNull()
+                if (epCount != null) {
+                    this.episodes[DubStatus.Subbed] = epCount
+                }
             }
         }
     }
@@ -255,20 +259,13 @@ class AnimeHayProvider : MainAPI() {
     private suspend fun Document.toLoadResponse(provider: MainAPI, url: String, baseUrl: String): LoadResponse? {
         val title = this.selectFirst("h1.heading_movie")?.text()?.trim() ?: return null
         
-        // CSS Selectors dựa trên HTML mới
         val genres = this.select("div.list_cate div:nth-child(2) a").mapNotNull { it.text()?.trim() }
         val isChineseAnimation = genres.any { it.contains("CN Animation", ignoreCase = true) }
         
-        // Poster nằm trong .head .first img
         val posterUrl = fixUrl(this.selectFirst("div.head div.first img")?.attr("src"), baseUrl)
-        
-        // Description nằm trong .desc > div:last-child (div con thứ 2)
         val description = this.selectFirst("div.desc > div:last-child")?.text()?.trim()
-        
-        // Lấy thông tin từ cột bên phải (.last)
         val year = this.selectFirst("div.update_time div:nth-child(2)")?.text()?.filter { it.isDigit() }?.toIntOrNull()
         
-        // Status
         val statusText = this.selectFirst("div.status div:nth-child(2)")?.text()?.trim()
         val status = when {
             statusText?.contains("Hoàn thành", ignoreCase = true) == true -> ShowStatus.Completed
@@ -276,11 +273,9 @@ class AnimeHayProvider : MainAPI() {
             else -> ShowStatus.Ongoing
         }
 
-        // Score: "NaN || 3 đánh giá" -> Cần xử lý NaN
         val ratingText = this.selectFirst("div.score div:nth-child(2)")?.text()?.trim()
         val rating = ratingText?.split("||")?.firstOrNull()?.trim()?.toFloatOrNull()
 
-        // Episodes
         val episodeElements = this.select("div.list-item-episode a")
         val hasEpisodes = episodeElements.isNotEmpty()
 
@@ -300,7 +295,6 @@ class AnimeHayProvider : MainAPI() {
             } else null
         }.reversed()
 
-        // Recommendations (nếu có trong HTML, file mẫu không thấy có nhưng cứ để selector chuẩn)
         val recommendations = this.select("div.movie-recommend div.movie-item").mapNotNull {
             it.toSearchResponse(provider, baseUrl)
         }
@@ -319,7 +313,10 @@ class AnimeHayProvider : MainAPI() {
             } else {
                 val durationText = this@toLoadResponse.selectFirst("div.duration div:nth-child(2)")?.text()?.trim()
                 val durationMinutes = durationText?.filter { it.isDigit() }?.toIntOrNull()
-                if (durationMinutes != null) addDuration(durationMinutes.toString())
+                // Sử dụng hàm addDuration an toàn hơn nếu nó là extension
+                if (durationMinutes != null) {
+                   addDuration(durationMinutes.toString())
+                }
             }
         }
     }
