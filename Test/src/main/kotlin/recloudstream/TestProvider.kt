@@ -1,13 +1,13 @@
 package recloudstream
 
-import android.net.Uri // Cần thiết cho việc parse URL Dailymotion
+import android.net.Uri
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
+// Import tường minh ExtractorLink để fix lỗi .copy()
+import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-// import com.lagradost.cloudstream3.network.CloudflareKiller
-// import android.util.Log
 import com.lagradost.cloudstream3.CommonActivity.showToast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -16,7 +16,6 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
 
 class HHNinjaProvider : MainAPI() {
-    // 1. Đặt https://hhtq.me/ làm mainUrl gốc
     override var mainUrl = "https://hhtq.me"
     override var name = "HHNinja"
     override val hasMainPage = true
@@ -26,27 +25,20 @@ class HHNinjaProvider : MainAPI() {
         TvType.Cartoon
     )
 
-    // Biến để lưu URL thực tế sau khi check redirect
     private var dynamicUrl: String? = null
 
-    // 2. Hàm getBaseUrl để get location từ header (giả lập curl -I)
     private suspend fun getBaseUrl(): String {
-        // Nếu đã check rồi thì dùng lại kết quả cũ cho nhanh
         if (dynamicUrl != null) return dynamicUrl!!
 
         return try {
-            // allowRedirects = false để chặn tự động chuyển hướng, giúp bắt được header location (status 301/302)
             val response = app.get(mainUrl, allowRedirects = false)
 
             if (response.code == 301 || response.code == 302) {
-                // Lấy header location
                 val location = response.headers["location"] ?: response.headers["Location"]
-                // Xử lý chuỗi URL (xóa dấu / ở cuối nếu có để đồng bộ)
                 val finalUrl = location?.trim()?.trimEnd('/') ?: mainUrl
                 dynamicUrl = finalUrl
                 finalUrl
             } else {
-                // Nếu không redirect (200 OK) thì dùng luôn mainUrl
                 dynamicUrl = mainUrl
                 mainUrl
             }
@@ -74,11 +66,7 @@ class HHNinjaProvider : MainAPI() {
             }
         }
 
-        // 3. Lấy domain thực tế
         val currentDomain = getBaseUrl()
-
-        // Thay thế mainUrl cũ (hhtq.me) trong request data bằng domain thực tế (ví dụ: hh3dtq3.net)
-        // Vì request.data được khởi tạo từ biến mainPage ở trên nên nó vẫn chứa mainUrl cũ
         val url = (request.data.replace(mainUrl, currentDomain)) + page
 
         val document = app.get(url).document
@@ -88,7 +76,6 @@ class HHNinjaProvider : MainAPI() {
         return newHomePageResponse(request.name, home)
     }
 
-    // --- HÀM toSearchResult ---
     private fun Element.toSearchResult(): SearchResponse? {
         val title = this.selectFirst("div.name-movie")?.text()?.trim() ?: return null
         var href = this.selectFirst("a")?.attr("href") ?: return null
@@ -122,7 +109,6 @@ class HHNinjaProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        // 4. Sử dụng getBaseUrl cho chức năng tìm kiếm
         val currentDomain = getBaseUrl()
         val searchUrl = "$currentDomain/tim-kiem/${query.replace(" ", "-")}.html"
         val document = app.get(searchUrl).document
@@ -132,7 +118,6 @@ class HHNinjaProvider : MainAPI() {
         }
     }
 
-    // --- HÀM load ---
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
@@ -203,8 +188,7 @@ class HHNinjaProvider : MainAPI() {
         @JsonProperty("Movie_Vote") val movieVote: String?,
         @JsonProperty("Movie_Year") val movieYear: String?
     )
-    
-    // Đã cập nhật Data Class để map đúng JSON trả về từ Ajax
+
     private data class InitialPlayerResponse(
         @JsonProperty("code") val code: Int?,
         @JsonProperty("info") val info: InitialPlayerResponseInfo?,
@@ -222,12 +206,9 @@ class HHNinjaProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // 5. Sử dụng getBaseUrl để tạo link ajax player chính xác
         val currentDomain = getBaseUrl()
 
-        // 1. Tải trang để lấy CSRF Token và MovieID
         val episodePageDocument = app.get(data, referer = data).document
-        // Quan trọng: lấy x-csrf-token
         val csrfToken = episodePageDocument.select("meta[name=csrf-token]").attr("content")
 
         val episodeIdRegex = Regex("""episode-id-(\d+)""")
@@ -246,7 +227,6 @@ class HHNinjaProvider : MainAPI() {
 
         val ajaxUrl = "$currentDomain/server/ajax/player"
 
-        // 2. Gửi Request lấy danh sách server với header x-csrf-token
         val initialAjaxResponse = app.post(
             ajaxUrl,
             data = mapOf("MovieID" to movieId, "EpisodeID" to episodeId),
@@ -262,20 +242,20 @@ class HHNinjaProvider : MainAPI() {
             return false
         }
 
-        // 3. Xử lý danh sách server
-        val serverSources = listOfNotNull(
-            initialAjaxResponse.srcVip to "VIP (Vidmmo)",
-            initialAjaxResponse.srcVip6 to "VIP 6 (Vevocloud)",
-            initialAjaxResponse.srcSsp to "SSP",
-            initialAjaxResponse.srcDlm to "DLM",
-            initialAjaxResponse.srcHyd to "HYD"
-        )
+        // --- FIX LỖI STRING? TẠI ĐÂY ---
+        // Sử dụng mutableListOf và kiểm tra isNotBlank() để đảm bảo url không bao giờ null
+        val serverSources = mutableListOf<Pair<String, String>>()
+        
+        initialAjaxResponse.srcVip?.takeIf { it.isNotBlank() }?.let { serverSources.add(it to "VIP (Vidmmo)") }
+        initialAjaxResponse.srcVip6?.takeIf { it.isNotBlank() }?.let { serverSources.add(it to "VIP 6 (Vevocloud)") }
+        initialAjaxResponse.srcSsp?.takeIf { it.isNotBlank() }?.let { serverSources.add(it to "SSP") }
+        initialAjaxResponse.srcDlm?.takeIf { it.isNotBlank() }?.let { serverSources.add(it to "DLM") }
+        initialAjaxResponse.srcHyd?.takeIf { it.isNotBlank() }?.let { serverSources.add(it to "HYD") }
 
         var foundStream = false
 
+        // Vì dùng Pair<String, String> (không phải String?) nên url trong loop này chắc chắn là String
         for ((url, name) in serverSources) {
-            if (url.isBlank()) continue
-
             // --- 1. XỬ LÝ VIDMMO ---
             if (url.contains("vidmmo.com") || name.contains("Vidmmo", true)) {
                 try {
@@ -320,7 +300,6 @@ class HHNinjaProvider : MainAPI() {
                             url = masterUrl,
                             type = ExtractorLinkType.M3U8
                         ) {
-                            // Cần Origin để vevocloud cho phép phát
                             this.referer = url
                             this.headers = mapOf(
                                 "Origin" to "https://vevocloud.com"
@@ -340,7 +319,8 @@ class HHNinjaProvider : MainAPI() {
                     val dlmId = Uri.parse(url).getQueryParameter("url")
                     if (!dlmId.isNullOrBlank()) {
                         val dailymotionUrl = "https://www.dailymotion.com/video/$dlmId"
-                        loadExtractor(dailymotionUrl, data, subtitleCallback) { link ->
+                        // Khai báo rõ kiểu link: ExtractorLink để fix lỗi unresolved reference copy
+                        loadExtractor(dailymotionUrl, data, subtitleCallback) { link: ExtractorLink ->
                             callback(link.copy(source = "${this.name} - DLM (Dailymotion)"))
                             foundStream = true
                         }
@@ -351,7 +331,7 @@ class HHNinjaProvider : MainAPI() {
             }
             // --- 4. CÁC SERVER KHÁC (SSP, HYD...) ---
             else if (url.startsWith("http")) {
-                loadExtractor(url, data, subtitleCallback) { link ->
+                loadExtractor(url, data, subtitleCallback) { link: ExtractorLink ->
                     callback(link.copy(source = "${this.name} - $name"))
                     foundStream = true
                 }
