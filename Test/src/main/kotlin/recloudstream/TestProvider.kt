@@ -235,25 +235,27 @@ class AnimeHayProvider : MainAPI() {
     // === Helpers ===
 
     private fun Element.toSearchResponse(provider: MainAPI, baseUrl: String): AnimeSearchResponse? {
-        val linkElement = this.selectFirst("> a[href], a[href*=thong-tin-phim]") ?: return null
-        val href = fixUrl(linkElement.attr("href"), baseUrl) ?: return null
-        val title = this.selectFirst("div.name-movie")?.text()?.takeIf { it.isNotBlank() }
-            ?: linkElement.attr("title").takeIf { it.isNotBlank() } ?: return null
-        val posterUrl = fixUrl(this.selectFirst("img")?.let { it.attr("src").ifBlank { it.attr("data-src") } }, baseUrl)
-        val tvType = if (href.contains("/phim/", true)) TvType.AnimeMovie else TvType.Anime
+        // RunCatching để đảm bảo một item lỗi không làm hỏng cả list
+        return runCatching {
+            val linkElement = this.selectFirst("> a[href], a[href*=thong-tin-phim]") ?: return null
+            val href = fixUrl(linkElement.attr("href"), baseUrl) ?: return null
+            val title = this.selectFirst("div.name-movie")?.text()?.takeIf { it.isNotBlank() }
+                ?: linkElement.attr("title").takeIf { it.isNotBlank() } ?: return null
+            val posterUrl = fixUrl(this.selectFirst("img")?.let { it.attr("src").ifBlank { it.attr("data-src") } }, baseUrl)
+            val tvType = if (href.contains("/phim/", true)) TvType.AnimeMovie else TvType.Anime
 
-        return provider.newAnimeSearchResponse(name = title, url = href, type = tvType) {
-            this.posterUrl = posterUrl
-            this.dubStatus = EnumSet.of(DubStatus.Subbed)
-            val episodeText = this@toSearchResponse.selectFirst("div.episode-latest span")?.text()?.trim()
-            if (episodeText != null && !episodeText.contains("phút", ignoreCase = true)) {
-                // SỬA LỖI Ở ĐÂY: Kiểm tra null trước khi gán
-                val epCount = episodeText.substringBefore("/").substringBefore("-").filter { it.isDigit() }.toIntOrNull()
-                if (epCount != null) {
-                    this.episodes[DubStatus.Subbed] = epCount
+            provider.newAnimeSearchResponse(name = title, url = href, type = tvType) {
+                this.posterUrl = posterUrl
+                this.dubStatus = EnumSet.of(DubStatus.Subbed)
+                val episodeText = this@toSearchResponse.selectFirst("div.episode-latest span")?.text()?.trim()
+                if (episodeText != null && !episodeText.contains("phút", ignoreCase = true)) {
+                    val epCount = episodeText.substringBefore("/").substringBefore("-").filter { it.isDigit() }.toIntOrNull()
+                    if (epCount != null) {
+                        this.episodes[DubStatus.Subbed] = epCount
+                    }
                 }
             }
-        }
+        }.getOrNull()
     }
 
     private suspend fun Document.toLoadResponse(provider: MainAPI, url: String, baseUrl: String): LoadResponse? {
@@ -273,8 +275,10 @@ class AnimeHayProvider : MainAPI() {
             else -> ShowStatus.Ongoing
         }
 
+        // FIX LỖI CRASH TẠI ĐÂY: Xử lý NaN
         val ratingText = this.selectFirst("div.score div:nth-child(2)")?.text()?.trim()
-        val rating = ratingText?.split("||")?.firstOrNull()?.trim()?.toFloatOrNull()
+        // Chỉ lấy số nếu nó không phải là NaN
+        val rating = ratingText?.split("||")?.firstOrNull()?.trim()?.toFloatOrNull()?.takeIf { !it.isNaN() }
 
         val episodeElements = this.select("div.list-item-episode a")
         val hasEpisodes = episodeElements.isNotEmpty()
@@ -295,6 +299,7 @@ class AnimeHayProvider : MainAPI() {
             } else null
         }.reversed()
 
+        // Thêm runCatching cho recommendations
         val recommendations = this.select("div.movie-recommend div.movie-item").mapNotNull {
             it.toSearchResponse(provider, baseUrl)
         }
@@ -304,6 +309,7 @@ class AnimeHayProvider : MainAPI() {
             this.plot = description
             this.tags = genres
             this.year = year
+            // Chỉ set score nếu rating hợp lệ
             this.score = rating?.let { Score.from10(it) }
             this.showStatus = status
             this.recommendations = recommendations
@@ -313,7 +319,6 @@ class AnimeHayProvider : MainAPI() {
             } else {
                 val durationText = this@toLoadResponse.selectFirst("div.duration div:nth-child(2)")?.text()?.trim()
                 val durationMinutes = durationText?.filter { it.isDigit() }?.toIntOrNull()
-                // Sử dụng hàm addDuration an toàn hơn nếu nó là extension
                 if (durationMinutes != null) {
                    addDuration(durationMinutes.toString())
                 }
