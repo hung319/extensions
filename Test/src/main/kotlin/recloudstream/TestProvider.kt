@@ -1,6 +1,5 @@
 package recloudstream
 
-// Import các lớp cần thiết
 import android.util.Log
 import android.widget.Toast
 import android.net.Uri
@@ -23,13 +22,11 @@ import okhttp3.Interceptor
 import okhttp3.ResponseBody
 import okhttp3.ResponseBody.Companion.toResponseBody
 
-// --- DATA CLASS mới để lưu trữ nhiều nguồn cho một tập ---
 data class EpisodeSource(
     @JsonProperty("server") val server: String,
     @JsonProperty("url") val url: String
 )
 
-// --- Định nghĩa lớp Provider ---
 class AnimetProvider : MainAPI() {
     override var mainUrl = "https://animet.org"
     override var name = "Animet"
@@ -47,7 +44,6 @@ class AnimetProvider : MainAPI() {
     private var baseUrl: String? = null
     private val baseUrlMutex = Mutex()
 
-    // =================== PHẦN 1: KHAI BÁO CÁC MỤC TRANG CHỦ ===================
     override val mainPage = mainPageOf(
         "/danh-sach/phim-moi-cap-nhat/" to "Phim Mới Cập Nhật",
         "/the-loai/cn-animation/" to "CN Animation",
@@ -55,7 +51,6 @@ class AnimetProvider : MainAPI() {
         "/bang-xep-hang/day.html" to "Xem Nhiều Trong Ngày"
     )
 
-    // =================== PHẦN 2: HÀM getMainPage ĐA NĂNG ===================
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         withContext(Dispatchers.Main) {
             CommonActivity.activity?.let { activity ->
@@ -114,22 +109,38 @@ class AnimetProvider : MainAPI() {
         }
     }
 
-    // --- Các hàm helper ---
+    // --- Cập nhật logic getBaseUrl: Thêm dự phòng check redirect từ anime12.site ---
     private suspend fun getBaseUrl(): String {
         baseUrlMutex.withLock {
             if (baseUrl == null) {
+                // Cách 1: Thử lấy từ biến MAIN_URL trong script của trang chủ (animet.org)
                 try {
                     val response = app.get(mainUrl, timeout = 15_000L).text
-                    val doc = Jsoup.parse(response)
-                    val domainText =
-                        doc.selectFirst("span.text-success.font-weight-bold")?.text()?.trim()
-                    if (!domainText.isNullOrBlank()) {
-                        baseUrl = "https://${domainText.lowercase().removeSuffix("/")}"
-                    } else {
-                        baseUrl = "https://anime11.site" // Fallback
+                    val scriptMainUrl = Regex("var MAIN_URL\\s*=\\s*['\"]([^'\"]+)['\"]").find(response)?.groupValues?.get(1)
+                    
+                    if (!scriptMainUrl.isNullOrBlank()) {
+                        baseUrl = scriptMainUrl.removeSuffix("/")
                     }
                 } catch (e: Exception) {
-                    baseUrl = "https://anime11.site" // Fallback
+                    Log.e(name, "Lỗi khi lấy MAIN_URL từ script: ${e.message}")
+                }
+
+                // Cách 2 (Dự phòng): Nếu cách 1 fail, check redirect từ domain cũ (anime12.site)
+                if (baseUrl == null) {
+                    try {
+                        // Gọi đến domain cũ, app.get sẽ tự động follow redirect 301
+                        // response.url sẽ trả về URL cuối cùng (ví dụ: https://anime13.site/)
+                        val redirectResponse = app.get("https://anime12.site")
+                        baseUrl = redirectResponse.url.removeSuffix("/")
+                        Log.d(name, "Đã lấy baseUrl từ redirect anime12.site: $baseUrl")
+                    } catch (e: Exception) {
+                        Log.e(name, "Lỗi khi check redirect từ anime12.site: ${e.message}")
+                    }
+                }
+
+                // Cách 3 (Fallback cứng): Nếu cả 2 cách trên đều fail
+                if (baseUrl == null) {
+                    baseUrl = "https://anime13.site" // Domain mới nhất được biết
                 }
             }
         }
@@ -177,7 +188,6 @@ class AnimetProvider : MainAPI() {
         }
     }
 
-    // --- Các hàm chức năng chính ---
     override suspend fun search(query: String): List<SearchResponse>? {
         val currentBaseUrl = try { getBaseUrl() } catch (e: Exception) { return null }
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
@@ -202,7 +212,7 @@ class AnimetProvider : MainAPI() {
 
             val displayTitle = mainTitle?.takeIf { it.isNotBlank() }
                 ?: subTitle?.takeIf { it.isNotBlank() }
-                ?: throw ErrorLoadingException("Không tìm thấy tiêu đề (h1.Title hoặc h2.SubTitle)")
+                ?: throw ErrorLoadingException("Không tìm thấy tiêu đề")
 
             val finalPosterUrl =
                 mainDocument.selectFirst("article.TPost header div.Image figure.Objf img")?.let {
@@ -328,12 +338,13 @@ class AnimetProvider : MainAPI() {
                 uniqueSources.map { source ->
                     async {
                         try {
-                            val currentBaseUrl = getBaseUrl()
+                            val currentBaseUrl = getBaseUrl() 
                             val responseText = app.get(source.url).text
                             val doc = Jsoup.parse(responseText)
 
-                            val movieId = Regex("MovieId\\s*=\\s*'(\\d+)'").find(responseText)?.groupValues?.get(1)
-                            val episodeId = Regex("EpisodeId\\s*=\\s*'(\\d+)'").find(responseText)?.groupValues?.get(1)
+                            // Regex hỗ trợ cả ' và "
+                            val movieId = Regex("MovieId\\s*=\\s*['\"](\\d+)['\"]").find(responseText)?.groupValues?.get(1)
+                            val episodeId = Regex("EpisodeId\\s*=\\s*['\"](\\d+)['\"]").find(responseText)?.groupValues?.get(1)
 
                             if (movieId != null && episodeId != null) {
                                 val serverElements = doc.select(".list-server1 .server-item span[data-index]")
@@ -364,7 +375,7 @@ class AnimetProvider : MainAPI() {
                                                 val m3u8Url = Uri.parse(iframeSrc).getQueryParameter("v")
                                                 
                                                 if (!m3u8Url.isNullOrBlank()) {
-                                                    // SỬ DỤNG newExtractorLink như yêu cầu
+                                                    // Sử dụng newExtractorLink như yêu cầu
                                                     callback.invoke(
                                                         newExtractorLink(
                                                             source = this@AnimetProvider.name,
@@ -372,7 +383,7 @@ class AnimetProvider : MainAPI() {
                                                             url = m3u8Url,
                                                             type = ExtractorLinkType.M3U8
                                                         ) {
-                                                            this.referer = currentBaseUrl // Set referer trong initializer nếu cần
+                                                            this.referer = currentBaseUrl 
                                                         }
                                                     )
                                                 }
