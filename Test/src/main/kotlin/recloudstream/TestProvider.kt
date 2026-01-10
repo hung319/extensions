@@ -5,7 +5,6 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-// Import tường minh ExtractorLink để fix lỗi .copy()
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.CommonActivity.showToast
@@ -242,8 +241,6 @@ class HHNinjaProvider : MainAPI() {
             return false
         }
 
-        // --- FIX LỖI STRING? TẠI ĐÂY ---
-        // Sử dụng mutableListOf và kiểm tra isNotBlank() để đảm bảo url không bao giờ null
         val serverSources = mutableListOf<Pair<String, String>>()
         
         initialAjaxResponse.srcVip?.takeIf { it.isNotBlank() }?.let { serverSources.add(it to "VIP (Vidmmo)") }
@@ -254,7 +251,6 @@ class HHNinjaProvider : MainAPI() {
 
         var foundStream = false
 
-        // Vì dùng Pair<String, String> (không phải String?) nên url trong loop này chắc chắn là String
         for ((url, name) in serverSources) {
             // --- 1. XỬ LÝ VIDMMO ---
             if (url.contains("vidmmo.com") || name.contains("Vidmmo", true)) {
@@ -319,9 +315,9 @@ class HHNinjaProvider : MainAPI() {
                     val dlmId = Uri.parse(url).getQueryParameter("url")
                     if (!dlmId.isNullOrBlank()) {
                         val dailymotionUrl = "https://www.dailymotion.com/video/$dlmId"
-                        // Khai báo rõ kiểu link: ExtractorLink để fix lỗi unresolved reference copy
-                        loadExtractor(dailymotionUrl, data, subtitleCallback) { link: ExtractorLink ->
-                            callback(link.copy(source = "${this.name} - DLM (Dailymotion)"))
+                        // Truyền thẳng vào callback, không tạo mới hay copy
+                        loadExtractor(dailymotionUrl, data, subtitleCallback) { link ->
+                            callback(link)
                             foundStream = true
                         }
                     }
@@ -331,8 +327,9 @@ class HHNinjaProvider : MainAPI() {
             }
             // --- 4. CÁC SERVER KHÁC (SSP, HYD...) ---
             else if (url.startsWith("http")) {
-                loadExtractor(url, data, subtitleCallback) { link: ExtractorLink ->
-                    callback(link.copy(source = "${this.name} - $name"))
+                // Truyền thẳng vào callback
+                loadExtractor(url, data, subtitleCallback) { link ->
+                    callback(link)
                     foundStream = true
                 }
             }
