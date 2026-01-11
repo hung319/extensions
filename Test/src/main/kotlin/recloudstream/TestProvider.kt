@@ -6,7 +6,7 @@ import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import org.jsoup.nodes.Element
 
-// --- Data Classes khớp với JSON response ---
+// --- Data Classes ---
 data class PlayerAjaxResponse(
     @JsonProperty("code") val code: Int? = null,
     @JsonProperty("src_vip") val srcVip: String? = null,
@@ -56,50 +56,45 @@ class HHDRagonProvider : MainAPI() {
     }
 
     override val mainPage = mainPageOf(
-        "phim-moi-cap-nhap" to "Mới Cập Nhật", // URL chuẩn của Halim theme thường không có .html ở list
-        "the-loai/hoat-hinh-trung-quoc" to "Hoạt Hình Trung Quốc",
-        "the-loai/anime" to "Anime",
-        "the-loai/sap-chieu" to "Sắp Chiếu"
+        "phim-moi-cap-nhap.html" to "Mới Cập Nhật",
+        "the-loai/cna-3d.html" to "Hoạt Hình 3D",
+        "the-loai/anime.html" to "Anime",
+        "the-loai/sap-chieu.html" to "Sắp Chiếu"
     )
 
     private fun Element.toSearchResponse(): SearchResponse? {
-        // Selector chuẩn cho Halim Theme
-        val linkTag = this.selectFirst("a.halim-thumb") ?: return null
+        // Selector quay về bản cũ vì bản này đúng cấu trúc HTML
+        val linkTag = this.selectFirst("a") ?: return null
         val href = fixUrl(linkTag.attr("href"))
+        val title = this.selectFirst(".name-movie")?.text()?.trim() ?: linkTag.attr("title")
         
-        // Lấy title
-        val title = linkTag.attr("title").trim()
-        
-        // Lấy poster: Fix lỗi mất ảnh
-        val imgTag = this.selectFirst("figure img")
-        val posterUrl = imgTag?.let { 
-            it.attr("data-src").ifBlank { it.attr("src") } 
+        // --- FIX POSTER: Thử nhiều thuộc tính hơn ---
+        val img = this.selectFirst("img")
+        val posterUrl = img?.let { 
+            it.attr("data-src").ifBlank { 
+                it.attr("data-original").ifBlank {
+                    it.attr("src") 
+                }
+            } 
         }
         
-        // Lấy tập mới nhất
-        val episodeLatest = this.selectFirst(".status")?.text()
-        
+        val episodeLatest = this.selectFirst(".episode-latest span")?.text()
+
         return newAnimeSearchResponse(title, href, TvType.Anime) {
             this.posterUrl = posterUrl
-            this.otherName = episodeLatest 
+            this.otherName = episodeLatest
         }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         if (mainUrl == "https://hhdragon.io") updateDomain()
-        
-        // Fix URL page: Halim theme thường là /page/2
-        val url = if(page > 1) {
-            "$mainUrl/${request.data}/page/$page"
-        } else {
-            "$mainUrl/${request.data}"
-        }
-        
+
+        val url = "$mainUrl/${request.data}?p=$page"
         val document = app.get(url, interceptor = killer).document
         
-        // Selector chuẩn Halim Theme: .halim_box .halim-item
-        val home = document.select(".halim_box .halim-item").mapNotNull { it.toSearchResponse() }
-        
+        // Selector quay về bản cũ: .movies-list .movie-item
+        val home = document.select(".movies-list .movie-item").mapNotNull { it.toSearchResponse() }
+
         return newHomePageResponse(
             list = HomePageList(name = request.name, list = home),
             hasNext = home.isNotEmpty()
@@ -108,39 +103,36 @@ class HHDRagonProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         if (mainUrl == "https://hhdragon.io") updateDomain()
-        val url = "$mainUrl/tim-kiem/$query" // Halim theme search url
+        
+        val url = "$mainUrl/tim-kiem/$query.html"
         val document = app.get(url, interceptor = killer).document
         
-        return document.select(".halim_box .halim-item").mapNotNull { it.toSearchResponse() }
+        return document.select(".movies-list .movie-item").mapNotNull { it.toSearchResponse() }
     }
 
     override suspend fun load(url: String): LoadResponse {
         if (mainUrl == "https://hhdragon.io") updateDomain()
         val document = app.get(url, interceptor = killer).document
 
-        // Selector chi tiết phim chuẩn Halim Theme
-        val title = document.selectFirst(".movie-title, .entry-title")?.text()?.trim() ?: "No Title"
+        val title = document.selectFirst("h1.heading_movie")?.text()?.trim() ?: "No Title"
         
-        val posterUrl = document.selectFirst(".movie-poster img")?.let {
-            it.attr("data-src").ifBlank { it.attr("src") }
-        } ?: document.selectFirst(".info-movie .first img")?.attr("src")
+        // Fix poster trang chi tiết
+        val posterUrl = document.selectFirst(".info-movie .first img")?.let {
+             it.attr("data-src").ifBlank { it.attr("src") }
+        }
         
-        val description = document.select("#chi-tiet .entry-content, .movie-detail .entry-content").text().trim()
-        
-        val tags = document.select(".tags-link a, .category a").map { it.text() }
+        val description = document.select(".desc .list-item-episode p").text().trim()
+        val tags = document.select(".list_cate a").map { it.text() }
         val type = if (tags.any { it.contains("3D") || it.contains("HH3D") }) TvType.Cartoon else TvType.Anime
 
-        // Selector tập phim: Thường nằm trong #halim-list-server hoặc .list-episode
-        val episodes = document.select(".halim-list-eps a, .list-episode a").map {
+        val episodes = document.select("#episode-list a.episode-item").map {
             val href = fixUrl(it.attr("href"))
             val name = it.text().trim()
             newEpisode(href) {
                 this.name = name
-                this.episode = name.replace(Regex("[^0-9]"), "").toIntOrNull()
+                this.episode = name.toIntOrNull()
             }
-        }
-        // Không cần reverse vì Halim thường list từ 1->end, hoặc nếu end->1 thì reverse tùy site
-        // Site này có vẻ list mới nhất lên đầu? Nếu thế thì episodes.reversed()
+        }.reversed()
 
         return newAnimeLoadResponse(title, url, type) {
             this.posterUrl = posterUrl
@@ -165,20 +157,15 @@ class HHDRagonProvider : MainAPI() {
 
         val scriptContent = document.select("script").joinToString("\n") { it.data() }
         
-        // --- FIX REGEX: Chấp nhận cả "3812" và 3812, chấp nhận khoảng trắng lỏng lẻo ---
-        // Tìm pattern: "movie_id": "3812" hoặc movie_id: 3812
+        // --- FIX REGEX: Giữ nguyên regex mới đã sửa ở lần trước ---
+        // Bắt trường hợp có ngoặc kép: "movie_id": "123" hoặc không: movie_id: 123
         val movieIdRegex = Regex("""["']?movie_id["']?\s*:\s*["']?(\d+)["']?""")
-        val episodeIdRegex = Regex("""["']?id["']?\s*:\s*["']?(\d+)["']?""") // id trong $info_data thường là episode ID
+        val episodeIdRegex = Regex("""["']?id["']?\s*:\s*["']?(\d+)["']?""") 
 
         val movieId = movieIdRegex.find(scriptContent)?.groupValues?.get(1)
         val episodeId = episodeIdRegex.find(scriptContent)?.groupValues?.get(1)
 
-        if (movieId == null || episodeId == null) {
-            // Fallback: Tìm trong thẻ HTML nếu Regex script thất bại (phòng hờ)
-            // Ví dụ: <div id="player-wrapper" data-movie-id="...">
-            // Có thể thêm logic fallback ở đây nếu cần thiết
-            return false
-        }
+        if (movieId == null || episodeId == null) return false
 
         val apiUrl = "$mainUrl/server/ajax/player"
         val headers = mapOf(
@@ -215,8 +202,6 @@ class HHDRagonProvider : MainAPI() {
                         this.referer = data
                     }
                 )
-            } else if (link.endsWith(".m3u8")) {
-                loadExtractor(link, data, subtitleCallback, callback)
             } else {
                 loadExtractor(link, data, subtitleCallback, callback)
             }
