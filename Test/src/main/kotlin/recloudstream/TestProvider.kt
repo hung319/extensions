@@ -5,6 +5,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import org.jsoup.nodes.Element
+import kotlin.random.Random
 
 // --- Data Classes ---
 data class PlayerAjaxResponse(
@@ -36,7 +37,6 @@ class HHDRagonProvider : MainAPI() {
 
     private val killer = CloudflareKiller()
 
-    // Tự động cập nhật domain mới nhất
     private suspend fun updateDomain() {
         try {
             val response = app.get(
@@ -44,18 +44,15 @@ class HHDRagonProvider : MainAPI() {
                 allowRedirects = false,
                 interceptor = killer
             )
-            // Nếu gặp redirect 301/302, lấy location mới
             if (response.code == 301 || response.code == 302) {
                 val location = response.headers["location"] ?: response.headers["Location"]
                 if (!location.isNullOrBlank()) {
                     mainUrl = location.trimEnd('/')
                 }
             } else if (response.code == 200) {
-                 // Trường hợp hiếm: domain cũ vẫn sống và trả về 200
                  mainUrl = response.url.trimEnd('/')
             }
         } catch (e: Exception) {
-            // Fallback nếu không check được
             mainUrl = "https://hhdragon.run"
         }
     }
@@ -72,7 +69,6 @@ class HHDRagonProvider : MainAPI() {
         val href = fixUrl(linkTag.attr("href"))
         val title = this.selectFirst(".name-movie")?.text()?.trim() ?: linkTag.attr("title")
         
-        // Fix lỗi ảnh: Web dùng đường dẫn tương đối (/assets/...) -> cần fixUrl()
         val img = this.selectFirst("img")
         val posterUrl = img?.let { 
             val rawUrl = it.attr("data-src").ifBlank { 
@@ -126,22 +122,48 @@ class HHDRagonProvider : MainAPI() {
         }
         
         val description = document.select(".desc .list-item-episode p").text().trim()
-        val tags = document.select(".list_cate a").map { it.text() }
+        
+        // Lấy Tags và URL của Tags để làm recommendation
+        val tagsElements = document.select(".list_cate a")
+        val tags = tagsElements.map { it.text() }
+        val tagUrls = tagsElements.map { fixUrl(it.attr("href")) }
+        
         val type = if (tags.any { it.contains("3D") || it.contains("HH3D") }) TvType.Cartoon else TvType.Anime
 
+        // Xử lý tập phim
         val episodes = document.select("#episode-list a.episode-item").map {
             val href = fixUrl(it.attr("href"))
-            val name = it.text().trim()
+            val rawName = it.text().trim()
+            // Format tên tập: "1" -> "Tập 1"
+            val name = if (rawName.lowercase().startsWith("tập")) rawName else "Tập $rawName"
+            
             newEpisode(href) {
                 this.name = name
-                this.episode = name.toIntOrNull()
+                this.episode = rawName.toIntOrNull()
             }
         }.reversed()
+
+        // --- RECOMMENDATION LOGIC ---
+        // 1. Thử tìm list phim liên quan trên page (nếu web có cấu trúc này)
+        var recommendations = document.select(".related-movies .movie-item").mapNotNull { it.toSearchResponse() }
+
+        // 2. Nếu không có, lấy random từ 1 genre bất kỳ của phim
+        if (recommendations.isEmpty() && tagUrls.isNotEmpty()) {
+            try {
+                // Chọn ngẫu nhiên 1 link thể loại
+                val randomTagUrl = tagUrls.random()
+                val tagDoc = app.get(randomTagUrl, interceptor = killer).document
+                recommendations = tagDoc.select(".movies-list .movie-item").mapNotNull { it.toSearchResponse() }
+            } catch (e: Exception) {
+                // Ignore error fetching recommendations
+            }
+        }
 
         return newAnimeLoadResponse(title, url, type) {
             this.posterUrl = posterUrl
             this.plot = description
             this.tags = tags
+            this.recommendations = recommendations
             addEpisodes(DubStatus.Subbed, episodes)
         }
     }
@@ -159,25 +181,18 @@ class HHDRagonProvider : MainAPI() {
         val csrfToken = document.selectFirst("meta[name='csrf-token']")?.attr("content")
             ?: return false
 
-        // --- CÁCH MỚI: Lấy ID từ Form báo lỗi (Chính xác 100%) ---
-        // Trong HTML có: <input name="movie_id" value="3812"> và <input name="Episode_id" value="133451">
+        // Lấy ID từ Form báo lỗi (Chính xác nhất)
         var movieId = document.selectFirst("input[name='movie_id']")?.attr("value")
         var episodeId = document.selectFirst("input[name='Episode_id']")?.attr("value")
 
-        // Fallback: Nếu không tìm thấy trong form, mới quét Regex trong script
+        // Fallback: Quét script nếu không thấy form
         if (movieId == null || episodeId == null) {
             val scriptContent = document.select("script").joinToString("\n") { it.data() }
-            
-            // Tìm trong biến $info_data = { ... }
             if (movieId == null) {
-                movieId = Regex("""movie_id\s*:\s*['"]?(\d+)['"]?""", RegexOption.IGNORE_CASE)
-                    .find(scriptContent)?.groupValues?.get(1)
+                movieId = Regex("""movie_id\s*:\s*['"]?(\d+)['"]?""", RegexOption.IGNORE_CASE).find(scriptContent)?.groupValues?.get(1)
             }
-            // Tìm id trong $info_data (thường đi sau movie_id)
             if (episodeId == null) {
-                // Regex tìm id: 133451, tránh nhầm với các id string rỗng
-                episodeId = Regex("""id\s*:\s*['"]?(\d+)['"]?,\s*no_ep""", RegexOption.IGNORE_CASE)
-                    .find(scriptContent)?.groupValues?.get(1)
+                episodeId = Regex("""id\s*:\s*['"]?(\d+)['"]?,\s*no_ep""", RegexOption.IGNORE_CASE).find(scriptContent)?.groupValues?.get(1)
             }
         }
 
@@ -190,7 +205,6 @@ class HHDRagonProvider : MainAPI() {
             "Referer" to data,
             "Origin" to mainUrl
         )
-        // Lưu ý: API nhận 'MovieID' và 'EpisodeID' (Viết hoa chữ cái đầu)
         val formData = mapOf(
             "MovieID" to movieId,
             "EpisodeID" to episodeId
@@ -205,6 +219,7 @@ class HHDRagonProvider : MainAPI() {
 
         if (jsonResponse.code != 200) return false
 
+        // Hàm xử lý link dùng newExtractorLink cho m3u8/mp4
         suspend fun processSource(link: String?, sourceName: String) {
             if (link.isNullOrBlank()) return
 
@@ -219,21 +234,38 @@ class HHDRagonProvider : MainAPI() {
                         this.referer = data
                     }
                 )
+            } else if (link.contains(".m3u8")) {
+                // Dùng newExtractorLink cho M3U8 thay vì loadExtractor
+                callback(
+                    newExtractorLink(
+                        source = name,
+                        name = "$sourceName HLS",
+                        url = link,
+                        type = ExtractorLinkType.M3U8
+                    ) {
+                        this.referer = data
+                    }
+                )
             } else {
+                // Các nguồn embed (StreamBlue, OkRu...) vẫn dùng loadExtractor để nó tự tách
                 loadExtractor(link, data, subtitleCallback, callback)
             }
         }
 
-        // Mapping dựa trên HTML file mới phân tích
-        processSource(jsonResponse.srcVip, "Vip") // StreamBlue
-        processSource(jsonResponse.srcOp, "Op")   // OpStream
-        processSource(jsonResponse.srcKk, "Kk")   // Phim1280
-        processSource(jsonResponse.srcArc, "Arc") // Archive
-        processSource(jsonResponse.srcOk, "Ok")   // Ok.ru
-        processSource(jsonResponse.srcDl, "Dl")   // Dood/StreamC
-        processSource(jsonResponse.srcHx, "Hx")   // Hx
-        processSource(jsonResponse.srcTok, "Tok")
+        // Ưu tiên M3U8 Direct trước
+        processSource(jsonResponse.srcOp, "Op")
+        processSource(jsonResponse.srcKk, "Kk")
         processSource(jsonResponse.srcSs, "Ss")
+        
+        // Link Direct MP4
+        processSource(jsonResponse.srcArc, "Arc")
+        
+        // Link Embed
+        processSource(jsonResponse.srcVip, "Vip")
+        processSource(jsonResponse.srcOk, "Ok")
+        processSource(jsonResponse.srcDl, "Dl")
+        processSource(jsonResponse.srcHx, "Hx")
+        processSource(jsonResponse.srcTok, "Tok")
         
         return true
     }
