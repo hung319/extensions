@@ -172,6 +172,10 @@ class HHNinjaProvider : MainAPI() {
         @JsonProperty("src_vip_6") val srcVip6: String?
     )
 
+    private data class TokenResponse(
+        @JsonProperty("token") val token: String?
+    )
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -181,13 +185,41 @@ class HHNinjaProvider : MainAPI() {
         val currentDomain = getBaseUrl()
         Log.d("HHNinja", "Loading links for: $data")
 
-        // 1. Tải trang và LẤY COOKIES
+        // 1. Tải trang chính để lấy session và CSRF
         val pageResponse = app.get(data, referer = data)
         val document = pageResponse.document
-        val cookies = pageResponse.cookies // Lưu cookies để dùng cho POST
+        val cookies = pageResponse.cookies.toMutableMap() // Lấy cookies hiện tại
         
         val csrfToken = document.select("meta[name=csrf-token]").attr("content")
         Log.d("HHNinja", "CSRF Token: $csrfToken")
+
+        // 2. Gọi API để lấy TokenTime (Bắt buộc để tránh lỗi 401)
+        try {
+            val tokenUrl = "$currentDomain/server/token"
+            val tokenResponse = app.get(
+                tokenUrl,
+                headers = mapOf(
+                    "Referer" to data,
+                    "X-Requested-With" to "XMLHttpRequest",
+                    "x-csrf-token" to csrfToken,
+                    "Accept" to "application/json, text/plain, */*"
+                ),
+                cookies = cookies // Gửi kèm session cookie
+            ).parsedSafe<TokenResponse>()
+
+            val token = tokenResponse?.token
+            if (token != null) {
+                Log.d("HHNinja", "Got Token: $token")
+                // Tạo cookie TokenTime theo định dạng {"token":"token"}
+                // Lưu ý: Key và Value trong JSON giống nhau
+                val tokenJsonString = "{\"$token\":\"$token\"}"
+                cookies["TokenTime"] = tokenJsonString
+            } else {
+                Log.d("HHNinja", "Failed to get token from $tokenUrl")
+            }
+        } catch (e: Exception) {
+            Log.e("HHNinja", "Error fetching token", e)
+        }
 
         val episodeIdRegex = Regex("""episode-id-(\d+)""")
         val episodeId = episodeIdRegex.find(data)?.groupValues?.get(1)
@@ -209,33 +241,27 @@ class HHNinjaProvider : MainAPI() {
         val ajaxUrl = "$currentDomain/server/ajax/player"
         Log.d("HHNinja", "Posting to: $ajaxUrl with MovieID=$movieId, EpisodeID=$episodeId")
 
-        // 2. Request POST kèm Cookies và Headers đầy đủ
+        // 3. Gọi API lấy link với đầy đủ Cookies (Session + TokenTime)
         val response = app.post(
             ajaxUrl,
             data = mapOf("MovieID" to movieId, "EpisodeID" to episodeId),
             referer = data,
-            cookies = cookies, // QUAN TRỌNG: Gửi kèm cookies
+            cookies = cookies, // QUAN TRỌNG: Gửi cookies đã cập nhật
             headers = mapOf(
                 "X-Requested-With" to "XMLHttpRequest",
-                "X-CSRF-TOKEN" to csrfToken, // Thử cả 2 case cho chắc
+                "X-CSRF-TOKEN" to csrfToken,
                 "x-csrf-token" to csrfToken,
                 "Origin" to currentDomain,
                 "Accept" to "*/*"
             )
         )
 
-        Log.d("HHNinja", "Ajax Response Code: ${response.code}")
+        Log.d("HHNinja", "Ajax Response HTTP Code: ${response.code}")
         
-        // Debug nếu lỗi
-        if (response.code != 200) {
-            Log.d("HHNinja", "Ajax Error Body: ${response.text}")
-            return false
-        }
-
         val initialAjaxResponse = response.parsedSafe<InitialPlayerResponse>()
 
         if (initialAjaxResponse?.code != 200) {
-            Log.d("HHNinja", "JSON Code not 200: ${initialAjaxResponse?.code}")
+            Log.d("HHNinja", "Server Error. Code: ${initialAjaxResponse?.code}, Message: ${initialAjaxResponse?.message}")
             return false
         }
 
