@@ -1,6 +1,7 @@
 package recloudstream
 
 import android.net.Uri
+import android.util.Log // Import Log để debug
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
@@ -28,10 +29,8 @@ class HHNinjaProvider : MainAPI() {
 
     private suspend fun getBaseUrl(): String {
         if (dynamicUrl != null) return dynamicUrl!!
-
         return try {
             val response = app.get(mainUrl, allowRedirects = false)
-
             if (response.code == 301 || response.code == 302) {
                 val location = response.headers["location"] ?: response.headers["Location"]
                 val finalUrl = location?.trim()?.trimEnd('/') ?: mainUrl
@@ -55,19 +54,14 @@ class HHNinjaProvider : MainAPI() {
         "$mainUrl/loc-phim/W1tdLFtdLFsyXSxbXV0=?p=" to "Phim Bộ"
     )
 
-    override suspend fun getMainPage(
-        page: Int,
-        request: MainPageRequest
-    ): HomePageResponse {
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         withContext(Dispatchers.Main) {
             CommonActivity.activity?.let { activity ->
                 showToast(activity, "Free Repo From H4RS", Toast.LENGTH_LONG)
             }
         }
-
         val currentDomain = getBaseUrl()
         val url = (request.data.replace(mainUrl, currentDomain)) + page
-
         val document = app.get(url).document
         val home = document.select("div.movies-list div.movie-item").mapNotNull {
             it.toSearchResult()
@@ -81,10 +75,8 @@ class HHNinjaProvider : MainAPI() {
         if (!href.startsWith("http") && !href.startsWith("/")) {
             href = "/$href"
         }
-
         val posterUrl = this.selectFirst("img")?.attr("src")
             ?: this.selectFirst("img")?.attr("data-src")
-
         val episodeStr = this.selectFirst("div.episode-latest span")?.text()?.trim()
 
         return newAnimeSearchResponse(title, fixUrl(href), TvType.Cartoon) {
@@ -93,16 +85,9 @@ class HHNinjaProvider : MainAPI() {
                 val epRegex = Regex("""(?:Tập\s*)?(\d+)(?:(?:[/| ]\s*\d+\s*)?|$)""")
                 val matchResult = epRegex.find(episodeStr)
                 val currentEpisode = matchResult?.groupValues?.get(1)?.toIntOrNull()
-
                 val isDub = episodeStr.contains("Lồng tiếng", ignoreCase = true) || episodeStr.contains("Thuyết Minh", ignoreCase = true)
                 val isSub = episodeStr.contains("Vietsub", ignoreCase = true) || !isDub
-
-                addDubStatus(
-                    dubExist = isDub,
-                    subExist = isSub,
-                    dubEpisodes = if (isDub) currentEpisode else null,
-                    subEpisodes = if (isSub) currentEpisode else null
-                )
+                addDubStatus(isDub, isSub, if (isDub) currentEpisode else null, if (isSub) currentEpisode else null)
             }
         }
     }
@@ -111,38 +96,32 @@ class HHNinjaProvider : MainAPI() {
         val currentDomain = getBaseUrl()
         val searchUrl = "$currentDomain/tim-kiem/${query.replace(" ", "-")}.html"
         val document = app.get(searchUrl).document
-
-        return document.select("div.movies-list div.movie-item").mapNotNull {
-            it.toSearchResult()
-        }
+        return document.select("div.movies-list div.movie-item").mapNotNull { it.toSearchResult() }
     }
 
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
-
         val title = document.selectFirst("h1.heading_movie")?.text()?.trim() ?: return null
         val poster = document.selectFirst("div.info-movie div.head div.first img")?.attr("src")
             ?: document.selectFirst("div.info-movie div.head div.first img")?.attr("data-src")
         val plot = document.selectFirst("div.desc div[style*='overflow:auto'] p")?.text()?.trim()
-
         val yearText = document.select("div.info-movie div.head div.last div.update_time > div:contains(Năm) + div")?.text()?.trim()
         val year = yearText?.toIntOrNull()
-
         val statusText = document.select("div.info-movie div.head div.last div.status > div:contains(Trạng Thái) + div")?.text()?.trim()
         val showStatus = when {
             statusText?.contains("Đang Cập Nhật", ignoreCase = true) == true -> ShowStatus.Ongoing
             statusText?.contains("Hoàn Thành", ignoreCase = true) == true || statusText?.contains("Full", ignoreCase = true) == true -> ShowStatus.Completed
             else -> null
         }
-
+        val recommendations = document.select("div.list_episode_relate div.movies-list div.movie-item").mapNotNull { it.toSearchResult() }
+        val genres = document.select("div.info-movie div.head div.last div.list_cate > div:contains(Thể Loại) + div a").mapNotNull { it.text() }
+        
         val episodes = document.select("div.list_episode div.list-item-episode a").mapNotNull { el ->
             val epNameFull = el.selectFirst("span")?.text()?.trim() ?: el.text().trim()
             val epNumRegex = Regex("""Tập\s*(\S+)""")
             val epNumMatch = epNumRegex.find(epNameFull)
             val epNumString = epNumMatch?.groupValues?.get(1)
-
             val epName = if (epNumString != null && !epNumString.contains("Trailer", ignoreCase = true) && !epNumString.contains("PV", ignoreCase = true) ) "Tập $epNumString" else epNameFull
-
             val epHref = el.attr("href")
             if (epName.contains("Trailer", ignoreCase = true) || epName.contains("PV", ignoreCase = true)) {
                 null
@@ -155,12 +134,6 @@ class HHNinjaProvider : MainAPI() {
         }.reversed()
 
         val structuralTypeIsSeries = episodes.size > 1 || episodes.any { it.name?.contains("Tập", ignoreCase = true) == true && it.name?.contains("Full", ignoreCase = true) == false }
-
-        val recommendations = document.select("div.list_episode_relate div.movies-list div.movie-item").mapNotNull {
-            it.toSearchResult()
-        }
-
-        val genres = document.select("div.info-movie div.head div.last div.list_cate > div:contains(Thể Loại) + div a").mapNotNull { it.text() }
 
         return if (structuralTypeIsSeries) {
             newTvSeriesLoadResponse(title, url, TvType.Cartoon, episodes) {
@@ -192,11 +165,11 @@ class HHNinjaProvider : MainAPI() {
         @JsonProperty("code") val code: Int?,
         @JsonProperty("info") val info: InitialPlayerResponseInfo?,
         @JsonProperty("message") val message: String?,
-        @JsonProperty("src_vip") val srcVip: String?,     // Vidmmo
-        @JsonProperty("src_ssp") val srcSsp: String?,     // SSPlay
-        @JsonProperty("src_dlm") val srcDlm: String?,     // DLM (hh4d/Dailymotion)
-        @JsonProperty("src_hyd") val srcHyd: String?,     // Short.icu
-        @JsonProperty("src_vip_6") val srcVip6: String?   // Vevocloud
+        @JsonProperty("src_vip") val srcVip: String?,
+        @JsonProperty("src_ssp") val srcSsp: String?,
+        @JsonProperty("src_dlm") val srcDlm: String?,
+        @JsonProperty("src_hyd") val srcHyd: String?,
+        @JsonProperty("src_vip_6") val srcVip6: String?
     )
 
     override suspend fun loadLinks(
@@ -206,9 +179,11 @@ class HHNinjaProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val currentDomain = getBaseUrl()
+        Log.d("HHNinja", "Loading links for: $data")
 
         val episodePageDocument = app.get(data, referer = data).document
         val csrfToken = episodePageDocument.select("meta[name=csrf-token]").attr("content")
+        Log.d("HHNinja", "CSRF Token: $csrfToken")
 
         val episodeIdRegex = Regex("""episode-id-(\d+)""")
         val episodeId = episodeIdRegex.find(data)?.groupValues?.get(1)
@@ -222,36 +197,46 @@ class HHNinjaProvider : MainAPI() {
                 Regex("""(?:MovieID|movie_id):\s*(\d+)""").find(scriptText)?.groupValues?.get(1)
             }.firstOrNull()
         }
-        if (movieId == null) return false
+        if (movieId == null) {
+            Log.d("HHNinja", "MovieID not found")
+            return false
+        }
 
         val ajaxUrl = "$currentDomain/server/ajax/player"
+        Log.d("HHNinja", "Posting to: $ajaxUrl with MovieID=$movieId, EpisodeID=$episodeId")
 
+        // Sử dụng X-CSRF-TOKEN (in hoa) cho chắc chắn
         val initialAjaxResponse = app.post(
             ajaxUrl,
             data = mapOf("MovieID" to movieId, "EpisodeID" to episodeId),
             referer = data,
             headers = mapOf(
                 "X-Requested-With" to "XMLHttpRequest",
-                "x-csrf-token" to csrfToken,
+                "X-CSRF-TOKEN" to csrfToken,
+                "x-csrf-token" to csrfToken, 
                 "Origin" to currentDomain
             )
         ).parsedSafe<InitialPlayerResponse>()
 
         if (initialAjaxResponse?.code != 200) {
+            Log.d("HHNinja", "Ajax failed or code != 200. Code: ${initialAjaxResponse?.code}")
             return false
         }
 
         val serverSources = mutableListOf<Pair<String, String>>()
-        
         initialAjaxResponse.srcVip?.takeIf { it.isNotBlank() }?.let { serverSources.add(it to "VIP (Vidmmo)") }
         initialAjaxResponse.srcVip6?.takeIf { it.isNotBlank() }?.let { serverSources.add(it to "VIP 6 (Vevocloud)") }
         initialAjaxResponse.srcSsp?.takeIf { it.isNotBlank() }?.let { serverSources.add(it to "SSP") }
         initialAjaxResponse.srcDlm?.takeIf { it.isNotBlank() }?.let { serverSources.add(it to "DLM") }
         initialAjaxResponse.srcHyd?.takeIf { it.isNotBlank() }?.let { serverSources.add(it to "HYD") }
 
+        Log.d("HHNinja", "Found sources: ${serverSources.size}")
+
         var foundStream = false
 
         for ((url, name) in serverSources) {
+            Log.d("HHNinja", "Processing source: $name - $url")
+            
             // --- 1. XỬ LÝ VIDMMO ---
             if (url.contains("vidmmo.com") || name.contains("Vidmmo", true)) {
                 try {
@@ -264,6 +249,7 @@ class HHNinjaProvider : MainAPI() {
                         if (masterUrl.startsWith("/")) {
                             masterUrl = "https://vidmmo.com$masterUrl"
                         }
+                        // Tạo ExtractorLink bằng newExtractorLink
                         val link = newExtractorLink(
                             source = "${this.name} - $name",
                             name = "${this.name} - $name",
@@ -275,21 +261,23 @@ class HHNinjaProvider : MainAPI() {
                         }
                         callback(link)
                         foundStream = true
+                    } else {
+                        Log.d("HHNinja", "Vidmmo HLS not found")
                     }
                 } catch (e: Exception) {
-                    e.printStackTrace()
+                    Log.e("HHNinja", "Vidmmo Error", e)
                 }
             }
             // --- 2. XỬ LÝ VEVOCLOUD ---
             else if (url.contains("vevocloud.com")) {
                 try {
                     val vevoResponse = app.get(url, referer = currentDomain).text
-                    val sourceMatch = Regex("""\"sourceUrl\":\"(https:[^\"]+)\"""").find(vevoResponse)
+                    // Regex mới linh hoạt hơn cho sourceUrl
+                    val sourceMatch = Regex("""\"sourceUrl\"\s*:\s*\"(https:[^\"]+)\"""").find(vevoResponse)
                     val sourceUrl = sourceMatch?.groupValues?.get(1)
 
                     if (sourceUrl != null) {
                         val masterUrl = sourceUrl.replace("\\/", "/")
-
                         val link = newExtractorLink(
                             source = "${this.name} - $name",
                             name = "${this.name} - $name",
@@ -297,39 +285,37 @@ class HHNinjaProvider : MainAPI() {
                             type = ExtractorLinkType.M3U8
                         ) {
                             this.referer = url
-                            this.headers = mapOf(
-                                "Origin" to "https://vevocloud.com"
-                            )
+                            this.headers = mapOf("Origin" to "https://vevocloud.com")
                             this.quality = Qualities.Unknown.value
                         }
                         callback(link)
                         foundStream = true
+                    } else {
+                        Log.d("HHNinja", "Vevocloud sourceUrl not found")
                     }
                 } catch (e: Exception) {
-                    e.printStackTrace()
+                    Log.e("HHNinja", "Vevocloud Error", e)
                 }
             }
-            // --- 3. XỬ LÝ DLM (hh4d.site / Dailymotion) ---
+            // --- 3. XỬ LÝ DLM (Dailymotion) ---
             else if (url.contains("hh4d.site") && url.contains("dlm.php")) {
                 try {
                     val dlmId = Uri.parse(url).getQueryParameter("url")
                     if (!dlmId.isNullOrBlank()) {
                         val dailymotionUrl = "https://www.dailymotion.com/video/$dlmId"
-                        // Truyền thẳng vào callback, không tạo mới hay copy
                         loadExtractor(dailymotionUrl, data, subtitleCallback) { link ->
-                            callback(link)
+                            callback(link) // Truyền trực tiếp link
                             foundStream = true
                         }
                     }
                 } catch (e: Exception) {
-                    e.printStackTrace()
+                    Log.e("HHNinja", "DLM Error", e)
                 }
             }
             // --- 4. CÁC SERVER KHÁC (SSP, HYD...) ---
             else if (url.startsWith("http")) {
-                // Truyền thẳng vào callback
                 loadExtractor(url, data, subtitleCallback) { link ->
-                    callback(link)
+                    callback(link) // Truyền trực tiếp link
                     foundStream = true
                 }
             }
