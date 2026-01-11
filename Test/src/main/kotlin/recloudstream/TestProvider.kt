@@ -6,7 +6,7 @@ import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import org.jsoup.nodes.Element
 
-// --- Data Classes khớp với JSON response ---
+// --- Data Classes ---
 data class PlayerAjaxResponse(
     @JsonProperty("code") val code: Int? = null,
     @JsonProperty("src_vip") val srcVip: String? = null,
@@ -18,7 +18,8 @@ data class PlayerAjaxResponse(
     @JsonProperty("src_hx") val srcHx: String? = null,
     @JsonProperty("src_tok") val srcTok: String? = null,
     @JsonProperty("src_tm") val srcTm: String? = null,
-    @JsonProperty("src_nc") val srcNc: String? = null
+    @JsonProperty("src_nc") val srcNc: String? = null,
+    @JsonProperty("src_ss") val srcSs: String? = null
 )
 
 class HHDRagonProvider : MainAPI() {
@@ -35,7 +36,7 @@ class HHDRagonProvider : MainAPI() {
 
     private val killer = CloudflareKiller()
 
-    // Hàm tự động cập nhật domain
+    // Tự động cập nhật domain mới nhất
     private suspend fun updateDomain() {
         try {
             val response = app.get(
@@ -43,15 +44,18 @@ class HHDRagonProvider : MainAPI() {
                 allowRedirects = false,
                 interceptor = killer
             )
+            // Nếu gặp redirect 301/302, lấy location mới
             if (response.code == 301 || response.code == 302) {
                 val location = response.headers["location"] ?: response.headers["Location"]
                 if (!location.isNullOrBlank()) {
                     mainUrl = location.trimEnd('/')
                 }
             } else if (response.code == 200) {
+                 // Trường hợp hiếm: domain cũ vẫn sống và trả về 200
                  mainUrl = response.url.trimEnd('/')
             }
         } catch (e: Exception) {
+            // Fallback nếu không check được
             mainUrl = "https://hhdragon.run"
         }
     }
@@ -68,7 +72,7 @@ class HHDRagonProvider : MainAPI() {
         val href = fixUrl(linkTag.attr("href"))
         val title = this.selectFirst(".name-movie")?.text()?.trim() ?: linkTag.attr("title")
         
-        // --- FIX QUAN TRỌNG: Xử lý link ảnh tương đối ---
+        // Fix lỗi ảnh: Web dùng đường dẫn tương đối (/assets/...) -> cần fixUrl()
         val img = this.selectFirst("img")
         val posterUrl = img?.let { 
             val rawUrl = it.attr("data-src").ifBlank { 
@@ -76,7 +80,6 @@ class HHDRagonProvider : MainAPI() {
                     it.attr("src") 
                 }
             }
-            // Dùng fixUrl để chuyển /assets/... thành https://domain/assets/...
             fixUrl(rawUrl) 
         }
         
@@ -117,7 +120,6 @@ class HHDRagonProvider : MainAPI() {
 
         val title = document.selectFirst("h1.heading_movie")?.text()?.trim() ?: "No Title"
         
-        // Fix poster trang chi tiết
         val posterUrl = document.selectFirst(".info-movie .first img")?.let {
              val raw = it.attr("data-src").ifBlank { it.attr("src") }
              fixUrl(raw)
@@ -157,19 +159,26 @@ class HHDRagonProvider : MainAPI() {
         val csrfToken = document.selectFirst("meta[name='csrf-token']")?.attr("content")
             ?: return false
 
-        val scriptContent = document.select("script").joinToString("\n") { it.data() }
-        
-        // --- FIX REGEX: Thêm fallback tìm trong Ajax data ---
-        // Ưu tiên 1: Tìm trong biến $info_data
-        var movieId = Regex("""["']?movie_id["']?\s*:\s*["']?(\d+)["']?""", RegexOption.IGNORE_CASE).find(scriptContent)?.groupValues?.get(1)
-        var episodeId = Regex("""["']?id["']?\s*:\s*["']?(\d+)["']?""", RegexOption.IGNORE_CASE).find(scriptContent)?.groupValues?.get(1)
+        // --- CÁCH MỚI: Lấy ID từ Form báo lỗi (Chính xác 100%) ---
+        // Trong HTML có: <input name="movie_id" value="3812"> và <input name="Episode_id" value="133451">
+        var movieId = document.selectFirst("input[name='movie_id']")?.attr("value")
+        var episodeId = document.selectFirst("input[name='Episode_id']")?.attr("value")
 
-        // Ưu tiên 2: Tìm trong Ajax call (data: { MovieID: 3812, ... })
-        if (movieId == null) {
-            movieId = Regex("""MovieID\s*:\s*(\d+)""").find(scriptContent)?.groupValues?.get(1)
-        }
-        if (episodeId == null) {
-            episodeId = Regex("""EpisodeID\s*:\s*(\d+)""").find(scriptContent)?.groupValues?.get(1)
+        // Fallback: Nếu không tìm thấy trong form, mới quét Regex trong script
+        if (movieId == null || episodeId == null) {
+            val scriptContent = document.select("script").joinToString("\n") { it.data() }
+            
+            // Tìm trong biến $info_data = { ... }
+            if (movieId == null) {
+                movieId = Regex("""movie_id\s*:\s*['"]?(\d+)['"]?""", RegexOption.IGNORE_CASE)
+                    .find(scriptContent)?.groupValues?.get(1)
+            }
+            // Tìm id trong $info_data (thường đi sau movie_id)
+            if (episodeId == null) {
+                // Regex tìm id: 133451, tránh nhầm với các id string rỗng
+                episodeId = Regex("""id\s*:\s*['"]?(\d+)['"]?,\s*no_ep""", RegexOption.IGNORE_CASE)
+                    .find(scriptContent)?.groupValues?.get(1)
+            }
         }
 
         if (movieId == null || episodeId == null) return false
@@ -181,6 +190,7 @@ class HHDRagonProvider : MainAPI() {
             "Referer" to data,
             "Origin" to mainUrl
         )
+        // Lưu ý: API nhận 'MovieID' và 'EpisodeID' (Viết hoa chữ cái đầu)
         val formData = mapOf(
             "MovieID" to movieId,
             "EpisodeID" to episodeId
@@ -214,14 +224,16 @@ class HHDRagonProvider : MainAPI() {
             }
         }
 
-        processSource(jsonResponse.srcVip, "Vip")
-        processSource(jsonResponse.srcOp, "Op")
-        processSource(jsonResponse.srcKk, "Kk")
-        processSource(jsonResponse.srcArc, "Archive")
-        processSource(jsonResponse.srcOk, "OkRu")
-        processSource(jsonResponse.srcDl, "StreamC")
-        processSource(jsonResponse.srcHx, "Hx")
+        // Mapping dựa trên HTML file mới phân tích
+        processSource(jsonResponse.srcVip, "Vip") // StreamBlue
+        processSource(jsonResponse.srcOp, "Op")   // OpStream
+        processSource(jsonResponse.srcKk, "Kk")   // Phim1280
+        processSource(jsonResponse.srcArc, "Arc") // Archive
+        processSource(jsonResponse.srcOk, "Ok")   // Ok.ru
+        processSource(jsonResponse.srcDl, "Dl")   // Dood/StreamC
+        processSource(jsonResponse.srcHx, "Hx")   // Hx
         processSource(jsonResponse.srcTok, "Tok")
+        processSource(jsonResponse.srcSs, "Ss")
         
         return true
     }
