@@ -6,7 +6,7 @@ import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import org.jsoup.nodes.Element
 
-// --- Data Classes ---
+// --- Data Classes khớp với JSON response ---
 data class PlayerAjaxResponse(
     @JsonProperty("code") val code: Int? = null,
     @JsonProperty("src_vip") val srcVip: String? = null,
@@ -35,6 +35,7 @@ class HHDRagonProvider : MainAPI() {
 
     private val killer = CloudflareKiller()
 
+    // Hàm tự động cập nhật domain
     private suspend fun updateDomain() {
         try {
             val response = app.get(
@@ -63,19 +64,20 @@ class HHDRagonProvider : MainAPI() {
     )
 
     private fun Element.toSearchResponse(): SearchResponse? {
-        // Selector quay về bản cũ vì bản này đúng cấu trúc HTML
         val linkTag = this.selectFirst("a") ?: return null
         val href = fixUrl(linkTag.attr("href"))
         val title = this.selectFirst(".name-movie")?.text()?.trim() ?: linkTag.attr("title")
         
-        // --- FIX POSTER: Thử nhiều thuộc tính hơn ---
+        // --- FIX QUAN TRỌNG: Xử lý link ảnh tương đối ---
         val img = this.selectFirst("img")
         val posterUrl = img?.let { 
-            it.attr("data-src").ifBlank { 
+            val rawUrl = it.attr("data-src").ifBlank { 
                 it.attr("data-original").ifBlank {
                     it.attr("src") 
                 }
-            } 
+            }
+            // Dùng fixUrl để chuyển /assets/... thành https://domain/assets/...
+            fixUrl(rawUrl) 
         }
         
         val episodeLatest = this.selectFirst(".episode-latest span")?.text()
@@ -92,7 +94,6 @@ class HHDRagonProvider : MainAPI() {
         val url = "$mainUrl/${request.data}?p=$page"
         val document = app.get(url, interceptor = killer).document
         
-        // Selector quay về bản cũ: .movies-list .movie-item
         val home = document.select(".movies-list .movie-item").mapNotNull { it.toSearchResponse() }
 
         return newHomePageResponse(
@@ -118,7 +119,8 @@ class HHDRagonProvider : MainAPI() {
         
         // Fix poster trang chi tiết
         val posterUrl = document.selectFirst(".info-movie .first img")?.let {
-             it.attr("data-src").ifBlank { it.attr("src") }
+             val raw = it.attr("data-src").ifBlank { it.attr("src") }
+             fixUrl(raw)
         }
         
         val description = document.select(".desc .list-item-episode p").text().trim()
@@ -157,13 +159,18 @@ class HHDRagonProvider : MainAPI() {
 
         val scriptContent = document.select("script").joinToString("\n") { it.data() }
         
-        // --- FIX REGEX: Giữ nguyên regex mới đã sửa ở lần trước ---
-        // Bắt trường hợp có ngoặc kép: "movie_id": "123" hoặc không: movie_id: 123
-        val movieIdRegex = Regex("""["']?movie_id["']?\s*:\s*["']?(\d+)["']?""")
-        val episodeIdRegex = Regex("""["']?id["']?\s*:\s*["']?(\d+)["']?""") 
+        // --- FIX REGEX: Thêm fallback tìm trong Ajax data ---
+        // Ưu tiên 1: Tìm trong biến $info_data
+        var movieId = Regex("""["']?movie_id["']?\s*:\s*["']?(\d+)["']?""", RegexOption.IGNORE_CASE).find(scriptContent)?.groupValues?.get(1)
+        var episodeId = Regex("""["']?id["']?\s*:\s*["']?(\d+)["']?""", RegexOption.IGNORE_CASE).find(scriptContent)?.groupValues?.get(1)
 
-        val movieId = movieIdRegex.find(scriptContent)?.groupValues?.get(1)
-        val episodeId = episodeIdRegex.find(scriptContent)?.groupValues?.get(1)
+        // Ưu tiên 2: Tìm trong Ajax call (data: { MovieID: 3812, ... })
+        if (movieId == null) {
+            movieId = Regex("""MovieID\s*:\s*(\d+)""").find(scriptContent)?.groupValues?.get(1)
+        }
+        if (episodeId == null) {
+            episodeId = Regex("""EpisodeID\s*:\s*(\d+)""").find(scriptContent)?.groupValues?.get(1)
+        }
 
         if (movieId == null || episodeId == null) return false
 
