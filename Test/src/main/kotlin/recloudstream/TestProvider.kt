@@ -4,8 +4,8 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
+import com.lagradost.cloudstream3.CommonActivity.showToast
 import org.jsoup.nodes.Element
-import kotlin.random.Random
 
 // --- Data Classes ---
 data class PlayerAjaxResponse(
@@ -23,6 +23,17 @@ data class PlayerAjaxResponse(
     @JsonProperty("src_ss") val srcSs: String? = null
 )
 
+// Data class cho StreamBlue response
+data class StreamBlueResponse(
+    @JsonProperty("status") val status: Boolean? = null,
+    @JsonProperty("message") val message: StreamBlueMessage? = null
+)
+
+data class StreamBlueMessage(
+    @JsonProperty("type") val type: String? = null,
+    @JsonProperty("source") val source: String? = null
+)
+
 class HHDRagonProvider : MainAPI() {
     override var mainUrl = "https://hhdragon.io"
     override var name = "HHDragon"
@@ -37,6 +48,7 @@ class HHDRagonProvider : MainAPI() {
 
     private val killer = CloudflareKiller()
 
+    // Tự động cập nhật domain mới nhất
     private suspend fun updateDomain() {
         try {
             val response = app.get(
@@ -90,6 +102,11 @@ class HHDRagonProvider : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         if (mainUrl == "https://hhdragon.io") updateDomain()
 
+        // --- ADD TOAST HERE ---
+        if (page == 1) {
+            showToast("Free Repo From H4RS")
+        }
+
         val url = "$mainUrl/${request.data}?p=$page"
         val document = app.get(url, interceptor = killer).document
         
@@ -123,18 +140,15 @@ class HHDRagonProvider : MainAPI() {
         
         val description = document.select(".desc .list-item-episode p").text().trim()
         
-        // Lấy Tags và URL của Tags để làm recommendation
         val tagsElements = document.select(".list_cate a")
         val tags = tagsElements.map { it.text() }
         val tagUrls = tagsElements.map { fixUrl(it.attr("href")) }
         
         val type = if (tags.any { it.contains("3D") || it.contains("HH3D") }) TvType.Cartoon else TvType.Anime
 
-        // Xử lý tập phim
         val episodes = document.select("#episode-list a.episode-item").map {
             val href = fixUrl(it.attr("href"))
             val rawName = it.text().trim()
-            // Format tên tập: "1" -> "Tập 1"
             val name = if (rawName.lowercase().startsWith("tập")) rawName else "Tập $rawName"
             
             newEpisode(href) {
@@ -143,19 +157,14 @@ class HHDRagonProvider : MainAPI() {
             }
         }.reversed()
 
-        // --- RECOMMENDATION LOGIC ---
-        // 1. Thử tìm list phim liên quan trên page (nếu web có cấu trúc này)
         var recommendations = document.select(".related-movies .movie-item").mapNotNull { it.toSearchResponse() }
 
-        // 2. Nếu không có, lấy random từ 1 genre bất kỳ của phim
         if (recommendations.isEmpty() && tagUrls.isNotEmpty()) {
             try {
-                // Chọn ngẫu nhiên 1 link thể loại
                 val randomTagUrl = tagUrls.random()
                 val tagDoc = app.get(randomTagUrl, interceptor = killer).document
                 recommendations = tagDoc.select(".movies-list .movie-item").mapNotNull { it.toSearchResponse() }
             } catch (e: Exception) {
-                // Ignore error fetching recommendations
             }
         }
 
@@ -181,11 +190,9 @@ class HHDRagonProvider : MainAPI() {
         val csrfToken = document.selectFirst("meta[name='csrf-token']")?.attr("content")
             ?: return false
 
-        // Lấy ID từ Form báo lỗi (Chính xác nhất)
         var movieId = document.selectFirst("input[name='movie_id']")?.attr("value")
         var episodeId = document.selectFirst("input[name='Episode_id']")?.attr("value")
 
-        // Fallback: Quét script nếu không thấy form
         if (movieId == null || episodeId == null) {
             val scriptContent = document.select("script").joinToString("\n") { it.data() }
             if (movieId == null) {
@@ -219,11 +226,52 @@ class HHDRagonProvider : MainAPI() {
 
         if (jsonResponse.code != 200) return false
 
-        // Hàm xử lý link dùng newExtractorLink cho m3u8/mp4
+        // --- STREAM BLUE HANDLER ---
+        suspend fun handleStreamBlue(embedUrl: String) {
+            try {
+                // 1. Lấy HTML của trang embed để tìm videoId
+                val embedPage = app.get(embedUrl).text
+                
+                // Tìm videoId từ HTML (dựa vào pattern thường thấy)
+                val videoId = Regex("""videoId\s*=\s*['"]?(\d+)['"]?""", RegexOption.IGNORE_CASE).find(embedPage)?.groupValues?.get(1) 
+                    ?: Regex("""data-video-id=['"]?(\d+)['"]?""").find(embedPage)?.groupValues?.get(1)
+                    ?: return // Không tìm thấy ID thì bỏ qua
+
+                // 2. Gọi API POST để lấy source thật
+                val streamBlueApi = "https://streamblue.biz/players/sources?videoId=$videoId"
+                val sbHeaders = mapOf(
+                    "Authority" to "streamblue.biz",
+                    "Accept" to "*/*",
+                    "Origin" to "https://streamblue.biz",
+                    "Referer" to embedUrl, // Quan trọng: Referer phải là link embed
+                    "X-Requested-With" to "XMLHttpRequest",
+                    "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
+                )
+
+                val sbResponse = app.post(streamBlueApi, headers = sbHeaders).parsedSafe<StreamBlueResponse>()
+
+                // 3. Xử lý kết quả trả về
+                if (sbResponse?.status == true && sbResponse.message?.source != null) {
+                    val finalSource = sbResponse.message.source
+                    // Nếu là link embed (VD: Dailymotion), gọi loadExtractor
+                    if (sbResponse.message.type == "embed") {
+                        loadExtractor(finalSource, data, subtitleCallback, callback)
+                    } else {
+                        // Nếu là direct link (m3u8/mp4)
+                        loadExtractor(finalSource, embedUrl, subtitleCallback, callback)
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+
         suspend fun processSource(link: String?, sourceName: String) {
             if (link.isNullOrBlank()) return
 
-            if (link.endsWith(".mp4")) {
+            if (link.contains("streamblue")) {
+                handleStreamBlue(link)
+            } else if (link.endsWith(".mp4")) {
                 callback(
                     newExtractorLink(
                         source = name,
@@ -235,7 +283,6 @@ class HHDRagonProvider : MainAPI() {
                     }
                 )
             } else if (link.contains(".m3u8")) {
-                // Dùng newExtractorLink cho M3U8 thay vì loadExtractor
                 callback(
                     newExtractorLink(
                         source = name,
@@ -247,7 +294,6 @@ class HHDRagonProvider : MainAPI() {
                     }
                 )
             } else {
-                // Các nguồn embed (StreamBlue, OkRu...) vẫn dùng loadExtractor để nó tự tách
                 loadExtractor(link, data, subtitleCallback, callback)
             }
         }
@@ -260,8 +306,10 @@ class HHDRagonProvider : MainAPI() {
         // Link Direct MP4
         processSource(jsonResponse.srcArc, "Arc")
         
-        // Link Embed
+        // Link Embed (StreamBlue xử lý riêng)
         processSource(jsonResponse.srcVip, "Vip")
+        
+        // Các embed khác
         processSource(jsonResponse.srcOk, "Ok")
         processSource(jsonResponse.srcDl, "Dl")
         processSource(jsonResponse.srcHx, "Hx")
