@@ -4,8 +4,6 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
-import com.lagradost.cloudstream3.mvvm.suspendSafeApiCall
-import android.util.Log
 import org.jsoup.nodes.Element
 
 // --- Data Classes khớp với JSON response ---
@@ -72,9 +70,11 @@ class HHDRagonProvider : MainAPI() {
             img.attr("data-src").ifBlank { img.attr("src") }
         }
         val episodeLatest = this.selectFirst(".episode-latest span")?.text()
+        
         return newAnimeSearchResponse(title, href, TvType.Anime) {
             this.posterUrl = posterUrl
-            addLatest(episodeLatest)
+            // Fix lỗi 'addLatest': Dùng otherName để hiển thị tập mới nhất
+            this.otherName = episodeLatest 
         }
     }
 
@@ -108,17 +108,22 @@ class HHDRagonProvider : MainAPI() {
         val tags = document.select(".list_cate a").map { it.text() }
         val type = if (tags.any { it.contains("3D") || it.contains("HH3D") }) TvType.Cartoon else TvType.Anime
 
+        // Fix lỗi 'Episode constructor deprecated'
         val episodes = document.select("#episode-list a.episode-item").map {
             val href = fixUrl(it.attr("href"))
             val name = it.text().trim()
-            Episode(data = href, name = name)
+            newEpisode(href) {
+                this.name = name
+                this.episode = name.toIntOrNull()
+            }
         }.reversed()
 
         return newAnimeLoadResponse(title, url, type) {
             this.posterUrl = posterUrl
             this.plot = description
             this.tags = tags
-            addEpisodes(TvType.Anime, episodes)
+            // Fix lỗi 'Argument type mismatch': Thay TvType.Anime bằng DubStatus.Subbed
+            addEpisodes(DubStatus.Subbed, episodes)
         }
     }
 
@@ -166,7 +171,6 @@ class HHDRagonProvider : MainAPI() {
             if (link.isNullOrBlank()) return
 
             if (link.endsWith(".mp4")) {
-                // Sử dụng suspend newExtractorLink như yêu cầu
                 callback(
                     newExtractorLink(
                         source = name,
@@ -184,11 +188,10 @@ class HHDRagonProvider : MainAPI() {
             }
         }
 
-        // Ưu tiên các nguồn ngon trước
         processSource(jsonResponse.srcVip, "Vip")
         processSource(jsonResponse.srcOp, "Op")
         processSource(jsonResponse.srcKk, "Kk")
-        processSource(jsonResponse.srcArc, "Archive") // Thường là mp4 direct
+        processSource(jsonResponse.srcArc, "Archive")
         processSource(jsonResponse.srcOk, "OkRu")
         processSource(jsonResponse.srcDl, "StreamC")
         processSource(jsonResponse.srcHx, "Hx")
