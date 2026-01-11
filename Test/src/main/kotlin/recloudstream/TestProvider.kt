@@ -186,18 +186,20 @@ class HHNinjaProvider : MainAPI() {
         val currentDomain = getBaseUrl()
         Log.d("HHNinja", "Loading links for: $data")
 
-        // 1. Tải trang chính để lấy session
+        // 1. Tải trang chính (Để CookieJar tự động lưu PHPSESSID và các cookie khác)
         val pageResponse = app.get(data, referer = data)
         val document = pageResponse.document
-        // Lưu cookies từ response này
-        val cookiesMap = pageResponse.cookies.toMutableMap()
         
         val csrfToken = document.select("meta[name=csrf-token]").attr("content")
         Log.d("HHNinja", "CSRF Token: $csrfToken")
 
+        // Map để lưu cookie bổ sung (chỉ chứa TokenTime)
+        val extraCookies = mutableMapOf<String, String>()
+
         // 2. Gọi API để lấy Token
         try {
             val tokenUrl = "$currentDomain/server/token"
+            // Không truyền tham số cookies thủ công ở đây để CookieJar tự xử lý session
             val tokenResponse = app.get(
                 tokenUrl,
                 headers = mapOf(
@@ -205,20 +207,19 @@ class HHNinjaProvider : MainAPI() {
                     "X-Requested-With" to "XMLHttpRequest",
                     "x-csrf-token" to csrfToken,
                     "Accept" to "application/json, text/plain, */*"
-                ),
-                cookies = cookiesMap
+                )
             ).parsedSafe<TokenResponse>()
 
             val token = tokenResponse?.token
             if (token != null) {
                 Log.d("HHNinja", "Got Token: $token")
                 
-                // Mã hóa TokenTime theo đúng format server yêu cầu: {"token":"value"} -> URL Encoded
+                // URL Encode cookie TokenTime theo định dạng {"token":"token"}
+                // Server yêu cầu format đã encode, ví dụ: %7B%22token...
                 val rawJson = "{\"$token\":\"$token\"}"
                 val encodedToken = URLEncoder.encode(rawJson, "UTF-8")
                 
-                // Thêm vào map cookies
-                cookiesMap["TokenTime"] = encodedToken
+                extraCookies["TokenTime"] = encodedToken
             } else {
                 Log.d("HHNinja", "Failed to get token from $tokenUrl")
             }
@@ -238,32 +239,29 @@ class HHNinjaProvider : MainAPI() {
                 Regex("""(?:MovieID|movie_id):\s*(\d+)""").find(scriptText)?.groupValues?.get(1)
             }.firstOrNull()
         }
-        if (movieId == null) return false
-
-        // 3. Tự xây dựng Header Cookie thủ công (QUAN TRỌNG)
-        // Việc này tránh thư viện tự encode lại các giá trị đã encode (như TokenTime)
-        val cookieHeader = StringBuilder()
-        for ((k, v) in cookiesMap) {
-            cookieHeader.append("$k=$v; ")
+        if (movieId == null) {
+            Log.d("HHNinja", "MovieID not found")
+            return false
         }
-        
-        val ajaxUrl = "$currentDomain/server/ajax/player"
-        Log.d("HHNinja", "Posting to: $ajaxUrl with Cookie Header: $cookieHeader")
 
-        // 4. Request POST với Header Cookie thủ công
+        val ajaxUrl = "$currentDomain/server/ajax/player"
+        Log.d("HHNinja", "Posting to: $ajaxUrl with MovieID=$movieId, EpisodeID=$episodeId")
+
+        // 3. Request POST
+        // Sử dụng tham số cookies để THÊM cookie mới vào request, 
+        // Cloudstream sẽ tự merge với CookieJar (chứa PHPSESSID)
         val response = app.post(
             ajaxUrl,
             data = mapOf("MovieID" to movieId, "EpisodeID" to episodeId),
             referer = data,
+            cookies = extraCookies, // Chỉ truyền map chứa TokenTime
             headers = mapOf(
                 "X-Requested-With" to "XMLHttpRequest",
                 "X-CSRF-TOKEN" to csrfToken,
                 "x-csrf-token" to csrfToken,
                 "Origin" to currentDomain,
-                "Accept" to "*/*",
-                "Cookie" to cookieHeader.toString() // Gửi cookie dạng header
+                "Accept" to "*/*"
             )
-            // Lưu ý: Không truyền tham số 'cookies' ở đây để tránh xung đột
         )
 
         Log.d("HHNinja", "Ajax Response HTTP Code: ${response.code}")
@@ -287,6 +285,8 @@ class HHNinjaProvider : MainAPI() {
         var foundStream = false
 
         for ((url, name) in serverSources) {
+            Log.d("HHNinja", "Processing source: $name - $url")
+            
             // --- 1. XỬ LÝ VIDMMO ---
             if (url.contains("vidmmo.com") || name.contains("Vidmmo", true)) {
                 try {
@@ -310,9 +310,11 @@ class HHNinjaProvider : MainAPI() {
                         }
                         callback(link)
                         foundStream = true
+                    } else {
+                        Log.d("HHNinja", "Vidmmo HLS not found")
                     }
                 } catch (e: Exception) {
-                    e.printStackTrace()
+                    Log.e("HHNinja", "Vidmmo Error", e)
                 }
             }
             // --- 2. XỬ LÝ VEVOCLOUD ---
@@ -336,9 +338,11 @@ class HHNinjaProvider : MainAPI() {
                         }
                         callback(link)
                         foundStream = true
+                    } else {
+                        Log.d("HHNinja", "Vevocloud sourceUrl not found")
                     }
                 } catch (e: Exception) {
-                    e.printStackTrace()
+                    Log.e("HHNinja", "Vevocloud Error", e)
                 }
             }
             // --- 3. XỬ LÝ DLM (Dailymotion) ---
@@ -353,7 +357,7 @@ class HHNinjaProvider : MainAPI() {
                         }
                     }
                 } catch (e: Exception) {
-                    e.printStackTrace()
+                    Log.e("HHNinja", "DLM Error", e)
                 }
             }
             // --- 4. CÁC SERVER KHÁC (SSP, HYD...) ---
