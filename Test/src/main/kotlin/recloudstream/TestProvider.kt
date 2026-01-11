@@ -1,7 +1,7 @@
 package recloudstream
 
 import android.net.Uri
-import android.util.Log // Import Log để debug
+import android.util.Log
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
@@ -181,18 +181,22 @@ class HHNinjaProvider : MainAPI() {
         val currentDomain = getBaseUrl()
         Log.d("HHNinja", "Loading links for: $data")
 
-        val episodePageDocument = app.get(data, referer = data).document
-        val csrfToken = episodePageDocument.select("meta[name=csrf-token]").attr("content")
+        // 1. Tải trang và LẤY COOKIES
+        val pageResponse = app.get(data, referer = data)
+        val document = pageResponse.document
+        val cookies = pageResponse.cookies // Lưu cookies để dùng cho POST
+        
+        val csrfToken = document.select("meta[name=csrf-token]").attr("content")
         Log.d("HHNinja", "CSRF Token: $csrfToken")
 
         val episodeIdRegex = Regex("""episode-id-(\d+)""")
         val episodeId = episodeIdRegex.find(data)?.groupValues?.get(1)
-            ?: episodePageDocument.selectFirst("input[name=Episode_id]")?.attr("value")
+            ?: document.selectFirst("input[name=Episode_id]")?.attr("value")
             ?: return false
 
-        var movieId = episodePageDocument.selectFirst("form#episode_error input[name=movie_id]")?.attr("value")
+        var movieId = document.selectFirst("form#episode_error input[name=movie_id]")?.attr("value")
         if (movieId == null) {
-            movieId = episodePageDocument.select("script").mapNotNull { script ->
+            movieId = document.select("script").mapNotNull { script ->
                 val scriptText = script.html()
                 Regex("""(?:MovieID|movie_id):\s*(\d+)""").find(scriptText)?.groupValues?.get(1)
             }.firstOrNull()
@@ -205,21 +209,33 @@ class HHNinjaProvider : MainAPI() {
         val ajaxUrl = "$currentDomain/server/ajax/player"
         Log.d("HHNinja", "Posting to: $ajaxUrl with MovieID=$movieId, EpisodeID=$episodeId")
 
-        // Sử dụng X-CSRF-TOKEN (in hoa) cho chắc chắn
-        val initialAjaxResponse = app.post(
+        // 2. Request POST kèm Cookies và Headers đầy đủ
+        val response = app.post(
             ajaxUrl,
             data = mapOf("MovieID" to movieId, "EpisodeID" to episodeId),
             referer = data,
+            cookies = cookies, // QUAN TRỌNG: Gửi kèm cookies
             headers = mapOf(
                 "X-Requested-With" to "XMLHttpRequest",
-                "X-CSRF-TOKEN" to csrfToken,
-                "x-csrf-token" to csrfToken, 
-                "Origin" to currentDomain
+                "X-CSRF-TOKEN" to csrfToken, // Thử cả 2 case cho chắc
+                "x-csrf-token" to csrfToken,
+                "Origin" to currentDomain,
+                "Accept" to "*/*"
             )
-        ).parsedSafe<InitialPlayerResponse>()
+        )
+
+        Log.d("HHNinja", "Ajax Response Code: ${response.code}")
+        
+        // Debug nếu lỗi
+        if (response.code != 200) {
+            Log.d("HHNinja", "Ajax Error Body: ${response.text}")
+            return false
+        }
+
+        val initialAjaxResponse = response.parsedSafe<InitialPlayerResponse>()
 
         if (initialAjaxResponse?.code != 200) {
-            Log.d("HHNinja", "Ajax failed or code != 200. Code: ${initialAjaxResponse?.code}")
+            Log.d("HHNinja", "JSON Code not 200: ${initialAjaxResponse?.code}")
             return false
         }
 
@@ -249,7 +265,6 @@ class HHNinjaProvider : MainAPI() {
                         if (masterUrl.startsWith("/")) {
                             masterUrl = "https://vidmmo.com$masterUrl"
                         }
-                        // Tạo ExtractorLink bằng newExtractorLink
                         val link = newExtractorLink(
                             source = "${this.name} - $name",
                             name = "${this.name} - $name",
@@ -272,7 +287,6 @@ class HHNinjaProvider : MainAPI() {
             else if (url.contains("vevocloud.com")) {
                 try {
                     val vevoResponse = app.get(url, referer = currentDomain).text
-                    // Regex mới linh hoạt hơn cho sourceUrl
                     val sourceMatch = Regex("""\"sourceUrl\"\s*:\s*\"(https:[^\"]+)\"""").find(vevoResponse)
                     val sourceUrl = sourceMatch?.groupValues?.get(1)
 
@@ -304,7 +318,7 @@ class HHNinjaProvider : MainAPI() {
                     if (!dlmId.isNullOrBlank()) {
                         val dailymotionUrl = "https://www.dailymotion.com/video/$dlmId"
                         loadExtractor(dailymotionUrl, data, subtitleCallback) { link ->
-                            callback(link) // Truyền trực tiếp link
+                            callback(link)
                             foundStream = true
                         }
                     }
@@ -315,7 +329,7 @@ class HHNinjaProvider : MainAPI() {
             // --- 4. CÁC SERVER KHÁC (SSP, HYD...) ---
             else if (url.startsWith("http")) {
                 loadExtractor(url, data, subtitleCallback) { link ->
-                    callback(link) // Truyền trực tiếp link
+                    callback(link)
                     foundStream = true
                 }
             }
