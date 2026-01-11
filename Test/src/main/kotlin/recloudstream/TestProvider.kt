@@ -1,5 +1,3 @@
-// Save this file as HHDRagonProvider.kt
-
 package recloudstream
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
@@ -11,19 +9,21 @@ import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import org.jsoup.nodes.Element
 import org.jsoup.Jsoup
 
-// === Data Classes khớp với JSON response mới ===
+// Import cần thiết cho M3U8
+import com.lagradost.cloudstream3.utils.M3u8Helper
+
+// === Data Classes ===
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class HHAjaxResponse(
     val code: Int? = null,
-    // Các nguồn phim từ JSON thực tế
-    val src_vip: String? = null, // StreamBlue
-    val src_op: String? = null,  // OpStream (m3u8)
-    val src_kk: String? = null,  // Phim1280 (m3u8)
-    val src_arc: String? = null, // Archive.org (mp4)
-    val src_ok: String? = null,  // OkRu
-    val src_dl: String? = null,  // StreamC
-    val src_hx: String? = null,  // Short.icu
-    val src_tok: String? = null  // Tok (nếu có)
+    val src_vip: String? = null,
+    val src_op: String? = null,
+    val src_kk: String? = null,
+    val src_arc: String? = null,
+    val src_ok: String? = null,
+    val src_dl: String? = null,
+    val src_hx: String? = null,
+    val src_tok: String? = null
 )
 
 class HHDRagonProvider : MainAPI() {
@@ -39,11 +39,9 @@ class HHDRagonProvider : MainAPI() {
     )
 
     private val killer = CloudflareKiller()
-    
-    // Biến cache domain thật
     private var resolvedUrl: String? = null
 
-    // === 1. Dynamic Domain Resolution ===
+    // === Helper: Resolve Redirect ===
     private suspend fun getRealUrl(): String {
         resolvedUrl?.let { return it }
         return try {
@@ -58,12 +56,13 @@ class HHDRagonProvider : MainAPI() {
         }
     }
 
-    // === 2. Parsing Helper ===
+    // === Helper: Parse Search Item ===
     private fun Element.toSearchResponse(domain: String): SearchResponse? {
         val aTag = this.selectFirst("a") ?: return null
         val title = aTag.selectFirst(".name-movie")?.text()?.trim() ?: return null
         var href = aTag.attr("href")
         if (!href.startsWith("http")) href = "$domain$href"
+        
         val imgTag = aTag.selectFirst("img")
         val posterUrl = imgTag?.attr("data-src") ?: imgTag?.attr("src")
         val episodeLabel = aTag.selectFirst(".episode-latest span")?.text()
@@ -123,11 +122,10 @@ class HHDRagonProvider : MainAPI() {
             this.posterUrl = posterUrl
             this.plot = desc
             this.tags = tags
-            this.rating = document.select(".score").text().substringBefore("||").trim().toRatingInt()
+            // Đã xóa phần rating/score theo yêu cầu
         }
     }
 
-    // === 3. PLAYER LOGIC (UPDATED) ===
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -137,17 +135,15 @@ class HHDRagonProvider : MainAPI() {
         val currentDomain = getRealUrl()
         val document = app.get(data, referer = currentDomain, interceptor = killer).document
 
-        // Extract metadata for Request
         val csrfToken = document.select("meta[name=csrf-token]").attr("content")
         val scriptContent = document.select("script").joinToString("\n") { it.data() }
+        
         val movieId = Regex("""MovieID\s*:\s*(\d+)""").find(scriptContent)?.groupValues?.get(1)
             ?: throw ErrorLoadingException("Không tìm thấy MovieID")
         val episodeId = Regex("""EpisodeID\s*:\s*(\d+)""").find(scriptContent)?.groupValues?.get(1)
             ?: throw ErrorLoadingException("Không tìm thấy EpisodeID")
 
-        // Prepare AJAX Request
         val ajaxUrl = "$currentDomain/server/ajax/player"
-        
         val headers = mapOf(
             "X-CSRF-TOKEN" to csrfToken,
             "X-Requested-With" to "XMLHttpRequest",
@@ -155,24 +151,12 @@ class HHDRagonProvider : MainAPI() {
             "Origin" to currentDomain,
             "Accept" to "*/*"
         )
+        val formBody = mapOf("MovieID" to movieId, "EpisodeID" to episodeId)
 
-        // Gửi Form Data (application/x-www-form-urlencoded)
-        val formBody = mapOf(
-            "MovieID" to movieId,
-            "EpisodeID" to episodeId
-        )
-
-        val ajaxResponse = app.post(
-            ajaxUrl, 
-            headers = headers, 
-            data = formBody, // Cloudstream tự động encode map này thành form data
-            interceptor = killer
-        ).text
-
+        val ajaxResponse = app.post(ajaxUrl, headers = headers, data = formBody, interceptor = killer).text
         val json = tryParseJson<HHAjaxResponse>(ajaxResponse) 
-            ?: throw ErrorLoadingException("Lỗi parse JSON player: $ajaxResponse")
+            ?: throw ErrorLoadingException("Lỗi parse JSON player")
 
-        // Map sources
         val sourceMap = mapOf(
             "Vip (StreamBlue)" to json.src_vip,
             "OpStream" to json.src_op,
@@ -186,33 +170,31 @@ class HHDRagonProvider : MainAPI() {
 
         sourceMap.forEach { (serverName, src) ->
             if (!src.isNullOrEmpty()) {
-                val cleanSrc = src.replace("\\/", "/") // Fix escaped slashes nếu có
+                val cleanSrc = src.replace("\\/", "/")
                 
                 when {
-                    // Trường hợp 1: File M3U8
                     cleanSrc.contains(".m3u8") -> {
-                        generateM3u8(
-                            name = serverName,
-                            streamUrl = cleanSrc,
-                            referer = currentDomain
+                        // M3u8Helper đã trả về list ExtractorLink chuẩn, có thể dùng trực tiếp
+                        M3u8Helper.generateM3u8(
+                            serverName,
+                            cleanSrc,
+                            currentDomain
                         ).forEach(callback)
                     }
-                    // Trường hợp 2: File MP4 trực tiếp
                     cleanSrc.contains(".mp4") -> {
-                        callback(
-                            newExtractorLink(
-                                name = serverName,
-                                source = serverName,
-                                url = cleanSrc,
-                                referer = currentDomain,
-                                quality = Qualities.Unknown.value,
-                                type = ExtractorLinkType.VIDEO
-                            )
-                        )
+                        // SỬ DỤNG newExtractorLink (MP4)
+                        val link = newExtractorLink(
+                            source = serverName,
+                            name = serverName,
+                            url = cleanSrc,
+                            type = ExtractorLinkType.VIDEO
+                        ) {
+                            this.referer = currentDomain
+                            this.quality = Qualities.Unknown.value
+                        }
+                        callback(link)
                     }
-                    // Trường hợp 3: Embed (StreamBlue, OkRu, StreamC, etc.)
                     else -> {
-                        // Nếu là iframe, extract src
                         val linkUrl = if (cleanSrc.contains("<iframe")) {
                             Jsoup.parse(cleanSrc).select("iframe").attr("src")
                         } else {
@@ -220,29 +202,29 @@ class HHDRagonProvider : MainAPI() {
                         }
                         
                         if (linkUrl.startsWith("http")) {
-                            loadExtractor(linkUrl, data, subtitleCallback) { link ->
-                                callback(
-                                    newExtractorLink(
-                                        link.source,
-                                        "$serverName - ${link.name}",
-                                        link.url,
-                                        link.referer,
-                                        link.quality,
-                                        link.type,
-                                        link.headers,
-                                        link.extractorData
-                                    )
-                                )
+                            loadExtractor(linkUrl, data, subtitleCallback) { extractedLink ->
+                                // SỬ DỤNG newExtractorLink (Embed)
+                                val finalLink = newExtractorLink(
+                                    source = extractedLink.source,
+                                    name = "$serverName - ${extractedLink.name}",
+                                    url = extractedLink.url,
+                                    type = extractedLink.type
+                                ) {
+                                    this.referer = extractedLink.referer
+                                    this.quality = extractedLink.quality
+                                    this.headers = extractedLink.headers
+                                    this.extractorData = extractedLink.extractorData
+                                }
+                                callback(finalLink)
                             }
                         }
                     }
                 }
             }
         }
-
         return true
     }
-
+    
     override val mainPage = mainPageOf(
         "/phim-moi-cap-nhap.html" to "Mới Cập Nhật",
         "/the-loai/cna-3d.html" to "Hoạt Hình 3D",
