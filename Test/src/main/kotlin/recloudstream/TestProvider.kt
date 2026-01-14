@@ -3,9 +3,7 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
-import com.lagradost.cloudstream3.utils.AppUtils
 import com.fasterxml.jackson.annotation.JsonProperty
-import java.net.URLEncoder
 
 class AnimexProvider : MainAPI() {
     override var mainUrl = "https://animex.one"
@@ -14,14 +12,13 @@ class AnimexProvider : MainAPI() {
     override var lang = "en"
     override val supportedTypes = setOf(TvType.Anime, TvType.Movie)
 
-    // Anilist API URL
-    private val anilistApi = "https://graphql.anilist.co/"
+    private val anilistApi = "https://graphql.anilist.co"
 
-    // --- GraphQL Queries ---
+    // SỬA LỖI: Dùng ${"$"} để escape ký tự $ trong chuỗi Kotlin
     private val queryMedia = """
-        query ($"page": Int = 1, $"perPage": Int = 20, $"type": MediaType = ANIME, $"search": String, $"sort": [MediaSort]) {
-          Page(page: $"page", perPage: $"perPage") {
-            media(type: $"type", sort: $"sort", search: $"search") {
+        query (${"$"}page: Int = 1, ${"$"}perPage: Int = 20, ${"$"}type: MediaType = ANIME, ${"$"}search: String, ${"$"}sort: [MediaSort]) {
+          Page(page: ${"$"}page, perPage: ${"$"}perPage) {
+            media(type: ${"$"}type, sort: ${"$"}sort, search: ${"$"}search) {
               id
               title {
                 english
@@ -29,6 +26,8 @@ class AnimexProvider : MainAPI() {
               }
               coverImage {
                 extraLarge
+                large
+                medium
               }
               bannerImage
             }
@@ -36,7 +35,6 @@ class AnimexProvider : MainAPI() {
         }
     """.trimIndent()
 
-    // Khai báo các mục trang chủ tương ứng với sort của Anilist
     override val mainPage = mainPageOf(
         "TRENDING_DESC" to "Trending",
         "POPULARITY_DESC" to "Popular",
@@ -44,13 +42,15 @@ class AnimexProvider : MainAPI() {
         "UPDATED_AT_DESC" to "Just Updated"
     )
 
-    // --- Data Classes cho Anilist GraphQL ---
+    // --- Data Classes ---
     data class AnilistTitle(
         @JsonProperty("english") val english: String?,
         @JsonProperty("romaji") val romaji: String?
     )
     data class AnilistCover(
-        @JsonProperty("extraLarge") val extraLarge: String?
+        @JsonProperty("extraLarge") val extraLarge: String?,
+        @JsonProperty("large") val large: String?,
+        @JsonProperty("medium") val medium: String?
     )
     data class AnilistMedia(
         @JsonProperty("id") val id: Int,
@@ -68,13 +68,11 @@ class AnimexProvider : MainAPI() {
         @JsonProperty("data") val data: AnilistData?
     )
     
-    // Request Body cho GraphQL
     data class GraphQlQuery(
         val query: String,
-        val variables: Map<String, Any>
+        val variables: Map<String, Any?>
     )
 
-    // --- Data Classes cho Episode API (Animex) ---
     data class AnimexEpTitle(
         @JsonProperty("en") val en: String?,
         @JsonProperty("ja") val ja: String?,
@@ -87,9 +85,10 @@ class AnimexProvider : MainAPI() {
         @JsonProperty("description") val description: String?
     )
 
-    // Xử lý lấy danh sách phim trang chủ qua GraphQL
+    // --- Main Logic ---
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val sortType = request.data // Ví dụ: TRENDING_DESC
+        val sortType = request.data
         val variables = mapOf(
             "page" to page,
             "perPage" to 20,
@@ -98,24 +97,9 @@ class AnimexProvider : MainAPI() {
         )
         
         val body = GraphQlQuery(queryMedia, variables)
-        val response = app.post(
-            anilistApi,
-            json = body,
-            headers = mapOf(
-                "Content-Type" to "application/json",
-                "Accept" to "application/json",
-                "Origin" to mainUrl
-            )
-        ).parsedSafe<AnilistResponse>()
-
-        val list = response?.data?.page?.media?.mapNotNull { media ->
-            media.toSearchResponse()
-        } ?: emptyList()
-
-        return newHomePageResponse(request.name, list)
+        return fetchAnilist(body, request.name)
     }
 
-    // Xử lý tìm kiếm qua GraphQL
     override suspend fun search(query: String): List<SearchResponse> {
         val variables = mapOf(
             "page" to 1,
@@ -125,35 +109,65 @@ class AnimexProvider : MainAPI() {
         )
         
         val body = GraphQlQuery(queryMedia, variables)
+        // Search trả về List<SearchResponse> trực tiếp
         val response = app.post(
             anilistApi,
             json = body,
             headers = mapOf(
                 "Content-Type" to "application/json",
-                "Accept" to "application/json",
-                "Origin" to mainUrl
+                "Accept" to "application/json"
             )
         ).parsedSafe<AnilistResponse>()
 
-        return response?.data?.page?.media?.mapNotNull { media ->
-            media.toSearchResponse()
-        } ?: emptyList()
+        return response?.data?.page?.media?.mapNotNull { it.toSearchResponse() } ?: emptyList()
     }
 
-    // Hàm tiện ích chuyển đổi Anilist Media sang Cloudstream SearchResponse
-    private fun AnilistMedia.toSearchResponse(): SearchResponse {
-        val titleEn = this.title?.english ?: this.title?.romaji ?: "Unknown"
-        // Tạo URL dạng giả lập để hàm load có thể xử lý: /anime/slug-id
-        // Slug không quá quan trọng, quan trọng là ID ở cuối
-        val slug = titleEn.replace(Regex("[^a-zA-Z0-9]"), "-").replace(Regex("-+"), "-").lowercase()
-        val url = "$mainUrl/anime/$slug-${this.id}"
-        
-        return newAnimeSearchResponse(titleEn, url, TvType.Anime) {
-            this.posterUrl = this@toSearchResponse.coverImage?.extraLarge
+    // Hàm chung để gọi API Anilist cho trang chủ
+    private suspend fun fetchAnilist(body: GraphQlQuery, name: String): HomePageResponse {
+        try {
+            val response = app.post(
+                anilistApi,
+                json = body,
+                headers = mapOf(
+                    "Content-Type" to "application/json",
+                    "Accept" to "application/json",
+                    "Origin" to mainUrl
+                )
+            ).parsedSafe<AnilistResponse>()
+
+            val list = response?.data?.page?.media?.mapNotNull { media ->
+                media.toSearchResponse()
+            } ?: emptyList()
+
+            return newHomePageResponse(name, list)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return newHomePageResponse(name, emptyList())
         }
     }
 
-    // Xử lý Load chi tiết phim & Tập
+    private fun AnilistMedia.toSearchResponse(): SearchResponse {
+        val titleEn = this.title?.english ?: this.title?.romaji ?: "Unknown"
+        // Tạo slug an toàn cho URL
+        val slug = titleEn.replace(Regex("[^a-zA-Z0-9]"), "-")
+                          .replace(Regex("-+"), "-")
+                          .lowercase()
+                          .trim('-')
+        
+        // Quan trọng: URL phải chứa ID ở cuối để hàm load parse được
+        val url = "$mainUrl/anime/$slug-${this.id}"
+        
+        // Fallback ảnh để tránh lỗi Coil NullRequest
+        val image = this.coverImage?.extraLarge 
+            ?: this.coverImage?.large 
+            ?: this.coverImage?.medium 
+            ?: ""
+
+        return newAnimeSearchResponse(titleEn, url, TvType.Anime) {
+            this.posterUrl = image
+        }
+    }
+
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
@@ -165,52 +179,49 @@ class AnimexProvider : MainAPI() {
         val bg = document.selectFirst(".absolute.inset-0.bg-cover")?.attr("style")
             ?.substringAfter("url('")?.substringBefore("')")
 
-        // 1. Recommendations (giữ nguyên logic parse HTML vì đơn giản và hiệu quả)
+        // Recommendations
         val recommendations = document.select("swiper-slide a").mapNotNull { element ->
             val href = element.attr("href")
             val img = element.selectFirst("img")?.attr("src")
             val name = element.selectFirst(".title-text")?.text() ?: element.selectFirst("h5")?.text()
-            if (href != null && name != null) {
+            if (!href.isNullOrBlank() && !name.isNullOrBlank()) {
                 newAnimeSearchResponse(name, fixUrl(href), TvType.Anime) {
                     this.posterUrl = img
                 }
             } else null
         }
 
-        // 2. Episodes (Dùng API riêng của Animex)
+        // Episodes
         val episodes = mutableListOf<Episode>()
-        // Lấy ID từ URL (số cuối cùng sau dấu -)
         val animeId = url.substringBefore("?").trimEnd('/').substringAfterLast("-")
 
-        // Tìm template link từ nút Watch Now (để sửa thành link tập)
+        // Template link từ nút Watch Now
         val watchButton = document.selectFirst("a[href^='/watch/']")
         val watchUrlTemplate = watchButton?.attr("href")?.let { fixUrl(it) }
 
         if (animeId.all { it.isDigit() }) {
             try {
                 val apiUrl = "$mainUrl/api/anime/episodes/$animeId"
-                val headers = mapOf(
-                    "Referer" to url,
-                    "Accept" to "application/json",
-                    "X-Requested-With" to "XMLHttpRequest"
-                )
-                
-                val apiResponse = app.get(apiUrl, headers = headers).parsedSafe<List<AnimexEpData>>()
+                val apiResponse = app.get(
+                    apiUrl, 
+                    headers = mapOf(
+                        "Referer" to url,
+                        "Accept" to "application/json",
+                        "X-Requested-With" to "XMLHttpRequest"
+                    )
+                ).parsedSafe<List<AnimexEpData>>()
 
                 apiResponse?.forEach { epData ->
                     val epNum = epData.number?.toInt() ?: 0
                     
-                    // Tạo link tập phim
                     val epUrl = if (watchUrlTemplate != null) {
                         watchUrlTemplate.replace(Regex("episode-\\d+$"), "episode-$epNum")
                     } else {
-                        // Fallback
                         "$mainUrl/watch/${url.substringAfter("/anime/")}-episode-$epNum"
                     }
 
-                    // Tên tập: Ưu tiên tiếng Anh, fallback sang xJat
+                    // Ưu tiên tên tiếng Anh
                     val rawTitle = epData.titles?.en ?: epData.titles?.xJat
-                    // Format tên tập đồng bộ: "Episode 1 - Title" hoặc "Episode 1"
                     val epName = if (!rawTitle.isNullOrBlank()) {
                         "Episode $epNum - $rawTitle"
                     } else {
@@ -231,7 +242,6 @@ class AnimexProvider : MainAPI() {
             }
         }
 
-        // Fallback nếu API lỗi
         if (episodes.isEmpty() && watchUrlTemplate != null) {
             episodes.add(newEpisode(watchUrlTemplate) {
                 this.name = "Watch Now"
@@ -254,8 +264,6 @@ class AnimexProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Chuyển đổi link ảo (nếu có) thành link thật để tải
-        // Ví dụ data: .../anime/slug-id-episode-1 -> .../watch/slug-id-episode-1
         val urlToLoad = if (data.contains("/watch/")) {
             data
         } else {
@@ -268,7 +276,6 @@ class AnimexProvider : MainAPI() {
         if (iframe != null) {
             var src = iframe.attr("src")
             if (src.startsWith("//")) src = "https:$src"
-            
             if (src.isNotEmpty()) {
                 loadExtractor(src, subtitleCallback, callback)
                 return true
