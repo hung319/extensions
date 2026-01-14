@@ -5,7 +5,6 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
 
-// Chuyển từ ParseProvider sang MainAPI để tránh lỗi Unresolved reference
 class AnimexProvider : MainAPI() {
     override var mainUrl = "https://animex.one"
     override var name = "AnimeX"
@@ -94,8 +93,8 @@ class AnimexProvider : MainAPI() {
             this.posterUrl = poster
             this.backgroundPosterUrl = bg
             this.plot = description
-            // SỬA LỖI 3: Sử dụng addEpisodes hoặc gán Map thay vì List
-            addEpisodes(DubStatus.Sub, episodes) 
+            // SỬA: Dùng DubStatus.Subbed thay vì Sub
+            addEpisodes(DubStatus.Subbed, episodes) 
         }
     }
 
@@ -113,7 +112,6 @@ class AnimexProvider : MainAPI() {
             if (src.startsWith("//")) src = "https:$src"
             
             if (src.isNotEmpty()) {
-                // SỬA LỖI 2: Đổi vị trí subtitleCallback và callback
                 loadExtractor(src, subtitleCallback, callback)
                 return true
             }
