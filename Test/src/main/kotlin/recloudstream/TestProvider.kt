@@ -3,6 +3,7 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
+import com.lagradost.cloudstream3.utils.AppUtils
 import com.fasterxml.jackson.annotation.JsonProperty
 
 class AnimexProvider : MainAPI() {
@@ -14,7 +15,7 @@ class AnimexProvider : MainAPI() {
 
     private val anilistApi = "https://graphql.anilist.co"
 
-    // SỬA LỖI: Dùng ${"$"} để escape ký tự $ trong chuỗi Kotlin
+    // Query GraphQL
     private val queryMedia = """
         query (${"$"}page: Int = 1, ${"$"}perPage: Int = 20, ${"$"}type: MediaType = ANIME, ${"$"}search: String, ${"$"}sort: [MediaSort]) {
           Page(page: ${"$"}page, perPage: ${"$"}perPage) {
@@ -109,7 +110,7 @@ class AnimexProvider : MainAPI() {
         )
         
         val body = GraphQlQuery(queryMedia, variables)
-        // Search trả về List<SearchResponse> trực tiếp
+        
         val response = app.post(
             anilistApi,
             json = body,
@@ -122,7 +123,6 @@ class AnimexProvider : MainAPI() {
         return response?.data?.page?.media?.mapNotNull { it.toSearchResponse() } ?: emptyList()
     }
 
-    // Hàm chung để gọi API Anilist cho trang chủ
     private suspend fun fetchAnilist(body: GraphQlQuery, name: String): HomePageResponse {
         try {
             val response = app.post(
@@ -148,16 +148,13 @@ class AnimexProvider : MainAPI() {
 
     private fun AnilistMedia.toSearchResponse(): SearchResponse {
         val titleEn = this.title?.english ?: this.title?.romaji ?: "Unknown"
-        // Tạo slug an toàn cho URL
         val slug = titleEn.replace(Regex("[^a-zA-Z0-9]"), "-")
                           .replace(Regex("-+"), "-")
                           .lowercase()
                           .trim('-')
         
-        // Quan trọng: URL phải chứa ID ở cuối để hàm load parse được
         val url = "$mainUrl/anime/$slug-${this.id}"
         
-        // Fallback ảnh để tránh lỗi Coil NullRequest
         val image = this.coverImage?.extraLarge 
             ?: this.coverImage?.large 
             ?: this.coverImage?.medium 
@@ -195,23 +192,29 @@ class AnimexProvider : MainAPI() {
         val episodes = mutableListOf<Episode>()
         val animeId = url.substringBefore("?").trimEnd('/').substringAfterLast("-")
 
-        // Template link từ nút Watch Now
         val watchButton = document.selectFirst("a[href^='/watch/']")
         val watchUrlTemplate = watchButton?.attr("href")?.let { fixUrl(it) }
 
         if (animeId.all { it.isDigit() }) {
             try {
                 val apiUrl = "$mainUrl/api/anime/episodes/$animeId"
-                val apiResponse = app.get(
+                
+                // SỬA LỖI Ở ĐÂY:
+                // Thay vì .parsedSafe<List<...>>(), ta lấy text và parse thủ công
+                val responseText = app.get(
                     apiUrl, 
                     headers = mapOf(
                         "Referer" to url,
                         "Accept" to "application/json",
                         "X-Requested-With" to "XMLHttpRequest"
                     )
-                ).parsedSafe<List<AnimexEpData>>()
+                ).text
 
-                apiResponse?.forEach { epData ->
+                // Parse JSON string thành List<AnimexEpData>
+                // AppUtils.parseJson đủ thông minh để xử lý List
+                val apiResponse = AppUtils.parseJson<List<AnimexEpData>>(responseText)
+
+                apiResponse.forEach { epData ->
                     val epNum = epData.number?.toInt() ?: 0
                     
                     val epUrl = if (watchUrlTemplate != null) {
@@ -220,7 +223,6 @@ class AnimexProvider : MainAPI() {
                         "$mainUrl/watch/${url.substringAfter("/anime/")}-episode-$epNum"
                     }
 
-                    // Ưu tiên tên tiếng Anh
                     val rawTitle = epData.titles?.en ?: epData.titles?.xJat
                     val epName = if (!rawTitle.isNullOrBlank()) {
                         "Episode $epNum - $rawTitle"
@@ -238,6 +240,7 @@ class AnimexProvider : MainAPI() {
                     )
                 }
             } catch (e: Exception) {
+                // In lỗi ra log để debug nếu cần
                 e.printStackTrace()
             }
         }
