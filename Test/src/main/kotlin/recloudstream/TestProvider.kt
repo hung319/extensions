@@ -5,26 +5,23 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Element
 
-class AnimexProvider : ParseProvider() {
+// Chuyển từ ParseProvider sang MainAPI để tránh lỗi Unresolved reference
+class AnimexProvider : MainAPI() {
     override var mainUrl = "https://animex.one"
     override var name = "AnimeX"
     override val hasMainPage = true
     override var lang = "en"
     override val supportedTypes = setOf(TvType.Anime, TvType.Movie)
 
-    // Khai báo các mục trên trang chủ
     override val mainPage = mainPageOf(
         "$mainUrl/home" to "Home",
         "$mainUrl/catalog?sort=TRENDING_DESC" to "Trending",
         "$mainUrl/catalog?sort=POPULARITY_DESC" to "Popular"
     )
 
-    // Xử lý lấy danh sách phim từ trang chủ
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(request.data).document
         
-        // Lưu ý: Do web dùng SvelteKit, nếu HTML trả về rỗng, bạn có thể cần parse JSON trong thẻ <script>
-        // Ở đây giả định HTML đã được render (SSR) hoặc bạn tìm thấy element.
         val home = document.select("a.item-link").mapNotNull {
             it.toSearchResult()
         }
@@ -43,7 +40,6 @@ class AnimexProvider : ParseProvider() {
         }
     }
 
-    // Tìm kiếm phim
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/catalog?search=$query"
         val document = app.get(url).document
@@ -52,7 +48,6 @@ class AnimexProvider : ParseProvider() {
         }
     }
 
-    // Tải thông tin chi tiết phim
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
@@ -64,9 +59,6 @@ class AnimexProvider : ParseProvider() {
         val bg = document.selectFirst(".absolute.inset-0.bg-cover")?.attr("style")
             ?.substringAfter("url('")?.substringBefore("')")
 
-        // Logic lấy tập phim:
-        // Web SvelteKit thường load danh sách tập động. 
-        // Nếu không thấy trong HTML tĩnh, bạn cần tìm nút "Watch" rồi request trang đó.
         val episodes = mutableListOf<Episode>()
         val watchButton = document.selectFirst("a[href^='/watch/']")
 
@@ -74,14 +66,12 @@ class AnimexProvider : ParseProvider() {
             val watchUrl = fixUrl(watchButton.attr("href"))
             val watchDoc = app.get(watchUrl).document
             
-            // Selector này cần kiểm tra thực tế trên web (F12)
             val episodeElements = watchDoc.select("a[href^='/watch/']")
             
             if (episodeElements.isNotEmpty()) {
                 episodeElements.forEach { el ->
                     val epHref = fixUrl(el.attr("href"))
                     val epName = el.text()
-                    // Regex tìm số tập
                     val epNum = Regex("Episode\\s+(\\d+)").find(epName)?.groupValues?.get(1)?.toIntOrNull()
                         ?: Regex("episode-(\\d+)").find(epHref)?.groupValues?.get(1)?.toIntOrNull()
 
@@ -94,7 +84,6 @@ class AnimexProvider : ParseProvider() {
                     )
                 }
             } else {
-                // Fallback nếu không parse được list
                 episodes.add(newEpisode(watchUrl) {
                     this.name = "Watch Now"
                 })
@@ -105,11 +94,11 @@ class AnimexProvider : ParseProvider() {
             this.posterUrl = poster
             this.backgroundPosterUrl = bg
             this.plot = description
-            this.episodes = episodes
+            // SỬA LỖI 3: Sử dụng addEpisodes hoặc gán Map thay vì List
+            addEpisodes(DubStatus.Sub, episodes) 
         }
     }
 
-    // Lấy link video
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -118,14 +107,14 @@ class AnimexProvider : ParseProvider() {
     ): Boolean {
         val document = app.get(data).document
 
-        // Kiểm tra iframe
         val iframe = document.selectFirst("iframe")
         if (iframe != null) {
             var src = iframe.attr("src")
             if (src.startsWith("//")) src = "https:$src"
             
             if (src.isNotEmpty()) {
-                loadExtractor(src, callback, subtitleCallback)
+                // SỬA LỖI 2: Đổi vị trí subtitleCallback và callback
+                loadExtractor(src, subtitleCallback, callback)
                 return true
             }
         }
