@@ -124,7 +124,6 @@ class AnimexProvider : MainAPI() {
                                 else "$mainUrl/watch/${url.substringAfter("/anime/")}-episode-$epNum"
                     val epName = "Episode $epNum" + (if (!epData.titles?.en.isNullOrBlank()) " - ${epData.titles?.en}" else "")
                     
-                    // Fallback ảnh poster nếu thumbnail tập bị null
                     val epImage = if (!epData.img.isNullOrBlank()) epData.img else poster
 
                     episodes.add(newEpisode(epUrl) {
@@ -157,23 +156,20 @@ class AnimexProvider : MainAPI() {
         val animeId = cleanUrl.substringBefore("-episode-").substringAfterLast("-")
         val epNum = cleanUrl.substringAfter("-episode-").substringBefore("/")
 
-        // Params mặc định
         val host = "pahe"
         val type = "sub"
 
         try {
-            // SỬA LỖI QUAN TRỌNG:
-            // 1. Chuyển id và epNum sang kiểu số (Int/Long) vì server mong đợi số.
-            // 2. Xóa param "cache" thừa.
+            // FIX: Thêm lại trường "cache" và đảm bảo ID là số
             val payloadMap = mapOf(
                 "id" to animeId.toIntOrNull(),
                 "host" to host,
                 "epNum" to epNum.toIntOrNull(),
                 "type" to type,
+                "cache" to "true", // Bắt buộc phải có
                 "timestamp" to System.currentTimeMillis()
             )
             
-            // Nếu parse ID thất bại thì return false luôn
             if (payloadMap["id"] == null || payloadMap["epNum"] == null) return false
 
             val jsonPayload = mapper.writeValueAsString(payloadMap)
