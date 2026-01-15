@@ -2,6 +2,7 @@ package recloudstream
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.core.type.TypeReference
+import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
@@ -20,7 +21,11 @@ class AnimexProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.Anime, TvType.Movie)
 
     private val anilistApi = "https://graphql.anilist.co"
-    private val mapper = jacksonObjectMapper()
+    
+    // CẤU HÌNH QUAN TRỌNG: Bỏ qua lỗi khi gặp trường lạ trong JSON
+    private val mapper = jacksonObjectMapper().apply {
+        configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+    }
 
     // --- Helpers ---
     private fun getAnimeIdFromUrl(url: String): String {
@@ -112,7 +117,7 @@ class AnimexProvider : MainAPI() {
                     headers = mapOf("Referer" to url, "Accept" to "application/json", "X-Requested-With" to "XMLHttpRequest")
                 ).text
 
-                // SỬA LỖI: Dùng TypeReference để parse List chính xác
+                // Parse List với mapper đã cấu hình ignore unknown properties
                 val apiResponse: List<AnimexEpData> = mapper.readValue(responseText, object : TypeReference<List<AnimexEpData>>() {})
 
                 apiResponse.forEach { epData ->
@@ -121,7 +126,6 @@ class AnimexProvider : MainAPI() {
                                 else "$mainUrl/watch/${url.substringAfter("/anime/")}-episode-$epNum"
                     val epName = "Episode $epNum" + (if (!epData.titles?.en.isNullOrBlank()) " - ${epData.titles?.en}" else "")
                     
-                    // Fallback ảnh poster nếu thumbnail tập bị null/rỗng
                     val epImage = if (!epData.img.isNullOrBlank()) epData.img else poster
 
                     episodes.add(newEpisode(epUrl) {
@@ -168,10 +172,7 @@ class AnimexProvider : MainAPI() {
                 "timestamp" to System.currentTimeMillis()
             )
             
-            // Serialize JSON
             val jsonPayload = mapper.writeValueAsString(payloadMap)
-
-            // Mã hóa ID
             val encryptedId = AnimexCrypto.encrypt(jsonPayload)
 
             if (encryptedId.isNotEmpty()) {
@@ -204,7 +205,7 @@ class AnimexProvider : MainAPI() {
     }
 }
 
-// --- Top Level Data Classes (Moved out of class to avoid nesting issues) ---
+// --- Data Classes ---
 
 data class AnilistTitle(@JsonProperty("english") val english: String?, @JsonProperty("romaji") val romaji: String?)
 data class AnilistCover(@JsonProperty("extraLarge") val extraLarge: String?, @JsonProperty("large") val large: String?, @JsonProperty("medium") val medium: String?)
