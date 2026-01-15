@@ -1,9 +1,11 @@
 package recloudstream
 
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import java.nio.charset.StandardCharsets
+import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
@@ -17,6 +19,9 @@ class AnimexProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.Anime, TvType.Movie)
 
     private val anilistApi = "https://graphql.anilist.co"
+    
+    // Mapper dùng chung để parse JSON
+    private val mapper = jacksonObjectMapper()
 
     // --- Helpers ---
     private fun getAnimeIdFromUrl(url: String): String {
@@ -174,8 +179,8 @@ class AnimexProvider : MainAPI() {
                 "timestamp" to System.currentTimeMillis()
             )
             
-            // SỬA LỖI: Dùng extension function .toJson() thay vì AppUtils.toJson()
-            val jsonPayload = payloadMap.toJson()
+            // SỬA LỖI: Dùng mapper thay vì .toJson() extension
+            val jsonPayload = mapper.writeValueAsString(payloadMap)
 
             // Mã hóa ID
             val encryptedId = AnimexCrypto.encrypt(jsonPayload)
@@ -210,7 +215,7 @@ class AnimexProvider : MainAPI() {
     }
 }
 
-// --- Crypto Logic ---
+// --- Crypto Logic (SỬA LỖI: Dùng java.util.Base64) ---
 object AnimexCrypto {
     private val d = intArrayOf(231, 59, 146, 95, 193, 70, 218, 142, 39, 245, 105, 179, 20, 168, 124, 208)
     private val U = intArrayOf(77, 241, 104, 156, 35, 183, 90, 230, 49, 205, 132, 31, 170, 118, 217, 82)
@@ -376,10 +381,9 @@ object AnimexCrypto {
             System.arraycopy(iv, 0, combined, 0, iv.size)
             System.arraycopy(encrypted, 0, combined, iv.size, encrypted.size)
 
-            return Base64.encodeToString(combined, Base64.NO_WRAP)
-                .replace("+", "-")
-                .replace("/", "_")
-                .replace("=", "")
+            // Dùng java.util.Base64.getUrlEncoder().withoutPadding() để thay thế logic replace thủ công
+            // Điều này tương đương với btoa().replace("+","-")... trong JS
+            return Base64.getUrlEncoder().withoutPadding().encodeToString(combined)
         } catch (e: Exception) {
             e.printStackTrace()
             return ""
