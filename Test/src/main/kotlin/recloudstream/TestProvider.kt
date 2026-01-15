@@ -1,5 +1,6 @@
 package recloudstream
 
+import android.util.Base64
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.DeserializationFeature
@@ -7,7 +8,6 @@ import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import java.nio.charset.StandardCharsets
-import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
@@ -22,7 +22,7 @@ class AnimexProvider : MainAPI() {
 
     private val anilistApi = "https://graphql.anilist.co"
     
-    // CẤU HÌNH QUAN TRỌNG: Bỏ qua lỗi khi gặp trường lạ trong JSON
+    // Cấu hình Mapper để bỏ qua lỗi khi gặp trường lạ trong JSON
     private val mapper = jacksonObjectMapper().apply {
         configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
     }
@@ -84,7 +84,7 @@ class AnimexProvider : MainAPI() {
     private fun AnilistMedia.toSearchResponse(): SearchResponse {
         val titleEn = this.title?.english ?: this.title?.romaji ?: "Unknown"
         val slug = titleEn.replace(Regex("[^a-zA-Z0-9]"), "-").replace(Regex("-+"), "-").lowercase().trim('-')
-        val image = this.coverImage?.extraLarge ?: this.coverImage?.large ?: this.coverImage?.medium ?: ""
+        val image = this.coverImage?.extraLarge ?: this.coverImage?.large ?: this.coverImage?.medium
         return newAnimeSearchResponse(titleEn, "$mainUrl/anime/$slug-${this.id}", TvType.Anime) { this.posterUrl = image }
     }
 
@@ -92,7 +92,7 @@ class AnimexProvider : MainAPI() {
         val document = app.get(url).document
         val title = document.selectFirst("h1")?.text() ?: "Unknown"
         val description = document.selectFirst("meta[name=description]")?.attr("content")
-        val poster = document.selectFirst("meta[property=og:image]")?.attr("content") ?: ""
+        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         val bg = document.selectFirst(".absolute.inset-0.bg-cover")?.attr("style")?.substringAfter("url('")?.substringBefore("')")
 
         val recommendations = document.select("a[href^='/anime/']").mapNotNull { element ->
@@ -111,13 +111,11 @@ class AnimexProvider : MainAPI() {
 
         if (animeId.all { it.isDigit() }) {
             try {
-                // Lấy JSON Text
                 val responseText = app.get(
                     "$mainUrl/api/anime/episodes/$animeId", 
                     headers = mapOf("Referer" to url, "Accept" to "application/json", "X-Requested-With" to "XMLHttpRequest")
                 ).text
 
-                // Parse List với mapper đã cấu hình ignore unknown properties
                 val apiResponse: List<AnimexEpData> = mapper.readValue(responseText, object : TypeReference<List<AnimexEpData>>() {})
 
                 apiResponse.forEach { epData ->
@@ -126,6 +124,7 @@ class AnimexProvider : MainAPI() {
                                 else "$mainUrl/watch/${url.substringAfter("/anime/")}-episode-$epNum"
                     val epName = "Episode $epNum" + (if (!epData.titles?.en.isNullOrBlank()) " - ${epData.titles?.en}" else "")
                     
+                    // Fallback ảnh poster nếu thumbnail tập bị null
                     val epImage = if (!epData.img.isNullOrBlank()) epData.img else poster
 
                     episodes.add(newEpisode(epUrl) {
@@ -163,15 +162,20 @@ class AnimexProvider : MainAPI() {
         val type = "sub"
 
         try {
+            // SỬA LỖI QUAN TRỌNG:
+            // 1. Chuyển id và epNum sang kiểu số (Int/Long) vì server mong đợi số.
+            // 2. Xóa param "cache" thừa.
             val payloadMap = mapOf(
-                "id" to animeId,
+                "id" to animeId.toIntOrNull(),
                 "host" to host,
-                "epNum" to epNum,
+                "epNum" to epNum.toIntOrNull(),
                 "type" to type,
-                "cache" to "true",
                 "timestamp" to System.currentTimeMillis()
             )
             
+            // Nếu parse ID thất bại thì return false luôn
+            if (payloadMap["id"] == null || payloadMap["epNum"] == null) return false
+
             val jsonPayload = mapper.writeValueAsString(payloadMap)
             val encryptedId = AnimexCrypto.encrypt(jsonPayload)
 
@@ -393,7 +397,7 @@ object AnimexCrypto {
             System.arraycopy(iv, 0, combined, 0, iv.size)
             System.arraycopy(encrypted, 0, combined, iv.size, encrypted.size)
 
-            return Base64.getUrlEncoder().withoutPadding().encodeToString(combined)
+            return Base64.encodeToString(combined, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
         } catch (e: Exception) {
             e.printStackTrace()
             return ""
