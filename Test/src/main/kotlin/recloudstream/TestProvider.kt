@@ -1,10 +1,8 @@
 package recloudstream
 
-import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.loadExtractor
-import com.lagradost.cloudstream3.utils.AppUtils
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.utils.*
 
 class AnimexProvider : MainAPI() {
     override var mainUrl = "https://animex.one"
@@ -15,7 +13,7 @@ class AnimexProvider : MainAPI() {
 
     private val anilistApi = "https://graphql.anilist.co"
 
-    // Query GraphQL
+    // --- GraphQL Query ---
     private val queryMedia = """
         query (${"$"}page: Int = 1, ${"$"}perPage: Int = 20, ${"$"}type: MediaType = ANIME, ${"$"}search: String, ${"$"}sort: [MediaSort]) {
           Page(page: ${"$"}page, perPage: ${"$"}perPage) {
@@ -86,6 +84,20 @@ class AnimexProvider : MainAPI() {
         @JsonProperty("description") val description: String?
     )
 
+    data class SourceData(
+        @JsonProperty("url") val url: String?,
+        @JsonProperty("quality") val quality: String?
+    )
+    data class SubtitleData(
+        @JsonProperty("url") val url: String?,
+        @JsonProperty("lang") val lang: String?,
+        @JsonProperty("label") val label: String?
+    )
+    data class AnimexSources(
+        @JsonProperty("sources") val sources: List<SourceData>?,
+        @JsonProperty("subtitles") val subtitles: List<SubtitleData>?
+    )
+
     // --- Main Logic ---
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -96,7 +108,6 @@ class AnimexProvider : MainAPI() {
             "type" to "ANIME",
             "sort" to listOf(sortType)
         )
-        
         val body = GraphQlQuery(queryMedia, variables)
         return fetchAnilist(body, request.name)
     }
@@ -108,7 +119,6 @@ class AnimexProvider : MainAPI() {
             "type" to "ANIME",
             "search" to query
         )
-        
         val body = GraphQlQuery(queryMedia, variables)
         
         val response = app.post(
@@ -152,9 +162,7 @@ class AnimexProvider : MainAPI() {
                           .replace(Regex("-+"), "-")
                           .lowercase()
                           .trim('-')
-        
         val url = "$mainUrl/anime/$slug-${this.id}"
-        
         val image = this.coverImage?.extraLarge 
             ?: this.coverImage?.large 
             ?: this.coverImage?.medium 
@@ -191,16 +199,12 @@ class AnimexProvider : MainAPI() {
         // Episodes
         val episodes = mutableListOf<Episode>()
         val animeId = url.substringBefore("?").trimEnd('/').substringAfterLast("-")
-
         val watchButton = document.selectFirst("a[href^='/watch/']")
         val watchUrlTemplate = watchButton?.attr("href")?.let { fixUrl(it) }
 
         if (animeId.all { it.isDigit() }) {
             try {
                 val apiUrl = "$mainUrl/api/anime/episodes/$animeId"
-                
-                // SỬA LỖI Ở ĐÂY:
-                // Thay vì .parsedSafe<List<...>>(), ta lấy text và parse thủ công
                 val responseText = app.get(
                     apiUrl, 
                     headers = mapOf(
@@ -210,8 +214,6 @@ class AnimexProvider : MainAPI() {
                     )
                 ).text
 
-                // Parse JSON string thành List<AnimexEpData>
-                // AppUtils.parseJson đủ thông minh để xử lý List
                 val apiResponse = AppUtils.parseJson<List<AnimexEpData>>(responseText)
 
                 apiResponse.forEach { epData ->
@@ -240,7 +242,6 @@ class AnimexProvider : MainAPI() {
                     )
                 }
             } catch (e: Exception) {
-                // In lỗi ra log để debug nếu cần
                 e.printStackTrace()
             }
         }
@@ -267,23 +268,70 @@ class AnimexProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val urlToLoad = if (data.contains("/watch/")) {
-            data
-        } else {
-            data.replace("/anime/", "/watch/")
-        }
-
-        val document = app.get(urlToLoad).document
-        val iframe = document.selectFirst("iframe")
+        val urlToLoad = if (data.contains("/watch/")) data else data.replace("/anime/", "/watch/")
         
-        if (iframe != null) {
-            var src = iframe.attr("src")
-            if (src.startsWith("//")) src = "https:$src"
-            if (src.isNotEmpty()) {
-                loadExtractor(src, subtitleCallback, callback)
+        try {
+            val responseText = app.get(urlToLoad).text
+            
+            // Tìm ID nguồn
+            val sourceIdRegex = Regex("""api/anime/sources/([a-zA-Z0-9_-]+)""")
+            val match = sourceIdRegex.find(responseText)
+            
+            val sourceId = if (match != null) {
+                match.groupValues[1]
+            } else {
+                val fallbackRegex = Regex("""["']([a-zA-Z0-9_-]{50,})["']""")
+                fallbackRegex.find(responseText)?.groupValues?.get(1)
+            }
+
+            if (sourceId != null) {
+                val apiUrl = "$mainUrl/api/anime/sources/$sourceId"
+                
+                val apiResponseText = app.get(
+                    apiUrl,
+                    headers = mapOf(
+                        "Referer" to urlToLoad,
+                        "Accept" to "application/json",
+                        "X-Requested-With" to "XMLHttpRequest"
+                    )
+                ).text
+                
+                val sourceData = AppUtils.parseJson<AnimexSources>(apiResponseText)
+
+                // Subtitles
+                sourceData.subtitles?.forEach { sub ->
+                    val subUrl = sub.url ?: return@forEach
+                    val lang = sub.label ?: sub.lang ?: "Unknown"
+                    subtitleCallback.invoke(
+                        SubtitleFile(lang, subUrl)
+                    )
+                }
+
+                // Sources
+                sourceData.sources?.forEach { source ->
+                    val link = source.url ?: return@forEach
+                    
+                    // Xác định Type: M3U8 hoặc VIDEO
+                    val type = if (link.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+
+                    callback.invoke(
+                        newExtractorLink(
+                            source = name,
+                            name = name,
+                            url = link,
+                            type = type // Sử dụng tham số type thay vì this.isM3u8
+                        ) {
+                            this.referer = mainUrl
+                            this.quality = getQualityFromName(source.quality)
+                        }
+                    )
+                }
                 return true
             }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
+        
         return false
     }
 }
