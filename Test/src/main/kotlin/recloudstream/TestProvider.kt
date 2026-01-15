@@ -1,6 +1,5 @@
 package recloudstream
 
-import android.util.Base64
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
@@ -175,8 +174,8 @@ class AnimexProvider : MainAPI() {
                 "timestamp" to System.currentTimeMillis()
             )
             
-            // Serialize JSON
-            val jsonPayload = AppUtils.toJson(payloadMap)
+            // SỬA LỖI: Dùng extension function .toJson() thay vì AppUtils.toJson()
+            val jsonPayload = payloadMap.toJson()
 
             // Mã hóa ID
             val encryptedId = AnimexCrypto.encrypt(jsonPayload)
@@ -211,7 +210,7 @@ class AnimexProvider : MainAPI() {
     }
 }
 
-// --- Crypto Logic (Ported from mw8hWCYX.js) ---
+// --- Crypto Logic ---
 object AnimexCrypto {
     private val d = intArrayOf(231, 59, 146, 95, 193, 70, 218, 142, 39, 245, 105, 179, 20, 168, 124, 208)
     private val U = intArrayOf(77, 241, 104, 156, 35, 183, 90, 230, 49, 205, 132, 31, 170, 118, 217, 82)
