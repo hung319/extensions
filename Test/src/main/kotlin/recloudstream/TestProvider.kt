@@ -1,6 +1,7 @@
 package recloudstream
 
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
@@ -19,8 +20,6 @@ class AnimexProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.Anime, TvType.Movie)
 
     private val anilistApi = "https://graphql.anilist.co"
-    
-    // Mapper dùng chung để parse JSON
     private val mapper = jacksonObjectMapper()
 
     // --- Helpers ---
@@ -53,27 +52,6 @@ class AnimexProvider : MainAPI() {
         "FAVOURITES_DESC" to "Top Rated",
         "UPDATED_AT_DESC" to "Just Updated"
     )
-
-    // --- Data Classes ---
-    data class AnilistTitle(@JsonProperty("english") val english: String?, @JsonProperty("romaji") val romaji: String?)
-    data class AnilistCover(@JsonProperty("extraLarge") val extraLarge: String?, @JsonProperty("large") val large: String?, @JsonProperty("medium") val medium: String?)
-    data class AnilistMedia(@JsonProperty("id") val id: Int, @JsonProperty("title") val title: AnilistTitle?, @JsonProperty("coverImage") val coverImage: AnilistCover?, @JsonProperty("bannerImage") val bannerImage: String?)
-    data class AnilistPage(@JsonProperty("media") val media: List<AnilistMedia>?)
-    data class AnilistData(@JsonProperty("Page") val page: AnilistPage?)
-    data class AnilistResponse(@JsonProperty("data") val data: AnilistData?)
-    data class GraphQlQuery(val query: String, val variables: Map<String, Any?>)
-
-    data class AnimexEpTitle(@JsonProperty("en") val en: String?, @JsonProperty("ja") val ja: String?, @JsonProperty("x-jat") val xJat: String?)
-    data class AnimexEpData(
-        @JsonProperty("number") val number: Double?,
-        @JsonProperty("titles") val titles: AnimexEpTitle?,
-        @JsonProperty("img") val img: String?,
-        @JsonProperty("description") val description: String?
-    )
-
-    data class SourceData(@JsonProperty("url") val url: String?, @JsonProperty("quality") val quality: String?)
-    data class SubtitleData(@JsonProperty("url") val url: String?, @JsonProperty("lang") val lang: String?, @JsonProperty("label") val label: String?)
-    data class AnimexSources(@JsonProperty("sources") val sources: List<SourceData>?, @JsonProperty("subtitles") val subtitles: List<SubtitleData>?)
 
     // --- Main Functions ---
 
@@ -128,20 +106,34 @@ class AnimexProvider : MainAPI() {
 
         if (animeId.all { it.isDigit() }) {
             try {
-                val apiResponse = app.get("$mainUrl/api/anime/episodes/$animeId", headers = mapOf("Referer" to url, "Accept" to "application/json", "X-Requested-With" to "XMLHttpRequest")).parsedSafe<List<AnimexEpData>>()
-                apiResponse?.forEach { epData ->
+                // Lấy JSON Text
+                val responseText = app.get(
+                    "$mainUrl/api/anime/episodes/$animeId", 
+                    headers = mapOf("Referer" to url, "Accept" to "application/json", "X-Requested-With" to "XMLHttpRequest")
+                ).text
+
+                // SỬA LỖI: Dùng TypeReference để parse List chính xác
+                val apiResponse: List<AnimexEpData> = mapper.readValue(responseText, object : TypeReference<List<AnimexEpData>>() {})
+
+                apiResponse.forEach { epData ->
                     val epNum = epData.number?.toInt() ?: 0
                     val epUrl = if (watchUrlTemplate != null) watchUrlTemplate.replace(Regex("episode-\\d+$"), "episode-$epNum")
                                 else "$mainUrl/watch/${url.substringAfter("/anime/")}-episode-$epNum"
                     val epName = "Episode $epNum" + (if (!epData.titles?.en.isNullOrBlank()) " - ${epData.titles?.en}" else "")
+                    
+                    // Fallback ảnh poster nếu thumbnail tập bị null/rỗng
+                    val epImage = if (!epData.img.isNullOrBlank()) epData.img else poster
+
                     episodes.add(newEpisode(epUrl) {
                         this.name = epName
                         this.episode = epNum
-                        this.posterUrl = if (!epData.img.isNullOrBlank()) epData.img else poster
+                        this.posterUrl = epImage
                         this.description = epData.description
                     })
                 }
-            } catch (e: Exception) { e.printStackTrace() }
+            } catch (e: Exception) { 
+                e.printStackTrace() 
+            }
         }
 
         if (episodes.isEmpty() && watchUrlTemplate != null) {
@@ -158,9 +150,7 @@ class AnimexProvider : MainAPI() {
     }
 
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
-        // data: .../watch/slug-ID-episode-NUM
         val cleanUrl = data.substringBefore("?")
-        // Logic lấy ID và EpNum
         val animeId = cleanUrl.substringBefore("-episode-").substringAfterLast("-")
         val epNum = cleanUrl.substringAfter("-episode-").substringBefore("/")
 
@@ -169,7 +159,6 @@ class AnimexProvider : MainAPI() {
         val type = "sub"
 
         try {
-            // Tạo Payload
             val payloadMap = mapOf(
                 "id" to animeId,
                 "host" to host,
@@ -179,7 +168,7 @@ class AnimexProvider : MainAPI() {
                 "timestamp" to System.currentTimeMillis()
             )
             
-            // SỬA LỖI: Dùng mapper thay vì .toJson() extension
+            // Serialize JSON
             val jsonPayload = mapper.writeValueAsString(payloadMap)
 
             // Mã hóa ID
@@ -192,7 +181,7 @@ class AnimexProvider : MainAPI() {
                     headers = mapOf("Referer" to data, "Accept" to "application/json", "X-Requested-With" to "XMLHttpRequest")
                 ).text
                 
-                val sourceData = AppUtils.parseJson<AnimexSources>(apiResponseText)
+                val sourceData = mapper.readValue(apiResponseText, AnimexSources::class.java)
 
                 sourceData.subtitles?.forEach { sub ->
                     val url = sub.url ?: return@forEach
@@ -215,7 +204,29 @@ class AnimexProvider : MainAPI() {
     }
 }
 
-// --- Crypto Logic (SỬA LỖI: Dùng java.util.Base64) ---
+// --- Top Level Data Classes (Moved out of class to avoid nesting issues) ---
+
+data class AnilistTitle(@JsonProperty("english") val english: String?, @JsonProperty("romaji") val romaji: String?)
+data class AnilistCover(@JsonProperty("extraLarge") val extraLarge: String?, @JsonProperty("large") val large: String?, @JsonProperty("medium") val medium: String?)
+data class AnilistMedia(@JsonProperty("id") val id: Int, @JsonProperty("title") val title: AnilistTitle?, @JsonProperty("coverImage") val coverImage: AnilistCover?, @JsonProperty("bannerImage") val bannerImage: String?)
+data class AnilistPage(@JsonProperty("media") val media: List<AnilistMedia>?)
+data class AnilistData(@JsonProperty("Page") val page: AnilistPage?)
+data class AnilistResponse(@JsonProperty("data") val data: AnilistData?)
+data class GraphQlQuery(val query: String, val variables: Map<String, Any?>)
+
+data class AnimexEpTitle(@JsonProperty("en") val en: String?, @JsonProperty("ja") val ja: String?, @JsonProperty("x-jat") val xJat: String?)
+data class AnimexEpData(
+    @JsonProperty("number") val number: Double?,
+    @JsonProperty("titles") val titles: AnimexEpTitle?,
+    @JsonProperty("img") val img: String?,
+    @JsonProperty("description") val description: String?
+)
+
+data class SourceData(@JsonProperty("url") val url: String?, @JsonProperty("quality") val quality: String?)
+data class SubtitleData(@JsonProperty("url") val url: String?, @JsonProperty("lang") val lang: String?, @JsonProperty("label") val label: String?)
+data class AnimexSources(@JsonProperty("sources") val sources: List<SourceData>?, @JsonProperty("subtitles") val subtitles: List<SubtitleData>?)
+
+// --- Crypto Logic ---
 object AnimexCrypto {
     private val d = intArrayOf(231, 59, 146, 95, 193, 70, 218, 142, 39, 245, 105, 179, 20, 168, 124, 208)
     private val U = intArrayOf(77, 241, 104, 156, 35, 183, 90, 230, 49, 205, 132, 31, 170, 118, 217, 82)
@@ -381,8 +392,6 @@ object AnimexCrypto {
             System.arraycopy(iv, 0, combined, 0, iv.size)
             System.arraycopy(encrypted, 0, combined, iv.size, encrypted.size)
 
-            // Dùng java.util.Base64.getUrlEncoder().withoutPadding() để thay thế logic replace thủ công
-            // Điều này tương đương với btoa().replace("+","-")... trong JS
             return Base64.getUrlEncoder().withoutPadding().encodeToString(combined)
         } catch (e: Exception) {
             e.printStackTrace()
