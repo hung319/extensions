@@ -325,10 +325,11 @@ object AnimexCrypto {
 
     private fun f(n: Int): Int = ((n xor 1553869343) + (n shl 7 xor (n ushr 11)))
 
-    private fun g(n: Int): Int {
-        val nUnsigned = (n.toLong() and 0xFFFFFFFFL).toDouble()
-        val result = nUnsigned * 2654435769.0
-        return (result % 4294967296.0).toLong().toInt()
+    // FIX QUAN TRỌNG: Sử dụng Double để mô phỏng chính xác sai số của JS khi tính toán g
+    private fun g(n: Long): Long {
+        val nUnsignedDouble = n.toDouble()
+        val result = nUnsignedDouble * 2654435769.0
+        return (result % 4294967296.0).toLong()
     }
 
     private fun x(n: Int): Int {
@@ -370,16 +371,28 @@ object AnimexCrypto {
         }
         n
     }
+    
+    // Hàm g helper nhận Int để dùng cho b lazy init
+    private fun g(n: Int): Int {
+        val nUnsigned = (n.toLong() and 0xFFFFFFFFL).toDouble()
+        val result = nUnsigned * 2654435769.0
+        return (result % 4294967296.0).toLong().toInt()
+    }
 
     private fun p(n: Int, o: Int): IntArray {
         val e = IntArray(n)
-        var c = o
+        // Dùng Long cho c để tránh wrap-around sớm khi cộng dồn (mô phỏng behavior của Number trong JS)
+        var c = o.toLong() and 0xFFFFFFFFL
+        
         for (t in 0 until n) {
-            c = g(c + t * 40503)
-            val s = x(c)
+            // Tính toán argument cho g trên Long (Number của JS có thể > 2^32)
+            val arg = c + t * 40503
+            c = g(arg)
+            
+            val s = x(c.toInt())
             val a = d[t % 16] xor U[(t + 3) % 16] xor j[(t + 7) % 16]
             val r = A[(t + 2) % 16] xor Dollar[(t + 5) % 16] xor E[(t + 11) % 16]
-            val underscore = b[c.ushr(8) and 255]
+            val underscore = b[(c ushr 8).toInt() and 255]
             e[t] = (s xor a xor r xor underscore xor (t * 19)) and 255
         }
         for (t in 0 until 7) {
