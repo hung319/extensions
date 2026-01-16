@@ -22,7 +22,13 @@ class AnimexProvider : MainAPI() {
 
     private val anilistApi = "https://graphql.anilist.co"
     
-    // Mapper cấu hình bỏ qua lỗi field lạ
+    // Headers giả lập trình duyệt thật (giống Node.js script)
+    private val headers = mapOf(
+        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Origin" to mainUrl,
+        "Referer" to "$mainUrl/"
+    )
+
     private val mapper = jacksonObjectMapper().apply {
         configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
     }
@@ -67,13 +73,26 @@ class AnimexProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val variables = mapOf("page" to 1, "perPage" to 20, "type" to "ANIME", "search" to query)
-        val response = app.post(anilistApi, json = GraphQlQuery(queryMedia, variables), headers = mapOf("Content-Type" to "application/json", "Accept" to "application/json")).parsedSafe<AnilistResponse>()
-        return response?.data?.page?.media?.mapNotNull { it.toSearchResponse() } ?: emptyList()
+        val body = GraphQlQuery(queryMedia, variables)
+        return try {
+            val response = app.post(
+                anilistApi, 
+                json = body, 
+                headers = mapOf("Content-Type" to "application/json", "Accept" to "application/json")
+            ).parsedSafe<AnilistResponse>()
+            response?.data?.page?.media?.mapNotNull { it.toSearchResponse() } ?: emptyList()
+        } catch (e: Exception) {
+            emptyList()
+        }
     }
 
     private suspend fun fetchAnilist(body: GraphQlQuery, name: String): HomePageResponse {
         return try {
-            val response = app.post(anilistApi, json = body, headers = mapOf("Content-Type" to "application/json", "Accept" to "application/json", "Origin" to mainUrl)).parsedSafe<AnilistResponse>()
+            val response = app.post(
+                anilistApi,
+                json = body,
+                headers = mapOf("Content-Type" to "application/json", "Accept" to "application/json", "Origin" to mainUrl)
+            ).parsedSafe<AnilistResponse>()
             val list = response?.data?.page?.media?.mapNotNull { it.toSearchResponse() } ?: emptyList()
             newHomePageResponse(name, list)
         } catch (e: Exception) {
@@ -89,7 +108,7 @@ class AnimexProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url).document
+        val document = app.get(url, headers = headers).document
         val title = document.selectFirst("h1")?.text() ?: "Unknown"
         val description = document.selectFirst("meta[name=description]")?.attr("content")
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
@@ -111,7 +130,6 @@ class AnimexProvider : MainAPI() {
 
         if (animeId.all { it.isDigit() }) {
             try {
-                // Mã hóa request lấy danh sách tập
                 val epPayload = mapOf(
                     "id" to animeId.toIntOrNull(),
                     "refresh" to "false",
@@ -119,37 +137,47 @@ class AnimexProvider : MainAPI() {
                 )
                 val encryptedEpId = AnimexCrypto.encrypt(mapper.writeValueAsString(epPayload))
 
+                // Dùng Referer là trang chủ để tránh lỗi server
+                val apiHeaders = headers.toMutableMap().apply {
+                    put("Accept", "application/json")
+                    put("X-Requested-With", "XMLHttpRequest")
+                    put("Referer", "$mainUrl/") 
+                }
+
                 val responseText = app.get(
                     "$mainUrl/api/anime/episodes/$encryptedEpId", 
-                    headers = mapOf("Referer" to url, "Accept" to "application/json", "X-Requested-With" to "XMLHttpRequest")
+                    headers = apiHeaders
                 ).text
 
-                val apiResponse: List<AnimexEpData> = mapper.readValue(responseText, object : TypeReference<List<AnimexEpData>>() {})
+                // Kiểm tra lỗi trước khi parse list
+                if (responseText.contains("\"error\"")) {
+                    // Log error nếu cần thiết, nhưng không crash
+                } else {
+                    val apiResponse: List<AnimexEpData> = mapper.readValue(responseText, object : TypeReference<List<AnimexEpData>>() {})
+                    apiResponse.forEach { epData ->
+                        val epNum = epData.number?.toInt() ?: 0
+                        val epName = "Episode $epNum" + (if (!epData.titles?.en.isNullOrBlank()) " - ${epData.titles?.en}" else "")
+                        val epImage = if (!epData.img.isNullOrBlank()) epData.img else poster
 
-                apiResponse.forEach { epData ->
-                    val epNum = epData.number?.toInt() ?: 0
-                    
-                    val epName = "Episode $epNum" + (if (!epData.titles?.en.isNullOrBlank()) " - ${epData.titles?.en}" else "")
-                    val epImage = if (!epData.img.isNullOrBlank()) epData.img else poster
+                        // Gói thông tin server vào data
+                        val episodeData = mapOf(
+                            "id" to animeId,
+                            "epNum" to epNum,
+                            "subs" to (epData.subProviders ?: listOf("pahe", "mega", "yuki")),
+                            "dubs" to (epData.dubProviders ?: emptyList())
+                        )
+                        val episodeDataJson = mapper.writeValueAsString(episodeData)
 
-                    // Tạo JSON chứa thông tin providers để pass qua loadLinks
-                    val episodeData = mapOf(
-                        "id" to animeId,
-                        "epNum" to epNum,
-                        "subs" to (epData.subProviders ?: emptyList()),
-                        "dubs" to (epData.dubProviders ?: emptyList())
-                    )
-                    val episodeDataJson = mapper.writeValueAsString(episodeData)
-
-                    episodes.add(newEpisode(episodeDataJson) {
-                        this.name = epName
-                        this.episode = epNum
-                        this.posterUrl = epImage
-                        this.description = epData.description
-                    })
+                        episodes.add(newEpisode(episodeDataJson) {
+                            this.name = epName
+                            this.episode = epNum
+                            this.posterUrl = epImage
+                            this.description = epData.description
+                        })
+                    }
                 }
             } catch (e: Exception) { 
-                e.printStackTrace()
+                // e.printStackTrace()
             }
         }
 
@@ -173,36 +201,29 @@ class AnimexProvider : MainAPI() {
             var subProviders = listOf<String>()
             var dubProviders = listOf<String>()
 
-            // KIỂM TRA: data là JSON hay URL?
+            // KIỂM TRA: data là JSON (từ API) hay URL (từ nút Watch Now/Fallback)
             if (data.trim().startsWith("{")) {
-                // Trường hợp 1: data là JSON (từ hàm load của chúng ta)
                 try {
                     val epData = mapper.readValue(data, Map::class.java)
                     animeId = epData["id"]?.toString()?.toIntOrNull()
                     epNum = epData["epNum"]?.toString()?.toIntOrNull()
                     subProviders = (epData["subs"] as? List<*>)?.map { it.toString() } ?: emptyList()
                     dubProviders = (epData["dubs"] as? List<*>)?.map { it.toString() } ?: emptyList()
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
+                } catch (e: Exception) { e.printStackTrace() }
             } else {
-                // Trường hợp 2: data là URL (nút Watch Now hoặc fallback)
+                // Parse từ URL
                 val cleanUrl = data.substringBefore("?")
                 animeId = cleanUrl.substringBefore("-episode-").substringAfterLast("-").toIntOrNull()
-                // Lấy epNum từ url: ...-episode-123...
                 val epRegex = Regex("episode-(\\d+)")
                 epNum = epRegex.find(cleanUrl)?.groupValues?.get(1)?.toIntOrNull() ?: 1
-                
-                // Mặc định server nếu parse từ URL
+                // Default servers
                 subProviders = listOf("pahe", "mega", "yuki")
             }
 
             if (animeId == null || epNum == null) return false
 
-            // Hàm nội bộ để gọi API sources
             suspend fun fetchSource(host: String, type: String) {
                 try {
-                    // PAYLOAD CHUẨN: id, epNum là số int, có cache: "true"
                     val payloadMap = mapOf(
                         "id" to animeId,
                         "host" to host,
@@ -215,14 +236,15 @@ class AnimexProvider : MainAPI() {
                     val encryptedId = AnimexCrypto.encrypt(mapper.writeValueAsString(payloadMap))
                     if (encryptedId.isEmpty()) return
 
-                    val apiUrl = "$mainUrl/api/anime/sources/$encryptedId"
+                    val apiHeaders = headers.toMutableMap().apply {
+                        put("Accept", "application/json")
+                        put("X-Requested-With", "XMLHttpRequest")
+                        put("Referer", "$mainUrl/")
+                    }
+
                     val apiResponseText = app.get(
-                        apiUrl,
-                        headers = mapOf(
-                            "Referer" to "$mainUrl/watch/",
-                            "Accept" to "application/json",
-                            "X-Requested-With" to "XMLHttpRequest"
-                        )
+                        "$mainUrl/api/anime/sources/$encryptedId",
+                        headers = apiHeaders
                     ).text
                     
                     val sourceData = mapper.readValue(apiResponseText, AnimexSources::class.java)
@@ -244,17 +266,12 @@ class AnimexProvider : MainAPI() {
                         )
                     }
                 } catch (e: Exception) {
-                    // Ignore individual server errors
+                    // Ignore error per server
                 }
             }
 
-            // Chạy song song/tuần tự các server
-            if (subProviders.isNotEmpty()) {
-                subProviders.forEach { host -> fetchSource(host, "sub") }
-            }
-            if (dubProviders.isNotEmpty()) {
-                dubProviders.forEach { host -> fetchSource(host, "dub") }
-            }
+            if (subProviders.isNotEmpty()) subProviders.forEach { fetchSource(it, "sub") }
+            if (dubProviders.isNotEmpty()) dubProviders.forEach { fetchSource(it, "dub") }
 
             return true
         } catch (e: Exception) {
@@ -265,7 +282,6 @@ class AnimexProvider : MainAPI() {
 }
 
 // --- Data Classes ---
-
 data class AnilistTitle(@JsonProperty("english") val english: String?, @JsonProperty("romaji") val romaji: String?)
 data class AnilistCover(@JsonProperty("extraLarge") val extraLarge: String?, @JsonProperty("large") val large: String?, @JsonProperty("medium") val medium: String?)
 data class AnilistMedia(@JsonProperty("id") val id: Int, @JsonProperty("title") val title: AnilistTitle?, @JsonProperty("coverImage") val coverImage: AnilistCover?, @JsonProperty("bannerImage") val bannerImage: String?)
