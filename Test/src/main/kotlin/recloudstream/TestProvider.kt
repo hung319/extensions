@@ -256,11 +256,17 @@ class AnimexProvider : MainAPI() {
                 val link = source.url ?: return@forEach
                 val linkType = if (link.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                 
-                // Cấu hình Headers theo từng Provider
+                // Cấu hình Headers theo từng Provider (dựa trên CURL)
                 val baseUserAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
                 
                 val videoHeaders = when(host.lowercase()) {
-                    "miru", "mizu", "zen" -> mapOf(
+                    "miru" -> mapOf(
+                        "Origin" to "https://animex.one",
+                        "User-Agent" to baseUserAgent,
+                        "Accept" to "*/*"
+                        // Miru KHÔNG dùng Referer theo CURL
+                    )
+                    "mizu", "zen" -> mapOf(
                         "Origin" to mainUrl,
                         "Referer" to "$mainUrl/",
                         "User-Agent" to baseUserAgent,
@@ -381,11 +387,9 @@ object AnimexCrypto {
 
     private fun p(n: Int, o: Int): IntArray {
         val e = IntArray(n)
-        // Dùng Long cho c để tránh wrap-around sớm khi cộng dồn (mô phỏng behavior của Number trong JS)
         var c = o.toLong() and 0xFFFFFFFFL
         
         for (t in 0 until n) {
-            // Tính toán argument cho g trên Long (Number của JS có thể > 2^32)
             val arg = c + t * 40503
             c = g(arg)
             
