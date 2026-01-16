@@ -30,7 +30,6 @@ class AnimexProvider : MainAPI() {
         configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
     }
 
-    // Hàm log debug chuyên dụng
     private fun debugLog(message: String) {
         Log.i("AnimexProvider", message)
         println("AnimexProvider: $message")
@@ -121,7 +120,6 @@ class AnimexProvider : MainAPI() {
 
         if (animeId.all { it.isDigit() }) {
             try {
-                // Dùng ID trần cho episodes như đã fix trước đó
                 val apiUrl = "$mainUrl/api/anime/episodes/$animeId"
                 val apiHeaders = mapOf(
                     "Accept" to "application/json",
@@ -143,7 +141,6 @@ class AnimexProvider : MainAPI() {
                         val epName = if (!titleEn.isNullOrBlank()) "Episode $epNum - $titleEn" else "Episode $epNum"
                         val epImage = if (!epData.img.isNullOrBlank()) epData.img else poster
 
-                        // Gói tất cả thông tin providers vào data JSON
                         val episodeData = mapOf(
                             "id" to animeId,
                             "epNum" to epNum,
@@ -159,12 +156,9 @@ class AnimexProvider : MainAPI() {
                             this.description = epData.description
                         })
                     }
-                } else {
-                    debugLog("API Error or Empty: $responseText")
                 }
             } catch (e: Exception) { 
                 debugLog("Load Error: ${e.message}")
-                e.printStackTrace()
             }
         }
 
@@ -187,7 +181,6 @@ class AnimexProvider : MainAPI() {
             var subProviders = listOf<String>()
             var dubProviders = listOf<String>()
 
-            // 1. Parse Data
             if (data.trim().startsWith("{")) {
                 try {
                     val epData = mapper.readValue(data, Map::class.java)
@@ -197,37 +190,26 @@ class AnimexProvider : MainAPI() {
                     dubProviders = (epData["dubs"] as? List<*>)?.map { it.toString() } ?: emptyList()
                 } catch (e: Exception) { 
                     debugLog("JSON Parse Error: ${e.message}")
-                    e.printStackTrace() 
                 }
             } else {
-                // Fallback cho URL (ít dùng)
                 val cleanUrl = data.substringBefore("?")
                 animeId = cleanUrl.substringBefore("-episode-").substringAfterLast("-").toIntOrNull()
                 val epRegex = Regex("episode-(\\d+)")
                 epNum = epRegex.find(cleanUrl)?.groupValues?.get(1)?.toIntOrNull() ?: 1
-                subProviders = listOf("pahe", "dih", "neko", "miru")
+                subProviders = listOf("pahe", "dih", "neko")
             }
-
-            debugLog("Parsed Info -> ID: $animeId, Ep: $epNum, Subs: $subProviders, Dubs: $dubProviders")
 
             if (animeId == null || epNum == null) {
                 debugLog("❌ Missing ID or Episode Number")
                 return false
             }
 
-            // 2. Chuẩn bị danh sách tasks để chạy song song
             val tasks = mutableListOf<Pair<String, String>>()
-            if (subProviders.isNotEmpty()) {
-                subProviders.forEach { tasks.add(it to "sub") }
-            }
-            if (dubProviders.isNotEmpty()) {
-                dubProviders.forEach { tasks.add(it to "dub") }
-            }
+            if (subProviders.isNotEmpty()) subProviders.forEach { tasks.add(it to "sub") }
+            if (dubProviders.isNotEmpty()) dubProviders.forEach { tasks.add(it to "dub") }
 
-            // 3. Chạy song song (Parallel Execution)
             if (tasks.isNotEmpty()) {
                 debugLog("🚀 Starting parallel fetch for ${tasks.size} sources...")
-                
                 coroutineScope {
                     tasks.map { (host, type) ->
                         async {
@@ -236,9 +218,6 @@ class AnimexProvider : MainAPI() {
                         }
                     }.awaitAll()
                 }
-                debugLog("✅ All tasks completed")
-            } else {
-                debugLog("⚠️ No providers found to fetch")
             }
 
             return true
@@ -284,8 +263,6 @@ class AnimexProvider : MainAPI() {
             )
 
             val apiUrl = "$mainUrl/api/anime/sources/$encryptedId"
-            // debugLog("GET $apiUrl") // Uncomment nếu cần debug URL
-
             val response = app.get(apiUrl, headers = apiHeaders)
             val apiResponseText = response.text
             
@@ -353,7 +330,12 @@ object AnimexCrypto {
 
     private fun f(n: Int): Int = ((n xor 1553869343) + (n shl 7 xor (n ushr 11)))
 
-    private fun g(n: Int): Int = (n * 2654435769L).toInt()
+    // FIX: Sử dụng Double để mô phỏng phép nhân mất chính xác của JS
+    private fun g(n: Int): Int {
+        val nUnsigned = n.toLong() and 0xFFFFFFFFL
+        val productDouble = nUnsigned.toDouble() * 2654435769.0
+        return productDouble.toLong().toInt()
+    }
 
     private fun x(n: Int): Int {
         var o = n
@@ -445,7 +427,6 @@ object AnimexCrypto {
             for (s in 0 until 16) {
                 val a = e[s]
                 val r = e[s + 16]
-                // Fix Logic ưu tiên toán tử: (u(r, 4) xor ((a xor r) and 255) xor (t * 41 + s * 19))
                 val underscore = (u(r, 4) xor ((a xor r) and 255) xor (t * 41 + s * 19)) and 255
                 val i = f(a + r + t) and 255
                 e[s] = r
