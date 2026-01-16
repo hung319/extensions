@@ -1,17 +1,21 @@
 package recloudstream
 
+import android.util.Base64
+import android.util.Log
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import java.nio.charset.StandardCharsets
 import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
-import android.util.Base64
 
 class AnimexProvider : MainAPI() {
     override var mainUrl = "https://animex.one"
@@ -24,6 +28,12 @@ class AnimexProvider : MainAPI() {
     
     private val mapper = jacksonObjectMapper().apply {
         configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+    }
+
+    // Hàm log debug chuyên dụng
+    private fun debugLog(message: String) {
+        Log.i("AnimexProvider", message)
+        println("AnimexProvider: $message")
     }
 
     // --- Helpers ---
@@ -88,6 +98,7 @@ class AnimexProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
+        debugLog("=== LOAD START: $url ===")
         val document = app.get(url).document
         val title = document.selectFirst("h1")?.text() ?: "Unknown"
         val description = document.selectFirst("meta[name=description]")?.attr("content")
@@ -106,30 +117,33 @@ class AnimexProvider : MainAPI() {
 
         val episodes = mutableListOf<Episode>()
         val animeId = getAnimeIdFromUrl(url)
+        debugLog("Parsed Anime ID: $animeId")
 
         if (animeId.all { it.isDigit() }) {
             try {
-                // SỬA ĐỔI: Dùng ID trần thay vì payload mã hóa
+                // Dùng ID trần cho episodes như đã fix trước đó
                 val apiUrl = "$mainUrl/api/anime/episodes/$animeId"
-                
                 val apiHeaders = mapOf(
                     "Accept" to "application/json",
                     "X-Requested-With" to "XMLHttpRequest",
-                    "Referer" to url, // Header Referer rất quan trọng
+                    "Referer" to url,
                     "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                 )
 
                 val responseText = app.get(apiUrl, headers = apiHeaders).text
-
+                
                 if (!responseText.contains("\"error\"") && responseText.trim().startsWith("[")) {
                     val apiResponse: List<AnimexEpData> = mapper.readValue(responseText, object : TypeReference<List<AnimexEpData>>() {})
                     
+                    debugLog("Found ${apiResponse.size} episodes")
+
                     apiResponse.forEach { epData ->
                         val epNum = epData.number?.toInt() ?: 0
                         val titleEn = epData.titles?.en
                         val epName = if (!titleEn.isNullOrBlank()) "Episode $epNum - $titleEn" else "Episode $epNum"
                         val epImage = if (!epData.img.isNullOrBlank()) epData.img else poster
 
+                        // Gói tất cả thông tin providers vào data JSON
                         val episodeData = mapOf(
                             "id" to animeId,
                             "epNum" to epNum,
@@ -145,8 +159,11 @@ class AnimexProvider : MainAPI() {
                             this.description = epData.description
                         })
                     }
+                } else {
+                    debugLog("API Error or Empty: $responseText")
                 }
             } catch (e: Exception) { 
+                debugLog("Load Error: ${e.message}")
                 e.printStackTrace()
             }
         }
@@ -161,12 +178,16 @@ class AnimexProvider : MainAPI() {
     }
 
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
+        debugLog("=== LOAD LINKS START ===")
+        debugLog("Input Data: $data")
+        
         try {
             var animeId: Int? = null
             var epNum: Int? = null
             var subProviders = listOf<String>()
             var dubProviders = listOf<String>()
 
+            // 1. Parse Data
             if (data.trim().startsWith("{")) {
                 try {
                     val epData = mapper.readValue(data, Map::class.java)
@@ -174,78 +195,127 @@ class AnimexProvider : MainAPI() {
                     epNum = epData["epNum"]?.toString()?.toIntOrNull()
                     subProviders = (epData["subs"] as? List<*>)?.map { it.toString() } ?: emptyList()
                     dubProviders = (epData["dubs"] as? List<*>)?.map { it.toString() } ?: emptyList()
-                } catch (e: Exception) { e.printStackTrace() }
+                } catch (e: Exception) { 
+                    debugLog("JSON Parse Error: ${e.message}")
+                    e.printStackTrace() 
+                }
             } else {
+                // Fallback cho URL (ít dùng)
                 val cleanUrl = data.substringBefore("?")
                 animeId = cleanUrl.substringBefore("-episode-").substringAfterLast("-").toIntOrNull()
                 val epRegex = Regex("episode-(\\d+)")
                 epNum = epRegex.find(cleanUrl)?.groupValues?.get(1)?.toIntOrNull() ?: 1
-                subProviders = listOf("pahe", "dih", "neko")
+                subProviders = listOf("pahe", "dih", "neko", "miru")
             }
 
-            if (animeId == null || epNum == null) return false
+            debugLog("Parsed Info -> ID: $animeId, Ep: $epNum, Subs: $subProviders, Dubs: $dubProviders")
 
-            suspend fun fetchSource(host: String, type: String) {
-                try {
-                    // Logic source vẫn cần mã hóa
-                    val payloadMap = mapOf(
-                        "id" to animeId,
-                        "host" to host,
-                        "epNum" to epNum,
-                        "type" to type,
-                        "cache" to "true",
-                        "timestamp" to System.currentTimeMillis()
-                    )
-                    
-                    val encryptedId = AnimexCrypto.encrypt(mapper.writeValueAsString(payloadMap))
-                    if (encryptedId.isEmpty()) return
+            if (animeId == null || epNum == null) {
+                debugLog("❌ Missing ID or Episode Number")
+                return false
+            }
 
-                    val apiHeaders = mapOf(
-                        "Accept" to "*/*",
-                        "Content-Type" to "application/json",
-                        "X-Requested-With" to "XMLHttpRequest",
-                        "Referer" to "$mainUrl/",
-                        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                    )
+            // 2. Chuẩn bị danh sách tasks để chạy song song
+            val tasks = mutableListOf<Pair<String, String>>()
+            if (subProviders.isNotEmpty()) {
+                subProviders.forEach { tasks.add(it to "sub") }
+            }
+            if (dubProviders.isNotEmpty()) {
+                dubProviders.forEach { tasks.add(it to "dub") }
+            }
 
-                    val apiResponseText = app.get(
-                        "$mainUrl/api/anime/sources/$encryptedId",
-                        headers = apiHeaders
-                    ).text
-                    
-                    if (apiResponseText.contains("\"error\"")) return
-
-                    val sourceData = mapper.readValue(apiResponseText, AnimexSources::class.java)
-
-                    sourceData.subtitles?.forEach { sub ->
-                        val url = sub.url ?: return@forEach
-                        subtitleCallback.invoke(SubtitleFile(sub.label ?: sub.lang ?: "Unknown", url))
-                    }
-
-                    sourceData.sources?.forEach { source ->
-                        val link = source.url ?: return@forEach
-                        val linkType = if (link.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                        
-                        callback.invoke(
-                            newExtractorLink(name, "$name $host ($type)", link, type = linkType) {
-                                this.referer = mainUrl
-                                this.quality = getQualityFromName(source.quality)
-                            }
-                        )
-                    }
-                } catch (e: Exception) {
-                    // Ignore
+            // 3. Chạy song song (Parallel Execution)
+            if (tasks.isNotEmpty()) {
+                debugLog("🚀 Starting parallel fetch for ${tasks.size} sources...")
+                
+                coroutineScope {
+                    tasks.map { (host, type) ->
+                        async {
+                            debugLog("⚡ Fetching: $host ($type)")
+                            fetchSource(host, type, animeId!!, epNum!!, subtitleCallback, callback)
+                        }
+                    }.awaitAll()
                 }
+                debugLog("✅ All tasks completed")
+            } else {
+                debugLog("⚠️ No providers found to fetch")
             }
-
-            if (subProviders.isNotEmpty()) subProviders.forEach { fetchSource(it, "sub") }
-            if (dubProviders.isNotEmpty()) dubProviders.forEach { fetchSource(it, "dub") }
 
             return true
         } catch (e: Exception) {
+            debugLog("❌ Critical Error in loadLinks: ${e.message}")
             e.printStackTrace()
         }
         return false
+    }
+
+    private suspend fun fetchSource(
+        host: String, 
+        type: String, 
+        animeId: Int, 
+        epNum: Int, 
+        subtitleCallback: (SubtitleFile) -> Unit, 
+        callback: (ExtractorLink) -> Unit
+    ) {
+        try {
+            val payloadMap = mapOf(
+                "id" to animeId,
+                "host" to host,
+                "epNum" to epNum,
+                "type" to type,
+                "cache" to "true",
+                "timestamp" to System.currentTimeMillis()
+            )
+            
+            val jsonPayload = mapper.writeValueAsString(payloadMap)
+            val encryptedId = AnimexCrypto.encrypt(jsonPayload)
+            
+            if (encryptedId.isEmpty()) {
+                debugLog("⚠️ Encryption failed for $host")
+                return
+            }
+
+            val apiHeaders = mapOf(
+                "Accept" to "*/*",
+                "Content-Type" to "application/json",
+                "X-Requested-With" to "XMLHttpRequest",
+                "Referer" to "$mainUrl/",
+                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+
+            val apiUrl = "$mainUrl/api/anime/sources/$encryptedId"
+            // debugLog("GET $apiUrl") // Uncomment nếu cần debug URL
+
+            val response = app.get(apiUrl, headers = apiHeaders)
+            val apiResponseText = response.text
+            
+            if (apiResponseText.contains("\"error\"") || !response.isSuccessful) {
+                debugLog("❌ Error fetching $host: $apiResponseText")
+                return
+            }
+
+            val sourceData = mapper.readValue(apiResponseText, AnimexSources::class.java)
+            debugLog("✅ Success $host: Found ${sourceData.sources?.size ?: 0} links")
+
+            sourceData.subtitles?.forEach { sub ->
+                val url = sub.url ?: return@forEach
+                subtitleCallback.invoke(SubtitleFile(sub.label ?: sub.lang ?: "Unknown", url))
+            }
+
+            sourceData.sources?.forEach { source ->
+                val link = source.url ?: return@forEach
+                val linkType = if (link.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                
+                callback.invoke(
+                    newExtractorLink(name, "$name $host ($type)", link, type = linkType) {
+                        this.referer = mainUrl
+                        this.quality = getQualityFromName(source.quality)
+                    }
+                )
+            }
+        } catch (e: Exception) {
+            debugLog("⚠️ Exception fetching $host: ${e.message}")
+        }
     }
 }
 
@@ -375,7 +445,7 @@ object AnimexCrypto {
             for (s in 0 until 16) {
                 val a = e[s]
                 val r = e[s + 16]
-                // Fix: Priority of operations
+                // Fix Logic ưu tiên toán tử: (u(r, 4) xor ((a xor r) and 255) xor (t * 41 + s * 19))
                 val underscore = (u(r, 4) xor ((a xor r) and 255) xor (t * 41 + s * 19)) and 255
                 val i = f(a + r + t) and 255
                 e[s] = r
@@ -447,6 +517,7 @@ object AnimexCrypto {
 
             Base64.encodeToString(combined, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
         } catch (e: Exception) {
+            Log.e("AnimexCrypto", "Encryption error: ${e.message}")
             e.printStackTrace()
             ""
         }
