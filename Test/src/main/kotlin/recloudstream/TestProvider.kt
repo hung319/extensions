@@ -149,7 +149,7 @@ class AnimexProvider : MainAPI() {
                     })
                 }
             } catch (e: Exception) { 
-                // e.printStackTrace() // Reduced logs
+                e.printStackTrace()
             }
         }
 
@@ -168,19 +168,41 @@ class AnimexProvider : MainAPI() {
 
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
         try {
-            // Parse data JSON được gói từ hàm load
-            val epData = mapper.readValue(data, Map::class.java)
-            
-            val animeId = epData["id"]?.toString()?.toIntOrNull() ?: return false
-            val epNum = epData["epNum"]?.toString()?.toIntOrNull() ?: return false
-            
-            // Lấy danh sách servers
-            val subProviders = (epData["subs"] as? List<*>)?.map { it.toString() } ?: emptyList()
-            val dubProviders = (epData["dubs"] as? List<*>)?.map { it.toString() } ?: emptyList()
+            var animeId: Int? = null
+            var epNum: Int? = null
+            var subProviders = listOf<String>()
+            var dubProviders = listOf<String>()
+
+            // KIỂM TRA: data là JSON hay URL?
+            if (data.trim().startsWith("{")) {
+                // Trường hợp 1: data là JSON (từ hàm load của chúng ta)
+                try {
+                    val epData = mapper.readValue(data, Map::class.java)
+                    animeId = epData["id"]?.toString()?.toIntOrNull()
+                    epNum = epData["epNum"]?.toString()?.toIntOrNull()
+                    subProviders = (epData["subs"] as? List<*>)?.map { it.toString() } ?: emptyList()
+                    dubProviders = (epData["dubs"] as? List<*>)?.map { it.toString() } ?: emptyList()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            } else {
+                // Trường hợp 2: data là URL (nút Watch Now hoặc fallback)
+                val cleanUrl = data.substringBefore("?")
+                animeId = cleanUrl.substringBefore("-episode-").substringAfterLast("-").toIntOrNull()
+                // Lấy epNum từ url: ...-episode-123...
+                val epRegex = Regex("episode-(\\d+)")
+                epNum = epRegex.find(cleanUrl)?.groupValues?.get(1)?.toIntOrNull() ?: 1
+                
+                // Mặc định server nếu parse từ URL
+                subProviders = listOf("pahe", "mega", "yuki")
+            }
+
+            if (animeId == null || epNum == null) return false
 
             // Hàm nội bộ để gọi API sources
             suspend fun fetchSource(host: String, type: String) {
                 try {
+                    // PAYLOAD CHUẨN: id, epNum là số int, có cache: "true"
                     val payloadMap = mapOf(
                         "id" to animeId,
                         "host" to host,
@@ -197,7 +219,7 @@ class AnimexProvider : MainAPI() {
                     val apiResponseText = app.get(
                         apiUrl,
                         headers = mapOf(
-                            "Referer" to "$mainUrl/watch/", // Fake referer đơn giản
+                            "Referer" to "$mainUrl/watch/",
                             "Accept" to "application/json",
                             "X-Requested-With" to "XMLHttpRequest"
                         )
@@ -222,28 +244,20 @@ class AnimexProvider : MainAPI() {
                         )
                     }
                 } catch (e: Exception) {
-                    // Log lỗi gọn nhẹ nếu cần debug
-                    // System.err.println("Error fetching $host: ${e.message}")
+                    // Ignore individual server errors
                 }
             }
 
-            // Chạy song song hoặc tuần tự các server
-            // Sub providers
-            subProviders.forEach { host ->
-                fetchSource(host, "sub")
+            // Chạy song song/tuần tự các server
+            if (subProviders.isNotEmpty()) {
+                subProviders.forEach { host -> fetchSource(host, "sub") }
             }
-            
-            // Dub providers
-            dubProviders.forEach { host ->
-                fetchSource(host, "dub")
+            if (dubProviders.isNotEmpty()) {
+                dubProviders.forEach { host -> fetchSource(host, "dub") }
             }
 
             return true
         } catch (e: Exception) {
-            // Fallback cho trường hợp data là URL cũ (Watch Now button)
-            if (data.startsWith("http")) {
-                 // Logic cũ cho Watch Now URL nếu cần thiết, hoặc return false
-            }
             e.printStackTrace()
         }
         return false
