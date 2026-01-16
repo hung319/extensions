@@ -28,6 +28,7 @@ class AnimexProvider : MainAPI() {
     }
 
     private fun debugLog(message: String) {
+        // Logcat tag: AnimexProvider
         Log.i("AnimexProvider", message)
         println("AnimexProvider: $message")
     }
@@ -42,7 +43,7 @@ class AnimexProvider : MainAPI() {
         }
     }
 
-    // --- GraphQL Query (Giữ nguyên) ---
+    // --- GraphQL Query ---
     private val queryMedia = """
         query (${"$"}page: Int = 1, ${"$"}perPage: Int = 20, ${"$"}type: MediaType = ANIME, ${"$"}search: String, ${"$"}sort: [MediaSort]) {
           Page(page: ${"$"}page, perPage: ${"$"}perPage) {
@@ -117,21 +118,18 @@ class AnimexProvider : MainAPI() {
 
         if (animeId.all { it.isDigit() }) {
             try {
-                // Payload chính xác theo JS
+                // Payload chuẩn
                 val epPayload = mapOf(
                     "id" to animeId.toIntOrNull(),
                     "refresh" to "false",
                     "timestamp" to System.currentTimeMillis()
                 )
-                
                 val jsonPayload = mapper.writeValueAsString(epPayload)
-                debugLog("Payload JSON: $jsonPayload")
                 
+                // Mã hóa payload
                 val encryptedEpId = AnimexCrypto.encrypt(jsonPayload)
-                debugLog("Encrypted ID: $encryptedEpId")
-
+                
                 if (encryptedEpId.isNotEmpty()) {
-                    // Headers giống CURL
                     val apiHeaders = mapOf(
                         "Accept" to "*/*",
                         "Content-Type" to "application/json",
@@ -144,7 +142,7 @@ class AnimexProvider : MainAPI() {
                     debugLog("Requesting API: $apiUrl")
 
                     val responseText = app.get(apiUrl, headers = apiHeaders).text
-                    debugLog("API Response: $responseText")
+                    // debugLog("API Response: $responseText") // Uncomment nếu cần xem full response
 
                     if (!responseText.contains("\"error\"") && responseText.trim().startsWith("[")) {
                         val apiResponse: List<AnimexEpData> = mapper.readValue(responseText, object : TypeReference<List<AnimexEpData>>() {})
@@ -170,17 +168,15 @@ class AnimexProvider : MainAPI() {
                                 this.description = epData.description
                             })
                         }
-                        debugLog("Added ${episodes.size} episodes")
+                        debugLog("Success: Added ${episodes.size} episodes")
                     } else {
-                        debugLog("API Error or Invalid Response")
+                        debugLog("API Error: $responseText")
                     }
                 }
             } catch (e: Exception) { 
-                debugLog("Error fetching episodes: ${e.message}")
+                debugLog("Exception fetching episodes: ${e.message}")
                 e.printStackTrace()
             }
-        } else {
-            debugLog("Invalid Anime ID format")
         }
 
         return newAnimeLoadResponse(title, url, TvType.Anime) {
@@ -245,6 +241,11 @@ class AnimexProvider : MainAPI() {
                         headers = apiHeaders
                     ).text
                     
+                    if (apiResponseText.contains("error")) {
+                        debugLog("Source error ($host): $apiResponseText")
+                        return
+                    }
+
                     val sourceData = mapper.readValue(apiResponseText, AnimexSources::class.java)
 
                     sourceData.subtitles?.forEach { sub ->
@@ -388,6 +389,7 @@ object AnimexCrypto {
 
         val o = ah
         val e = IntArray(32)
+        // Loop 1
         for (t in 0 until 32) {
             val s = o[t]
             val a = o[(t + 11) % 64]
@@ -396,6 +398,7 @@ object AnimexCrypto {
             val i = f(s + t) and 255
             e[t] = (u(s, 3) xor a xor r xor underscore xor i xor (t * 25)) and 255
         }
+        // Loop 2
         for (t in 0 until 5) {
             for (s in 0 until 32) {
                 val a = e[s]
@@ -405,11 +408,14 @@ object AnimexCrypto {
                 e[s] = (a xor ((r + underscore) and 255) xor i xor (t * 17)) and 255
             }
         }
+        // Loop 3 - FIXED PRIORITY LOGIC
         for (t in 0 until 4) {
             for (s in 0 until 16) {
                 val a = e[s]
                 val r = e[s + 16]
-                val underscore = (u(r, 4) xor (a xor r) and 255 xor (t * 41 + s * 19)) and 255
+                // JS Logic: (u(r, 4) ^ (a ^ r) & 255 ^ t * 41 + s * 19) & 255
+                // Kotlin 'and' priority fix: need parentheses around (a xor r)
+                val underscore = (u(r, 4) xor ((a xor r) and 255) xor (t * 41 + s * 19)) and 255
                 val i = f(a + r + t) and 255
                 e[s] = r
                 e[s + 16] = (a xor underscore xor i) and 255
