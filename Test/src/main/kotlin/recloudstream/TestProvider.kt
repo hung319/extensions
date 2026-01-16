@@ -120,6 +120,7 @@ class AnimexProvider : MainAPI() {
 
         if (animeId.all { it.isDigit() }) {
             try {
+                // Dùng ID trần cho episodes list (đã verified hoạt động)
                 val apiUrl = "$mainUrl/api/anime/episodes/$animeId"
                 val apiHeaders = mapOf(
                     "Accept" to "application/json",
@@ -173,7 +174,6 @@ class AnimexProvider : MainAPI() {
 
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
         debugLog("=== LOAD LINKS START ===")
-        debugLog("Input Data: $data")
         
         try {
             var animeId: Int? = null
@@ -204,25 +204,26 @@ class AnimexProvider : MainAPI() {
                 return false
             }
 
+            // Xử lý song song
             val tasks = mutableListOf<Pair<String, String>>()
             if (subProviders.isNotEmpty()) subProviders.forEach { tasks.add(it to "sub") }
             if (dubProviders.isNotEmpty()) dubProviders.forEach { tasks.add(it to "dub") }
 
             if (tasks.isNotEmpty()) {
-                debugLog("🚀 Starting parallel fetch for ${tasks.size} sources...")
+                debugLog("🚀 Fetching ${tasks.size} sources parallel...")
                 coroutineScope {
                     tasks.map { (host, type) ->
                         async {
-                            debugLog("⚡ Fetching: $host ($type)")
                             fetchSource(host, type, animeId!!, epNum!!, subtitleCallback, callback)
                         }
                     }.awaitAll()
                 }
+                debugLog("✅ All fetch tasks completed")
             }
 
             return true
         } catch (e: Exception) {
-            debugLog("❌ Critical Error in loadLinks: ${e.message}")
+            debugLog("❌ Critical Error: ${e.message}")
             e.printStackTrace()
         }
         return false
@@ -272,7 +273,7 @@ class AnimexProvider : MainAPI() {
             }
 
             val sourceData = mapper.readValue(apiResponseText, AnimexSources::class.java)
-            debugLog("✅ Success $host: Found ${sourceData.sources?.size ?: 0} links")
+            debugLog("✅ Success $host: ${sourceData.sources?.size ?: 0} links")
 
             sourceData.subtitles?.forEach { sub ->
                 val url = sub.url ?: return@forEach
@@ -330,11 +331,13 @@ object AnimexCrypto {
 
     private fun f(n: Int): Int = ((n xor 1553869343) + (n shl 7 xor (n ushr 11)))
 
-    // FIX: Sử dụng Double để mô phỏng phép nhân mất chính xác của JS
+    // --- FIX QUAN TRỌNG: Mô phỏng Double của JS ---
     private fun g(n: Int): Int {
-        val nUnsigned = n.toLong() and 0xFFFFFFFFL
-        val productDouble = nUnsigned.toDouble() * 2654435769.0
-        return productDouble.toLong().toInt()
+        // Chuyển sang Double để nhân (mô phỏng mất chính xác của JS khi số lớn)
+        val nUnsigned = (n.toLong() and 0xFFFFFFFFL).toDouble()
+        val result = nUnsigned * 2654435769.0
+        // Mô phỏng toán tử >>> 0 trong JS trên kết quả Double
+        return (result % 4294967296.0).toLong().toInt()
     }
 
     private fun x(n: Int): Int {
@@ -423,11 +426,17 @@ object AnimexCrypto {
                 e[s] = (a xor ((r + underscore) and 255) xor i xor (t * 17)) and 255
             }
         }
+        // --- FIX PRIORITY ---
         for (t in 0 until 4) {
             for (s in 0 until 16) {
                 val a = e[s]
                 val r = e[s + 16]
-                val underscore = (u(r, 4) xor ((a xor r) and 255) xor (t * 41 + s * 19)) and 255
+                // Tách rõ ràng các phép toán để đảm bảo thứ tự
+                val term1 = t * 41 + s * 19
+                val term2 = (a xor r) and 255
+                val term3 = u(r, 4)
+                val underscore = (term3 xor term2 xor term1) and 255
+                
                 val i = f(a + r + t) and 255
                 e[s] = r
                 e[s + 16] = (a xor underscore xor i) and 255
