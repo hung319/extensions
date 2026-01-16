@@ -1,6 +1,5 @@
 package recloudstream
 
-import android.util.Base64
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.DeserializationFeature
@@ -12,6 +11,7 @@ import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
+import android.util.Base64
 
 class AnimexProvider : MainAPI() {
     override var mainUrl = "https://animex.one"
@@ -92,7 +92,7 @@ class AnimexProvider : MainAPI() {
         val title = document.selectFirst("h1")?.text() ?: "Unknown"
         val description = document.selectFirst("meta[name=description]")?.attr("content")
         
-        // Fix lỗi Coil: Poster và Background không được null
+        // Poster & Background
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content") ?: "" 
         val bg = document.selectFirst(".absolute.inset-0.bg-cover")?.attr("style")?.substringAfter("url('")?.substringBefore("')") ?: ""
 
@@ -107,12 +107,11 @@ class AnimexProvider : MainAPI() {
 
         val episodes = mutableListOf<Episode>()
         val animeId = getAnimeIdFromUrl(url)
-        val watchButton = document.selectFirst("a[href^='/watch/']")
-        val watchUrlTemplate = watchButton?.attr("href")?.let { fixUrl(it) }
 
+        // Chỉ tải tập phim nếu lấy được ID số
         if (animeId.all { it.isDigit() }) {
             try {
-                // Payload lấy danh sách tập
+                // 1. Tạo payload mã hóa
                 val epPayload = mapOf(
                     "id" to animeId.toIntOrNull(),
                     "refresh" to "false",
@@ -121,30 +120,37 @@ class AnimexProvider : MainAPI() {
                 val encryptedEpId = AnimexCrypto.encrypt(mapper.writeValueAsString(epPayload))
 
                 if (encryptedEpId.isNotEmpty()) {
+                    // 2. Cấu hình Header như lệnh CURL
                     val apiHeaders = mapOf(
-                        "Accept" to "application/json",
-                        "Content-Type" to "application/json",
+                        "Accept" to "*/*",
+                        "Content-Type" to "application/json", // QUAN TRỌNG: Server yêu cầu cái này ngay cả với GET
                         "X-Requested-With" to "XMLHttpRequest",
-                        "Referer" to "$mainUrl/"
+                        "Referer" to url // QUAN TRỌNG: Phải trùng khớp URL trang hiện tại
                     )
 
+                    // 3. Gọi API
                     val responseText = app.get(
                         "$mainUrl/api/anime/episodes/$encryptedEpId", 
                         headers = apiHeaders
                     ).text
 
-                    if (!responseText.contains("\"error\"")) {
+                    // 4. Parse JSON
+                    if (!responseText.contains("\"error\"") && responseText.trim().startsWith("[")) {
                         val apiResponse: List<AnimexEpData> = mapper.readValue(responseText, object : TypeReference<List<AnimexEpData>>() {})
 
                         apiResponse.forEach { epData ->
                             val epNum = epData.number?.toInt() ?: 0
-                            val epName = "Episode $epNum" + (if (!epData.titles?.en.isNullOrBlank()) " - ${epData.titles?.en}" else "")
+                            val titleEn = epData.titles?.en
+                            val epName = if (!titleEn.isNullOrBlank()) "Episode $epNum - $titleEn" else "Episode $epNum"
+                            
+                            // Ưu tiên ảnh từ API, nếu không có thì dùng poster gốc
                             val epImage = if (!epData.img.isNullOrBlank()) epData.img else poster
 
+                            // Đóng gói dữ liệu cần thiết cho loadLinks
                             val episodeData = mapOf(
                                 "id" to animeId,
                                 "epNum" to epNum,
-                                "subs" to (epData.subProviders ?: listOf("pahe", "mega", "yuki")),
+                                "subs" to (epData.subProviders ?: emptyList()),
                                 "dubs" to (epData.dubProviders ?: emptyList())
                             )
                             val episodeDataJson = mapper.writeValueAsString(episodeData)
@@ -163,13 +169,7 @@ class AnimexProvider : MainAPI() {
             }
         }
 
-        if (episodes.isEmpty() && watchUrlTemplate != null) {
-            episodes.add(newEpisode(watchUrlTemplate) { 
-                this.name = "Watch Now"
-                this.episode = 1
-                this.posterUrl = poster 
-            })
-        }
+        // ĐÃ XÓA: Phần fallback tạo tập "Watch Now" (watchUrlTemplate)
 
         return newAnimeLoadResponse(title, url, TvType.Anime) {
             this.posterUrl = poster
@@ -197,11 +197,12 @@ class AnimexProvider : MainAPI() {
                     dubProviders = (epData["dubs"] as? List<*>)?.map { it.toString() } ?: emptyList()
                 } catch (e: Exception) { e.printStackTrace() }
             } else {
+                // Fallback cũ (ít khi dùng nếu load() hoạt động tốt)
                 val cleanUrl = data.substringBefore("?")
                 animeId = cleanUrl.substringBefore("-episode-").substringAfterLast("-").toIntOrNull()
                 val epRegex = Regex("episode-(\\d+)")
                 epNum = epRegex.find(cleanUrl)?.groupValues?.get(1)?.toIntOrNull() ?: 1
-                subProviders = listOf("pahe", "mega", "yuki")
+                subProviders = listOf("miru", "mizu", "doki", "yuki", "nuri", "pahe", "koto", "dih", "zen")
             }
 
             if (animeId == null || epNum == null) return false
@@ -221,7 +222,7 @@ class AnimexProvider : MainAPI() {
                     if (encryptedId.isEmpty()) return
 
                     val apiHeaders = mapOf(
-                        "Accept" to "application/json",
+                        "Accept" to "*/*",
                         "Content-Type" to "application/json",
                         "X-Requested-With" to "XMLHttpRequest",
                         "Referer" to "$mainUrl/"
@@ -266,7 +267,7 @@ class AnimexProvider : MainAPI() {
     }
 }
 
-// --- Data Classes ---
+// --- Data Classes Updated based on JSON ---
 data class AnilistTitle(@JsonProperty("english") val english: String?, @JsonProperty("romaji") val romaji: String?)
 data class AnilistCover(@JsonProperty("extraLarge") val extraLarge: String?, @JsonProperty("large") val large: String?, @JsonProperty("medium") val medium: String?)
 data class AnilistMedia(@JsonProperty("id") val id: Int, @JsonProperty("title") val title: AnilistTitle?, @JsonProperty("coverImage") val coverImage: AnilistCover?, @JsonProperty("bannerImage") val bannerImage: String?)
@@ -275,13 +276,18 @@ data class AnilistData(@JsonProperty("Page") val page: AnilistPage?)
 data class AnilistResponse(@JsonProperty("data") val data: AnilistData?)
 data class GraphQlQuery(val query: String, val variables: Map<String, Any?>)
 
-data class AnimexEpTitle(@JsonProperty("en") val en: String?, @JsonProperty("ja") val ja: String?, @JsonProperty("x-jat") val xJat: String?)
+// Cập nhật cấu trúc khớp với JSON từ CURL
+data class AnimexEpTitle(
+    @JsonProperty("en") val en: String?, 
+    @JsonProperty("ja") val ja: String?, 
+    @JsonProperty("x-jat") val xJat: String?
+)
 data class AnimexEpData(
     @JsonProperty("number") val number: Double?,
     @JsonProperty("titles") val titles: AnimexEpTitle?,
     @JsonProperty("img") val img: String?,
     @JsonProperty("description") val description: String?,
-    @JsonProperty("subProviders") val subProviders: List<String>?,
+    @JsonProperty("subProviders") val subProviders: List<String>?, // e.g., ["miru", "pahe", ...]
     @JsonProperty("dubProviders") val dubProviders: List<String>?
 )
 
@@ -289,7 +295,7 @@ data class SourceData(@JsonProperty("url") val url: String?, @JsonProperty("qual
 data class SubtitleData(@JsonProperty("url") val url: String?, @JsonProperty("lang") val lang: String?, @JsonProperty("label") val label: String?)
 data class AnimexSources(@JsonProperty("sources") val sources: List<SourceData>?, @JsonProperty("subtitles") val subtitles: List<SubtitleData>?)
 
-// --- Crypto Logic (Ported from mw8hWCYX.js) ---
+// --- Crypto Logic (Giữ nguyên logic từ mw8hWCYX.js đã port) ---
 object AnimexCrypto {
     private val d = intArrayOf(231, 59, 146, 95, 193, 70, 218, 142, 39, 245, 105, 179, 20, 168, 124, 208)
     private val U = intArrayOf(77, 241, 104, 156, 35, 183, 90, 230, 49, 205, 132, 31, 170, 118, 217, 82)
@@ -298,27 +304,22 @@ object AnimexCrypto {
     private val Dollar = intArrayOf(169, 99, 215, 28, 240, 132, 59, 207, 82, 230, 149, 42, 190, 65, 120, 220)
     private val E = intArrayOf(52, 200, 93, 225, 118, 186, 47, 147, 78, 210, 135, 27, 175, 101, 249, 38)
 
-    // JS: f = n => (n ^ 1553869343) + (n << 7 ^ n >>> 11) & 4294967295
     private fun f(n: Int): Int {
         val part1 = n xor 1553869343
         val part2 = (n shl 7) xor (n ushr 11)
-        return part1 + part2 // Int overflow mimics JS (a+b)|0
+        return part1 + part2 
     }
 
-    // JS: g = n => n * 2654435769 >>> 0
-    // Kotlin: Multiplies as Long to handle large number, then casts to Int (matches bit pattern)
     private fun g(n: Int): Int = (n * 2654435769L).toInt()
 
-    // JS: x = n => { ... (o >>> 0) % 256 }
     private fun x(n: Int): Int {
         var o = n
         o = o xor (o shl 13)
         o = o xor (o ushr 17)
         o = o xor (o shl 5)
-        return o and 255 // Equivalent to (o >>> 0) % 256
+        return o and 255
     }
 
-    // JS: u = (n, o) => (n << o | n >>> 8 - o) & 255
     private fun u(n: Int, o: Int): Int = (n shl o or (n ushr (8 - o))) and 255
 
     private val b: IntArray by lazy {
@@ -379,8 +380,7 @@ object AnimexCrypto {
         val ai = p(48, y xor 1515870810)
 
         val o = ah
-        val e = IntArray(32) // Temp buffer for key generation
-        
+        val e = IntArray(32)
         for (t in 0 until 32) {
             val s = o[t]
             val a = o[(t + 11) % 64]
@@ -389,7 +389,6 @@ object AnimexCrypto {
             val i = f(s + t) and 255
             e[t] = (u(s, 3) xor a xor r xor underscore xor i xor (t * 25)) and 255
         }
-        
         for (t in 0 until 5) {
             for (s in 0 until 32) {
                 val a = e[s]
@@ -399,7 +398,6 @@ object AnimexCrypto {
                 e[s] = (a xor ((r + underscore) and 255) xor i xor (t * 17)) and 255
             }
         }
-        
         for (t in 0 until 4) {
             for (s in 0 until 16) {
                 val a = e[s]
@@ -410,7 +408,6 @@ object AnimexCrypto {
                 e[s + 16] = (a xor underscore xor i) and 255
             }
         }
-        
         val c = IntArray(32)
         for (t in 0 until 32) {
             val s = e[t]
@@ -422,7 +419,6 @@ object AnimexCrypto {
             val h = f(s + a + t) and 255
             c[t] = (rotated xor a xor r xor underscore xor h xor (t * 37)) and 255
         }
-        
         val keyBytes = ByteArray(32)
         for (i in 0 until 32) keyBytes[i] = c[i].toByte()
         
@@ -466,8 +462,6 @@ object AnimexCrypto {
             val a = q(s)
             val r = T(a, at, au)
 
-            // JS uses WebCrypto AES-GCM which outputs (Ciphertext + AuthTag)
-            // Java/Android "AES/GCM/NoPadding" also outputs (Ciphertext + AuthTag)
             val spec = GCMParameterSpec(128, iv)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(keyBytes, "AES"), spec)
