@@ -1,7 +1,5 @@
 package recloudstream
 
-import android.util.Base64
-import android.util.Log
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.DeserializationFeature
@@ -13,6 +11,7 @@ import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
+import android.util.Base64
 
 class AnimexProvider : MainAPI() {
     override var mainUrl = "https://animex.one"
@@ -25,12 +24,6 @@ class AnimexProvider : MainAPI() {
     
     private val mapper = jacksonObjectMapper().apply {
         configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-    }
-
-    private fun debugLog(message: String) {
-        // Logcat tag: AnimexProvider
-        Log.i("AnimexProvider", message)
-        println("AnimexProvider: $message")
     }
 
     // --- Helpers ---
@@ -95,7 +88,6 @@ class AnimexProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        debugLog("Loading URL: $url")
         val document = app.get(url).document
         val title = document.selectFirst("h1")?.text() ?: "Unknown"
         val description = document.selectFirst("meta[name=description]")?.attr("content")
@@ -114,67 +106,47 @@ class AnimexProvider : MainAPI() {
 
         val episodes = mutableListOf<Episode>()
         val animeId = getAnimeIdFromUrl(url)
-        debugLog("Parsed Anime ID: $animeId")
 
         if (animeId.all { it.isDigit() }) {
             try {
-                // Payload chuẩn
-                val epPayload = mapOf(
-                    "id" to animeId.toIntOrNull(),
-                    "refresh" to "false",
-                    "timestamp" to System.currentTimeMillis()
+                // SỬA ĐỔI: Dùng ID trần thay vì payload mã hóa
+                val apiUrl = "$mainUrl/api/anime/episodes/$animeId"
+                
+                val apiHeaders = mapOf(
+                    "Accept" to "application/json",
+                    "X-Requested-With" to "XMLHttpRequest",
+                    "Referer" to url, // Header Referer rất quan trọng
+                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                 )
-                val jsonPayload = mapper.writeValueAsString(epPayload)
-                
-                // Mã hóa payload
-                val encryptedEpId = AnimexCrypto.encrypt(jsonPayload)
-                
-                if (encryptedEpId.isNotEmpty()) {
-                    val apiHeaders = mapOf(
-                        "Accept" to "*/*",
-                        "Content-Type" to "application/json",
-                        "X-Requested-With" to "XMLHttpRequest",
-                        "Referer" to url,
-                        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
-                    )
 
-                    val apiUrl = "$mainUrl/api/anime/episodes/$encryptedEpId"
-                    debugLog("Requesting API: $apiUrl")
+                val responseText = app.get(apiUrl, headers = apiHeaders).text
 
-                    val responseText = app.get(apiUrl, headers = apiHeaders).text
-                    // debugLog("API Response: $responseText") // Uncomment nếu cần xem full response
+                if (!responseText.contains("\"error\"") && responseText.trim().startsWith("[")) {
+                    val apiResponse: List<AnimexEpData> = mapper.readValue(responseText, object : TypeReference<List<AnimexEpData>>() {})
+                    
+                    apiResponse.forEach { epData ->
+                        val epNum = epData.number?.toInt() ?: 0
+                        val titleEn = epData.titles?.en
+                        val epName = if (!titleEn.isNullOrBlank()) "Episode $epNum - $titleEn" else "Episode $epNum"
+                        val epImage = if (!epData.img.isNullOrBlank()) epData.img else poster
 
-                    if (!responseText.contains("\"error\"") && responseText.trim().startsWith("[")) {
-                        val apiResponse: List<AnimexEpData> = mapper.readValue(responseText, object : TypeReference<List<AnimexEpData>>() {})
-                        
-                        apiResponse.forEach { epData ->
-                            val epNum = epData.number?.toInt() ?: 0
-                            val titleEn = epData.titles?.en
-                            val epName = if (!titleEn.isNullOrBlank()) "Episode $epNum - $titleEn" else "Episode $epNum"
-                            val epImage = if (!epData.img.isNullOrBlank()) epData.img else poster
+                        val episodeData = mapOf(
+                            "id" to animeId,
+                            "epNum" to epNum,
+                            "subs" to (epData.subProviders ?: emptyList()),
+                            "dubs" to (epData.dubProviders ?: emptyList())
+                        )
+                        val episodeDataJson = mapper.writeValueAsString(episodeData)
 
-                            val episodeData = mapOf(
-                                "id" to animeId,
-                                "epNum" to epNum,
-                                "subs" to (epData.subProviders ?: emptyList()),
-                                "dubs" to (epData.dubProviders ?: emptyList())
-                            )
-                            val episodeDataJson = mapper.writeValueAsString(episodeData)
-
-                            episodes.add(newEpisode(episodeDataJson) {
-                                this.name = epName
-                                this.episode = epNum
-                                this.posterUrl = epImage
-                                this.description = epData.description
-                            })
-                        }
-                        debugLog("Success: Added ${episodes.size} episodes")
-                    } else {
-                        debugLog("API Error: $responseText")
+                        episodes.add(newEpisode(episodeDataJson) {
+                            this.name = epName
+                            this.episode = epNum
+                            this.posterUrl = epImage
+                            this.description = epData.description
+                        })
                     }
                 }
             } catch (e: Exception) { 
-                debugLog("Exception fetching episodes: ${e.message}")
                 e.printStackTrace()
             }
         }
@@ -189,7 +161,6 @@ class AnimexProvider : MainAPI() {
     }
 
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
-        debugLog("loadLinks data: $data")
         try {
             var animeId: Int? = null
             var epNum: Int? = null
@@ -209,13 +180,14 @@ class AnimexProvider : MainAPI() {
                 animeId = cleanUrl.substringBefore("-episode-").substringAfterLast("-").toIntOrNull()
                 val epRegex = Regex("episode-(\\d+)")
                 epNum = epRegex.find(cleanUrl)?.groupValues?.get(1)?.toIntOrNull() ?: 1
-                subProviders = listOf("miru", "mizu", "doki", "yuki", "nuri", "pahe", "koto", "dih", "zen")
+                subProviders = listOf("pahe", "dih", "neko")
             }
 
             if (animeId == null || epNum == null) return false
 
             suspend fun fetchSource(host: String, type: String) {
                 try {
+                    // Logic source vẫn cần mã hóa
                     val payloadMap = mapOf(
                         "id" to animeId,
                         "host" to host,
@@ -233,7 +205,7 @@ class AnimexProvider : MainAPI() {
                         "Content-Type" to "application/json",
                         "X-Requested-With" to "XMLHttpRequest",
                         "Referer" to "$mainUrl/",
-                        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
+                        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                     )
 
                     val apiResponseText = app.get(
@@ -241,10 +213,7 @@ class AnimexProvider : MainAPI() {
                         headers = apiHeaders
                     ).text
                     
-                    if (apiResponseText.contains("error")) {
-                        debugLog("Source error ($host): $apiResponseText")
-                        return
-                    }
+                    if (apiResponseText.contains("\"error\"")) return
 
                     val sourceData = mapper.readValue(apiResponseText, AnimexSources::class.java)
 
@@ -265,7 +234,7 @@ class AnimexProvider : MainAPI() {
                         )
                     }
                 } catch (e: Exception) {
-                    debugLog("Error fetching source $host: ${e.message}")
+                    // Ignore
                 }
             }
 
@@ -312,11 +281,7 @@ object AnimexCrypto {
     private val Dollar = intArrayOf(169, 99, 215, 28, 240, 132, 59, 207, 82, 230, 149, 42, 190, 65, 120, 220)
     private val E = intArrayOf(52, 200, 93, 225, 118, 186, 47, 147, 78, 210, 135, 27, 175, 101, 249, 38)
 
-    private fun f(n: Int): Int {
-        val part1 = n xor 1553869343
-        val part2 = (n shl 7) xor (n ushr 11)
-        return part1 + part2
-    }
+    private fun f(n: Int): Int = ((n xor 1553869343) + (n shl 7 xor (n ushr 11)))
 
     private fun g(n: Int): Int = (n * 2654435769L).toInt()
 
@@ -389,7 +354,6 @@ object AnimexCrypto {
 
         val o = ah
         val e = IntArray(32)
-        // Loop 1
         for (t in 0 until 32) {
             val s = o[t]
             val a = o[(t + 11) % 64]
@@ -398,7 +362,6 @@ object AnimexCrypto {
             val i = f(s + t) and 255
             e[t] = (u(s, 3) xor a xor r xor underscore xor i xor (t * 25)) and 255
         }
-        // Loop 2
         for (t in 0 until 5) {
             for (s in 0 until 32) {
                 val a = e[s]
@@ -408,13 +371,11 @@ object AnimexCrypto {
                 e[s] = (a xor ((r + underscore) and 255) xor i xor (t * 17)) and 255
             }
         }
-        // Loop 3 - FIXED PRIORITY LOGIC
         for (t in 0 until 4) {
             for (s in 0 until 16) {
                 val a = e[s]
                 val r = e[s + 16]
-                // JS Logic: (u(r, 4) ^ (a ^ r) & 255 ^ t * 41 + s * 19) & 255
-                // Kotlin 'and' priority fix: need parentheses around (a xor r)
+                // Fix: Priority of operations
                 val underscore = (u(r, 4) xor ((a xor r) and 255) xor (t * 41 + s * 19)) and 255
                 val i = f(a + r + t) and 255
                 e[s] = r
@@ -486,7 +447,6 @@ object AnimexCrypto {
 
             Base64.encodeToString(combined, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
         } catch (e: Exception) {
-            Log.e("AnimexCrypto", "Encryption error: ${e.message}")
             e.printStackTrace()
             ""
         }
