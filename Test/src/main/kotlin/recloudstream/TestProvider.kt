@@ -256,14 +256,31 @@ class AnimexProvider : MainAPI() {
                 val link = source.url ?: return@forEach
                 val linkType = if (link.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                 
-                // QUAN TRỌNG: Thêm Headers Origin để tránh lỗi 3000/403
+                // Cấu hình Headers theo từng Provider
+                val baseUserAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
+                
+                val videoHeaders = when(host.lowercase()) {
+                    "miru", "mizu", "zen" -> mapOf(
+                        "Origin" to mainUrl,
+                        "Referer" to "$mainUrl/",
+                        "User-Agent" to baseUserAgent,
+                        "Accept" to "*/*"
+                    )
+                    "pahe" -> mapOf(
+                        "Origin" to "https://kwik.cx",
+                        "Referer" to "https://kwik.cx/",
+                        "User-Agent" to baseUserAgent
+                    )
+                    else -> mapOf(
+                        "Origin" to mainUrl,
+                        "Referer" to "$mainUrl/",
+                        "User-Agent" to baseUserAgent
+                    )
+                }
+
                 callback.invoke(
                     newExtractorLink(name, "$name $host ($type)", link, type = linkType) {
-                        this.headers = mapOf(
-                            "Origin" to mainUrl, // https://animex.one
-                            "Referer" to "$mainUrl/",
-                            "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
-                        )
+                        this.headers = videoHeaders
                         this.quality = getQualityFromName(source.quality)
                     }
                 )
