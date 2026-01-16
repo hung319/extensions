@@ -1,7 +1,5 @@
 package recloudstream
 
-import android.util.Base64
-import android.util.Log
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.DeserializationFeature
@@ -16,6 +14,7 @@ import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
+import android.util.Base64
 
 class AnimexProvider : MainAPI() {
     override var mainUrl = "https://animex.one"
@@ -28,11 +27,6 @@ class AnimexProvider : MainAPI() {
     
     private val mapper = jacksonObjectMapper().apply {
         configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-    }
-
-    private fun debugLog(message: String) {
-        Log.i("AnimexProvider", message)
-        println("AnimexProvider: $message")
     }
 
     // --- Helpers ---
@@ -97,7 +91,6 @@ class AnimexProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        debugLog("=== LOAD START: $url ===")
         val document = app.get(url).document
         val title = document.selectFirst("h1")?.text() ?: "Unknown"
         val description = document.selectFirst("meta[name=description]")?.attr("content")
@@ -116,11 +109,10 @@ class AnimexProvider : MainAPI() {
 
         val episodes = mutableListOf<Episode>()
         val animeId = getAnimeIdFromUrl(url)
-        debugLog("Parsed Anime ID: $animeId")
 
         if (animeId.all { it.isDigit() }) {
             try {
-                // Dùng ID trần cho episodes list (đã verified hoạt động)
+                // Dùng ID trần cho episodes list
                 val apiUrl = "$mainUrl/api/anime/episodes/$animeId"
                 val apiHeaders = mapOf(
                     "Accept" to "application/json",
@@ -134,8 +126,6 @@ class AnimexProvider : MainAPI() {
                 if (!responseText.contains("\"error\"") && responseText.trim().startsWith("[")) {
                     val apiResponse: List<AnimexEpData> = mapper.readValue(responseText, object : TypeReference<List<AnimexEpData>>() {})
                     
-                    debugLog("Found ${apiResponse.size} episodes")
-
                     apiResponse.forEach { epData ->
                         val epNum = epData.number?.toInt() ?: 0
                         val titleEn = epData.titles?.en
@@ -159,7 +149,7 @@ class AnimexProvider : MainAPI() {
                     }
                 }
             } catch (e: Exception) { 
-                debugLog("Load Error: ${e.message}")
+                e.printStackTrace()
             }
         }
 
@@ -173,8 +163,6 @@ class AnimexProvider : MainAPI() {
     }
 
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
-        debugLog("=== LOAD LINKS START ===")
-        
         try {
             var animeId: Int? = null
             var epNum: Int? = null
@@ -188,9 +176,7 @@ class AnimexProvider : MainAPI() {
                     epNum = epData["epNum"]?.toString()?.toIntOrNull()
                     subProviders = (epData["subs"] as? List<*>)?.map { it.toString() } ?: emptyList()
                     dubProviders = (epData["dubs"] as? List<*>)?.map { it.toString() } ?: emptyList()
-                } catch (e: Exception) { 
-                    debugLog("JSON Parse Error: ${e.message}")
-                }
+                } catch (e: Exception) { e.printStackTrace() }
             } else {
                 val cleanUrl = data.substringBefore("?")
                 animeId = cleanUrl.substringBefore("-episode-").substringAfterLast("-").toIntOrNull()
@@ -199,18 +185,13 @@ class AnimexProvider : MainAPI() {
                 subProviders = listOf("pahe", "dih", "neko")
             }
 
-            if (animeId == null || epNum == null) {
-                debugLog("❌ Missing ID or Episode Number")
-                return false
-            }
+            if (animeId == null || epNum == null) return false
 
-            // Xử lý song song
             val tasks = mutableListOf<Pair<String, String>>()
             if (subProviders.isNotEmpty()) subProviders.forEach { tasks.add(it to "sub") }
             if (dubProviders.isNotEmpty()) dubProviders.forEach { tasks.add(it to "dub") }
 
             if (tasks.isNotEmpty()) {
-                debugLog("🚀 Fetching ${tasks.size} sources parallel...")
                 coroutineScope {
                     tasks.map { (host, type) ->
                         async {
@@ -218,12 +199,10 @@ class AnimexProvider : MainAPI() {
                         }
                     }.awaitAll()
                 }
-                debugLog("✅ All fetch tasks completed")
             }
 
             return true
         } catch (e: Exception) {
-            debugLog("❌ Critical Error: ${e.message}")
             e.printStackTrace()
         }
         return false
@@ -250,10 +229,7 @@ class AnimexProvider : MainAPI() {
             val jsonPayload = mapper.writeValueAsString(payloadMap)
             val encryptedId = AnimexCrypto.encrypt(jsonPayload)
             
-            if (encryptedId.isEmpty()) {
-                debugLog("⚠️ Encryption failed for $host")
-                return
-            }
+            if (encryptedId.isEmpty()) return
 
             val apiHeaders = mapOf(
                 "Accept" to "*/*",
@@ -267,13 +243,9 @@ class AnimexProvider : MainAPI() {
             val response = app.get(apiUrl, headers = apiHeaders)
             val apiResponseText = response.text
             
-            if (apiResponseText.contains("\"error\"") || !response.isSuccessful) {
-                debugLog("❌ Error fetching $host: $apiResponseText")
-                return
-            }
+            if (apiResponseText.contains("\"error\"") || !response.isSuccessful) return
 
             val sourceData = mapper.readValue(apiResponseText, AnimexSources::class.java)
-            debugLog("✅ Success $host: ${sourceData.sources?.size ?: 0} links")
 
             sourceData.subtitles?.forEach { sub ->
                 val url = sub.url ?: return@forEach
@@ -284,15 +256,20 @@ class AnimexProvider : MainAPI() {
                 val link = source.url ?: return@forEach
                 val linkType = if (link.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                 
+                // QUAN TRỌNG: Thêm Headers Origin để tránh lỗi 3000/403
                 callback.invoke(
                     newExtractorLink(name, "$name $host ($type)", link, type = linkType) {
-                        this.referer = mainUrl
+                        this.headers = mapOf(
+                            "Origin" to mainUrl, // https://animex.one
+                            "Referer" to "$mainUrl/",
+                            "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
+                        )
                         this.quality = getQualityFromName(source.quality)
                     }
                 )
             }
         } catch (e: Exception) {
-            debugLog("⚠️ Exception fetching $host: ${e.message}")
+            // Ignore errors per source
         }
     }
 }
@@ -331,12 +308,9 @@ object AnimexCrypto {
 
     private fun f(n: Int): Int = ((n xor 1553869343) + (n shl 7 xor (n ushr 11)))
 
-    // --- FIX QUAN TRỌNG: Mô phỏng Double của JS ---
     private fun g(n: Int): Int {
-        // Chuyển sang Double để nhân (mô phỏng mất chính xác của JS khi số lớn)
         val nUnsigned = (n.toLong() and 0xFFFFFFFFL).toDouble()
         val result = nUnsigned * 2654435769.0
-        // Mô phỏng toán tử >>> 0 trong JS trên kết quả Double
         return (result % 4294967296.0).toLong().toInt()
     }
 
@@ -426,17 +400,11 @@ object AnimexCrypto {
                 e[s] = (a xor ((r + underscore) and 255) xor i xor (t * 17)) and 255
             }
         }
-        // --- FIX PRIORITY ---
         for (t in 0 until 4) {
             for (s in 0 until 16) {
                 val a = e[s]
                 val r = e[s + 16]
-                // Tách rõ ràng các phép toán để đảm bảo thứ tự
-                val term1 = t * 41 + s * 19
-                val term2 = (a xor r) and 255
-                val term3 = u(r, 4)
-                val underscore = (term3 xor term2 xor term1) and 255
-                
+                val underscore = (u(r, 4) xor ((a xor r) and 255) xor (t * 41 + s * 19)) and 255
                 val i = f(a + r + t) and 255
                 e[s] = r
                 e[s + 16] = (a xor underscore xor i) and 255
@@ -507,7 +475,6 @@ object AnimexCrypto {
 
             Base64.encodeToString(combined, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
         } catch (e: Exception) {
-            Log.e("AnimexCrypto", "Encryption error: ${e.message}")
             e.printStackTrace()
             ""
         }
