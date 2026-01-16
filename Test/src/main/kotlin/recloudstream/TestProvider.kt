@@ -8,10 +8,10 @@ import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import java.nio.charset.StandardCharsets
+import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
-import kotlin.experimental.xor
 
 class AnimexProvider : MainAPI() {
     override var mainUrl = "https://animex.one"
@@ -22,13 +22,6 @@ class AnimexProvider : MainAPI() {
 
     private val anilistApi = "https://graphql.anilist.co"
     
-    // Header chuẩn (giống script Node.js)
-    private val headers = mapOf(
-        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Origin" to mainUrl,
-        "Referer" to "$mainUrl/"
-    )
-
     private val mapper = jacksonObjectMapper().apply {
         configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
     }
@@ -73,26 +66,13 @@ class AnimexProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val variables = mapOf("page" to 1, "perPage" to 20, "type" to "ANIME", "search" to query)
-        val body = GraphQlQuery(queryMedia, variables)
-        return try {
-            val response = app.post(
-                anilistApi, 
-                json = body, 
-                headers = mapOf("Content-Type" to "application/json", "Accept" to "application/json")
-            ).parsedSafe<AnilistResponse>()
-            response?.data?.page?.media?.mapNotNull { it.toSearchResponse() } ?: emptyList()
-        } catch (e: Exception) {
-            emptyList()
-        }
+        val response = app.post(anilistApi, json = GraphQlQuery(queryMedia, variables), headers = mapOf("Content-Type" to "application/json", "Accept" to "application/json")).parsedSafe<AnilistResponse>()
+        return response?.data?.page?.media?.mapNotNull { it.toSearchResponse() } ?: emptyList()
     }
 
     private suspend fun fetchAnilist(body: GraphQlQuery, name: String): HomePageResponse {
         return try {
-            val response = app.post(
-                anilistApi,
-                json = body,
-                headers = mapOf("Content-Type" to "application/json", "Accept" to "application/json", "Origin" to mainUrl)
-            ).parsedSafe<AnilistResponse>()
+            val response = app.post(anilistApi, json = body, headers = mapOf("Content-Type" to "application/json", "Accept" to "application/json", "Origin" to mainUrl)).parsedSafe<AnilistResponse>()
             val list = response?.data?.page?.media?.mapNotNull { it.toSearchResponse() } ?: emptyList()
             newHomePageResponse(name, list)
         } catch (e: Exception) {
@@ -103,23 +83,24 @@ class AnimexProvider : MainAPI() {
     private fun AnilistMedia.toSearchResponse(): SearchResponse {
         val titleEn = this.title?.english ?: this.title?.romaji ?: "Unknown"
         val slug = titleEn.replace(Regex("[^a-zA-Z0-9]"), "-").replace(Regex("-+"), "-").lowercase().trim('-')
-        // Fix lỗi Coil: Trả về null nếu không có ảnh, thay vì chuỗi rỗng
-        val image = (this.coverImage?.extraLarge ?: this.coverImage?.large ?: this.coverImage?.medium)?.takeIf { it.isNotBlank() }
+        val image = this.coverImage?.extraLarge ?: this.coverImage?.large ?: this.coverImage?.medium ?: ""
         return newAnimeSearchResponse(titleEn, "$mainUrl/anime/$slug-${this.id}", TvType.Anime) { this.posterUrl = image }
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url, headers = headers).document
+        val document = app.get(url).document
         val title = document.selectFirst("h1")?.text() ?: "Unknown"
         val description = document.selectFirst("meta[name=description]")?.attr("content")
-        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")?.takeIf { it.isNotBlank() }
-        val bg = document.selectFirst(".absolute.inset-0.bg-cover")?.attr("style")?.substringAfter("url('")?.substringBefore("')")
+        
+        // Fix lỗi Coil: Poster và Background không được null
+        val poster = document.selectFirst("meta[property=og:image]")?.attr("content") ?: "" 
+        val bg = document.selectFirst(".absolute.inset-0.bg-cover")?.attr("style")?.substringAfter("url('")?.substringBefore("')") ?: ""
 
         val recommendations = document.select("a[href^='/anime/']").mapNotNull { element ->
             val href = element.attr("href")
-            val img = element.selectFirst("img")?.attr("src")?.takeIf { it.isNotBlank() }
+            val img = element.selectFirst("img")?.attr("src") ?: ""
             val name = element.selectFirst("span.font-medium")?.text() ?: element.selectFirst(".text-sm")?.text()
-            if (!name.isNullOrBlank() && href.isNotBlank()) {
+            if (!name.isNullOrBlank() && img.isNotBlank()) {
                 newAnimeSearchResponse(name, fixUrl(href), TvType.Anime) { this.posterUrl = img }
             } else null
         }.distinctBy { it.url }
@@ -131,6 +112,7 @@ class AnimexProvider : MainAPI() {
 
         if (animeId.all { it.isDigit() }) {
             try {
+                // Payload lấy danh sách tập
                 val epPayload = mapOf(
                     "id" to animeId.toIntOrNull(),
                     "refresh" to "false",
@@ -138,48 +120,55 @@ class AnimexProvider : MainAPI() {
                 )
                 val encryptedEpId = AnimexCrypto.encrypt(mapper.writeValueAsString(epPayload))
 
-                // Headers cho API
-                val apiHeaders = headers.toMutableMap().apply {
-                    put("Accept", "application/json")
-                    put("X-Requested-With", "XMLHttpRequest")
-                }
+                if (encryptedEpId.isNotEmpty()) {
+                    val apiHeaders = mapOf(
+                        "Accept" to "application/json",
+                        "Content-Type" to "application/json",
+                        "X-Requested-With" to "XMLHttpRequest",
+                        "Referer" to "$mainUrl/"
+                    )
 
-                val responseText = app.get(
-                    "$mainUrl/api/anime/episodes/$encryptedEpId", 
-                    headers = apiHeaders
-                ).text
+                    val responseText = app.get(
+                        "$mainUrl/api/anime/episodes/$encryptedEpId", 
+                        headers = apiHeaders
+                    ).text
 
-                if (!responseText.contains("\"error\"")) {
-                    val apiResponse: List<AnimexEpData> = mapper.readValue(responseText, object : TypeReference<List<AnimexEpData>>() {})
-                    apiResponse.forEach { epData ->
-                        val epNum = epData.number?.toInt() ?: 0
-                        val epName = "Episode $epNum" + (if (!epData.titles?.en.isNullOrBlank()) " - ${epData.titles?.en}" else "")
-                        val epImage = if (!epData.img.isNullOrBlank()) epData.img else poster
+                    if (!responseText.contains("\"error\"")) {
+                        val apiResponse: List<AnimexEpData> = mapper.readValue(responseText, object : TypeReference<List<AnimexEpData>>() {})
 
-                        // Gói JSON data
-                        val episodeData = mapOf(
-                            "id" to animeId,
-                            "epNum" to epNum,
-                            "subs" to (epData.subProviders ?: listOf("pahe", "mega", "yuki")),
-                            "dubs" to (epData.dubProviders ?: emptyList())
-                        )
-                        val episodeDataJson = mapper.writeValueAsString(episodeData)
+                        apiResponse.forEach { epData ->
+                            val epNum = epData.number?.toInt() ?: 0
+                            val epName = "Episode $epNum" + (if (!epData.titles?.en.isNullOrBlank()) " - ${epData.titles?.en}" else "")
+                            val epImage = if (!epData.img.isNullOrBlank()) epData.img else poster
 
-                        episodes.add(newEpisode(episodeDataJson) {
-                            this.name = epName
-                            this.episode = epNum
-                            this.posterUrl = epImage
-                            this.description = epData.description
-                        })
+                            val episodeData = mapOf(
+                                "id" to animeId,
+                                "epNum" to epNum,
+                                "subs" to (epData.subProviders ?: listOf("pahe", "mega", "yuki")),
+                                "dubs" to (epData.dubProviders ?: emptyList())
+                            )
+                            val episodeDataJson = mapper.writeValueAsString(episodeData)
+
+                            episodes.add(newEpisode(episodeDataJson) {
+                                this.name = epName
+                                this.episode = epNum
+                                this.posterUrl = epImage
+                                this.description = epData.description
+                            })
+                        }
                     }
                 }
             } catch (e: Exception) { 
-                // e.printStackTrace()
+                e.printStackTrace()
             }
         }
 
         if (episodes.isEmpty() && watchUrlTemplate != null) {
-            episodes.add(newEpisode(watchUrlTemplate) { this.name = "Watch Now"; this.episode = 1; this.posterUrl = poster })
+            episodes.add(newEpisode(watchUrlTemplate) { 
+                this.name = "Watch Now"
+                this.episode = 1
+                this.posterUrl = poster 
+            })
         }
 
         return newAnimeLoadResponse(title, url, TvType.Anime) {
@@ -198,7 +187,7 @@ class AnimexProvider : MainAPI() {
             var subProviders = listOf<String>()
             var dubProviders = listOf<String>()
 
-            // 1. Parse Data (JSON hoặc URL)
+            // Parse data từ load()
             if (data.trim().startsWith("{")) {
                 try {
                     val epData = mapper.readValue(data, Map::class.java)
@@ -206,9 +195,7 @@ class AnimexProvider : MainAPI() {
                     epNum = epData["epNum"]?.toString()?.toIntOrNull()
                     subProviders = (epData["subs"] as? List<*>)?.map { it.toString() } ?: emptyList()
                     dubProviders = (epData["dubs"] as? List<*>)?.map { it.toString() } ?: emptyList()
-                } catch (e: Exception) { 
-                    e.printStackTrace()
-                }
+                } catch (e: Exception) { e.printStackTrace() }
             } else {
                 val cleanUrl = data.substringBefore("?")
                 animeId = cleanUrl.substringBefore("-episode-").substringAfterLast("-").toIntOrNull()
@@ -219,7 +206,6 @@ class AnimexProvider : MainAPI() {
 
             if (animeId == null || epNum == null) return false
 
-            // 2. Hàm fetch nguồn
             suspend fun fetchSource(host: String, type: String) {
                 try {
                     val payloadMap = mapOf(
@@ -234,12 +220,12 @@ class AnimexProvider : MainAPI() {
                     val encryptedId = AnimexCrypto.encrypt(mapper.writeValueAsString(payloadMap))
                     if (encryptedId.isEmpty()) return
 
-                    // Header QUAN TRỌNG
-                    val apiHeaders = headers.toMutableMap().apply {
-                        put("Accept", "application/json")
-                        put("Content-Type", "application/json") // Bắt buộc
-                        put("X-Requested-With", "XMLHttpRequest")
-                    }
+                    val apiHeaders = mapOf(
+                        "Accept" to "application/json",
+                        "Content-Type" to "application/json",
+                        "X-Requested-With" to "XMLHttpRequest",
+                        "Referer" to "$mainUrl/"
+                    )
 
                     val apiResponseText = app.get(
                         "$mainUrl/api/anime/sources/$encryptedId",
@@ -265,11 +251,10 @@ class AnimexProvider : MainAPI() {
                         )
                     }
                 } catch (e: Exception) {
-                    // System.err.println("Animex loadLinks Error ($host): ${e.message}")
+                    // Ignore error per server
                 }
             }
 
-            // 3. Chạy providers
             if (subProviders.isNotEmpty()) subProviders.forEach { fetchSource(it, "sub") }
             if (dubProviders.isNotEmpty()) dubProviders.forEach { fetchSource(it, "dub") }
 
@@ -304,7 +289,7 @@ data class SourceData(@JsonProperty("url") val url: String?, @JsonProperty("qual
 data class SubtitleData(@JsonProperty("url") val url: String?, @JsonProperty("lang") val lang: String?, @JsonProperty("label") val label: String?)
 data class AnimexSources(@JsonProperty("sources") val sources: List<SourceData>?, @JsonProperty("subtitles") val subtitles: List<SubtitleData>?)
 
-// --- Crypto Logic ---
+// --- Crypto Logic (Ported from mw8hWCYX.js) ---
 object AnimexCrypto {
     private val d = intArrayOf(231, 59, 146, 95, 193, 70, 218, 142, 39, 245, 105, 179, 20, 168, 124, 208)
     private val U = intArrayOf(77, 241, 104, 156, 35, 183, 90, 230, 49, 205, 132, 31, 170, 118, 217, 82)
@@ -313,16 +298,28 @@ object AnimexCrypto {
     private val Dollar = intArrayOf(169, 99, 215, 28, 240, 132, 59, 207, 82, 230, 149, 42, 190, 65, 120, 220)
     private val E = intArrayOf(52, 200, 93, 225, 118, 186, 47, 147, 78, 210, 135, 27, 175, 101, 249, 38)
 
-    private fun f(n: Int): Int = ((n xor 1553869343) + (n shl 7 xor n.ushr(11))) and -1
+    // JS: f = n => (n ^ 1553869343) + (n << 7 ^ n >>> 11) & 4294967295
+    private fun f(n: Int): Int {
+        val part1 = n xor 1553869343
+        val part2 = (n shl 7) xor (n ushr 11)
+        return part1 + part2 // Int overflow mimics JS (a+b)|0
+    }
+
+    // JS: g = n => n * 2654435769 >>> 0
+    // Kotlin: Multiplies as Long to handle large number, then casts to Int (matches bit pattern)
     private fun g(n: Int): Int = (n * 2654435769L).toInt()
+
+    // JS: x = n => { ... (o >>> 0) % 256 }
     private fun x(n: Int): Int {
         var o = n
         o = o xor (o shl 13)
-        o = o xor o.ushr(17)
+        o = o xor (o ushr 17)
         o = o xor (o shl 5)
-        return (o.toLong() and 0xFFFFFFFFL).rem(256).toInt()
+        return o and 255 // Equivalent to (o >>> 0) % 256
     }
-    private fun u(n: Int, o: Int): Int = (n shl o or n.ushr(8 - o)) and 255
+
+    // JS: u = (n, o) => (n << o | n >>> 8 - o) & 255
+    private fun u(n: Int, o: Int): Int = (n shl o or (n ushr (8 - o))) and 255
 
     private val b: IntArray by lazy {
         val n = IntArray(256)
@@ -382,7 +379,8 @@ object AnimexCrypto {
         val ai = p(48, y xor 1515870810)
 
         val o = ah
-        val e = IntArray(32)
+        val e = IntArray(32) // Temp buffer for key generation
+        
         for (t in 0 until 32) {
             val s = o[t]
             val a = o[(t + 11) % 64]
@@ -391,15 +389,17 @@ object AnimexCrypto {
             val i = f(s + t) and 255
             e[t] = (u(s, 3) xor a xor r xor underscore xor i xor (t * 25)) and 255
         }
+        
         for (t in 0 until 5) {
             for (s in 0 until 32) {
                 val a = e[s]
                 val r = e[(s + 13) % 32]
                 val underscore = e[(s + 19) % 32]
                 val i = f(a + t * 7) and 255
-                e[s] = (a xor (r + underscore and 255) xor i xor (t * 17)) and 255
+                e[s] = (a xor ((r + underscore) and 255) xor i xor (t * 17)) and 255
             }
         }
+        
         for (t in 0 until 4) {
             for (s in 0 until 16) {
                 val a = e[s]
@@ -410,6 +410,7 @@ object AnimexCrypto {
                 e[s + 16] = (a xor underscore xor i) and 255
             }
         }
+        
         val c = IntArray(32)
         for (t in 0 until 32) {
             val s = e[t]
@@ -417,9 +418,11 @@ object AnimexCrypto {
             val r = o[t % 64]
             val underscore = b[(t * 13) % 256]
             val i = (t % 7) + 1
+            val rotated = (s shl i) or (s ushr (8 - i))
             val h = f(s + a + t) and 255
-            c[t] = (s shl i or s.ushr(8 - i)) xor a xor r xor underscore xor h xor (t * 37) and 255
+            c[t] = (rotated xor a xor r xor underscore xor h xor (t * 37)) and 255
         }
+        
         val keyBytes = ByteArray(32)
         for (i in 0 until 32) keyBytes[i] = c[i].toByte()
         
@@ -431,7 +434,8 @@ object AnimexCrypto {
         for (e in n.indices) {
             val c = n[e].toInt() and 0xFF
             val t = (e * 23) and 255
-            o[e] = ((c shl 4 or c.ushr(4)) xor t).toByte()
+            val swapped = (c shl 4) or (c ushr 4)
+            o[e] = (swapped xor t).toByte()
         }
         return o
     }
@@ -446,21 +450,24 @@ object AnimexCrypto {
             val i = e[(t + 11) % e.size]
             val h = b[(t * 7) % 256]
             val nt = n[t].toInt() and 0xFF
-            c[t] = (nt xor s xor a xor r xor underscore xor i xor h xor (t * 23)).toByte()
+            val value = nt xor s xor a xor r xor underscore xor i xor h xor (t * 23)
+            c[t] = value.toByte()
         }
         return c
     }
 
     fun encrypt(jsonString: String): String {
-        try {
+        return try {
             val (keyBytes, at, au) = generateKeys()
             val iv = ByteArray(12)
-            java.security.SecureRandom().nextBytes(iv)
+            SecureRandom().nextBytes(iv)
 
             val s = jsonString.toByteArray(StandardCharsets.UTF_8)
             val a = q(s)
             val r = T(a, at, au)
 
+            // JS uses WebCrypto AES-GCM which outputs (Ciphertext + AuthTag)
+            // Java/Android "AES/GCM/NoPadding" also outputs (Ciphertext + AuthTag)
             val spec = GCMParameterSpec(128, iv)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(keyBytes, "AES"), spec)
@@ -470,10 +477,10 @@ object AnimexCrypto {
             System.arraycopy(iv, 0, combined, 0, iv.size)
             System.arraycopy(encrypted, 0, combined, iv.size, encrypted.size)
 
-            return Base64.encodeToString(combined, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
+            Base64.encodeToString(combined, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
         } catch (e: Exception) {
             e.printStackTrace()
-            return ""
+            ""
         }
     }
 }
