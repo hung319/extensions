@@ -188,12 +188,10 @@ class AnikuroProvider : MainAPI() {
         return newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
             this.posterUrl = poster
             this.plot = description
-            // Sử dụng Score class mới thay cho ratingInt
+            // FIX: Sử dụng biến score mới thay vì recommendations
             if (ratingDouble != null) {
-                // Thang điểm 10.0 -> Score class
-                this.recommendations = mapOf("Score" to Score.from10(ratingDouble).toString())
-                // Hoặc nếu muốn set property score trực tiếp (nếu có trong version SDK của bạn):
-                // this.score = Score.from10(ratingDouble)
+                // Score.from10() tự động convert double 10.0 thành object Score
+                this.score = Score.from10(ratingDouble)
             }
             this.backgroundPosterUrl = doc.selectFirst("meta[name=twitter:image]")?.attr("content") ?: poster
             addAniListId(id.toIntOrNull())
@@ -215,12 +213,14 @@ class AnikuroProvider : MainAPI() {
             try {
                 val url = "$mainUrl/api/getsources/?id=$id&lol=$serverCode&ep=$episodeNum"
                 val response = app.get(url, headers = headers).parsed<SourceResponse>()
-                val rootSubs = response.subtitles?.mapNotNull { it.toSubtitleFile() } ?: emptyList()
                 
+                // Gom tất cả subtitles tìm được và gửi qua callback
+                val rootSubs = response.subtitles?.mapNotNull { it.toSubtitleFile() } ?: emptyList()
                 rootSubs.forEach(subtitleCallback)
 
-                response.sub?.let { parseSourceNode(it, serverCode, "Sub", rootSubs, subtitleCallback, callback) }
-                response.dub?.let { parseSourceNode(it, serverCode, "Dub", rootSubs, subtitleCallback, callback) }
+                // Pass subtitleCallback xuống hàm parse để xử lý sub lồng nhau
+                response.sub?.let { parseSourceNode(it, serverCode, "Sub", subtitleCallback, callback) }
+                response.dub?.let { parseSourceNode(it, serverCode, "Dub", subtitleCallback, callback) }
             } catch (e: Exception) { /* Ignore */ }
         }
         return true
@@ -230,46 +230,41 @@ class AnikuroProvider : MainAPI() {
         node: JsonNode,
         server: String,
         type: String,
-        rootSubs: List<SubtitleFile>,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
         if (node.isTextual) {
             val url = node.asText()
-            if (url.startsWith("http")) generateLinks(url, server, type, mainUrl, rootSubs, callback)
+            if (url.startsWith("http")) generateLinks(url, server, type, mainUrl, callback)
             return
         }
 
         if (node.isObject) {
             val referer = node["referer"]?.asText() ?: node["sub_referer"]?.asText() ?: node["dub_referer"]?.asText() ?: mainUrl
             
-            // Xử lý subtitles bên trong node và gửi qua callback
-            val innerSubs = ArrayList<SubtitleFile>()
-            node["tracks"]?.forEach { it.toTrack()?.toSubtitleFile()?.let { s -> innerSubs.add(s) } }
-            node["subtitles"]?.forEach { it.toTrack()?.toSubtitleFile()?.let { s -> innerSubs.add(s) } }
-            innerSubs.forEach(subtitleCallback)
-            
-            // Tổng hợp subs cho link (nếu cần thiết để pass vào extractor, dù callback đã xử lý)
-            val allSubs = rootSubs + innerSubs
+            // Xử lý subtitles bên trong node và gửi trực tiếp qua callback
+            // Không cần return list subtitle để gắn vào Link nữa
+            node["tracks"]?.forEach { it.toTrack()?.toSubtitleFile()?.let { s -> subtitleCallback(s) } }
+            node["subtitles"]?.forEach { it.toTrack()?.toSubtitleFile()?.let { s -> subtitleCallback(s) } }
 
             val directUrl = node["url"]?.asText() ?: node["default"]?.asText()
             if (!directUrl.isNullOrEmpty()) {
-                generateLinks(directUrl, server, type, referer, allSubs, callback)
+                generateLinks(directUrl, server, type, referer, callback)
                 return
             }
 
             if (node.has("sources")) {
                 node["sources"]?.fields()?.forEach { (k, v) ->
-                    v["url"]?.asText()?.let { generateLinks(it, "$server $k", type, referer, allSubs, callback) }
+                    v["url"]?.asText()?.let { generateLinks(it, "$server $k", type, referer, callback) }
                 }
-                node["preferred"]?.get("url")?.asText()?.let { generateLinks(it, "$server Preferred", type, referer, allSubs, callback) }
+                node["preferred"]?.get("url")?.asText()?.let { generateLinks(it, "$server Preferred", type, referer, callback) }
                 return
             }
 
             node.fields().forEach { (k, v) ->
                 if (v.isTextual && v.asText().startsWith("http")) {
                     val quality = if (k.matches(Regex("\\d+p"))) " $k" else ""
-                    generateLinks(v.asText(), server, "$type$quality", referer, allSubs, callback)
+                    generateLinks(v.asText(), server, "$type$quality", referer, callback)
                 }
             }
         }
@@ -280,7 +275,6 @@ class AnikuroProvider : MainAPI() {
         server: String,
         typeStr: String,
         referer: String,
-        subs: List<SubtitleFile>,
         callback: (ExtractorLink) -> Unit
     ) {
         val name = "Anikuro $server $typeStr"
@@ -288,19 +282,27 @@ class AnikuroProvider : MainAPI() {
         // Xác định loại link: M3U8 hoặc VIDEO (MP4)
         val type = if (url.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
 
-        // Chỉ dùng newExtractorLink, không dùng M3u8Helper
-        callback(
-            newExtractorLink(
-                source = name,
-                name = name,
-                url = url,
-                type = type
-            ) {
-                this.referer = referer
-                // Nếu phiên bản ExtractorLink hỗ trợ set subtitles thì set ở đây
-                this.subtitles = subs 
-            }
-        )
+        if (url.contains(".m3u8")) {
+            // Với M3U8, M3u8Helper sẽ tự parse chất lượng và gọi callback
+            M3u8Helper.generateM3u8(
+                name,
+                url,
+                referer,
+                headers = headers
+            ).forEach(callback)
+        } else {
+            // FIX: Xóa tham chiếu subtitles vì đã dùng callback ở trên
+            callback(
+                newExtractorLink(
+                    source = name,
+                    name = name,
+                    url = url,
+                    type = type
+                ) {
+                    this.referer = referer
+                }
+            )
+        }
     }
 
     // =========================================================================
