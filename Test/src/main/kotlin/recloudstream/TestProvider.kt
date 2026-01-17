@@ -205,7 +205,7 @@ class AnikuroProvider : MainAPI() {
     }
 
     // =========================================================================
-    // 4. LOAD LINKS (FIXED ERROR HANDLING)
+    // 4. LOAD LINKS
     // =========================================================================
     override suspend fun loadLinks(
         data: String,
@@ -215,16 +215,22 @@ class AnikuroProvider : MainAPI() {
     ): Boolean {
         val (id, episodeNum) = data.split("|")
 
+        // Sử dụng amap để chạy song song
         supportedServers.amap { serverCode ->
             try {
-                // Tách riêng request để debug nếu lỗi
                 val url = "$mainUrl/api/getsources/?id=$id&lol=$serverCode&ep=$episodeNum"
-                val responseText = app.get(url, headers = headers).text
+                val textResponse = app.get(url, headers = headers).text
                 
-                // Nếu response rỗng hoặc lỗi, bỏ qua
-                if (responseText.contains("\"error\"") || responseText.length < 5) return@amap
+                // Log response để debug nếu cần
+                // System.out.println("ANIKURO DEBUG: $serverCode -> $textResponse")
 
-                val response = parseJson<SourceResponse>(responseText)
+                // Check lỗi cơ bản
+                if (textResponse.contains("error") || textResponse.length < 5) {
+                    // throw Exception("Server $serverCode trả về lỗi hoặc rỗng") // Uncomment nếu muốn ném lỗi
+                    return@amap
+                }
+
+                val response = parseJson<SourceResponse>(textResponse)
                 
                 val rootSubs = response.subtitles?.mapNotNull { it.toSubtitleFile() } ?: emptyList()
                 rootSubs.forEach(subtitleCallback)
@@ -232,8 +238,10 @@ class AnikuroProvider : MainAPI() {
                 response.sub?.let { parseSourceNode(it, serverCode, "Sub", subtitleCallback, callback) }
                 response.dub?.let { parseSourceNode(it, serverCode, "Dub", subtitleCallback, callback) }
             } catch (e: Exception) {
-                // In lỗi ra log để biết server nào tạch
-                // e.printStackTrace() 
+                // In lỗi chi tiết ra Logcat để debug
+                System.err.println("ANIKURO ERROR [$serverCode]: ${e.message}")
+                e.printStackTrace()
+                // throw e // Uncomment dòng này nếu muốn Crash/Báo lỗi lên UI ngay lập tức
             }
         }
         return true
@@ -289,13 +297,11 @@ class AnikuroProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ) {
         val name = "Anikuro $server $typeStr"
-        // Thêm User-Agent vào header link để tránh bị chặn bởi Proxy
         val linkHeaders = mapOf(
             "Origin" to mainUrl, 
             "Referer" to referer,
             "User-Agent" to (headers["user-agent"] ?: "")
         )
-        
         val type = if (url.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
 
         if (url.contains(".m3u8")) {
@@ -332,7 +338,7 @@ class AnikuroProvider : MainAPI() {
         return newAnimeSearchResponse(title, url, TvType.Anime) {
             this.posterUrl = poster
             if (currentEpisode != null) {
-                addDubStatus(dubExist = false, subExist = true)
+                addDubStatus(false, true) // Fix: Sử dụng positional args
             }
         }
     }
