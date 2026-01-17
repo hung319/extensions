@@ -25,7 +25,7 @@ class AnimexProvider : MainAPI() {
 
     private val anilistApi = "https://graphql.anilist.co"
     
-    // User-Agent chung cho toàn bộ Provider
+    // User-Agent chung
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
     
     private val mapper = jacksonObjectMapper().apply {
@@ -42,8 +42,15 @@ class AnimexProvider : MainAPI() {
         }
     }
 
-    private fun getSlugIdFromUrl(url: String): String {
-        return url.substringBefore("?").trimEnd('/').substringAfterLast("/anime/")
+    // Hàm kiểm tra link sống hay chết
+    private suspend fun isLinkAlive(url: String, headers: Map<String, String>): Boolean {
+        return try {
+            // Dùng GET thay vì HEAD vì một số server chặn HEAD
+            val response = app.get(url, headers = headers)
+            response.isSuccessful // Trả về true nếu code là 200..299
+        } catch (e: Exception) {
+            false
+        }
     }
 
     // --- GraphQL Query ---
@@ -116,7 +123,6 @@ class AnimexProvider : MainAPI() {
 
         val episodes = mutableListOf<Episode>()
         val animeId = getAnimeIdFromUrl(url)
-        val slugId = getSlugIdFromUrl(url)
 
         if (animeId.all { it.isDigit() }) {
             try {
@@ -141,7 +147,6 @@ class AnimexProvider : MainAPI() {
 
                         val episodeData = mapOf(
                             "id" to animeId,
-                            "slugId" to slugId,
                             "epNum" to epNum,
                             "subs" to (epData.subProviders ?: emptyList()),
                             "dubs" to (epData.dubProviders ?: emptyList())
@@ -173,7 +178,6 @@ class AnimexProvider : MainAPI() {
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
         try {
             var animeId: Int? = null
-            var slugId: String? = null
             var epNum: Int? = null
             var subProviders = listOf<String>()
             var dubProviders = listOf<String>()
@@ -182,7 +186,6 @@ class AnimexProvider : MainAPI() {
                 try {
                     val epData = mapper.readValue(data, Map::class.java)
                     animeId = epData["id"]?.toString()?.toIntOrNull()
-                    slugId = epData["slugId"]?.toString()
                     epNum = epData["epNum"]?.toString()?.toIntOrNull()
                     subProviders = (epData["subs"] as? List<*>)?.map { it.toString() } ?: emptyList()
                     dubProviders = (epData["dubs"] as? List<*>)?.map { it.toString() } ?: emptyList()
@@ -197,12 +200,6 @@ class AnimexProvider : MainAPI() {
 
             if (animeId == null || epNum == null) return false
 
-            val watchUrl = if (slugId != null) {
-                "$mainUrl/watch/$slugId-episode-$epNum"
-            } else {
-                "$mainUrl/"
-            }
-
             val tasks = mutableListOf<Pair<String, String>>()
             if (subProviders.isNotEmpty()) subProviders.forEach { tasks.add(it to "sub") }
             if (dubProviders.isNotEmpty()) dubProviders.forEach { tasks.add(it to "dub") }
@@ -211,7 +208,7 @@ class AnimexProvider : MainAPI() {
                 coroutineScope {
                     tasks.map { (host, type) ->
                         async {
-                            fetchSource(host, type, animeId!!, epNum!!, watchUrl, subtitleCallback, callback)
+                            fetchSource(host, type, animeId!!, epNum!!, subtitleCallback, callback)
                         }
                     }.awaitAll()
                 }
@@ -229,7 +226,6 @@ class AnimexProvider : MainAPI() {
         type: String, 
         animeId: Int, 
         epNum: Int, 
-        watchUrl: String,
         subtitleCallback: (SubtitleFile) -> Unit, 
         callback: (ExtractorLink) -> Unit
     ) {
@@ -249,6 +245,7 @@ class AnimexProvider : MainAPI() {
             if (encryptedId.isEmpty()) return
 
             val apiHeaders = mapOf(
+                "Accept" to "*/*",
                 "Content-Type" to "application/json",
                 "X-Requested-With" to "XMLHttpRequest",
                 "Referer" to "$mainUrl/",
@@ -263,6 +260,15 @@ class AnimexProvider : MainAPI() {
 
             val sourceData = mapper.readValue(apiResponseText, AnimexSources::class.java)
 
+            // Xử lý Softsub và Hardsub
+            val hasSoftSubs = !sourceData.subtitles.isNullOrEmpty()
+            val subType = if (hasSoftSubs) "Softsub" else "Hardsub"
+            
+            // Xử lý Audio/Dub
+            val isDub = type.equals("dub", true)
+            val typeLabel = if (isDub) "Dub" else subType
+
+            // Callback Subtitles (nếu có)
             sourceData.subtitles?.forEach { sub ->
                 val url = sub.url ?: return@forEach
                 subtitleCallback.invoke(SubtitleFile(sub.label ?: sub.lang ?: "Unknown", url))
@@ -270,20 +276,24 @@ class AnimexProvider : MainAPI() {
 
             sourceData.sources?.forEach { source ->
                 val link = source.url ?: return@forEach
+                val linkType = ExtractorLinkType.M3U8 // Mặc định M3U8 như yêu cầu
                 
-                // Đồng bộ hóa headers cho tất cả các nguồn (đã bỏ ngoại lệ cho pahe)
+                // Headers chuẩn cho Video
                 val videoHeaders = mapOf(
                     "Origin" to mainUrl,
-                    "Referer" to watchUrl,
+                    "Referer" to "$mainUrl/", // Referer về mainUrl theo yêu cầu fix lỗi
                     "User-Agent" to userAgent
                 )
 
-                callback.invoke(
-                    newExtractorLink(name, "$name $host ($type)", link, type = ExtractorLinkType.M3U8) {
-                        this.headers = videoHeaders
-                        this.quality = getQualityFromName(source.quality)
-                    }
-                )
+                // CHECK: Link có sống không?
+                if (isLinkAlive(link, videoHeaders)) {
+                    callback.invoke(
+                        newExtractorLink(name, "$name $host ($typeLabel)", link, type = linkType) {
+                            this.headers = videoHeaders
+                            this.quality = getQualityFromName(source.quality)
+                        }
+                    )
+                }
             }
         } catch (e: Exception) {
             // Ignore errors per source
