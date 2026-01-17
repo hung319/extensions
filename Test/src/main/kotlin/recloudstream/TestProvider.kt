@@ -24,7 +24,7 @@ class AnikuroProvider : MainAPI() {
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    // Cập nhật User-Agent chuẩn hơn để tránh bị chặn
+    // User-Agent ổn định
     private val headers = mapOf(
         "authority" to "anikuro.ru",
         "accept" to "*/*",
@@ -47,7 +47,7 @@ class AnikuroProvider : MainAPI() {
     )
 
     // =========================================================================
-    // 1. MAIN PAGE (OPTIMIZED PARALLEL)
+    // 1. MAIN PAGE
     // =========================================================================
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val tasks = listOf(
@@ -68,14 +68,11 @@ class AnikuroProvider : MainAPI() {
             }
         )
 
-        // Chạy song song tất cả API trang chủ
         val items = tasks.amap { task ->
             try {
                 val list = task.fetcher.invoke()
                 if (list.isNotEmpty()) HomePageList(task.title, list) else null
-            } catch (e: Exception) {
-                null 
-            }
+            } catch (e: Exception) { null }
         }.filterNotNull()
 
         return newHomePageResponse(items)
@@ -133,9 +130,7 @@ class AnikuroProvider : MainAPI() {
         return try {
             val response = app.post(graphqlUrl, headers = headers, json = body).parsed<AnilistResponse>()
             response.data?.page?.media?.mapNotNull { it.toSearchResponse() } ?: emptyList()
-        } catch (e: Exception) {
-            emptyList()
-        }
+        } catch (e: Exception) { emptyList() }
     }
 
     // =========================================================================
@@ -152,7 +147,6 @@ class AnikuroProvider : MainAPI() {
         val id = rawId?.filter { it.isDigit() } ?: ""
         if (id.isEmpty()) throw ErrorLoadingException("Invalid Anime ID")
 
-        // 1. Load HTML (Parallel nếu muốn, nhưng tuần tự an toàn hơn để lấy cookie)
         val response = app.get(url, headers = headers)
         val doc = response.document
 
@@ -169,7 +163,6 @@ class AnikuroProvider : MainAPI() {
         val description = doc.selectFirst(".details-content .description p")?.text()?.trim()
             ?: doc.selectFirst("meta[name=description]")?.attr("content")
 
-        // 2. Load Episodes
         val episodesUrl = "$mainUrl/api/getepisodelist/?id=$id"
         val epResponse = app.get(episodesUrl, headers = headers).parsed<EpisodeListResponse>()
         val episodes = epResponse.episodes.mapNotNull { (epNumStr, epData) ->
@@ -181,7 +174,6 @@ class AnikuroProvider : MainAPI() {
             }
         }.sortedBy { it.episode }
 
-        // 3. Load Rating
         var ratingScore: Score? = null
         try {
             val csrfToken = response.cookies["csrftoken"] ?: doc.select("input[name=csrfmiddlewaretoken]").attr("value")
@@ -206,7 +198,7 @@ class AnikuroProvider : MainAPI() {
     }
 
     // =========================================================================
-    // 4. LOAD LINKS (FIXED & DEBUG LOGGING)
+    // 4. LOAD LINKS
     // =========================================================================
     override suspend fun loadLinks(
         data: String,
@@ -215,13 +207,8 @@ class AnikuroProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val (rawId, episodeNum) = data.split("|")
-        
-        // --- FIX QUAN TRỌNG: Lọc bỏ ký tự rác nếu ID bị dính URL ---
         val id = rawId.filter { it.isDigit() }
         
-        // Log start
-        // System.out.println("ANIKURO: Getting links for ID: $id EP: $episodeNum")
-
         supportedServers.amap { serverCode ->
             try {
                 val url = "$mainUrl/api/getsources/?id=$id&lol=$serverCode&ep=$episodeNum"
@@ -235,35 +222,20 @@ class AnikuroProvider : MainAPI() {
                 val response = extendedClient.newCall(request).execute()
                 val responseText = response.body?.string() ?: ""
 
-                // LOG RAW RESPONSE ĐỂ DEBUG
-                // System.out.println("ANIKURO RAW [$serverCode]: $responseText")
-
                 if (responseText.contains("error") || responseText.length < 5) return@amap
 
                 val sourceResponse = parseJson<SourceResponse>(responseText)
                 
-                // Parse Subtitles
                 val rootSubs = sourceResponse.subtitles?.mapNotNull { it.toSubtitleFile() } ?: emptyList()
                 rootSubs.forEach(subtitleCallback)
 
-                // Parse Video
-                var linksFound = 0
                 sourceResponse.sub?.let { 
-                    val count = parseSourceNode(it, serverCode, "Sub", subtitleCallback, callback)
-                    linksFound += count
+                    parseSourceNode(it, serverCode, "Sub", subtitleCallback, callback)
                 }
                 sourceResponse.dub?.let { 
-                    val count = parseSourceNode(it, serverCode, "Dub", subtitleCallback, callback) 
-                    linksFound += count
+                    parseSourceNode(it, serverCode, "Dub", subtitleCallback, callback) 
                 }
-
-                if (linksFound > 0) {
-                    // System.out.println("ANIKURO: [$serverCode] Found $linksFound links")
-                }
-
-            } catch (e: Exception) {
-                // System.err.println("ANIKURO_ERR: $serverCode -> ${e.message}")
-            }
+            } catch (e: Exception) { }
         }
         return true
     }
@@ -305,9 +277,13 @@ class AnikuroProvider : MainAPI() {
 
             node.fields().forEach { (k, v) ->
                 if (v.isTextual && v.asText().startsWith("http")) {
-                    val quality = if (k.matches(Regex("\\d+p"))) " $k" else ""
-                    // Tránh duplicate với url/default key
-                    if (k != "url" && k != "default") {
+                    // FIX: Bỏ qua các key referer để tránh nhận nhầm là source
+                    val isNotMetaField = k != "url" && k != "default" && 
+                                         !k.contains("referer") && 
+                                         k != "backup" && k != "preview"
+
+                    if (isNotMetaField) {
+                        val quality = if (k.matches(Regex("\\d+p"))) " $k" else ""
                         generateLinks(v.asText(), server, "$type$quality", referer, callback)
                         count++
                     }
@@ -335,7 +311,6 @@ class AnikuroProvider : MainAPI() {
     private fun AnimeData.toSearchResponse(currentEpisode: String? = null): SearchResponse {
         val animeId = this.id
         val title = this.title?.english ?: this.title?.romaji ?: this.title?.native ?: "Unknown"
-        // FIX: Thêm ảnh fallback mặc định
         val poster = this.coverImage?.large ?: this.coverImage?.medium ?: "https://anikuro.ru/static/images/Anikuro_LogoBlack.svg"
         val url = "$mainUrl/watch/?id=$animeId"
         return newAnimeSearchResponse(title, url, TvType.Anime) {
