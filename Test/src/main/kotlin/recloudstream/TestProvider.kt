@@ -25,6 +25,9 @@ class AnimexProvider : MainAPI() {
 
     private val anilistApi = "https://graphql.anilist.co"
     
+    // User-Agent chung cho toàn bộ Provider
+    private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
+    
     private val mapper = jacksonObjectMapper().apply {
         configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
     }
@@ -39,7 +42,6 @@ class AnimexProvider : MainAPI() {
         }
     }
 
-    // Helper lấy slug đầy đủ (ví dụ: the-idolm-ster-side-m-98310) để tạo link watch
     private fun getSlugIdFromUrl(url: String): String {
         return url.substringBefore("?").trimEnd('/').substringAfterLast("/anime/")
     }
@@ -114,7 +116,7 @@ class AnimexProvider : MainAPI() {
 
         val episodes = mutableListOf<Episode>()
         val animeId = getAnimeIdFromUrl(url)
-        val slugId = getSlugIdFromUrl(url) // Lấy slug để tái tạo link watch sau này
+        val slugId = getSlugIdFromUrl(url)
 
         if (animeId.all { it.isDigit() }) {
             try {
@@ -123,7 +125,7 @@ class AnimexProvider : MainAPI() {
                     "Accept" to "application/json",
                     "X-Requested-With" to "XMLHttpRequest",
                     "Referer" to url,
-                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    "User-Agent" to userAgent
                 )
 
                 val responseText = app.get(apiUrl, headers = apiHeaders).text
@@ -139,7 +141,7 @@ class AnimexProvider : MainAPI() {
 
                         val episodeData = mapOf(
                             "id" to animeId,
-                            "slugId" to slugId, // Truyền slug xuống loadLinks
+                            "slugId" to slugId,
                             "epNum" to epNum,
                             "subs" to (epData.subProviders ?: emptyList()),
                             "dubs" to (epData.dubProviders ?: emptyList())
@@ -195,11 +197,10 @@ class AnimexProvider : MainAPI() {
 
             if (animeId == null || epNum == null) return false
 
-            // Tạo Link Watch chính xác để làm Referer
             val watchUrl = if (slugId != null) {
                 "$mainUrl/watch/$slugId-episode-$epNum"
             } else {
-                "$mainUrl/" // Fallback nếu không có slug
+                "$mainUrl/"
             }
 
             val tasks = mutableListOf<Pair<String, String>>()
@@ -248,11 +249,10 @@ class AnimexProvider : MainAPI() {
             if (encryptedId.isEmpty()) return
 
             val apiHeaders = mapOf(
-                "Accept" to "*/*",
                 "Content-Type" to "application/json",
                 "X-Requested-With" to "XMLHttpRequest",
                 "Referer" to "$mainUrl/",
-                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                "User-Agent" to userAgent
             )
 
             val apiUrl = "$mainUrl/api/anime/sources/$encryptedId"
@@ -270,21 +270,16 @@ class AnimexProvider : MainAPI() {
 
             sourceData.sources?.forEach { source ->
                 val link = source.url ?: return@forEach
-                val linkType = if (link.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                 
-                // Headers chuẩn hóa cho TẤT CẢ các nguồn theo yêu cầu:
-                // Origin: mainUrl (https://animex.one)
-                // Referer: watchUrl (https://animex.one/watch/...)
-                // User-Agent: Android Chrome standard
+                // Đồng bộ hóa headers cho tất cả các nguồn (đã bỏ ngoại lệ cho pahe)
                 val videoHeaders = mapOf(
                     "Origin" to mainUrl,
                     "Referer" to watchUrl,
-                    "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
-                    "Accept" to "*/*"
+                    "User-Agent" to userAgent
                 )
 
                 callback.invoke(
-                    newExtractorLink(name, "$name $host ($type)", link, type = linkType) {
+                    newExtractorLink(name, "$name $host ($type)", link, type = ExtractorLinkType.M3U8) {
                         this.headers = videoHeaders
                         this.quality = getQualityFromName(source.quality)
                     }
