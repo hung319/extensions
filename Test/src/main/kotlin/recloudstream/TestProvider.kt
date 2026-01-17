@@ -24,18 +24,19 @@ class AnikuroProvider : MainAPI() {
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
+    // Cập nhật User-Agent chuẩn hơn để tránh bị chặn
     private val headers = mapOf(
         "authority" to "anikuro.ru",
         "accept" to "*/*",
         "accept-language" to "en-US,en;q=0.9",
         "referer" to "$mainUrl/",
-        "sec-ch-ua" to "\"Chromium\";v=\"137\", \"Not/A)Brand\";v=\"24\"",
+        "sec-ch-ua" to "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"",
         "sec-ch-ua-mobile" to "?1",
         "sec-ch-ua-platform" to "\"Android\"",
         "sec-fetch-dest" to "empty",
         "sec-fetch-mode" to "cors",
         "sec-fetch-site" to "same-origin",
-        "user-agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
+        "user-agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
     )
 
     private val supportedServers = listOf(
@@ -205,7 +206,7 @@ class AnikuroProvider : MainAPI() {
     }
 
     // =========================================================================
-    // 4. LOAD LINKS (FULL DEBUG LOGGING)
+    // 4. LOAD LINKS (FIXED & DEBUG LOGGING)
     // =========================================================================
     override suspend fun loadLinks(
         data: String,
@@ -213,10 +214,13 @@ class AnikuroProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val (id, episodeNum) = data.split("|")
+        val (rawId, episodeNum) = data.split("|")
+        
+        // --- FIX QUAN TRỌNG: Lọc bỏ ký tự rác nếu ID bị dính URL ---
+        val id = rawId.filter { it.isDigit() }
         
         // Log start
-        System.out.println("ANIKURO: Getting links for ID: $id EP: $episodeNum")
+        // System.out.println("ANIKURO: Getting links for ID: $id EP: $episodeNum")
 
         supportedServers.amap { serverCode ->
             try {
@@ -254,11 +258,11 @@ class AnikuroProvider : MainAPI() {
                 }
 
                 if (linksFound > 0) {
-                    System.out.println("ANIKURO: [$serverCode] Found $linksFound links")
+                    // System.out.println("ANIKURO: [$serverCode] Found $linksFound links")
                 }
 
             } catch (e: Exception) {
-                System.err.println("ANIKURO_ERR: $serverCode -> ${e.message}")
+                // System.err.println("ANIKURO_ERR: $serverCode -> ${e.message}")
             }
         }
         return true
@@ -331,7 +335,8 @@ class AnikuroProvider : MainAPI() {
     private fun AnimeData.toSearchResponse(currentEpisode: String? = null): SearchResponse {
         val animeId = this.id
         val title = this.title?.english ?: this.title?.romaji ?: this.title?.native ?: "Unknown"
-        val poster = this.coverImage?.large ?: this.coverImage?.medium
+        // FIX: Thêm ảnh fallback mặc định
+        val poster = this.coverImage?.large ?: this.coverImage?.medium ?: "https://anikuro.ru/static/images/Anikuro_LogoBlack.svg"
         val url = "$mainUrl/watch/?id=$animeId"
         return newAnimeSearchResponse(title, url, TvType.Anime) {
             this.posterUrl = poster
