@@ -25,10 +25,10 @@ class AnimexProvider : MainAPI() {
 
     private val anilistApi = "https://graphql.anilist.co"
     
-    // User-Agent chung
+    // User-Agent chung để đảm bảo tính nhất quán và vượt qua các check bảo mật cơ bản
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
     
-    // Tối ưu: Khởi tạo Mapper một lần duy nhất
+    // Khởi tạo Mapper một lần duy nhất để tối ưu hiệu năng
     private val mapper = jacksonObjectMapper().apply {
         configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
     }
@@ -45,6 +45,17 @@ class AnimexProvider : MainAPI() {
 
     private fun getSlugIdFromUrl(url: String): String {
         return url.substringBefore("?").trimEnd('/').substringAfterLast("/anime/")
+    }
+
+    // Hàm kiểm tra link sống (đã thêm lại theo yêu cầu)
+    private suspend fun isLinkAlive(url: String, headers: Map<String, String>): Boolean {
+        return try {
+            // Thực hiện request GET để kiểm tra status code
+            val response = app.get(url, headers = headers)
+            response.isSuccessful
+        } catch (e: Exception) {
+            false
+        }
     }
 
     // --- GraphQL Query ---
@@ -98,71 +109,81 @@ class AnimexProvider : MainAPI() {
         return newAnimeSearchResponse(titleEn, "$mainUrl/anime/$slug-${this.id}", TvType.Anime) { this.posterUrl = image }
     }
 
-    override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url).document
-        val title = document.selectFirst("h1")?.text() ?: "Unknown"
-        val description = document.selectFirst("meta[name=description]")?.attr("content")
-        
-        val poster = document.selectFirst("meta[property=og:image]")?.attr("content") ?: "" 
-        val bg = document.selectFirst(".absolute.inset-0.bg-cover")?.attr("style")?.substringAfter("url('")?.substringBefore("')") ?: ""
+    // Tải thông tin phim (Chạy song song HTML + API để tối ưu tốc độ)
+    override suspend fun load(url: String): LoadResponse = coroutineScope {
+        val animeId = getAnimeIdFromUrl(url)
+        val slugId = getSlugIdFromUrl(url)
 
-        val recommendations = document.select("a[href^='/anime/']").mapNotNull { element ->
+        // 1. Task HTML
+        val documentTask = async { 
+            try { app.get(url).document } catch (e: Exception) { null }
+        }
+
+        // 2. Task API Episodes
+        val episodesTask = async {
+            if (animeId.all { it.isDigit() }) {
+                try {
+                    val apiUrl = "$mainUrl/api/anime/episodes/$animeId"
+                    val apiHeaders = mapOf(
+                        "Accept" to "application/json",
+                        "X-Requested-With" to "XMLHttpRequest",
+                        "Referer" to url,
+                        "User-Agent" to userAgent
+                    )
+                    val response = app.get(apiUrl, headers = apiHeaders)
+                    if (response.isSuccessful) response.text else null
+                } catch (e: Exception) { null }
+            } else null
+        }
+
+        val document = documentTask.await()
+        val responseText = episodesTask.await()
+
+        val title = document?.selectFirst("h1")?.text() ?: "Unknown"
+        val description = document?.selectFirst("meta[name=description]")?.attr("content")
+        val poster = document?.selectFirst("meta[property=og:image]")?.attr("content") ?: "" 
+        val bg = document?.selectFirst(".absolute.inset-0.bg-cover")?.attr("style")?.substringAfter("url('")?.substringBefore("')") ?: ""
+
+        val recommendations = document?.select("a[href^='/anime/']")?.mapNotNull { element ->
             val href = element.attr("href")
             val img = element.selectFirst("img")?.attr("src") ?: ""
             val name = element.selectFirst("span.font-medium")?.text() ?: element.selectFirst(".text-sm")?.text()
             if (!name.isNullOrBlank() && img.isNotBlank()) {
                 newAnimeSearchResponse(name, fixUrl(href), TvType.Anime) { this.posterUrl = img }
             } else null
-        }.distinctBy { it.url }
+        }?.distinctBy { it.url }
 
         val episodes = mutableListOf<Episode>()
-        val animeId = getAnimeIdFromUrl(url)
-        val slugId = getSlugIdFromUrl(url)
-
-        if (animeId.all { it.isDigit() }) {
+        if (!responseText.isNullOrBlank() && !responseText.contains("\"error\"") && responseText.trim().startsWith("[")) {
             try {
-                val apiUrl = "$mainUrl/api/anime/episodes/$animeId"
-                val apiHeaders = mapOf(
-                    "Accept" to "application/json",
-                    "X-Requested-With" to "XMLHttpRequest",
-                    "Referer" to url,
-                    "User-Agent" to userAgent
-                )
-
-                val responseText = app.get(apiUrl, headers = apiHeaders).text
+                val apiResponse: List<AnimexEpData> = mapper.readValue(responseText, object : TypeReference<List<AnimexEpData>>() {})
                 
-                if (!responseText.contains("\"error\"") && responseText.trim().startsWith("[")) {
-                    val apiResponse: List<AnimexEpData> = mapper.readValue(responseText, object : TypeReference<List<AnimexEpData>>() {})
-                    
-                    apiResponse.forEach { epData ->
-                        val epNum = epData.number?.toInt() ?: 0
-                        val titleEn = epData.titles?.en
-                        val epName = if (!titleEn.isNullOrBlank()) "Episode $epNum - $titleEn" else "Episode $epNum"
-                        val epImage = if (!epData.img.isNullOrBlank()) epData.img else poster
+                apiResponse.forEach { epData ->
+                    val epNum = epData.number?.toInt() ?: 0
+                    val titleEn = epData.titles?.en
+                    val epName = if (!titleEn.isNullOrBlank()) "Episode $epNum - $titleEn" else "Episode $epNum"
+                    val epImage = if (!epData.img.isNullOrBlank()) epData.img else poster
 
-                        val episodeData = mapOf(
-                            "id" to animeId,
-                            "slugId" to slugId,
-                            "epNum" to epNum,
-                            "subs" to (epData.subProviders ?: emptyList()),
-                            "dubs" to (epData.dubProviders ?: emptyList())
-                        )
-                        val episodeDataJson = mapper.writeValueAsString(episodeData)
+                    val episodeData = mapOf(
+                        "id" to animeId,
+                        "slugId" to slugId,
+                        "epNum" to epNum,
+                        "subs" to (epData.subProviders ?: emptyList()),
+                        "dubs" to (epData.dubProviders ?: emptyList())
+                    )
+                    val episodeDataJson = mapper.writeValueAsString(episodeData)
 
-                        episodes.add(newEpisode(episodeDataJson) {
-                            this.name = epName
-                            this.episode = epNum
-                            this.posterUrl = epImage
-                            this.description = epData.description
-                        })
-                    }
+                    episodes.add(newEpisode(episodeDataJson) {
+                        this.name = epName
+                        this.episode = epNum
+                        this.posterUrl = epImage
+                        this.description = epData.description
+                    })
                 }
-            } catch (e: Exception) { 
-                e.printStackTrace()
-            }
+            } catch (e: Exception) { e.printStackTrace() }
         }
 
-        return newAnimeLoadResponse(title, url, TvType.Anime) {
+        newAnimeLoadResponse(title, url, TvType.Anime) {
             this.posterUrl = poster
             this.backgroundPosterUrl = bg
             this.plot = description
@@ -198,15 +219,11 @@ class AnimexProvider : MainAPI() {
 
             if (animeId == null || epNum == null) return false
 
-            val watchUrl = if (slugId != null) {
-                "$mainUrl/watch/$slugId-episode-$epNum"
-            } else {
-                "$mainUrl/"
-            }
+            val watchUrl = if (slugId != null) "$mainUrl/watch/$slugId-episode-$epNum" else "$mainUrl/"
 
-            val tasks = mutableListOf<Pair<String, String>>()
-            if (subProviders.isNotEmpty()) subProviders.forEach { tasks.add(it to "sub") }
-            if (dubProviders.isNotEmpty()) dubProviders.forEach { tasks.add(it to "dub") }
+            val tasks = ArrayList<Pair<String, String>>()
+            subProviders.forEach { tasks.add(it to "sub") }
+            dubProviders.forEach { tasks.add(it to "dub") }
 
             if (tasks.isNotEmpty()) {
                 coroutineScope {
@@ -250,7 +267,6 @@ class AnimexProvider : MainAPI() {
             if (encryptedId.isEmpty()) return
 
             val apiHeaders = mapOf(
-                "Accept" to "*/*",
                 "Content-Type" to "application/json",
                 "X-Requested-With" to "XMLHttpRequest",
                 "Referer" to "$mainUrl/",
@@ -259,46 +275,44 @@ class AnimexProvider : MainAPI() {
 
             val apiUrl = "$mainUrl/api/anime/sources/$encryptedId"
             val response = app.get(apiUrl, headers = apiHeaders)
-            val apiResponseText = response.text
             
-            if (apiResponseText.contains("\"error\"") || !response.isSuccessful) return
+            if (!response.isSuccessful) return
+            val apiResponseText = response.text
+            if (apiResponseText.contains("\"error\"")) return
 
             val sourceData = mapper.readValue(apiResponseText, AnimexSources::class.java)
 
             val hasSoftSubs = !sourceData.subtitles.isNullOrEmpty()
             val subType = if (hasSoftSubs) "Softsub" else "Hardsub"
-            
             val isDub = type.equals("dub", true)
             val typeLabel = if (isDub) "Dub" else subType
 
             sourceData.subtitles?.forEach { sub ->
                 val url = sub.url ?: return@forEach
                 subtitleCallback.invoke(
-                    newSubtitleFile(
-                        sub.label ?: sub.lang ?: "Unknown",
-                        url
-                    )
+                    newSubtitleFile(sub.label ?: sub.lang ?: "Unknown", url)
                 )
             }
+
+            // Headers chuẩn cho Video Player
+            val videoHeaders = mapOf(
+                "Origin" to mainUrl,
+                "Referer" to watchUrl,
+                "User-Agent" to userAgent
+            )
 
             sourceData.sources?.forEach { source ->
                 val link = source.url ?: return@forEach
                 
-                val videoHeaders = mapOf(
-                    "Origin" to mainUrl,
-                    "Referer" to "$mainUrl/",
-                    "User-Agent" to userAgent
-                )
-
-                // TỐI ƯU: Đã BỎ kiểm tra link alive (isLinkAlive) để tăng tốc độ. 
-                // Player sẽ tự handle lỗi nếu link 403/404.
-                
-                callback.invoke(
-                    newExtractorLink(name, "$name $host ($typeLabel)", link, type = ExtractorLinkType.M3U8) {
-                        this.headers = videoHeaders
-                        this.quality = getQualityFromName(source.quality)
-                    }
-                )
+                // CHECK LINK ALIVE: Kiểm tra xem link có truy cập được không
+                if (isLinkAlive(link, videoHeaders)) {
+                    callback.invoke(
+                        newExtractorLink(name, "$name $host ($typeLabel)", link, type = ExtractorLinkType.M3U8) {
+                            this.headers = videoHeaders
+                            this.quality = getQualityFromName(source.quality)
+                        }
+                    )
+                }
             }
         } catch (e: Exception) {
             // Ignore errors
@@ -329,8 +343,10 @@ data class SourceData(@JsonProperty("url") val url: String?, @JsonProperty("qual
 data class SubtitleData(@JsonProperty("url") val url: String?, @JsonProperty("lang") val lang: String?, @JsonProperty("label") val label: String?)
 data class AnimexSources(@JsonProperty("sources") val sources: List<SourceData>?, @JsonProperty("subtitles") val subtitles: List<SubtitleData>?)
 
-// --- Crypto Logic (Optimized) ---
+// --- Crypto Logic (Optimized & Cached) ---
 object AnimexCrypto {
+    private val random = SecureRandom()
+
     private val d = intArrayOf(231, 59, 146, 95, 193, 70, 218, 142, 39, 245, 105, 179, 20, 168, 124, 208)
     private val U = intArrayOf(77, 241, 104, 156, 35, 183, 90, 230, 49, 205, 132, 31, 170, 118, 217, 82)
     private val j = intArrayOf(150, 42, 222, 113, 181, 73, 252, 131, 30, 167, 100, 216, 53, 201, 143, 18)
@@ -346,7 +362,6 @@ object AnimexCrypto {
         return (result % 4294967296.0).toLong()
     }
     
-    // Helper cho initialization
     private fun g(n: Int): Int {
         val nUnsigned = (n.toLong() and 0xFFFFFFFFL).toDouble()
         val result = nUnsigned * 2654435769.0
@@ -418,7 +433,6 @@ object AnimexCrypto {
         return e
     }
 
-    // TỐI ƯU: Cache keys để không tính toán lại mỗi lần encrypt
     private val cachedKeys: Triple<ByteArray, IntArray, IntArray> by lazy {
         val y = 2052799517
         val ah = p(64, y)
@@ -499,10 +513,9 @@ object AnimexCrypto {
 
     fun encrypt(jsonString: String): String {
         return try {
-            // Sử dụng Key đã được cache để tối ưu tốc độ
             val (keyBytes, at, au) = cachedKeys
             val iv = ByteArray(12)
-            SecureRandom().nextBytes(iv)
+            random.nextBytes(iv)
 
             val s = jsonString.toByteArray(StandardCharsets.UTF_8)
             val a = q(s)
