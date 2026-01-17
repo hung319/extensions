@@ -260,32 +260,37 @@ class AnimexProvider : MainAPI() {
 
             val sourceData = mapper.readValue(apiResponseText, AnimexSources::class.java)
 
-            // Xử lý Softsub và Hardsub
+            // Logic Hardsub/Softsub: Nếu có subtitles thì là Softsub, ngược lại là Hardsub
             val hasSoftSubs = !sourceData.subtitles.isNullOrEmpty()
             val subType = if (hasSoftSubs) "Softsub" else "Hardsub"
             
-            // Xử lý Audio/Dub
+            // Xử lý Label (Dub, Softsub, Hardsub)
             val isDub = type.equals("dub", true)
             val typeLabel = if (isDub) "Dub" else subType
 
-            // Callback Subtitles (nếu có)
+            // Callback Subtitles (FIX WARNING: Use newSubtitleFile)
             sourceData.subtitles?.forEach { sub ->
                 val url = sub.url ?: return@forEach
-                subtitleCallback.invoke(SubtitleFile(sub.label ?: sub.lang ?: "Unknown", url))
+                subtitleCallback.invoke(
+                    newSubtitleFile(
+                        sub.label ?: sub.lang ?: "Unknown",
+                        url
+                    )
+                )
             }
 
             sourceData.sources?.forEach { source ->
                 val link = source.url ?: return@forEach
-                val linkType = ExtractorLinkType.M3U8 // Mặc định M3U8 như yêu cầu
+                val linkType = ExtractorLinkType.M3U8 
                 
-                // Headers chuẩn cho Video
+                // Headers chuẩn cho Video Player
                 val videoHeaders = mapOf(
                     "Origin" to mainUrl,
-                    "Referer" to "$mainUrl/", // Referer về mainUrl theo yêu cầu fix lỗi
+                    "Referer" to "$mainUrl/",
                     "User-Agent" to userAgent
                 )
 
-                // CHECK: Link có sống không?
+                // CHECK: Link có sống không trước khi add vào list
                 if (isLinkAlive(link, videoHeaders)) {
                     callback.invoke(
                         newExtractorLink(name, "$name $host ($typeLabel)", link, type = linkType) {
