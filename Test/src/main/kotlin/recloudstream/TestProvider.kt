@@ -46,7 +46,7 @@ class AnikuroProvider : MainAPI() {
     )
 
     // =========================================================================
-    // 1. MAIN PAGE (FIXED: apmap -> amap)
+    // 1. MAIN PAGE (OPTIMIZED PARALLEL)
     // =========================================================================
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val tasks = listOf(
@@ -67,7 +67,7 @@ class AnikuroProvider : MainAPI() {
             }
         )
 
-        // FIX: Thay apmap bằng amap để chạy song song non-blocking
+        // Chạy song song tất cả API trang chủ
         val items = tasks.amap { task ->
             try {
                 val list = task.fetcher.invoke()
@@ -151,6 +151,7 @@ class AnikuroProvider : MainAPI() {
         val id = rawId?.filter { it.isDigit() } ?: ""
         if (id.isEmpty()) throw ErrorLoadingException("Invalid Anime ID")
 
+        // 1. Load HTML (Parallel nếu muốn, nhưng tuần tự an toàn hơn để lấy cookie)
         val response = app.get(url, headers = headers)
         val doc = response.document
 
@@ -167,6 +168,7 @@ class AnikuroProvider : MainAPI() {
         val description = doc.selectFirst(".details-content .description p")?.text()?.trim()
             ?: doc.selectFirst("meta[name=description]")?.attr("content")
 
+        // 2. Load Episodes
         val episodesUrl = "$mainUrl/api/getepisodelist/?id=$id"
         val epResponse = app.get(episodesUrl, headers = headers).parsed<EpisodeListResponse>()
         val episodes = epResponse.episodes.mapNotNull { (epNumStr, epData) ->
@@ -178,6 +180,7 @@ class AnikuroProvider : MainAPI() {
             }
         }.sortedBy { it.episode }
 
+        // 3. Load Rating
         var ratingScore: Score? = null
         try {
             val csrfToken = response.cookies["csrftoken"] ?: doc.select("input[name=csrfmiddlewaretoken]").attr("value")
@@ -202,7 +205,7 @@ class AnikuroProvider : MainAPI() {
     }
 
     // =========================================================================
-    // 4. LOAD LINKS
+    // 4. LOAD LINKS (FULL DEBUG LOGGING)
     // =========================================================================
     override suspend fun loadLinks(
         data: String,
@@ -212,23 +215,50 @@ class AnikuroProvider : MainAPI() {
     ): Boolean {
         val (id, episodeNum) = data.split("|")
         
+        // Log start
+        System.out.println("ANIKURO: Getting links for ID: $id EP: $episodeNum")
+
         supportedServers.amap { serverCode ->
             try {
                 val url = "$mainUrl/api/getsources/?id=$id&lol=$serverCode&ep=$episodeNum"
-                val responseText = extendedClient.newCall(
-                    okhttp3.Request.Builder().url(url).headers(headers.toHeaders()).get().build()
-                ).execute().body?.string() ?: ""
+                
+                val request = okhttp3.Request.Builder()
+                    .url(url)
+                    .headers(headers.toHeaders())
+                    .get()
+                    .build()
+                
+                val response = extendedClient.newCall(request).execute()
+                val responseText = response.body?.string() ?: ""
 
-                if (!responseText.contains("error") && responseText.length > 5) {
-                    val response = parseJson<SourceResponse>(responseText)
-                    
-                    response.subtitles?.mapNotNull { it.toSubtitleFile() }?.forEach(subtitleCallback)
+                // LOG RAW RESPONSE ĐỂ DEBUG
+                // System.out.println("ANIKURO RAW [$serverCode]: $responseText")
 
-                    response.sub?.let { parseSourceNode(it, serverCode, "Sub", subtitleCallback, callback) }
-                    response.dub?.let { parseSourceNode(it, serverCode, "Dub", subtitleCallback, callback) }
+                if (responseText.contains("error") || responseText.length < 5) return@amap
+
+                val sourceResponse = parseJson<SourceResponse>(responseText)
+                
+                // Parse Subtitles
+                val rootSubs = sourceResponse.subtitles?.mapNotNull { it.toSubtitleFile() } ?: emptyList()
+                rootSubs.forEach(subtitleCallback)
+
+                // Parse Video
+                var linksFound = 0
+                sourceResponse.sub?.let { 
+                    val count = parseSourceNode(it, serverCode, "Sub", subtitleCallback, callback)
+                    linksFound += count
                 }
+                sourceResponse.dub?.let { 
+                    val count = parseSourceNode(it, serverCode, "Dub", subtitleCallback, callback) 
+                    linksFound += count
+                }
+
+                if (linksFound > 0) {
+                    System.out.println("ANIKURO: [$serverCode] Found $linksFound links")
+                }
+
             } catch (e: Exception) {
-                // System.err.println("ANIKURO_ERR: $serverCode -> ${e.message}")
+                System.err.println("ANIKURO_ERR: $serverCode -> ${e.message}")
             }
         }
         return true
@@ -237,10 +267,11 @@ class AnikuroProvider : MainAPI() {
     private suspend fun parseSourceNode(
         node: JsonNode, server: String, type: String,
         subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit
-    ) {
+    ): Int {
+        var count = 0
         if (node.isTextual && node.asText().startsWith("http")) {
             generateLinks(node.asText(), server, type, mainUrl, callback)
-            return
+            return 1
         }
 
         if (node.isObject) {
@@ -252,24 +283,34 @@ class AnikuroProvider : MainAPI() {
             val directUrl = node["url"]?.asText() ?: node["default"]?.asText()
             if (!directUrl.isNullOrEmpty()) {
                 generateLinks(directUrl, server, type, referer, callback)
-                return
+                count++
             }
 
             if (node.has("sources")) {
                 node["sources"]?.fields()?.forEach { (k, v) ->
-                    v["url"]?.asText()?.let { generateLinks(it, "$server $k", type, referer, callback) }
+                    v["url"]?.asText()?.let { 
+                        generateLinks(it, "$server $k", type, referer, callback)
+                        count++
+                    }
                 }
-                node["preferred"]?.get("url")?.asText()?.let { generateLinks(it, "$server Preferred", type, referer, callback) }
-                return
+                node["preferred"]?.get("url")?.asText()?.let { 
+                    generateLinks(it, "$server Preferred", type, referer, callback)
+                    count++
+                }
             }
 
             node.fields().forEach { (k, v) ->
                 if (v.isTextual && v.asText().startsWith("http")) {
                     val quality = if (k.matches(Regex("\\d+p"))) " $k" else ""
-                    generateLinks(v.asText(), server, "$type$quality", referer, callback)
+                    // Tránh duplicate với url/default key
+                    if (k != "url" && k != "default") {
+                        generateLinks(v.asText(), server, "$type$quality", referer, callback)
+                        count++
+                    }
                 }
             }
         }
+        return count
     }
 
     private suspend fun generateLinks(url: String, server: String, typeStr: String, referer: String, callback: (ExtractorLink) -> Unit) {
