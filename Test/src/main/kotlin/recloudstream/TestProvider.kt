@@ -17,7 +17,7 @@ class AnikuroProvider : MainAPI() {
     override val hasQuickSearch = true
     override val supportedTypes = setOf(TvType.Anime)
 
-    // Timeout hợp lý (30s) để không treo app quá lâu nếu mạng lag
+    // Timeout 30s
     private val extendedClient = app.baseClient.newBuilder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
@@ -46,10 +46,9 @@ class AnikuroProvider : MainAPI() {
     )
 
     // =========================================================================
-    // 1. MAIN PAGE (TỐI ƯU SONG SONG - PARALLEL)
+    // 1. MAIN PAGE (FIXED: apmap -> amap)
     // =========================================================================
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Định nghĩa các tác vụ lấy dữ liệu (Label, API function)
         val tasks = listOf(
             HomePageData("Trending") { 
                 app.get("$mainUrl/api/gettrending/", headers = headers).parsed<TrendingResponse>()
@@ -68,13 +67,13 @@ class AnikuroProvider : MainAPI() {
             }
         )
 
-        // Chạy tất cả request cùng lúc bằng apmap
-        val items = tasks.apmap { task ->
+        // FIX: Thay apmap bằng amap để chạy song song non-blocking
+        val items = tasks.amap { task ->
             try {
                 val list = task.fetcher.invoke()
                 if (list.isNotEmpty()) HomePageList(task.title, list) else null
             } catch (e: Exception) {
-                null // Bỏ qua nếu lỗi, không làm crash trang chủ
+                null 
             }
         }.filterNotNull()
 
@@ -102,14 +101,16 @@ class AnikuroProvider : MainAPI() {
         val body = mapOf("query" to query, "variables" to mapOf("page" to 1, "perPage" to 20, "currentTime" to currentTime))
         val anilistHeaders = mapOf("Content-Type" to "application/json", "Origin" to mainUrl, "Accept" to "application/json")
         
-        return app.post(graphqlUrl, headers = anilistHeaders, json = body).parsed<AnilistResponse>()
-            .data?.page?.airingSchedules?.mapNotNull { 
-                it.media?.toSearchResponse(currentEpisode = "Ep ${it.episode}") 
-            } ?: emptyList()
+        return try {
+            app.post(graphqlUrl, headers = anilistHeaders, json = body).parsed<AnilistResponse>()
+                .data?.page?.airingSchedules?.mapNotNull { 
+                    it.media?.toSearchResponse(currentEpisode = "Ep ${it.episode}") 
+                } ?: emptyList()
+        } catch (e: Exception) { emptyList() }
     }
 
     // =========================================================================
-    // 2. SEARCH (OPTIMIZED)
+    // 2. SEARCH
     // =========================================================================
     override suspend fun search(query: String): List<SearchResponse> {
         val graphqlUrl = "https://graphql.anilist.co/"
@@ -137,7 +138,7 @@ class AnikuroProvider : MainAPI() {
     }
 
     // =========================================================================
-    // 3. LOAD (FIXED & FAST)
+    // 3. LOAD
     // =========================================================================
     private fun getIdFromUrl(url: String): String? {
         val paramId = try { Uri.parse(url).getQueryParameter("id") } catch (e: Exception) { null }
@@ -150,11 +151,9 @@ class AnikuroProvider : MainAPI() {
         val id = rawId?.filter { it.isDigit() } ?: ""
         if (id.isEmpty()) throw ErrorLoadingException("Invalid Anime ID")
 
-        // 1. Tải HTML (Bắt buộc để lấy metadata chính xác)
         val response = app.get(url, headers = headers)
         val doc = response.document
 
-        // Parse Metadata nhanh gọn
         val title = doc.selectFirst(".details-content h2")?.text()?.trim()
             ?: doc.selectFirst("script:containsData(animeTitle)")?.data()
                 ?.substringAfter("animeTitle = \"")?.substringBefore("\";")
@@ -168,7 +167,6 @@ class AnikuroProvider : MainAPI() {
         val description = doc.selectFirst(".details-content .description p")?.text()?.trim()
             ?: doc.selectFirst("meta[name=description]")?.attr("content")
 
-        // 2. Gọi API Episodes
         val episodesUrl = "$mainUrl/api/getepisodelist/?id=$id"
         val epResponse = app.get(episodesUrl, headers = headers).parsed<EpisodeListResponse>()
         val episodes = epResponse.episodes.mapNotNull { (epNumStr, epData) ->
@@ -180,7 +178,6 @@ class AnikuroProvider : MainAPI() {
             }
         }.sortedBy { it.episode }
 
-        // 3. Rating (Không chặn luồng chính nếu lỗi)
         var ratingScore: Score? = null
         try {
             val csrfToken = response.cookies["csrftoken"] ?: doc.select("input[name=csrfmiddlewaretoken]").attr("value")
@@ -205,7 +202,7 @@ class AnikuroProvider : MainAPI() {
     }
 
     // =========================================================================
-    // 4. LOAD LINKS (PARALLEL & DEBUG LOGGED)
+    // 4. LOAD LINKS
     // =========================================================================
     override suspend fun loadLinks(
         data: String,
@@ -214,8 +211,7 @@ class AnikuroProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val (id, episodeNum) = data.split("|")
-        System.out.println("ANIKURO_INFO: Getting links for ID: $id EP: $episodeNum")
-
+        
         supportedServers.amap { serverCode ->
             try {
                 val url = "$mainUrl/api/getsources/?id=$id&lol=$serverCode&ep=$episodeNum"
@@ -226,14 +222,13 @@ class AnikuroProvider : MainAPI() {
                 if (!responseText.contains("error") && responseText.length > 5) {
                     val response = parseJson<SourceResponse>(responseText)
                     
-                    // Gửi sub ngay khi có
                     response.subtitles?.mapNotNull { it.toSubtitleFile() }?.forEach(subtitleCallback)
 
                     response.sub?.let { parseSourceNode(it, serverCode, "Sub", subtitleCallback, callback) }
                     response.dub?.let { parseSourceNode(it, serverCode, "Dub", subtitleCallback, callback) }
                 }
             } catch (e: Exception) {
-                System.err.println("ANIKURO_ERR: $serverCode -> ${e.message}")
+                // System.err.println("ANIKURO_ERR: $serverCode -> ${e.message}")
             }
         }
         return true
