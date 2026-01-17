@@ -151,43 +151,32 @@ class AnikuroProvider : MainAPI() {
         val doc = response.document
         val id = url.substringAfter("id=").substringBefore("&")
 
-        // --- CRAWL METADATA TỪ HTML ---
-        
-        // Title: Nằm trong .details-content h2 hoặc script
         val title = doc.selectFirst(".details-content h2")?.text()?.trim()
             ?: doc.selectFirst("script:containsData(animeTitle)")?.data()
                 ?.substringAfter("animeTitle = \"")?.substringBefore("\";")
             ?: "Unknown Title"
 
-        // Poster: Nằm trong thẻ img.anime-cover
         val poster = doc.selectFirst("img.anime-cover")?.attr("src")
             ?: doc.selectFirst(".preview-cover")?.attr("src")
 
-        // Background: Parse từ style="background-image: url(...)" của .preview-banner
         val backgroundStyle = doc.selectFirst(".preview-banner")?.attr("style")
         val backgroundPoster = backgroundStyle?.substringAfter("url('")?.substringBefore("')") 
             ?: poster
 
-        // Description: Nằm trong .details-content .description p
         val description = doc.selectFirst(".details-content .description p")?.text()?.trim()
             ?: doc.selectFirst("meta[name=description]")?.attr("content")
 
-        // --- GỌI API LẤY EPISODES ---
         val episodesUrl = "$mainUrl/api/getepisodelist/?id=$id"
         val epResponse = app.get(episodesUrl, headers = headers).parsed<EpisodeListResponse>()
-        
         val episodes = epResponse.episodes.mapNotNull { (epNumStr, epData) ->
             val epNum = epNumStr.toIntOrNull() ?: return@mapNotNull null
             newEpisode(data = "$id|$epNum") {
                 this.name = epData.title ?: "Episode $epNum"
                 this.episode = epNum
-                // API đôi khi trả về null description, ưu tiên lấy từ API nếu có, 
-                // nhưng description tổng của phim thì lấy từ HTML ở trên
                 this.description = epData.overview
             }
         }.sortedBy { it.episode }
 
-        // Rating (Lấy từ API nếu có CSRF token)
         var ratingDouble: Double? = null
         try {
             val csrfToken = response.cookies["csrftoken"]
@@ -202,21 +191,21 @@ class AnikuroProvider : MainAPI() {
                     .parsed<RatingResponse>()
                 ratingDouble = ratingJson.rating?.avgRating
             }
-        } catch (e: Exception) { /* Ignore rating error */ }
+        } catch (e: Exception) { /* Ignore */ }
 
         return newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
             this.posterUrl = poster
             this.plot = description
-            this.backgroundPosterUrl = backgroundPoster
             if (ratingDouble != null) {
                 this.score = Score.from10(ratingDouble)
             }
+            this.backgroundPosterUrl = backgroundPoster
             addAniListId(id.toIntOrNull())
         }
     }
 
     // =========================================================================
-    // 4. LOAD LINKS
+    // 4. LOAD LINKS (FIXED ERROR HANDLING)
     // =========================================================================
     override suspend fun loadLinks(
         data: String,
@@ -228,15 +217,24 @@ class AnikuroProvider : MainAPI() {
 
         supportedServers.amap { serverCode ->
             try {
+                // Tách riêng request để debug nếu lỗi
                 val url = "$mainUrl/api/getsources/?id=$id&lol=$serverCode&ep=$episodeNum"
-                val response = app.get(url, headers = headers).parsed<SourceResponse>()
+                val responseText = app.get(url, headers = headers).text
+                
+                // Nếu response rỗng hoặc lỗi, bỏ qua
+                if (responseText.contains("\"error\"") || responseText.length < 5) return@amap
+
+                val response = parseJson<SourceResponse>(responseText)
                 
                 val rootSubs = response.subtitles?.mapNotNull { it.toSubtitleFile() } ?: emptyList()
                 rootSubs.forEach(subtitleCallback)
 
                 response.sub?.let { parseSourceNode(it, serverCode, "Sub", subtitleCallback, callback) }
                 response.dub?.let { parseSourceNode(it, serverCode, "Dub", subtitleCallback, callback) }
-            } catch (e: Exception) { /* Ignore */ }
+            } catch (e: Exception) {
+                // In lỗi ra log để biết server nào tạch
+                // e.printStackTrace() 
+            }
         }
         return true
     }
@@ -291,16 +289,21 @@ class AnikuroProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ) {
         val name = "Anikuro $server $typeStr"
-        val headers = mapOf("Origin" to mainUrl, "Referer" to referer)
+        // Thêm User-Agent vào header link để tránh bị chặn bởi Proxy
+        val linkHeaders = mapOf(
+            "Origin" to mainUrl, 
+            "Referer" to referer,
+            "User-Agent" to (headers["user-agent"] ?: "")
+        )
+        
         val type = if (url.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
 
         if (url.contains(".m3u8")) {
-            // M3u8Helper tự động xử lý và gọi callback
             M3u8Helper.generateM3u8(
                 name,
                 url,
                 referer,
-                headers = headers
+                headers = linkHeaders
             ).forEach(callback)
         } else {
             callback(
