@@ -28,6 +28,7 @@ class AnimexProvider : MainAPI() {
     // User-Agent chung
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
     
+    // Tối ưu: Khởi tạo Mapper một lần duy nhất
     private val mapper = jacksonObjectMapper().apply {
         configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
     }
@@ -42,15 +43,8 @@ class AnimexProvider : MainAPI() {
         }
     }
 
-    // Hàm kiểm tra link sống hay chết
-    private suspend fun isLinkAlive(url: String, headers: Map<String, String>): Boolean {
-        return try {
-            // Dùng GET thay vì HEAD vì một số server chặn HEAD
-            val response = app.get(url, headers = headers)
-            response.isSuccessful // Trả về true nếu code là 200..299
-        } catch (e: Exception) {
-            false
-        }
+    private fun getSlugIdFromUrl(url: String): String {
+        return url.substringBefore("?").trimEnd('/').substringAfterLast("/anime/")
     }
 
     // --- GraphQL Query ---
@@ -123,6 +117,7 @@ class AnimexProvider : MainAPI() {
 
         val episodes = mutableListOf<Episode>()
         val animeId = getAnimeIdFromUrl(url)
+        val slugId = getSlugIdFromUrl(url)
 
         if (animeId.all { it.isDigit() }) {
             try {
@@ -147,6 +142,7 @@ class AnimexProvider : MainAPI() {
 
                         val episodeData = mapOf(
                             "id" to animeId,
+                            "slugId" to slugId,
                             "epNum" to epNum,
                             "subs" to (epData.subProviders ?: emptyList()),
                             "dubs" to (epData.dubProviders ?: emptyList())
@@ -178,6 +174,7 @@ class AnimexProvider : MainAPI() {
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
         try {
             var animeId: Int? = null
+            var slugId: String? = null
             var epNum: Int? = null
             var subProviders = listOf<String>()
             var dubProviders = listOf<String>()
@@ -186,6 +183,7 @@ class AnimexProvider : MainAPI() {
                 try {
                     val epData = mapper.readValue(data, Map::class.java)
                     animeId = epData["id"]?.toString()?.toIntOrNull()
+                    slugId = epData["slugId"]?.toString()
                     epNum = epData["epNum"]?.toString()?.toIntOrNull()
                     subProviders = (epData["subs"] as? List<*>)?.map { it.toString() } ?: emptyList()
                     dubProviders = (epData["dubs"] as? List<*>)?.map { it.toString() } ?: emptyList()
@@ -200,6 +198,12 @@ class AnimexProvider : MainAPI() {
 
             if (animeId == null || epNum == null) return false
 
+            val watchUrl = if (slugId != null) {
+                "$mainUrl/watch/$slugId-episode-$epNum"
+            } else {
+                "$mainUrl/"
+            }
+
             val tasks = mutableListOf<Pair<String, String>>()
             if (subProviders.isNotEmpty()) subProviders.forEach { tasks.add(it to "sub") }
             if (dubProviders.isNotEmpty()) dubProviders.forEach { tasks.add(it to "dub") }
@@ -208,7 +212,7 @@ class AnimexProvider : MainAPI() {
                 coroutineScope {
                     tasks.map { (host, type) ->
                         async {
-                            fetchSource(host, type, animeId!!, epNum!!, subtitleCallback, callback)
+                            fetchSource(host, type, animeId!!, epNum!!, watchUrl, subtitleCallback, callback)
                         }
                     }.awaitAll()
                 }
@@ -226,6 +230,7 @@ class AnimexProvider : MainAPI() {
         type: String, 
         animeId: Int, 
         epNum: Int, 
+        watchUrl: String,
         subtitleCallback: (SubtitleFile) -> Unit, 
         callback: (ExtractorLink) -> Unit
     ) {
@@ -260,15 +265,12 @@ class AnimexProvider : MainAPI() {
 
             val sourceData = mapper.readValue(apiResponseText, AnimexSources::class.java)
 
-            // Logic Hardsub/Softsub: Nếu có subtitles thì là Softsub, ngược lại là Hardsub
             val hasSoftSubs = !sourceData.subtitles.isNullOrEmpty()
             val subType = if (hasSoftSubs) "Softsub" else "Hardsub"
             
-            // Xử lý Label (Dub, Softsub, Hardsub)
             val isDub = type.equals("dub", true)
             val typeLabel = if (isDub) "Dub" else subType
 
-            // Callback Subtitles (FIX WARNING: Use newSubtitleFile)
             sourceData.subtitles?.forEach { sub ->
                 val url = sub.url ?: return@forEach
                 subtitleCallback.invoke(
@@ -281,27 +283,25 @@ class AnimexProvider : MainAPI() {
 
             sourceData.sources?.forEach { source ->
                 val link = source.url ?: return@forEach
-                val linkType = ExtractorLinkType.M3U8 
                 
-                // Headers chuẩn cho Video Player
                 val videoHeaders = mapOf(
                     "Origin" to mainUrl,
                     "Referer" to "$mainUrl/",
                     "User-Agent" to userAgent
                 )
 
-                // CHECK: Link có sống không trước khi add vào list
-                if (isLinkAlive(link, videoHeaders)) {
-                    callback.invoke(
-                        newExtractorLink(name, "$name $host ($typeLabel)", link, type = linkType) {
-                            this.headers = videoHeaders
-                            this.quality = getQualityFromName(source.quality)
-                        }
-                    )
-                }
+                // TỐI ƯU: Đã BỎ kiểm tra link alive (isLinkAlive) để tăng tốc độ. 
+                // Player sẽ tự handle lỗi nếu link 403/404.
+                
+                callback.invoke(
+                    newExtractorLink(name, "$name $host ($typeLabel)", link, type = ExtractorLinkType.M3U8) {
+                        this.headers = videoHeaders
+                        this.quality = getQualityFromName(source.quality)
+                    }
+                )
             }
         } catch (e: Exception) {
-            // Ignore errors per source
+            // Ignore errors
         }
     }
 }
@@ -329,7 +329,7 @@ data class SourceData(@JsonProperty("url") val url: String?, @JsonProperty("qual
 data class SubtitleData(@JsonProperty("url") val url: String?, @JsonProperty("lang") val lang: String?, @JsonProperty("label") val label: String?)
 data class AnimexSources(@JsonProperty("sources") val sources: List<SourceData>?, @JsonProperty("subtitles") val subtitles: List<SubtitleData>?)
 
-// --- Crypto Logic ---
+// --- Crypto Logic (Optimized) ---
 object AnimexCrypto {
     private val d = intArrayOf(231, 59, 146, 95, 193, 70, 218, 142, 39, 245, 105, 179, 20, 168, 124, 208)
     private val U = intArrayOf(77, 241, 104, 156, 35, 183, 90, 230, 49, 205, 132, 31, 170, 118, 217, 82)
@@ -344,6 +344,13 @@ object AnimexCrypto {
         val nUnsignedDouble = n.toDouble()
         val result = nUnsignedDouble * 2654435769.0
         return (result % 4294967296.0).toLong()
+    }
+    
+    // Helper cho initialization
+    private fun g(n: Int): Int {
+        val nUnsigned = (n.toLong() and 0xFFFFFFFFL).toDouble()
+        val result = nUnsigned * 2654435769.0
+        return (result % 4294967296.0).toLong().toInt()
     }
 
     private fun x(n: Int): Int {
@@ -385,12 +392,6 @@ object AnimexCrypto {
         }
         n
     }
-    
-    private fun g(n: Int): Int {
-        val nUnsigned = (n.toLong() and 0xFFFFFFFFL).toDouble()
-        val result = nUnsigned * 2654435769.0
-        return (result % 4294967296.0).toLong().toInt()
-    }
 
     private fun p(n: Int, o: Int): IntArray {
         val e = IntArray(n)
@@ -417,7 +418,8 @@ object AnimexCrypto {
         return e
     }
 
-    private fun generateKeys(): Triple<ByteArray, IntArray, IntArray> {
+    // TỐI ƯU: Cache keys để không tính toán lại mỗi lần encrypt
+    private val cachedKeys: Triple<ByteArray, IntArray, IntArray> by lazy {
         val y = 2052799517
         val ah = p(64, y)
         val ai = p(48, y xor 1515870810)
@@ -465,7 +467,7 @@ object AnimexCrypto {
         val keyBytes = ByteArray(32)
         for (i in 0 until 32) keyBytes[i] = c[i].toByte()
         
-        return Triple(keyBytes, ah, ai)
+        Triple(keyBytes, ah, ai)
     }
 
     private fun q(n: ByteArray): ByteArray {
@@ -497,7 +499,8 @@ object AnimexCrypto {
 
     fun encrypt(jsonString: String): String {
         return try {
-            val (keyBytes, at, au) = generateKeys()
+            // Sử dụng Key đã được cache để tối ưu tốc độ
+            val (keyBytes, at, au) = cachedKeys
             val iv = ByteArray(12)
             SecureRandom().nextBytes(iv)
 
