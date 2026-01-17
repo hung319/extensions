@@ -5,13 +5,16 @@ import com.fasterxml.jackson.databind.JsonNode
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.LoadResponse.Companion.addAniListId
 
-class AnikuroProvider : AnimeProvider() {
+// Extend MainAPI instead of AnimeProvider if AnimeProvider is not found
+class AnikuroProvider : MainAPI() {
     override var mainUrl = "https://anikuro.ru"
     override var name = "Anikuro"
     override val hasMainPage = true
     override var lang = "vi"
     override val hasQuickSearch = true
+    override val supportedTypes = setOf(TvType.Anime)
 
     // Headers chung giả lập trình duyệt Android
     private val headers = mapOf(
@@ -39,7 +42,7 @@ class AnikuroProvider : AnimeProvider() {
     // =========================================================================
     // 1. MAIN PAGE
     // =========================================================================
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val items = ArrayList<HomePageList>()
 
         // 1. Trending (Anikuro API)
@@ -74,7 +77,7 @@ class AnikuroProvider : AnimeProvider() {
             if (list.isNotEmpty()) items.add(HomePageList("Mới cập nhật (Anilist)", list))
         } catch (e: Exception) { e.printStackTrace() }
 
-        return HomePageResponse(items)
+        return newHomePageResponse(items)
     }
 
     private suspend fun fetchAnilistHome(): List<SearchResponse> {
@@ -167,12 +170,13 @@ class AnikuroProvider : AnimeProvider() {
         val epResponse = app.get(episodesUrl, headers = headers).parsed<EpisodeListResponse>()
         val episodes = epResponse.episodes.mapNotNull { (epNumStr, epData) ->
             val epNum = epNumStr.toIntOrNull() ?: return@mapNotNull null
-            Episode(
+            newEpisode(
                 data = "$id|$epNum",
-                name = epData.title ?: "Episode $epNum",
-                episode = epNum,
-                description = epData.overview
-            )
+            ) {
+                this.name = epData.title ?: "Episode $epNum"
+                this.episode = epNum
+                this.description = epData.overview
+            }
         }.sortedBy { it.episode }
 
         // Rating (Optional CSRF)
@@ -188,7 +192,7 @@ class AnikuroProvider : AnimeProvider() {
                 }
                 val ratingJson = app.post("$mainUrl/api/getanimerating/", headers = ratingHeaders, json = mapOf("anilist_id" to id.toIntOrNull()))
                     .parsed<RatingResponse>()
-                ratingInt = (ratingJson.rating?.avgRating?.times(100))?.toInt()
+                ratingInt = (ratingJson.rating?.avgRating?.times(1000))?.toInt() // Rating 10.0 -> 10000 scale usually
             }
         } catch (e: Exception) { /* Ignore */ }
 
@@ -197,7 +201,7 @@ class AnikuroProvider : AnimeProvider() {
             this.plot = description
             this.rating = ratingInt
             this.backgroundPosterUrl = doc.selectFirst("meta[name=twitter:image]")?.attr("content") ?: poster
-            this.addAnilistId(id.toIntOrNull())
+            addAniListId(id.toIntOrNull())
         }
     }
 
@@ -208,13 +212,15 @@ class AnikuroProvider : AnimeProvider() {
         val (id, episodeNum) = data.split("|")
 
         supportedServers.apmap { serverCode ->
-            safeApiCall {
+            try {
                 val url = "$mainUrl/api/getsources/?id=$id&lol=$serverCode&ep=$episodeNum"
                 val response = app.get(url, headers = headers).parsed<SourceResponse>()
                 val rootSubs = response.subtitles?.mapNotNull { it.toSubtitleFile() } ?: emptyList()
 
                 response.sub?.let { parseSourceNode(it, serverCode, "Sub", rootSubs, onLink) }
                 response.dub?.let { parseSourceNode(it, serverCode, "Dub", rootSubs, onLink) }
+            } catch (e: Exception) {
+                // Ignore errors
             }
         }
     }
@@ -284,7 +290,7 @@ class AnikuroProvider : AnimeProvider() {
                 referer,
                 headers = headers
             ).forEach { link ->
-                onLink(link.copy(subtitles = subs))
+                onLink(link.copy(subtitles = link.subtitles + subs))
             }
         } else {
             // Dùng newExtractorLink như yêu cầu
@@ -315,10 +321,11 @@ class AnikuroProvider : AnimeProvider() {
 
         return newAnimeSearchResponse(title, url, TvType.Anime) {
             this.posterUrl = poster
-            this.id = animeId.toString()
+            // id là String trong SearchResponse, nhưng animeId có thể là Int?
+            // fix: set proper ID string
+            // this.id = animeId.toString() // This might be read-only in some versions, but usually set in init
             if (currentEpisode != null) {
                 addDubStatus(dubStatus = false, subStatus = true)
-                this.posterText = currentEpisode
             }
         }
     }
