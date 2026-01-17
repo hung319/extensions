@@ -7,7 +7,7 @@ import com.lagradost.cloudstream3.LoadResponse.Companion.addAniListId
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import java.util.concurrent.TimeUnit
-import android.net.Uri // Cần import này để parse URL chuẩn
+import android.net.Uri
 
 class AnikuroProvider : MainAPI() {
     override var mainUrl = "https://anikuro.ru"
@@ -51,15 +51,13 @@ class AnikuroProvider : MainAPI() {
         val items = ArrayList<HomePageList>()
 
         try {
-            val trendingUrl = "$mainUrl/api/gettrending/"
-            val response = app.get(trendingUrl, headers = headers).parsed<TrendingResponse>()
+            val response = app.get("$mainUrl/api/gettrending/", headers = headers).parsed<TrendingResponse>()
             val list = response.info.mapNotNull { it.toSearchResponse() }
             if (list.isNotEmpty()) items.add(HomePageList("Trending", list))
         } catch (e: Exception) { e.printStackTrace() }
 
         try {
-            val scheduleUrl = "$mainUrl/api/getschedule/"
-            val response = app.get(scheduleUrl, headers = headers).parsed<ScheduleResponse>()
+            val response = app.get("$mainUrl/api/getschedule/", headers = headers).parsed<ScheduleResponse>()
             val list = response.info.mapNotNull {
                 it.media?.toSearchResponse(currentEpisode = "Ep ${it.episode}")
             }
@@ -67,8 +65,7 @@ class AnikuroProvider : MainAPI() {
         } catch (e: Exception) { e.printStackTrace() }
 
         try {
-            val upcomingUrl = "$mainUrl/api/getupcoming/"
-            val response = app.get(upcomingUrl, headers = headers).parsed<TrendingResponse>()
+            val response = app.get("$mainUrl/api/getupcoming/", headers = headers).parsed<TrendingResponse>()
             val list = response.info.mapNotNull { it.toSearchResponse() }
             if (list.isNotEmpty()) items.add(HomePageList("Upcoming", list))
         } catch (e: Exception) { e.printStackTrace() }
@@ -152,25 +149,36 @@ class AnikuroProvider : MainAPI() {
     }
 
     // =========================================================================
-    // 3. LOAD (FIXED ID EXTRACTION)
+    // 3. LOAD (FIXED LOGIC ID)
     // =========================================================================
+    
+    // Hàm trích xuất ID an toàn: Luôn trả về chuỗi số hoặc null
+    private fun getIdFromUrl(url: String): String? {
+        // Cách 1: Lấy từ param ?id=
+        val paramId = try {
+            Uri.parse(url).getQueryParameter("id")
+        } catch (e: Exception) { null }
+        
+        if (!paramId.isNullOrEmpty()) return paramId
+
+        // Cách 2: Dùng Regex tìm chuỗi số trong URL (VD: /watch/12345/...)
+        val regexId = Regex("""(\d+)""").find(url)?.groupValues?.get(1)
+        return regexId
+    }
+
     override suspend fun load(url: String): LoadResponse {
+        // Lấy ID và lọc sạch ký tự không phải số
+        val rawId = getIdFromUrl(url)
+        val id = rawId?.filter { it.isDigit() } ?: ""
+
+        System.out.println("ANIKURO_DEBUG: Load URL=$url -> Extracted ID=$id")
+
+        if (id.isEmpty()) {
+            throw ErrorLoadingException("Could not extract Anime ID from URL: $url")
+        }
+
         val response = app.get(url, headers = headers)
         val doc = response.document
-        
-        // FIX: Logic lấy ID thông minh hơn
-        // 1. Thử lấy param ?id=...
-        // 2. Nếu không có, lấy segment cuối cùng của URL (cho trường hợp anikuro.ru/12345)
-        var id = Uri.parse(url).getQueryParameter("id")
-        if (id.isNullOrEmpty()) {
-            id = url.trimEnd('/').substringAfterLast("/")
-        }
-        
-        // Fallback: Nếu ID vẫn chứa ký tự lạ (không phải số), cố gắng lọc số
-        if (!id.all { it.isDigit() }) {
-             // Regex lấy chuỗi số đầu tiên tìm thấy
-             id = Regex("\\d+").find(id)?.value ?: id
-        }
 
         val title = doc.selectFirst(".details-content h2")?.text()?.trim()
             ?: doc.selectFirst("script:containsData(animeTitle)")?.data()
@@ -182,7 +190,7 @@ class AnikuroProvider : MainAPI() {
             ?: doc.selectFirst(".preview-cover")?.attr("src")
         
         if (poster.isNullOrEmpty()) {
-            poster = "https://anikuro.ru/static/images/Anikuro_LogoBlack.svg" 
+            poster = "https://anikuro.ru/static/images/Anikuro_LogoBlack.svg"
         }
 
         val backgroundStyle = doc.selectFirst(".preview-banner")?.attr("style")
@@ -213,7 +221,7 @@ class AnikuroProvider : MainAPI() {
                     put("x-csrftoken", csrfToken)
                     put("cookie", "csrftoken=$csrfToken")
                 }
-                val ratingJson = app.post("$mainUrl/api/getanimerating/", headers = ratingHeaders, json = mapOf("anilist_id" to id?.toIntOrNull()))
+                val ratingJson = app.post("$mainUrl/api/getanimerating/", headers = ratingHeaders, json = mapOf("anilist_id" to id.toIntOrNull()))
                     .parsed<RatingResponse>()
                 ratingDouble = ratingJson.rating?.avgRating
             }
@@ -226,7 +234,7 @@ class AnikuroProvider : MainAPI() {
                 this.score = Score.from10(ratingDouble)
             }
             this.backgroundPosterUrl = backgroundPoster
-            addAniListId(id?.toIntOrNull())
+            addAniListId(id.toIntOrNull())
         }
     }
 
@@ -241,13 +249,12 @@ class AnikuroProvider : MainAPI() {
     ): Boolean {
         val (id, episodeNum) = data.split("|")
         
-        // Log này sẽ giúp bạn xác nhận ID đã đúng là số chưa (VD: ID: 106479)
-        System.out.println("ANIKURO_INFO: Start loading links for ID: $id, EP: $episodeNum")
+        // Log chắc chắn ID là số
+        System.out.println("ANIKURO_INFO: Start loadLinks ID=$id EP=$episodeNum")
 
         supportedServers.amap { serverCode ->
             try {
                 val url = "$mainUrl/api/getsources/?id=$id&lol=$serverCode&ep=$episodeNum"
-                
                 val request = okhttp3.Request.Builder()
                     .url(url)
                     .headers(headers.toHeaders())
@@ -267,7 +274,7 @@ class AnikuroProvider : MainAPI() {
                 sourceResponse.sub?.let { parseSourceNode(it, serverCode, "Sub", subtitleCallback, callback) }
                 sourceResponse.dub?.let { parseSourceNode(it, serverCode, "Dub", subtitleCallback, callback) }
             } catch (e: Exception) {
-                System.err.println("ANIKURO_ERR: Server [$serverCode] Failed -> ${e.message}")
+                System.err.println("ANIKURO_ERR: Server [$serverCode] -> ${e.message}")
             }
         }
         return true
@@ -359,7 +366,7 @@ class AnikuroProvider : MainAPI() {
         val animeId = this.id
         val title = this.title?.english ?: this.title?.romaji ?: this.title?.native ?: "Unknown"
         val poster = this.coverImage?.large ?: this.coverImage?.medium
-        // Sử dụng ID chuẩn để đảm bảo load() hoạt động đúng
+        // URL chuẩn cho hàm load
         val url = "$mainUrl/watch/?id=$animeId"
 
         return newAnimeSearchResponse(title, url, TvType.Anime) {
