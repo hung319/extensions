@@ -1,20 +1,24 @@
 package recloudstream
 
+import android.util.Base64
+import android.widget.Toast // Import cho Toast
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.CommonActivity.showToast // Import hàm showToast
+import kotlinx.coroutines.Dispatchers // Import Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withContext // Import withContext
 import java.nio.charset.StandardCharsets
 import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
-import android.util.Base64
 
 class AnimexProvider : MainAPI() {
     override var mainUrl = "https://animex.one"
@@ -25,10 +29,8 @@ class AnimexProvider : MainAPI() {
 
     private val anilistApi = "https://graphql.anilist.co"
     
-    // User-Agent chung để đảm bảo tính nhất quán và vượt qua các check bảo mật cơ bản
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
     
-    // Khởi tạo Mapper một lần duy nhất để tối ưu hiệu năng
     private val mapper = jacksonObjectMapper().apply {
         configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
     }
@@ -47,10 +49,8 @@ class AnimexProvider : MainAPI() {
         return url.substringBefore("?").trimEnd('/').substringAfterLast("/anime/")
     }
 
-    // Hàm kiểm tra link sống (đã thêm lại theo yêu cầu)
     private suspend fun isLinkAlive(url: String, headers: Map<String, String>): Boolean {
         return try {
-            // Thực hiện request GET để kiểm tra status code
             val response = app.get(url, headers = headers)
             response.isSuccessful
         } catch (e: Exception) {
@@ -82,6 +82,15 @@ class AnimexProvider : MainAPI() {
     // --- Main Functions ---
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        // HIỂN THỊ TOAST (Chạy trên Main Thread)
+        if (page == 1) {
+            withContext(Dispatchers.Main) {
+                CommonActivity.activity?.let { activity ->
+                    showToast(activity, "Free Repo From H4RS", Toast.LENGTH_LONG)
+                }
+            }
+        }
+
         val variables = mapOf("page" to page, "perPage" to 20, "type" to "ANIME", "sort" to listOf(request.data))
         return fetchAnilist(GraphQlQuery(queryMedia, variables), request.name)
     }
@@ -109,17 +118,14 @@ class AnimexProvider : MainAPI() {
         return newAnimeSearchResponse(titleEn, "$mainUrl/anime/$slug-${this.id}", TvType.Anime) { this.posterUrl = image }
     }
 
-    // Tải thông tin phim (Chạy song song HTML + API để tối ưu tốc độ)
     override suspend fun load(url: String): LoadResponse = coroutineScope {
         val animeId = getAnimeIdFromUrl(url)
         val slugId = getSlugIdFromUrl(url)
 
-        // 1. Task HTML
         val documentTask = async { 
             try { app.get(url).document } catch (e: Exception) { null }
         }
 
-        // 2. Task API Episodes
         val episodesTask = async {
             if (animeId.all { it.isDigit() }) {
                 try {
@@ -294,7 +300,6 @@ class AnimexProvider : MainAPI() {
                 )
             }
 
-            // Headers chuẩn cho Video Player
             val videoHeaders = mapOf(
                 "Origin" to mainUrl,
                 "Referer" to watchUrl,
@@ -304,7 +309,6 @@ class AnimexProvider : MainAPI() {
             sourceData.sources?.forEach { source ->
                 val link = source.url ?: return@forEach
                 
-                // CHECK LINK ALIVE: Kiểm tra xem link có truy cập được không
                 if (isLinkAlive(link, videoHeaders)) {
                     callback.invoke(
                         newExtractorLink(name, "$name $host ($typeLabel)", link, type = ExtractorLinkType.M3U8) {
@@ -343,7 +347,7 @@ data class SourceData(@JsonProperty("url") val url: String?, @JsonProperty("qual
 data class SubtitleData(@JsonProperty("url") val url: String?, @JsonProperty("lang") val lang: String?, @JsonProperty("label") val label: String?)
 data class AnimexSources(@JsonProperty("sources") val sources: List<SourceData>?, @JsonProperty("subtitles") val subtitles: List<SubtitleData>?)
 
-// --- Crypto Logic (Optimized & Cached) ---
+// --- Crypto Logic ---
 object AnimexCrypto {
     private val random = SecureRandom()
 
