@@ -7,6 +7,7 @@ import com.lagradost.cloudstream3.LoadResponse.Companion.addAniListId
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import java.util.concurrent.TimeUnit
+import android.net.Uri // Cần import này để parse URL chuẩn
 
 class AnikuroProvider : MainAPI() {
     override var mainUrl = "https://anikuro.ru"
@@ -16,7 +17,6 @@ class AnikuroProvider : MainAPI() {
     override val hasQuickSearch = true
     override val supportedTypes = setOf(TvType.Anime)
 
-    // Tăng timeout lên 60s để chắc chắn không bị lỗi mạng do chậm
     private val extendedClient = app.baseClient.newBuilder()
         .connectTimeout(60, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
@@ -152,24 +152,37 @@ class AnikuroProvider : MainAPI() {
     }
 
     // =========================================================================
-    // 3. LOAD
+    // 3. LOAD (FIXED ID EXTRACTION)
     // =========================================================================
     override suspend fun load(url: String): LoadResponse {
         val response = app.get(url, headers = headers)
         val doc = response.document
-        val id = url.substringAfter("id=").substringBefore("&")
+        
+        // FIX: Logic lấy ID thông minh hơn
+        // 1. Thử lấy param ?id=...
+        // 2. Nếu không có, lấy segment cuối cùng của URL (cho trường hợp anikuro.ru/12345)
+        var id = Uri.parse(url).getQueryParameter("id")
+        if (id.isNullOrEmpty()) {
+            id = url.trimEnd('/').substringAfterLast("/")
+        }
+        
+        // Fallback: Nếu ID vẫn chứa ký tự lạ (không phải số), cố gắng lọc số
+        if (!id.all { it.isDigit() }) {
+             // Regex lấy chuỗi số đầu tiên tìm thấy
+             id = Regex("\\d+").find(id)?.value ?: id
+        }
 
         val title = doc.selectFirst(".details-content h2")?.text()?.trim()
             ?: doc.selectFirst("script:containsData(animeTitle)")?.data()
                 ?.substringAfter("animeTitle = \"")?.substringBefore("\";")
             ?: "Unknown Title"
 
-        // Fix null poster crash
-        var poster = doc.selectFirst("img.anime-cover")?.attr("src")
+        var poster = doc.selectFirst("meta[property=og:image]")?.attr("content")
+            ?: doc.selectFirst("img.anime-cover")?.attr("src")
             ?: doc.selectFirst(".preview-cover")?.attr("src")
         
         if (poster.isNullOrEmpty()) {
-            poster = "https://anikuro.ru/static/images/Anikuro_LogoBlack.svg"
+            poster = "https://anikuro.ru/static/images/Anikuro_LogoBlack.svg" 
         }
 
         val backgroundStyle = doc.selectFirst(".preview-banner")?.attr("style")
@@ -200,7 +213,7 @@ class AnikuroProvider : MainAPI() {
                     put("x-csrftoken", csrfToken)
                     put("cookie", "csrftoken=$csrfToken")
                 }
-                val ratingJson = app.post("$mainUrl/api/getanimerating/", headers = ratingHeaders, json = mapOf("anilist_id" to id.toIntOrNull()))
+                val ratingJson = app.post("$mainUrl/api/getanimerating/", headers = ratingHeaders, json = mapOf("anilist_id" to id?.toIntOrNull()))
                     .parsed<RatingResponse>()
                 ratingDouble = ratingJson.rating?.avgRating
             }
@@ -213,12 +226,12 @@ class AnikuroProvider : MainAPI() {
                 this.score = Score.from10(ratingDouble)
             }
             this.backgroundPosterUrl = backgroundPoster
-            addAniListId(id.toIntOrNull())
+            addAniListId(id?.toIntOrNull())
         }
     }
 
     // =========================================================================
-    // 4. LOAD LINKS (DEBUG MODE)
+    // 4. LOAD LINKS
     // =========================================================================
     override suspend fun loadLinks(
         data: String,
@@ -227,6 +240,8 @@ class AnikuroProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val (id, episodeNum) = data.split("|")
+        
+        // Log này sẽ giúp bạn xác nhận ID đã đúng là số chưa (VD: ID: 106479)
         System.out.println("ANIKURO_INFO: Start loading links for ID: $id, EP: $episodeNum")
 
         supportedServers.amap { serverCode ->
@@ -242,127 +257,62 @@ class AnikuroProvider : MainAPI() {
                 val response = extendedClient.newCall(request).execute()
                 val responseText = response.body?.string() ?: ""
 
-                // THROW 1: Response rỗng
-                if (responseText.isBlank()) {
-                    throw Exception("Response is empty")
-                }
+                if (responseText.contains("\"error\"") || responseText.length < 5) return@amap
 
-                // THROW 2: Server trả về lỗi
-                if (responseText.contains("\"error\"")) {
-                    throw Exception("API Error Response: $responseText")
-                }
-
-                // THROW 3: Không phải JSON hợp lệ (ví dụ trả về HTML lỗi 502/404)
-                if (!responseText.trim().startsWith("{")) {
-                    throw Exception("Invalid JSON format (start with ${responseText.take(10)}...)")
-                }
-
-                val sourceResponse = try {
-                    parseJson<SourceResponse>(responseText)
-                } catch (e: Exception) {
-                    // THROW 4: Lỗi Parse
-                    throw Exception("JSON Parse Failed: ${e.message}")
-                }
+                val sourceResponse = parseJson<SourceResponse>(responseText)
                 
-                // --- Xử lý Subtitles ---
                 val rootSubs = sourceResponse.subtitles?.mapNotNull { it.toSubtitleFile() } ?: emptyList()
-                if (rootSubs.isNotEmpty()) {
-                    System.out.println("ANIKURO_INFO: [$serverCode] Found ${rootSubs.size} root subtitles")
-                    rootSubs.forEach(subtitleCallback)
-                }
+                rootSubs.forEach(subtitleCallback)
 
-                var linksFound = 0
-
-                // --- Xử lý Video ---
-                if (sourceResponse.sub != null) {
-                    val count = parseSourceNode(sourceResponse.sub, serverCode, "Sub", subtitleCallback, callback)
-                    linksFound += count
-                }
-                
-                if (sourceResponse.dub != null) {
-                    val count = parseSourceNode(sourceResponse.dub, serverCode, "Dub", subtitleCallback, callback)
-                    linksFound += count
-                }
-
-                // THROW 5: API thành công nhưng không parse được link nào
-                if (linksFound == 0) {
-                    throw Exception("No links extracted from valid JSON")
-                } else {
-                    System.out.println("ANIKURO_SUCCESS: [$serverCode] Found $linksFound links")
-                }
-
+                sourceResponse.sub?.let { parseSourceNode(it, serverCode, "Sub", subtitleCallback, callback) }
+                sourceResponse.dub?.let { parseSourceNode(it, serverCode, "Dub", subtitleCallback, callback) }
             } catch (e: Exception) {
-                // LOG CHI TIẾT LỖI
                 System.err.println("ANIKURO_ERR: Server [$serverCode] Failed -> ${e.message}")
-                // e.printStackTrace() // Uncomment nếu muốn xem full stacktrace
             }
         }
         return true
     }
 
-    /**
-     * Trả về số lượng link tìm thấy để debug
-     */
     private suspend fun parseSourceNode(
         node: JsonNode,
         server: String,
         type: String,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
-    ): Int {
-        var foundCount = 0
-
-        // Case 1: String URL
+    ) {
         if (node.isTextual) {
             val url = node.asText()
-            if (url.startsWith("http")) {
-                generateLinks(url, server, type, mainUrl, callback)
-                return 1
-            }
+            if (url.startsWith("http")) generateLinks(url, server, type, mainUrl, callback)
+            return
         }
 
-        // Case 2: Object
         if (node.isObject) {
             val referer = node["referer"]?.asText() ?: node["sub_referer"]?.asText() ?: node["dub_referer"]?.asText() ?: mainUrl
             
-            // Extract Subtitles
             node["tracks"]?.forEach { it.toTrack()?.toSubtitleFile()?.let { s -> subtitleCallback(s) } }
             node["subtitles"]?.forEach { it.toTrack()?.toSubtitleFile()?.let { s -> subtitleCallback(s) } }
 
-            // A. Direct URL
             val directUrl = node["url"]?.asText() ?: node["default"]?.asText()
             if (!directUrl.isNullOrEmpty()) {
                 generateLinks(directUrl, server, type, referer, callback)
-                foundCount++
+                return
             }
 
-            // B. Sources Object (Allani)
             if (node.has("sources")) {
                 node["sources"]?.fields()?.forEach { (k, v) ->
-                    v["url"]?.asText()?.let { 
-                        generateLinks(it, "$server $k", type, referer, callback)
-                        foundCount++
-                    }
+                    v["url"]?.asText()?.let { generateLinks(it, "$server $k", type, referer, callback) }
                 }
-                node["preferred"]?.get("url")?.asText()?.let { 
-                    generateLinks(it, "$server Preferred", type, referer, callback)
-                    foundCount++
-                }
+                node["preferred"]?.get("url")?.asText()?.let { generateLinks(it, "$server Preferred", type, referer, callback) }
+                return
             }
 
-            // C. Quality Map (Anigg)
             node.fields().forEach { (k, v) ->
                 if (v.isTextual && v.asText().startsWith("http")) {
                     val quality = if (k.matches(Regex("\\d+p"))) " $k" else ""
-                    // Tránh duplicate với key "url" hoặc "default" đã xử lý ở trên
-                    if (k != "url" && k != "default") {
-                        generateLinks(v.asText(), server, "$type$quality", referer, callback)
-                        foundCount++
-                    }
+                    generateLinks(v.asText(), server, "$type$quality", referer, callback)
                 }
             }
         }
-        return foundCount
     }
 
     private suspend fun generateLinks(
@@ -409,6 +359,7 @@ class AnikuroProvider : MainAPI() {
         val animeId = this.id
         val title = this.title?.english ?: this.title?.romaji ?: this.title?.native ?: "Unknown"
         val poster = this.coverImage?.large ?: this.coverImage?.medium
+        // Sử dụng ID chuẩn để đảm bảo load() hoạt động đúng
         val url = "$mainUrl/watch/?id=$animeId"
 
         return newAnimeSearchResponse(title, url, TvType.Anime) {
