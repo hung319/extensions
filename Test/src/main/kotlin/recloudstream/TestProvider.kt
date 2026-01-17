@@ -39,6 +39,11 @@ class AnimexProvider : MainAPI() {
         }
     }
 
+    // Helper lấy slug đầy đủ (ví dụ: the-idolm-ster-side-m-98310) để tạo link watch
+    private fun getSlugIdFromUrl(url: String): String {
+        return url.substringBefore("?").trimEnd('/').substringAfterLast("/anime/")
+    }
+
     // --- GraphQL Query ---
     private val queryMedia = """
         query (${"$"}page: Int = 1, ${"$"}perPage: Int = 20, ${"$"}type: MediaType = ANIME, ${"$"}search: String, ${"$"}sort: [MediaSort]) {
@@ -109,10 +114,10 @@ class AnimexProvider : MainAPI() {
 
         val episodes = mutableListOf<Episode>()
         val animeId = getAnimeIdFromUrl(url)
+        val slugId = getSlugIdFromUrl(url) // Lấy slug để tái tạo link watch sau này
 
         if (animeId.all { it.isDigit() }) {
             try {
-                // Dùng ID trần cho episodes list
                 val apiUrl = "$mainUrl/api/anime/episodes/$animeId"
                 val apiHeaders = mapOf(
                     "Accept" to "application/json",
@@ -134,6 +139,7 @@ class AnimexProvider : MainAPI() {
 
                         val episodeData = mapOf(
                             "id" to animeId,
+                            "slugId" to slugId, // Truyền slug xuống loadLinks
                             "epNum" to epNum,
                             "subs" to (epData.subProviders ?: emptyList()),
                             "dubs" to (epData.dubProviders ?: emptyList())
@@ -165,6 +171,7 @@ class AnimexProvider : MainAPI() {
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
         try {
             var animeId: Int? = null
+            var slugId: String? = null
             var epNum: Int? = null
             var subProviders = listOf<String>()
             var dubProviders = listOf<String>()
@@ -173,6 +180,7 @@ class AnimexProvider : MainAPI() {
                 try {
                     val epData = mapper.readValue(data, Map::class.java)
                     animeId = epData["id"]?.toString()?.toIntOrNull()
+                    slugId = epData["slugId"]?.toString()
                     epNum = epData["epNum"]?.toString()?.toIntOrNull()
                     subProviders = (epData["subs"] as? List<*>)?.map { it.toString() } ?: emptyList()
                     dubProviders = (epData["dubs"] as? List<*>)?.map { it.toString() } ?: emptyList()
@@ -187,6 +195,13 @@ class AnimexProvider : MainAPI() {
 
             if (animeId == null || epNum == null) return false
 
+            // Tạo Link Watch chính xác để làm Referer
+            val watchUrl = if (slugId != null) {
+                "$mainUrl/watch/$slugId-episode-$epNum"
+            } else {
+                "$mainUrl/" // Fallback nếu không có slug
+            }
+
             val tasks = mutableListOf<Pair<String, String>>()
             if (subProviders.isNotEmpty()) subProviders.forEach { tasks.add(it to "sub") }
             if (dubProviders.isNotEmpty()) dubProviders.forEach { tasks.add(it to "dub") }
@@ -195,7 +210,7 @@ class AnimexProvider : MainAPI() {
                 coroutineScope {
                     tasks.map { (host, type) ->
                         async {
-                            fetchSource(host, type, animeId!!, epNum!!, subtitleCallback, callback)
+                            fetchSource(host, type, animeId!!, epNum!!, watchUrl, subtitleCallback, callback)
                         }
                     }.awaitAll()
                 }
@@ -213,6 +228,7 @@ class AnimexProvider : MainAPI() {
         type: String, 
         animeId: Int, 
         epNum: Int, 
+        watchUrl: String,
         subtitleCallback: (SubtitleFile) -> Unit, 
         callback: (ExtractorLink) -> Unit
     ) {
@@ -256,33 +272,16 @@ class AnimexProvider : MainAPI() {
                 val link = source.url ?: return@forEach
                 val linkType = if (link.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                 
-                // Cấu hình Headers theo từng Provider (dựa trên CURL)
-                val baseUserAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
-                
-                val videoHeaders = when(host.lowercase()) {
-                    "miru" -> mapOf(
-                        "Origin" to "https://animex.one",
-                        "User-Agent" to baseUserAgent,
-                        "Accept" to "*/*"
-                        // Miru KHÔNG dùng Referer theo CURL
-                    )
-                    "mizu", "zen" -> mapOf(
-                        "Origin" to mainUrl,
-                        "Referer" to "$mainUrl/",
-                        "User-Agent" to baseUserAgent,
-                        "Accept" to "*/*"
-                    )
-                    "pahe" -> mapOf(
-                        "Origin" to "https://kwik.cx",
-                        "Referer" to "https://kwik.cx/",
-                        "User-Agent" to baseUserAgent
-                    )
-                    else -> mapOf(
-                        "Origin" to mainUrl,
-                        "Referer" to "$mainUrl/",
-                        "User-Agent" to baseUserAgent
-                    )
-                }
+                // Headers chuẩn hóa cho TẤT CẢ các nguồn theo yêu cầu:
+                // Origin: mainUrl (https://animex.one)
+                // Referer: watchUrl (https://animex.one/watch/...)
+                // User-Agent: Android Chrome standard
+                val videoHeaders = mapOf(
+                    "Origin" to mainUrl,
+                    "Referer" to watchUrl,
+                    "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
+                    "Accept" to "*/*"
+                )
 
                 callback.invoke(
                     newExtractorLink(name, "$name $host ($type)", link, type = linkType) {
@@ -331,7 +330,6 @@ object AnimexCrypto {
 
     private fun f(n: Int): Int = ((n xor 1553869343) + (n shl 7 xor (n ushr 11)))
 
-    // FIX QUAN TRỌNG: Sử dụng Double để mô phỏng chính xác sai số của JS khi tính toán g
     private fun g(n: Long): Long {
         val nUnsignedDouble = n.toDouble()
         val result = nUnsignedDouble * 2654435769.0
@@ -378,7 +376,6 @@ object AnimexCrypto {
         n
     }
     
-    // Hàm g helper nhận Int để dùng cho b lazy init
     private fun g(n: Int): Int {
         val nUnsigned = (n.toLong() and 0xFFFFFFFFL).toDouble()
         val result = nUnsigned * 2654435769.0
