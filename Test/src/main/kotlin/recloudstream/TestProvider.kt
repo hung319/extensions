@@ -13,7 +13,7 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.TimeUnit
 import android.net.Uri
 
-class TestProvider : MainAPI() {
+class AnikuroProvider : MainAPI() {
     override var mainUrl = "https://anikuro.ru"
     override var name = "Anikuro"
     override val hasMainPage = true
