@@ -5,6 +5,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.network.CloudflareKiller
+import android.util.Log // Import thư viện Log của Android
 
 class WatchHentaiProvider : MainAPI() {
     override var mainUrl = "https://watchhentai.net"
@@ -12,9 +13,10 @@ class WatchHentaiProvider : MainAPI() {
     override val hasMainPage = true
     override var lang = "en"
     override val hasDownloadSupport = true
-    override val supportedTypes = setOf(
-        TvType.NSFW
-    )
+    override val supportedTypes = setOf(TvType.NSFW)
+
+    // Tag dùng để filter trong Logcat
+    private val TAG = "WatchHentaiDev"
 
     private val cfInterceptor = CloudflareKiller()
 
@@ -42,7 +44,6 @@ class WatchHentaiProvider : MainAPI() {
     private fun Element.toSearchResult(): SearchResponse? {
         val href = this.selectFirst("a")?.attr("href") ?: return null
         
-        // Lazy load logic
         val imgElement = this.selectFirst("img")
         val posterUrl = imgElement?.let {
             it.attr("data-src").ifBlank { 
@@ -133,24 +134,38 @@ class WatchHentaiProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        Log.d(TAG, "--> loadLinks STARTED: $data")
+        
         val document = app.get(data, interceptor = cfInterceptor).document
         
         val iframeElement = document.selectFirst("iframe.metaframe, #playarea iframe, .player_container iframe") 
-            ?: return false
+        
+        if (iframeElement == null) {
+            Log.e(TAG, "Error: No iframe found with selectors")
+            return false
+        }
             
         val iframeSrc = iframeElement.attr("src")
-        if (iframeSrc.isBlank()) return false
+        Log.d(TAG, "Found Iframe Src: $iframeSrc")
 
-        // Lấy link source từ parameter của JWPlayer
+        if (iframeSrc.isBlank()) {
+            Log.e(TAG, "Error: Iframe src is blank")
+            return false
+        }
+
+        // Decode source param
         val sourceParam = Regex("""source=([^&]+)""").find(iframeSrc)?.groupValues?.get(1)
         
         val extractedUrl = if (sourceParam != null) {
-            java.net.URLDecoder.decode(sourceParam, "UTF-8")
+            val decoded = java.net.URLDecoder.decode(sourceParam, "UTF-8")
+            Log.d(TAG, "Decoded from 'source=' param: $decoded")
+            decoded
         } else {
+            Log.d(TAG, "No 'source=' param, using raw iframe src")
             iframeSrc
         }
 
-        // Xác định loại link
+        // Logic xử lý link
         val linkType = when {
             extractedUrl.endsWith(".mp4") || extractedUrl.endsWith(".mkv") -> ExtractorLinkType.VIDEO
             extractedUrl.contains(".m3u8") -> ExtractorLinkType.M3U8
@@ -158,7 +173,8 @@ class WatchHentaiProvider : MainAPI() {
         }
 
         if (linkType != null) {
-            // SỬ DỤNG newExtractorLink như yêu cầu
+            Log.d(TAG, "Action: Returning DIRECT LINK (Type: $linkType)")
+            
             val link = newExtractorLink(
                 source = this.name,
                 name = "${this.name} VIP",
@@ -170,12 +186,14 @@ class WatchHentaiProvider : MainAPI() {
             }
             callback.invoke(link)
         } else {
-            // Các server khác (Dood, StreamSB...) dùng loadExtractor
+            Log.d(TAG, "Action: Delegating to loadExtractor (External Server)")
             loadExtractor(extractedUrl, mainUrl, subtitleCallback) { link ->
+                Log.d(TAG, "Extractor Found Link: ${link.name} - ${link.url}")
                 callback.invoke(link)
             }
         }
 
+        Log.d(TAG, "<-- loadLinks FINISHED")
         return true
     }
 }
