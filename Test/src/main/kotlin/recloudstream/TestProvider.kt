@@ -57,7 +57,7 @@ class IhentaiProvider : MainAPI() {
         val imageElement = linkElement.selectFirst("img.tw-w-full")
         val posterUrl = fixUrlNull(imageElement?.attr("src"))
             ?: fixUrlNull(imageElement?.attr("data-src"))
-            ?: "" 
+            ?: ""
 
         val title = imageElement?.attr("alt")?.trim()
             ?: imageElement?.attr("title")?.trim()
@@ -119,7 +119,7 @@ class IhentaiProvider : MainAPI() {
         }
     }
 
-    // --- 4. Load Links (Direct Decryption + JSON Parsing) ---
+    // --- 4. Load Links (Logic: segmentDomains) ---
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -137,13 +137,10 @@ class IhentaiProvider : MainAPI() {
                 println("[$name] ERROR: Không tìm thấy thẻ iframe!")
                 return false
             }
-            println("[$name] Found Iframe: $iframeSrc")
 
             val videoId = iframeSrc.substringAfter("?v=").substringBefore("&")
-            if (videoId.isBlank()) {
-                println("[$name] ERROR: Không lấy được Video ID từ URL iframe.")
-                return false
-            }
+            if (videoId.isBlank()) return false
+            
             println("[$name] Video ID: $videoId")
 
             val cryptoHeaders = mapOf(
@@ -155,29 +152,29 @@ class IhentaiProvider : MainAPI() {
             )
             val apiUrl = "https://x.mimix.cc/watch/$videoId"
             
-            println("[$name] Requesting API: $apiUrl")
             val response = app.get(apiUrl, headers = cryptoHeaders).text
-            // Log response đã ẩn bớt để tránh spam
-            println("[$name] API Response received") 
-
-            if (!response.contains(":")) {
-                println("[$name] ERROR: Response không đúng định dạng (thiếu dấu :)")
-                return false
-            }
+            if (!response.contains(":")) return false
 
             // Giải mã
             val decryptedData = decryptMimix(response, videoId)
             println("[$name] Decrypted JSON: $decryptedData")
 
-            // --- XỬ LÝ JSON ---
-            // Kết quả là JSON, không phải URL trực tiếp. Cần parse.
             if (decryptedData.trim().startsWith("{")) {
                 val json = JSONObject(decryptedData)
-                val domain = json.getString("domain") // "https://b3.mimix.cc"
-                val id = json.getString("id")         // "8b0ab437..."
+                val id = json.getString("id")
                 
-                // Tạo link M3U8 thủ công
-                val m3u8Url = "$domain/$id/master.m3u8"
+                // --- LOGIC QUAN TRỌNG: Lấy Domain từ segmentDomains ---
+                // Ưu tiên dùng segmentDomains[0] vì đó là CDN chứa file.
+                // Nếu rỗng thì mới fallback về "domain" (API).
+                val segmentDomains = json.optJSONArray("segmentDomains")
+                val finalDomain = if (segmentDomains != null && segmentDomains.length() > 0) {
+                    segmentDomains.getString(0)
+                } else {
+                    json.getString("domain")
+                }
+                
+                // Tạo link M3U8 chuẩn: https://cdn.xxx/VideoID/master.m3u8
+                val m3u8Url = "$finalDomain/$id/master.m3u8"
                 println("[$name] Final M3U8 URL: $m3u8Url")
 
                 callback(
@@ -191,10 +188,7 @@ class IhentaiProvider : MainAPI() {
                         this.quality = Qualities.Unknown.value
                     }
                 )
-                println("[$name] SUCCESS: Link added to callback.")
                 return true
-            } else {
-                println("[$name] ERROR: Dữ liệu sau giải mã không phải JSON hợp lệ.")
             }
 
         } catch (e: Exception) {
@@ -202,7 +196,6 @@ class IhentaiProvider : MainAPI() {
             e.printStackTrace()
         }
         
-        println("[$name] === END LOAD LINKS (Failed) ===")
         return false
     }
 
@@ -215,17 +208,14 @@ class IhentaiProvider : MainAPI() {
             val ivHex = parts[0]
             val cipherHex = parts[1]
 
-            // 1. Tạo Key từ VideoID
             val md = MessageDigest.getInstance("SHA-256")
             val keyBytes = md.digest(keySeed.toByteArray(Charsets.UTF_8))
             val secretKey = SecretKeySpec(keyBytes, "AES")
 
-            // 2. Chuyển Hex -> Bytes
             val ivBytes = hexToBytes(ivHex)
             val cipherBytes = hexToBytes(cipherHex)
             val ivSpec = IvParameterSpec(ivBytes)
 
-            // 3. Giải mã
             val cipher = Cipher.getInstance("AES/CTR/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, secretKey, ivSpec)
 
@@ -233,7 +223,6 @@ class IhentaiProvider : MainAPI() {
             String(decryptedBytes, Charsets.UTF_8)
 
         } catch (e: Exception) {
-            println("[$name] DECRYPT ERROR: ${e.message}")
             e.printStackTrace()
             ""
         }
