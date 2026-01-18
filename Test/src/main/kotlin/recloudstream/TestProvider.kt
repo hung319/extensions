@@ -12,6 +12,13 @@ class VlxxProvider : MainAPI() {
     override var supportedTypes = setOf(TvType.NSFW)
     override var lang = "vi"
 
+    // Tag để lọc log: adb logcat -s "VLXX_DEBUG"
+    private val TAG = "VLXX_DEBUG"
+
+    private fun debugLog(msg: String) {
+        println("[$TAG] $msg")
+    }
+
     private var baseUrl: String? = null
 
     private suspend fun getBaseUrl(): String {
@@ -19,6 +26,7 @@ class VlxxProvider : MainAPI() {
             val document = app.get(mainUrl).document
             val realUrl = document.selectFirst("a.button")?.attr("href")?.trimEnd('/') ?: mainUrl
             baseUrl = realUrl
+            debugLog("Resolved Base URL: $baseUrl")
         }
         return baseUrl!!
     }
@@ -50,6 +58,7 @@ class VlxxProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        debugLog("Loading details for: $url")
         val document = app.get(url).document
 
         val title = document.selectFirst("h2#page-title")?.text()?.trim() ?: return null
@@ -57,8 +66,6 @@ class VlxxProvider : MainAPI() {
         val plot = document.selectFirst("div.video-description")?.text()?.trim()
         
         val tags = document.select("div.video-tags div.category-tag a").map { it.text() }
-        
-        // Fix lỗi type mismatch: List<String> -> List<ActorData>
         val actors = document.select("div.video-tags div.actress-tag a").map { 
             ActorData(Actor(it.text(), null)) 
         }
@@ -67,6 +74,8 @@ class VlxxProvider : MainAPI() {
             it.toSearchResult()
         }.filter { it.url != url }
         
+        debugLog("Loaded success: $title | Actors: ${actors.size} | Recs: ${recommendations.size}")
+
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = posterUrl
             this.plot = plot
@@ -85,10 +94,19 @@ class VlxxProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data).document
-        val videoId = document.selectFirst("div#video")?.attr("data-id") ?: return false
+        debugLog("=== START LoadLinks: $data ===")
         
+        val document = app.get(data).document
+        val videoId = document.selectFirst("div#video")?.attr("data-id")
+        
+        if (videoId == null) {
+            debugLog("ERROR: Cannot find videoId in div#video")
+            return false
+        }
+        debugLog("Found VideoID: $videoId")
+
         listOf(1, 2).forEach { serverNum ->
+            debugLog("--- Checking Server $serverNum ---")
             try {
                 val postData = mapOf(
                     "vlxx_server" to "2",
@@ -103,10 +121,14 @@ class VlxxProvider : MainAPI() {
                 )
                 
                 val ajaxUrl = "${getBaseUrl()}/ajax.php"
+                debugLog("Posting to $ajaxUrl with data: $postData")
+                
                 val ajaxResponse = app.post(ajaxUrl, data = postData, headers = headers).parsed<PlayerResponse>()
+                debugLog("AJAX Response length: ${ajaxResponse.player.length}")
                 
                 val iframeDocument = Jsoup.parse(ajaxResponse.player)
                 val iframeSrc = iframeDocument.selectFirst("iframe")?.attr("src")
+                debugLog("Extracted Iframe Src: $iframeSrc")
 
                 if (!iframeSrc.isNullOrBlank()) {
                     val iframeHeaders = mapOf(
@@ -115,35 +137,49 @@ class VlxxProvider : MainAPI() {
                     )
                     
                     val finalPlayerPage = app.get(iframeSrc, headers = iframeHeaders).text
+                    debugLog("Fetched Player Page (${finalPlayerPage.length} chars)")
                     
-                    val sourcesJson = sourcesRegex.find(finalPlayerPage)?.groupValues?.get(1)
-                    val sources = AppUtils.tryParseJson<List<VideoSource>>(sourcesJson)
+                    val sourcesMatch = sourcesRegex.find(finalPlayerPage)
+                    val sourcesJson = sourcesMatch?.groupValues?.get(1)
                     
-                    sources?.forEach { source ->
-                        if (source.file.isNotBlank()) {
-                            val isM3u8 = source.type == "hls" || source.file.contains(".m3u8") || source.file.endsWith(".vl")
-                            val linkType = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                    if (sourcesJson != null) {
+                        debugLog("Found JSON Sources: $sourcesJson")
+                        val sources = AppUtils.tryParseJson<List<VideoSource>>(sourcesJson)
+                        debugLog("Parsed Sources count: ${sources?.size}")
+                        
+                        sources?.forEach { source ->
+                            debugLog("Processing source: ${source.file}")
+                            if (source.file.isNotBlank()) {
+                                val isM3u8 = source.type == "hls" || source.file.contains(".m3u8") || source.file.endsWith(".vl")
+                                val linkType = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
 
-                            // Sử dụng helper function newExtractorLink
-                            val link = newExtractorLink(
-                                source = this.name,
-                                name = "${this.name} Server $serverNum",
-                                url = source.file,
-                                type = linkType
-                            ) {
-                                this.referer = iframeSrc
-                                this.quality = Qualities.Unknown.value
+                                val link = newExtractorLink(
+                                    source = this.name,
+                                    name = "${this.name} Server $serverNum",
+                                    url = source.file,
+                                    type = linkType
+                                ) {
+                                    this.referer = iframeSrc
+                                    this.quality = Qualities.Unknown.value
+                                }
+                                
+                                callback.invoke(link)
+                                debugLog(">>> Added Link: ${source.file}")
                             }
-                            
-                            callback.invoke(link)
                         }
+                    } else {
+                        debugLog("ERROR: Regex did not match any sources in player page.")
                     }
+                } else {
+                    debugLog("ERROR: Iframe Src is empty.")
                 }
             } catch (e: Exception) {
-                // Ignore error
+                debugLog("EXCEPTION in Server $serverNum: ${e.message}")
+                e.printStackTrace()
             }
         }
         
+        debugLog("=== END LoadLinks ===")
         return true
     }
     
