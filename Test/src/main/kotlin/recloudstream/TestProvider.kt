@@ -17,7 +17,7 @@ class IhentaiProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.NSFW)
 
     companion object {
-        // User-Agent giả lập Android để tránh bị chặn
+        // User-Agent giả lập Android
         private const val USER_AGENT = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
         private val COMMON_HEADERS = mapOf("User-Agent" to USER_AGENT)
     }
@@ -56,10 +56,11 @@ class IhentaiProvider : MainAPI() {
         val href = fixUrlNull(linkElement.attr("href"))?.takeIf { it.isNotBlank() && it != "/" } ?: return null
 
         val imageElement = linkElement.selectFirst("img.tw-w-full")
+        // Fix lỗi Coil: Đảm bảo posterUrl không null
         val posterUrl = fixUrlNull(imageElement?.attr("src"))
             ?: fixUrlNull(imageElement?.attr("data-src"))
+            ?: "" // Fallback chuỗi rỗng để tránh null pointer
 
-        // Logic fallback title
         val title = imageElement?.attr("alt")?.trim()
             ?: imageElement?.attr("title")?.trim()
             ?: element.selectFirst("a > div.v-card-text h2.text-subtitle-1")?.text()?.trim()
@@ -99,7 +100,6 @@ class IhentaiProvider : MainAPI() {
         val description = document.selectFirst("div.v-sheet.tw-p-5 > p.tw-text-sm")?.text()?.trim()
         val genres = document.select("div.v-sheet.tw-p-5 a.v-chip").mapNotNull { it.text()?.trim() }
 
-        // Lấy Recommendations
         val recommendations = document.select("div.tw-col-span-3.lg\\:tw-col-span-1 > div.tw-mb-5:has(h2)")
             .flatMap { section ->
                 section.select("div.tw-relative.tw-grid").mapNotNull { item ->
@@ -121,24 +121,37 @@ class IhentaiProvider : MainAPI() {
         }
     }
 
-    // --- 4. Load Links (Direct Decryption + newExtractorLink) ---
+    // --- 4. Load Links (Direct Decryption + DEBUG LOGS) ---
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // [DEBUG] Bắt đầu function
+        println("[$name] === START LOAD LINKS ===")
+        println("[$name] URL: $data")
+
         try {
-            // Bước 1: Lấy HTML để tìm Video ID
             val document = app.get(data, headers = COMMON_HEADERS).document
-            val iframeSrc = document.selectFirst("iframe.tw-w-full")?.attr("src") ?: return false
+            val iframeSrc = document.selectFirst("iframe.tw-w-full")?.attr("src")
+            
+            // [DEBUG] Check iframe
+            if (iframeSrc == null) {
+                println("[$name] ERROR: Không tìm thấy thẻ iframe!")
+                return false
+            }
+            println("[$name] Found Iframe: $iframeSrc")
 
-            // src format: https://play.sonar-cdn.com/watch?v=UUID
             val videoId = iframeSrc.substringAfter("?v=").substringBefore("&")
-            if (videoId.isBlank()) return false
+            // [DEBUG] Check Video ID
+            if (videoId.isBlank()) {
+                println("[$name] ERROR: Không lấy được Video ID từ URL iframe.")
+                return false
+            }
+            println("[$name] Video ID: $videoId")
 
-            // Bước 2: Gọi API lấy dữ liệu mã hóa (IV:Cipher)
-            // Headers phải chuẩn để bypass CORS/Protection của Mimix
+            // Headers bắt buộc để gọi API Mimix
             val cryptoHeaders = mapOf(
                 "Authority" to "x.mimix.cc",
                 "Accept" to "*/*",
@@ -147,20 +160,25 @@ class IhentaiProvider : MainAPI() {
                 "User-Agent" to USER_AGENT
             )
             val apiUrl = "https://x.mimix.cc/watch/$videoId"
-
-            val response = app.get(apiUrl, headers = cryptoHeaders).text
             
-            // Format mong đợi: HEX_IV:HEX_DATA (VD: 460fe0...:a583...)
-            if (!response.contains(":")) return false
+            println("[$name] Requesting API: $apiUrl")
+            val response = app.get(apiUrl, headers = cryptoHeaders).text
+            println("[$name] API Response: $response")
 
-            // Bước 3: Giải mã AES-CTR
+            if (!response.contains(":")) {
+                println("[$name] ERROR: Response không đúng định dạng (thiếu dấu :)")
+                return false
+            }
+
+            // Giải mã
             val decryptedUrl = decryptMimix(response, videoId)
+            println("[$name] Decrypted URL: $decryptedUrl")
 
             if (decryptedUrl.startsWith("http")) {
                 callback(
                     newExtractorLink(
                         source = name,
-                        name = "iHentai (VIP)",
+                        name = "$name (VIP)",
                         url = decryptedUrl,
                         type = ExtractorLinkType.M3U8
                     ) {
@@ -168,12 +186,18 @@ class IhentaiProvider : MainAPI() {
                         this.quality = Qualities.Unknown.value
                     }
                 )
+                println("[$name] SUCCESS: Link added to callback.")
                 return true
+            } else {
+                println("[$name] ERROR: Giải mã thất bại hoặc link không bắt đầu bằng http")
             }
 
         } catch (e: Exception) {
+            println("[$name] EXCEPTION: ${e.message}")
             e.printStackTrace()
         }
+        
+        println("[$name] === END LOAD LINKS (Failed) ===")
         return false
     }
 
@@ -186,17 +210,17 @@ class IhentaiProvider : MainAPI() {
             val ivHex = parts[0]
             val cipherHex = parts[1]
 
-            // 1. Tạo Key từ VideoID (SHA-256)
+            // 1. Tạo Key từ VideoID
             val md = MessageDigest.getInstance("SHA-256")
             val keyBytes = md.digest(keySeed.toByteArray(Charsets.UTF_8))
             val secretKey = SecretKeySpec(keyBytes, "AES")
 
-            // 2. Chuyển Hex sang Byte
+            // 2. Chuyển Hex -> Bytes
             val ivBytes = hexToBytes(ivHex)
             val cipherBytes = hexToBytes(cipherHex)
             val ivSpec = IvParameterSpec(ivBytes)
 
-            // 3. Giải mã AES/CTR/NoPadding
+            // 3. Giải mã
             val cipher = Cipher.getInstance("AES/CTR/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, secretKey, ivSpec)
 
@@ -204,12 +228,12 @@ class IhentaiProvider : MainAPI() {
             String(decryptedBytes, Charsets.UTF_8)
 
         } catch (e: Exception) {
+            println("[$name] DECRYPT ERROR: ${e.message}")
             e.printStackTrace()
             ""
         }
     }
 
-    // Utility: Chuyển Hex String sang ByteArray thủ công
     private fun hexToBytes(hex: String): ByteArray {
         val len = hex.length
         val data = ByteArray(len / 2)
