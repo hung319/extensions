@@ -1,15 +1,5 @@
 package recloudstream
 
-/*
-* @CloudstreamProvider: BokepIndoProvider
-* @Version: 3.3
-* @Author: Coder
-* @Language: id
-* @TvType: Nsfw
-* @Url: https://bokepindoh.wtf
-* @Info: Full implementation with fixed Coroutines and extracting logic from Meta/Script/DOM.
-*/
-
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
@@ -24,6 +14,9 @@ class BokepIndoProvider : MainAPI() {
     override var lang = "id"
     override var hasMainPage = true
     override var hasDownloadSupport = true
+
+    // Tag dùng để filter trong Logcat
+    private val TAG = "[BokepIndoDebug]"
 
     override val mainPage = mainPageOf(
         mainUrl to "Latest",
@@ -66,55 +59,78 @@ class BokepIndoProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        println("$TAG: ================= START LOADLINKS ==================")
+        println("$TAG: Requesting URL: $data")
+
         val document = app.get(data).document
         val servers = mutableListOf<String>()
 
         // 1. Extract from Meta Tag (Highest Priority & Cleanest)
-        // Target: <meta itemprop="embedURL" content="https://bebasnonton.online/..." />
-        document.selectFirst("meta[itemprop='embedURL']")?.attr("content")?.let { url ->
-            if (url.isNotBlank()) servers.add(fixUrl(url))
+        val metaUrl = document.selectFirst("meta[itemprop='embedURL']")?.attr("content")
+        if (!metaUrl.isNullOrBlank()) {
+            val fixedMeta = fixUrl(metaUrl)
+            println("$TAG: Found Meta embedURL: $fixedMeta")
+            servers.add(fixedMeta)
+        } else {
+            println("$TAG: Meta embedURL not found or empty")
         }
 
         // 2. Extract from Script 'wpst_ajax_var'
-        // Target: "embed_url":"\u003Ciframe src=\"URL\"..."
         val scriptContent = document.select("script").firstOrNull { 
             it.data().contains("wpst_ajax_var") 
         }?.data()
 
         if (scriptContent != null) {
-            // Regex to capture content between src=\" and \" inside the script
+            println("$TAG: Found script containing 'wpst_ajax_var'")
             val regex = Regex("""src=\\"(.*?)\\"""")
             
-            regex.findAll(scriptContent).forEach { match ->
+            val matches = regex.findAll(scriptContent).toList()
+            println("$TAG: Regex matches found: ${matches.size}")
+
+            matches.forEach { match ->
                 val rawUrl = match.groupValues[1]
-                // Fix escaped slashes (e.g., https:\/\/ -> https://)
                 val cleanUrl = rawUrl.replace("\\/", "/")
-                servers.add(fixUrl(cleanUrl))
+                val fixedUrl = fixUrl(cleanUrl)
+                println("$TAG: Extracted from Script: $fixedUrl")
+                servers.add(fixedUrl)
             }
+        } else {
+            println("$TAG: Script 'wpst_ajax_var' NOT found")
         }
 
-        // 3. Fallback: Direct DOM elements (if JS didn't render or Meta missing)
-        document.select("div.responsive-player iframe, div#bkpdo-player-container iframe").forEach { element ->
+        // 3. Fallback: Direct DOM elements
+        val iframes = document.select("div.responsive-player iframe, div#bkpdo-player-container iframe")
+        println("$TAG: Found ${iframes.size} iframe elements in DOM")
+        
+        iframes.forEach { element ->
             val src = element.attr("src")
             if (src.isNotBlank()) {
-                servers.add(fixUrl(src))
+                val fixedSrc = fixUrl(src)
+                println("$TAG: Extracted from DOM Iframe: $fixedSrc")
+                servers.add(fixedSrc)
             }
         }
 
-        // 4. Load Extractors safely using standard Coroutines
+        // 4. Load Extractors
         val uniqueServers = servers.distinct()
+        println("$TAG: Total unique servers to load: ${uniqueServers.size}")
+        println("$TAG: Server List: $uniqueServers")
         
-        if (uniqueServers.isEmpty()) return false
+        if (uniqueServers.isEmpty()) {
+            println("$TAG: No servers found. Returning false.")
+            return false
+        }
 
-        // Standard way to run async tasks in Cloudstream providers
         coroutineScope {
             uniqueServers.map { serverUrl ->
                 async {
+                    println("$TAG: Invoking loadExtractor for: $serverUrl")
                     loadExtractor(serverUrl, data, subtitleCallback, callback)
                 }
             }.awaitAll()
         }
 
+        println("$TAG: ================= END LOADLINKS ==================")
         return true
     }
 
