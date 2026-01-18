@@ -1,94 +1,136 @@
+// Tên file: WatchHentaiProvider.kt
 package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
-
 import org.jsoup.nodes.Element
-import java.lang.Exception
+import com.lagradost.cloudstream3.network.CloudflareKiller
 
-class Sextop1Provider : MainAPI() {
-    override var mainUrl = "https://bit.ly/xemtop1"
-    override var name = "SexTop1"
+class WatchHentaiProvider : MainAPI() {
+    override var mainUrl = "https://watchhentai.net"
+    override var name = "WatchHentai"
     override val hasMainPage = true
-    override var lang = "vi"
+    override var lang = "en"
     override val hasDownloadSupport = true
-    override val supportedTypes = setOf(TvType.NSFW)
+    override val supportedTypes = setOf(
+        TvType.NSFW
+    )
 
-    // Biến để lưu trữ URL thật sau khi redirect
-    private var realUrl: String? = null
+    private val cfInterceptor = CloudflareKiller()
 
-    // Hàm helper để lấy URL thật, chỉ gọi request một lần duy nhất
-    private suspend fun getRealUrl(): String {
-        if (realUrl == null) {
-            // Nếu chưa có URL thật, gửi yêu cầu đến Bitly để lấy và lưu lại
-            realUrl = app.get(mainUrl).url
+    override val mainPage = mainPageOf(
+        "$mainUrl/videos/" to "Recent Episodes",
+        "$mainUrl/series/" to "Hentai Series",
+        "$mainUrl/genre/uncensored/" to "Uncensored",
+        "$mainUrl/genre/harem/" to "Harem",
+        "$mainUrl/genre/school-girls/" to "School Girls",
+    )
+
+    override suspend fun getMainPage(
+        page: Int,
+        request: MainPageRequest
+    ): HomePageResponse {
+        val url = if (page == 1) request.data else "${request.data}page/$page/"
+        val document = app.get(url, interceptor = cfInterceptor).document
+        
+        val home = document.select("article.item").mapNotNull {
+            it.toSearchResult()
         }
-        return realUrl!!
+        return newHomePageResponse(request.name, home)
     }
 
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val currentUrl = getRealUrl() // Luôn lấy URL thật
-        val document = app.get("$currentUrl/page/$page/").document
-        val homePageList = ArrayList<HomePageList>()
-        val mainItems = document.select("article.dp-item").mapNotNull { it.toSearchResult() }
-        if (mainItems.isNotEmpty()) {
-            homePageList.add(HomePageList("Phim Mới", mainItems))
+    private fun Element.toSearchResult(): SearchResponse? {
+        val href = this.selectFirst("a")?.attr("href") ?: return null
+        
+        // FIX: Xử lý lazy load ảnh (Litespeed cache thường dùng data-src)
+        val imgElement = this.selectFirst("img")
+        val posterUrl = imgElement?.let {
+            it.attr("data-src").ifBlank { 
+                it.attr("src").ifBlank { 
+                    it.attr("srcset").substringBefore(" ") 
+                } 
+            }
         }
-        return newHomePageResponse(homePageList)
-    }
 
-    private fun Element.toSearchResult(): MovieSearchResponse? {
-        // HTML mới vẫn dùng h2.entry-title và a.dp-thumb, nhưng ta check kỹ hơn
-        val title = this.selectFirst("h2.entry-title a")?.attr("title")?.trim() ?: return null
-        
-        // Sửa href để đảm bảo nó là URL tuyệt đối
-        val href = fixUrl(this.selectFirst("a.dp-thumb")?.attr("href") ?: return null)
-        
-        // Ảnh thumbnail: HTML mới dùng img.lazy
-        val posterUrl = fixUrlNull(this.selectFirst("img.lazy")?.attr("src"))
-        
-        return newMovieSearchResponse(title, href, TvType.NSFW) {
-            this.posterUrl = posterUrl
+        // FIX: Logic lấy title an toàn hơn, support nhiều layout
+        val seriesTitle = this.selectFirst("span.serie")?.text()?.trim()
+        val episodeTitle = this.selectFirst("h3")?.text()?.trim()
+        val searchTitle = this.selectFirst(".title a")?.text()?.trim()
+
+        val title = when {
+            seriesTitle != null && !episodeTitle.isNullOrBlank() -> "$seriesTitle - $episodeTitle"
+            !episodeTitle.isNullOrBlank() -> episodeTitle
+            !searchTitle.isNullOrBlank() -> searchTitle
+            else -> "Unknown Title"
+        }
+
+        return if (href.contains("/series/")) {
+            newTvSeriesSearchResponse(title, href, TvType.NSFW) {
+                this.posterUrl = posterUrl
+            }
+        } else {
+            newMovieSearchResponse(title, href, TvType.NSFW) {
+                this.posterUrl = posterUrl
+            }
         }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val currentUrl = getRealUrl() // Luôn lấy URL thật
-        val document = app.get("$currentUrl/?s=$query").document
-        return document.select("article.dp-item").mapNotNull { it.toSearchResult() }
+        val searchUrl = "$mainUrl/?s=$query"
+        val document = app.get(searchUrl, interceptor = cfInterceptor).document
+        // Support cả layout grid search mới và cũ
+        return document.select("div.result-item article, article.item").mapNotNull {
+            it.toSearchResult()
+        }
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url).document
+        val document = app.get(url, interceptor = cfInterceptor).document
+        val isSeriesPage = url.contains("/series/")
 
-        // UPDATE 1: Title nằm trong div.video-title-compact
-        val title = document.selectFirst("div.video-title-compact h1")?.text()?.trim() 
-            ?: document.selectFirst("h1.entry-title")?.text()?.trim() // Fallback cho cấu trúc cũ
-            ?: return null
-
-        val poster = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
-
-        // UPDATE 2: Description nằm trong div.intro-content
-        val description = document.select("div.film-introduction .intro-content p").text().trim().ifEmpty {
-            document.selectFirst("div.video-item.dp-entry-box > article > p")?.text() // Fallback
+        // Common Extractors
+        // FIX: Layout mới có thể dùng .sheader hoặc .data
+        val title = document.selectFirst("div.data h1, div.sheader h1")?.text()?.trim() ?: "Unknown"
+        val posterUrl = document.selectFirst("div.poster img, div.sheader .poster img")?.let {
+             it.attr("data-src").ifBlank { it.attr("src") }
+        }
+        val synopsis = document.selectFirst("div.wp-content p, div.synopsis p, .wp-content")?.text()?.trim()
+        
+        // Recommendations
+        val recommendations = document.select("div#single_relacionados article, div#dt-episodes article, .related-items article").mapNotNull {
+            it.toSearchResult()
         }
 
-        // UPDATE 3: Tags lấy từ cả Categories (.labels-container) và Actors (.actors)
-        val tags = document.select(".labels-container a, .actors a").map { it.text() }
+        return if (isSeriesPage) {
+            val episodes = document.select("ul.episodios li").mapNotNull { el ->
+                val epHref = el.selectFirst("div.episodiotitle a")?.attr("href") ?: return@mapNotNull null
+                val epTitle = el.selectFirst("div.episodiotitle a")?.text()?.trim() ?: "Episode"
+                val epPoster = el.selectFirst("div.imagen img")?.let { 
+                    it.attr("data-src").ifBlank { it.attr("src") } 
+                }
+                
+                // Parse episode number
+                val epNum = Regex("""Episode\s+(\d+)""").find(epTitle)?.groupValues?.get(1)?.toIntOrNull()
 
-        // ID vẫn nằm trong div#video data-id
-        val postId = document.selectFirst("div#video")?.attr("data-id") ?: return null
+                newEpisode(epHref) {
+                    this.name = epTitle
+                    this.posterUrl = epPoster
+                    this.episode = epNum
+                }
+            }.reversed()
 
-        // UPDATE 4: Recommendations (Related movies)
-        val recommendations = document.select("section.related-movies article.dp-item").mapNotNull { it.toSearchResult() }
-
-        return newMovieLoadResponse(title, url, TvType.NSFW, postId) {
-            this.posterUrl = poster
-            this.plot = description
-            this.tags = tags
-            this.recommendations = recommendations
+            newTvSeriesLoadResponse(title, url, TvType.NSFW, episodes) {
+                this.posterUrl = posterUrl
+                this.plot = synopsis
+                this.recommendations = recommendations
+            }
+        } else {
+            // Single Movie / Episode page
+            newMovieLoadResponse(title, url, TvType.NSFW, dataUrl = url) {
+                this.posterUrl = posterUrl
+                this.plot = synopsis
+                this.recommendations = recommendations
+            }
         }
     }
 
@@ -98,37 +140,56 @@ class Sextop1Provider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val currentUrl = getRealUrl() // Luôn lấy URL thật
+        val document = app.get(data, interceptor = cfInterceptor).document
         
-        // API endpoint có vẻ không đổi dựa trên HTML (wp-json/sextop1/player)
-        val apiUrl = "$currentUrl/wp-json/sextop1/player/?id=$data&server=1"
+        // FIX: Tìm iframe ở nhiều vị trí hơn (metaframe, playarea, player_container)
+        val iframeElement = document.selectFirst("iframe.metaframe, #playarea iframe, .player_container iframe") 
+            ?: return false
+            
+        val iframeSrc = iframeElement.attr("src")
+        if (iframeSrc.isBlank()) return false
+
+        // FIX: Logic xử lý link source từ parameter (dành cho JWPlayer wrapper)
+        val sourceParam = Regex("""source=([^&]+)""").find(iframeSrc)?.groupValues?.get(1)
         
-        val responseText = app.get(apiUrl, referer = "$currentUrl/").text
-        val apiResponse = tryParseJson<ApiResponse>(responseText)
-        val jsData = apiResponse?.data ?: return false
-
-        val regex = Regex("file: '(https?://[^']+\\.m3u8)'")
-        val matchResult = regex.find(jsData)
-        val videoUrl = matchResult?.groups?.get(1)?.value
-
-        videoUrl?.let { url ->
-            val link = newExtractorLink(
-                source = this.name,
-                name = "${this.name}r",
-                url = url,
-                type = ExtractorLinkType.M3U8
-            ) {
-                // Sửa referer để dùng URL thật, đảm bảo tính nhất quán
-                this.referer = currentUrl
-                this.quality = Qualities.Unknown.value
-            }
-            callback.invoke(link)
+        val extractedUrl = if (sourceParam != null) {
+            java.net.URLDecoder.decode(sourceParam, "UTF-8")
+        } else {
+            iframeSrc // Fallback: Link embed trực tiếp
         }
+
+        // Phân loại link để xử lý tối ưu
+        if (extractedUrl.endsWith(".mp4") || extractedUrl.endsWith(".mkv")) {
+            // Đây là Direct Link (như hstorage.xyz), trả về luôn không cần Extractor
+            callback.invoke(
+                ExtractorLink(
+                    source = "WatchHentai", 
+                    name = "WatchHentai VIP",
+                    url = extractedUrl,
+                    referer = mainUrl, 
+                    quality = Qualities.Unknown.value,
+                    type = ExtractorLinkType.VIDEO
+                )
+            )
+        } else if (extractedUrl.contains(".m3u8")) {
+            // Direct HLS Link
+             callback.invoke(
+                ExtractorLink(
+                    source = "WatchHentai",
+                    name = "WatchHentai HLS",
+                    url = extractedUrl,
+                    referer = mainUrl,
+                    quality = Qualities.Unknown.value,
+                    type = ExtractorLinkType.M3U8
+                )
+            )
+        } else {
+            // Link Embed server (Dood, StreamSB, etc.) -> Dùng loadExtractor
+            loadExtractor(extractedUrl, mainUrl, subtitleCallback) { link ->
+                callback.invoke(link)
+            }
+        }
+
         return true
     }
-
-    data class ApiResponse(
-        val success: Boolean?,
-        val data: String?
-    )
 }
