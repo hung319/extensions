@@ -291,12 +291,13 @@ class AnikuroProvider : MainAPI() {
         supportedServers.amap { serverCode ->
             try {
                 val url = "$mainUrl/api/getsources/?id=$id&lol=$serverCode&ep=$episodeNum"
-                val responseText = app.get(url, headers = headers.toHeaders()).text
+                // FIX: Pass headers as Map (removed .toHeaders())
+                val responseText = app.get(url, headers = headers).text
                 if (responseText.contains("error") || responseText.length < 5) return@amap
 
                 val sourceJson = parseJson<JsonNode>(responseText)
                 
-                // Parse Subtitles (Fix: Use newSubtitleFile)
+                // Parse Subtitles
                 sourceJson["subtitles"]?.forEach { track ->
                     track.toTrack()?.toSubtitleFile()?.let(subtitleCallback)
                 }
@@ -397,18 +398,16 @@ class AnikuroProvider : MainAPI() {
 
     private fun JsonNode.toTrack(): Track? = try { AppUtils.parseJson<Track>(this.toString()) } catch (e: Exception) { null }
     
-    // FIX: Using suspend newSubtitleFile as requested
     private suspend fun Track.toSubtitleFile(): SubtitleFile? {
         val url = this.file ?: this.url ?: return null
         if (this.kind == "thumbnails") return null
         val lang = this.lang ?: this.label ?: "Unknown"
-        // Sử dụng hàm newSubtitleFile thay vì constructor
         return newSubtitleFile(lang, url)
     }
     
-    private fun Map<String, String>.toHeaders(): okhttp3.Headers = okhttp3.Headers.Builder().apply { this@toHeaders.forEach { (k, v) -> add(k, v) } }.build()
+    // Removed toHeaders() extension because it's not needed anymore
 
-    // Reduced Data Classes to save size
+    // Minimal Data Classes
     data class TrendingResponse(@JsonProperty("info") val info: List<AnimeData> = emptyList())
     data class ScheduleResponse(@JsonProperty("info") val info: List<ScheduleItem> = emptyList())
     data class ScheduleItem(@JsonProperty("media") val media: AnimeData? = null, @JsonProperty("episode") val episode: Int? = null)
