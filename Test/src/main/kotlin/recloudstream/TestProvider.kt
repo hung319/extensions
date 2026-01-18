@@ -12,9 +12,17 @@ class FapClubProvider : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.NSFW)
 
-    // Thêm Headers để tránh bị chặn bởi Cloudflare/Firewall
-    private val headers = mapOf(
-        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    // 1. QUAN TRỌNG: Giả lập Headers giống hệt lệnh Curl/Trình duyệt Android của bạn
+    // Cloudstream sẽ tự động xử lý Cookie (cf_clearance) nếu request hợp lệ
+    override val headers = mapOf(
+        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language" to "vi-VN,vi;q=0.9",
+        "Referer" to "$mainUrl/",
+        "Sec-Fetch-Dest" to "document",
+        "Sec-Fetch-Mode" to "navigate",
+        "Sec-Fetch-Site" to "same-origin",
+        "Upgrade-Insecure-Requests" to "1"
     )
 
     override val mainPage = mainPageOf(
@@ -24,28 +32,20 @@ class FapClubProvider : MainAPI() {
     )
 
     override suspend fun search(query: String): List<SearchResponse> {
-        // Thêm headers vào request
         val searchUrl = "$mainUrl/search/?q=$query"
-        val document = app.get(searchUrl, headers = headers).document
-        
-        // Selector: Lấy trực tiếp div.video để đảm bảo không bị miss do ID cha thay đổi
-        return parseHomepage(document.select("div.video"))
+        // Luôn truyền headers = this.headers
+        val document = app.get(searchUrl, headers = this.headers).document
+        return parseHomepage(document.select("div#contmain div.video"))
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Xử lý URL phân trang
         val url = if (page == 1) {
             "$mainUrl${request.data}"
         } else {
-            // Logic phân trang của site: /latest-updates/2/
             "$mainUrl${request.data}$page/"
         }
 
-        // Thêm headers vào request
-        val document = app.get(url, headers = headers).document
-        
-        // Lấy danh sách video (chỉ lấy trong content chính nếu cần, nhưng div.video khá an toàn)
-        // Dùng filter để loại bỏ các div.video rác nếu có
+        val document = app.get(url, headers = this.headers).document
         val home = parseHomepage(document.select("div#contmain div.video"))
         
         val hasNext = document.select("a.mpages:contains(Next)").isNotEmpty()
@@ -53,7 +53,7 @@ class FapClubProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url, headers = headers).document
+        val document = app.get(url, headers = this.headers).document
 
         val title = document.selectFirst("h1.movtitl")?.text()?.trim()
             ?: throw RuntimeException("Không tìm thấy tiêu đề")
@@ -61,7 +61,6 @@ class FapClubProvider : MainAPI() {
         val description = document.selectFirst("meta[name=description]")?.attr("content")
         val tags = document.select("div.vcatsp a.video_cat").map { it.text() }
 
-        // Logic lấy poster HD từ data-id
         val playerDiv = document.selectFirst("div#player")
         val videoId = playerDiv?.attr("data-id")
         
@@ -73,7 +72,6 @@ class FapClubProvider : MainAPI() {
             document.selectFirst("link[rel=image_src]")?.attr("href")
         }
 
-        // Related videos: Selector h1#rell ~ div.video để lấy các video ngay sau tiêu đề Related
         val recommendations = parseHomepage(document.select("h1#rell ~ div.video"))
 
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
@@ -90,7 +88,7 @@ class FapClubProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data, headers = headers).document
+        val document = app.get(data, headers = this.headers).document
         val playerDiv = document.selectFirst("div#player") ?: return false
 
         val qualityData = playerDiv.attr("data-q") ?: return false
@@ -103,7 +101,6 @@ class FapClubProvider : MainAPI() {
 
         val domain = "https://$serverSubdomain.vstor.top/"
 
-        // Parse từng chất lượng
         for (qualityBlock in qualityData.split(",")) {
             val parts = qualityBlock.split(";")
             if (parts.size < 6) continue
@@ -124,6 +121,7 @@ class FapClubProvider : MainAPI() {
                 this.referer = mainUrl
                 this.quality = getQualityFromName(qualityLabel)
             }
+            
             callback.invoke(link)
         }
         return true
@@ -131,13 +129,13 @@ class FapClubProvider : MainAPI() {
 
     private fun parseHomepage(elements: List<Element>): List<MovieSearchResponse> {
         return elements.mapNotNull { element ->
-            // Kiểm tra kỹ cấu trúc: div.video -> div.inner -> h2 -> a
             val inner = element.selectFirst("div.inner") ?: return@mapNotNull null
+            // Selector chính xác dựa trên HTML bạn gửi: div.inner -> h2 -> a
             val linkElement = inner.selectFirst("h2 > a") ?: return@mapNotNull null
             
             val href = linkElement.attr("href")
             val title = linkElement.attr("title")
-            // Ảnh thumbnail
+            // Selector ảnh: div.inner -> div.info -> a -> img
             val posterUrl = inner.selectFirst("div.info img")?.attr("src")
 
             newMovieSearchResponse(title, href, TvType.NSFW) {
