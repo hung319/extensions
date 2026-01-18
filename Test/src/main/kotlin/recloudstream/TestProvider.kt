@@ -2,6 +2,7 @@ package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import org.json.JSONObject
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
 import java.security.MessageDigest
@@ -27,7 +28,6 @@ class IhentaiProvider : MainAPI() {
         val document = app.get(mainUrl, headers = COMMON_HEADERS).document
         val homePageList = mutableListOf<HomePageList>()
 
-        // Lấy các section chính
         document.select("main > div.v-container > div.tw-mb-16").forEach { section ->
             val title = section.selectFirst("h1.tw-text-3xl")?.text()?.trim() ?: return@forEach
             val items = section.select("div.tw-grid > div.v-card").mapNotNull { parseSearchCard(it) }
@@ -37,7 +37,6 @@ class IhentaiProvider : MainAPI() {
             }
         }
 
-        // Fallback: Nếu không parse được section nào, thử lấy list mặc định
         if (homePageList.isEmpty()) {
             val latestItems = document.select("main.v-main div.v-container div.tw-grid > div.v-card")
                 .mapNotNull { parseSearchCard(it) }
@@ -56,10 +55,9 @@ class IhentaiProvider : MainAPI() {
         val href = fixUrlNull(linkElement.attr("href"))?.takeIf { it.isNotBlank() && it != "/" } ?: return null
 
         val imageElement = linkElement.selectFirst("img.tw-w-full")
-        // Fix lỗi Coil: Đảm bảo posterUrl không null
         val posterUrl = fixUrlNull(imageElement?.attr("src"))
             ?: fixUrlNull(imageElement?.attr("data-src"))
-            ?: "" // Fallback chuỗi rỗng để tránh null pointer
+            ?: "" 
 
         val title = imageElement?.attr("alt")?.trim()
             ?: imageElement?.attr("title")?.trim()
@@ -121,14 +119,13 @@ class IhentaiProvider : MainAPI() {
         }
     }
 
-    // --- 4. Load Links (Direct Decryption + DEBUG LOGS) ---
+    // --- 4. Load Links (Direct Decryption + JSON Parsing) ---
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // [DEBUG] Bắt đầu function
         println("[$name] === START LOAD LINKS ===")
         println("[$name] URL: $data")
 
@@ -136,7 +133,6 @@ class IhentaiProvider : MainAPI() {
             val document = app.get(data, headers = COMMON_HEADERS).document
             val iframeSrc = document.selectFirst("iframe.tw-w-full")?.attr("src")
             
-            // [DEBUG] Check iframe
             if (iframeSrc == null) {
                 println("[$name] ERROR: Không tìm thấy thẻ iframe!")
                 return false
@@ -144,14 +140,12 @@ class IhentaiProvider : MainAPI() {
             println("[$name] Found Iframe: $iframeSrc")
 
             val videoId = iframeSrc.substringAfter("?v=").substringBefore("&")
-            // [DEBUG] Check Video ID
             if (videoId.isBlank()) {
                 println("[$name] ERROR: Không lấy được Video ID từ URL iframe.")
                 return false
             }
             println("[$name] Video ID: $videoId")
 
-            // Headers bắt buộc để gọi API Mimix
             val cryptoHeaders = mapOf(
                 "Authority" to "x.mimix.cc",
                 "Accept" to "*/*",
@@ -163,7 +157,8 @@ class IhentaiProvider : MainAPI() {
             
             println("[$name] Requesting API: $apiUrl")
             val response = app.get(apiUrl, headers = cryptoHeaders).text
-            println("[$name] API Response: $response")
+            // Log response đã ẩn bớt để tránh spam
+            println("[$name] API Response received") 
 
             if (!response.contains(":")) {
                 println("[$name] ERROR: Response không đúng định dạng (thiếu dấu :)")
@@ -171,15 +166,25 @@ class IhentaiProvider : MainAPI() {
             }
 
             // Giải mã
-            val decryptedUrl = decryptMimix(response, videoId)
-            println("[$name] Decrypted URL: $decryptedUrl")
+            val decryptedData = decryptMimix(response, videoId)
+            println("[$name] Decrypted JSON: $decryptedData")
 
-            if (decryptedUrl.startsWith("http")) {
+            // --- XỬ LÝ JSON ---
+            // Kết quả là JSON, không phải URL trực tiếp. Cần parse.
+            if (decryptedData.trim().startsWith("{")) {
+                val json = JSONObject(decryptedData)
+                val domain = json.getString("domain") // "https://b3.mimix.cc"
+                val id = json.getString("id")         // "8b0ab437..."
+                
+                // Tạo link M3U8 thủ công
+                val m3u8Url = "$domain/$id/master.m3u8"
+                println("[$name] Final M3U8 URL: $m3u8Url")
+
                 callback(
                     newExtractorLink(
                         source = name,
                         name = "$name (VIP)",
-                        url = decryptedUrl,
+                        url = m3u8Url,
                         type = ExtractorLinkType.M3U8
                     ) {
                         this.referer = "https://play.sonar-cdn.com/"
@@ -189,7 +194,7 @@ class IhentaiProvider : MainAPI() {
                 println("[$name] SUCCESS: Link added to callback.")
                 return true
             } else {
-                println("[$name] ERROR: Giải mã thất bại hoặc link không bắt đầu bằng http")
+                println("[$name] ERROR: Dữ liệu sau giải mã không phải JSON hợp lệ.")
             }
 
         } catch (e: Exception) {
