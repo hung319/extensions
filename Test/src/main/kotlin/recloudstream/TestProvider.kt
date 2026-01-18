@@ -12,9 +12,8 @@ class FapClubProvider : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.NSFW)
 
-    // 1. QUAN TRỌNG: Giả lập Headers giống hệt lệnh Curl/Trình duyệt Android của bạn
-    // Cloudstream sẽ tự động xử lý Cookie (cf_clearance) nếu request hợp lệ
-    override val headers = mapOf(
+    // SỬA LỖI Ở ĐÂY: Bỏ 'override', đổi thành 'private val'
+    private val customHeaders = mapOf(
         "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
         "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
         "Accept-Language" to "vi-VN,vi;q=0.9",
@@ -33,8 +32,8 @@ class FapClubProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/search/?q=$query"
-        // Luôn truyền headers = this.headers
-        val document = app.get(searchUrl, headers = this.headers).document
+        // Gọi biến customHeaders vừa khai báo
+        val document = app.get(searchUrl, headers = customHeaders).document
         return parseHomepage(document.select("div#contmain div.video"))
     }
 
@@ -45,7 +44,7 @@ class FapClubProvider : MainAPI() {
             "$mainUrl${request.data}$page/"
         }
 
-        val document = app.get(url, headers = this.headers).document
+        val document = app.get(url, headers = customHeaders).document
         val home = parseHomepage(document.select("div#contmain div.video"))
         
         val hasNext = document.select("a.mpages:contains(Next)").isNotEmpty()
@@ -53,7 +52,7 @@ class FapClubProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url, headers = this.headers).document
+        val document = app.get(url, headers = customHeaders).document
 
         val title = document.selectFirst("h1.movtitl")?.text()?.trim()
             ?: throw RuntimeException("Không tìm thấy tiêu đề")
@@ -88,7 +87,7 @@ class FapClubProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data, headers = this.headers).document
+        val document = app.get(data, headers = customHeaders).document
         val playerDiv = document.selectFirst("div#player") ?: return false
 
         val qualityData = playerDiv.attr("data-q") ?: return false
@@ -130,12 +129,10 @@ class FapClubProvider : MainAPI() {
     private fun parseHomepage(elements: List<Element>): List<MovieSearchResponse> {
         return elements.mapNotNull { element ->
             val inner = element.selectFirst("div.inner") ?: return@mapNotNull null
-            // Selector chính xác dựa trên HTML bạn gửi: div.inner -> h2 -> a
             val linkElement = inner.selectFirst("h2 > a") ?: return@mapNotNull null
             
             val href = linkElement.attr("href")
             val title = linkElement.attr("title")
-            // Selector ảnh: div.inner -> div.info -> a -> img
             val posterUrl = inner.selectFirst("div.info img")?.attr("src")
 
             newMovieSearchResponse(title, href, TvType.NSFW) {
