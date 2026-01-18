@@ -12,16 +12,24 @@ class FapClubProvider : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.NSFW)
 
-    // SỬA LỖI Ở ĐÂY: Bỏ 'override', đổi thành 'private val'
+    // Cập nhật Headers Y HỆT như lệnh Curl bạn cung cấp
+    // Lưu ý: "Cookie" ở đây chỉ set những cái tĩnh như tst_pass để qua mặt script check.
+    // cf_clearance sẽ được App tự động thêm vào sau khi bạn mở WebView 1 lần.
     private val customHeaders = mapOf(
-        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Authority" to "fapclub.vip",
+        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         "Accept-Language" to "vi-VN,vi;q=0.9",
-        "Referer" to "$mainUrl/",
+        "Cache-Control" to "max-age=0",
+        // QUAN TRỌNG: Gửi kèm cookie tst_pass=1 để bypass màn hình "Checking your browser..."
+        "Cookie" to "tst_pass=1; device_verified=true", 
+        "Sec-Ch-Ua" to "\"Chromium\";v=\"137\", \"Not/A)Brand\";v=\"24\"",
+        "Sec-Ch-Ua-Mobile" to "?1",
+        "Sec-Ch-Ua-Platform" to "\"Android\"",
         "Sec-Fetch-Dest" to "document",
         "Sec-Fetch-Mode" to "navigate",
-        "Sec-Fetch-Site" to "same-origin",
-        "Upgrade-Insecure-Requests" to "1"
+        "Sec-Fetch-Site" to "none",
+        "Upgrade-Insecure-Requests" to "1",
+        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
     )
 
     override val mainPage = mainPageOf(
@@ -32,7 +40,6 @@ class FapClubProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/search/?q=$query"
-        // Gọi biến customHeaders vừa khai báo
         val document = app.get(searchUrl, headers = customHeaders).document
         return parseHomepage(document.select("div#contmain div.video"))
     }
@@ -45,14 +52,25 @@ class FapClubProvider : MainAPI() {
         }
 
         val document = app.get(url, headers = customHeaders).document
-        val home = parseHomepage(document.select("div#contmain div.video"))
         
+        // Check xem có bị dính màn hình Security Check không
+        if (document.title().contains("Security Check") || document.select("div#contmain").isEmpty()) {
+            // Nếu vẫn bị chặn, ném lỗi để người dùng biết cần mở WebView
+            throw ErrorLoadingException("Bị chặn bởi Cloudflare. Hãy bấm 'Open in WebView' để xác thực.")
+        }
+
+        val home = parseHomepage(document.select("div#contmain div.video"))
         val hasNext = document.select("a.mpages:contains(Next)").isNotEmpty()
         return newHomePageResponse(request.name, home, hasNext)
     }
 
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url, headers = customHeaders).document
+
+        // Check lỗi Security Check
+        if (document.title().contains("Security Check")) {
+             throw ErrorLoadingException("Bị chặn bởi Cloudflare. Hãy bấm 'Open in WebView'.")
+        }
 
         val title = document.selectFirst("h1.movtitl")?.text()?.trim()
             ?: throw RuntimeException("Không tìm thấy tiêu đề")
