@@ -138,34 +138,50 @@ class WatchHentaiProvider : MainAPI() {
         
         val document = app.get(data, interceptor = cfInterceptor).document
         
-        val iframeElement = document.selectFirst("iframe.metaframe, #playarea iframe, .player_container iframe") 
+        // 1. Lấy TẤT CẢ iframe trong khu vực player thay vì chỉ cái đầu tiên
+        // Thêm selector "div#playarea iframe" và "div.entry-content iframe" để bao quát hơn
+        val potentialIframes = document.select("iframe.metaframe, #playarea iframe, .player_container iframe, .entry-content iframe")
         
-        if (iframeElement == null) {
-            Log.e(TAG, "Error: No iframe found with selectors")
-            return false
-        }
+        var targetSrc: String? = null
+        
+        Log.d(TAG, "Found ${potentialIframes.size} potential iframes")
+
+        // 2. Lặp qua để tìm iframe "xịn"
+        for (iframe in potentialIframes) {
+            var src = iframe.attr("src")
             
-        val iframeSrc = iframeElement.attr("src")
-        Log.d(TAG, "Found Iframe Src: $iframeSrc")
+            // Check thêm data-src phòng trường hợp lazyload
+            if (src.isBlank() || src.contains("about:blank")) {
+                src = iframe.attr("data-src")
+            }
 
-        if (iframeSrc.isBlank()) {
-            Log.e(TAG, "Error: Iframe src is blank")
+            Log.d(TAG, "Checking iframe: $src")
+
+            // Điều kiện chọn: Không rỗng, không phải about:blank, và phải chứa http hoặc source=
+            if (src.isNotBlank() && !src.contains("about:blank") && (src.startsWith("http") || src.contains("source="))) {
+                targetSrc = src
+                Log.d(TAG, ">> SELECTED Valid Iframe: $targetSrc")
+                break // Tìm thấy rồi thì dừng luôn
+            }
+        }
+
+        if (targetSrc == null) {
+            Log.e(TAG, "Error: No valid video iframe found (All were blank or missing)")
             return false
         }
 
-        // Decode source param
-        val sourceParam = Regex("""source=([^&]+)""").find(iframeSrc)?.groupValues?.get(1)
+        // 3. Xử lý logic decode như cũ với link đã tìm được
+        val sourceParam = Regex("""source=([^&]+)""").find(targetSrc)?.groupValues?.get(1)
         
         val extractedUrl = if (sourceParam != null) {
             val decoded = java.net.URLDecoder.decode(sourceParam, "UTF-8")
-            Log.d(TAG, "Decoded from 'source=' param: $decoded")
+            Log.d(TAG, "Decoded source param: $decoded")
             decoded
         } else {
-            Log.d(TAG, "No 'source=' param, using raw iframe src")
-            iframeSrc
+            targetSrc
         }
 
-        // Logic xử lý link
+        // 4. Phân loại và trả về link
         val linkType = when {
             extractedUrl.endsWith(".mp4") || extractedUrl.endsWith(".mkv") -> ExtractorLinkType.VIDEO
             extractedUrl.contains(".m3u8") -> ExtractorLinkType.M3U8
@@ -173,8 +189,6 @@ class WatchHentaiProvider : MainAPI() {
         }
 
         if (linkType != null) {
-            Log.d(TAG, "Action: Returning DIRECT LINK (Type: $linkType)")
-            
             val link = newExtractorLink(
                 source = this.name,
                 name = "${this.name} VIP",
@@ -186,9 +200,7 @@ class WatchHentaiProvider : MainAPI() {
             }
             callback.invoke(link)
         } else {
-            Log.d(TAG, "Action: Delegating to loadExtractor (External Server)")
             loadExtractor(extractedUrl, mainUrl, subtitleCallback) { link ->
-                Log.d(TAG, "Extractor Found Link: ${link.name} - ${link.url}")
                 callback.invoke(link)
             }
         }
