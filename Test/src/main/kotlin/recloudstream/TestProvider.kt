@@ -1,15 +1,12 @@
 package recloudstream
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
-import javax.crypto.Cipher
-import javax.crypto.spec.IvParameterSpec
-import javax.crypto.spec.SecretKeySpec
 import java.security.MessageDigest
+import javax.crypto.Cipher
+import javax.crypto.spec.*
 
 class IhentaiProvider : MainAPI() {
     // --- Cấu hình Extension ---
@@ -160,7 +157,6 @@ class IhentaiProvider : MainAPI() {
             val decryptedUrl = decryptMimix(response, videoId)
 
             if (decryptedUrl.startsWith("http")) {
-                // --- SỬ DỤNG newExtractorLink THEO YÊU CẦU ---
                 callback(
                     newExtractorLink(
                         source = name,
@@ -170,8 +166,6 @@ class IhentaiProvider : MainAPI() {
                     ) {
                         this.referer = "https://play.sonar-cdn.com/"
                         this.quality = Qualities.Unknown.value
-                        // Nếu cần headers tùy chỉnh cho link m3u8, thêm vào đây
-                        // this.headers = mapOf("User-Agent" to USER_AGENT) 
                     }
                 )
                 return true
@@ -184,11 +178,6 @@ class IhentaiProvider : MainAPI() {
     }
 
     // --- Crypto Helper: AES-CTR + SHA256 ---
-    // Mô phỏng lại logic JS:
-    // Key = SHA-256(videoId)
-    // IV = HexDecode(Parts[0])
-    // Data = HexDecode(Parts[1])
-    // Mode = AES-CTR
     private fun decryptMimix(encryptedString: String, keySeed: String): String {
         return try {
             val parts = encryptedString.split(":")
@@ -220,7 +209,7 @@ class IhentaiProvider : MainAPI() {
         }
     }
 
-    // Utility: Chuyển Hex String sang ByteArray thủ công (không cần thư viện ngoài)
+    // Utility: Chuyển Hex String sang ByteArray thủ công
     private fun hexToBytes(hex: String): ByteArray {
         val len = hex.length
         val data = ByteArray(len / 2)
