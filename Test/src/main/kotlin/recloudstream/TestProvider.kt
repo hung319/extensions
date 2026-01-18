@@ -117,23 +117,22 @@ class FullxcinemaProvider : MainAPI() {
         // Cố gắng tìm thẻ <video> hoặc source bên trong iframe
         val videoUrl = iframeDocument.selectFirst("video source")?.attr("src")
             ?: iframeDocument.selectFirst("video")?.attr("src")
-            ?: run {
-                // Nếu không tìm thấy thẻ video trực tiếp, có thể nó nằm trong script (ví dụ jwplayer)
-                // Đây là logic fallback cơ bản, có thể cần regex nếu site dùng player phức tạp
-                return false
-            }
+            ?: return false
 
         val linkType = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
         
-        // Logic mới bạn yêu cầu:
+        // --- PHẦN ĐÃ SỬA ---
+        // Chuyển referer và quality vào trong block lambda {} ở cuối
         val link = newExtractorLink(
             source = this.name,
             name = this.name,
             url = videoUrl,
-            referer = "$mainUrl/",
-            quality = getQualityFromName(""),
-            type = linkType
-        )
+            type = linkType // type là tham số, để ở ngoài
+        ) {
+            this.referer = "$mainUrl/"
+            this.quality = getQualityFromName("")
+        }
+        // -------------------
 
         callback.invoke(link)
         return true
