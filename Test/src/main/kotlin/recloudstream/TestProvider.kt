@@ -1,3 +1,5 @@
+package recloudstream
+
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
@@ -12,9 +14,7 @@ class KuraKura21Provider : MainAPI() {
     override var hasMainPage = true
 
     override val supportedTypes = setOf(
-        TvType.NSFW,
-        TvType.Movie,
-        TvType.TvSeries
+        TvType.NSFW
     )
 
     // --- Helper Methods ---
@@ -159,7 +159,9 @@ class KuraKura21Provider : MainAPI() {
 
                             // 1. Lấy link iframe gốc
                             val rawIframeSrc = playerContent.selectFirst("iframe")?.attr("src") ?: return@async
-                            val iframeSrc = fixUrl(rawIframeSrc, mainUrl) // Xử lý link relative
+                            
+                            // Tự động fix link relative theo mainUrl
+                            val iframeSrc = fixUrl(rawIframeSrc) 
                             
                             // 2. Giao hoàn toàn cho Extractor xử lý (StreamWish, FileMoon, etc.)
                             loadExtractor(iframeSrc, subtitleCallback, callback)
