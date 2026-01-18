@@ -12,7 +12,6 @@ class VlxxProvider : MainAPI() {
     override var supportedTypes = setOf(TvType.NSFW)
     override var lang = "vi"
 
-    // Tag để lọc log: adb logcat -s "VLXX_DEBUG"
     private val TAG = "VLXX_DEBUG"
 
     private fun debugLog(msg: String) {
@@ -23,10 +22,14 @@ class VlxxProvider : MainAPI() {
 
     private suspend fun getBaseUrl(): String {
         if (baseUrl == null) {
-            val document = app.get(mainUrl).document
-            val realUrl = document.selectFirst("a.button")?.attr("href")?.trimEnd('/') ?: mainUrl
-            baseUrl = realUrl
-            debugLog("Resolved Base URL: $baseUrl")
+            try {
+                val document = app.get(mainUrl).document
+                val realUrl = document.selectFirst("a.button")?.attr("href")?.trimEnd('/') ?: mainUrl
+                baseUrl = realUrl
+                debugLog("Resolved Base URL: $baseUrl")
+            } catch (e: Exception) {
+                baseUrl = mainUrl
+            }
         }
         return baseUrl!!
     }
@@ -66,21 +69,17 @@ class VlxxProvider : MainAPI() {
         val plot = document.selectFirst("div.video-description")?.text()?.trim()
         
         val tags = document.select("div.video-tags div.category-tag a").map { it.text() }
-        val actors = document.select("div.video-tags div.actress-tag a").map { 
-            ActorData(Actor(it.text(), null)) 
-        }
+        
+        // Đã bỏ phần Actor theo yêu cầu
         
         val recommendations = document.select("div#video-list div.video-item").mapNotNull {
             it.toSearchResult()
         }.filter { it.url != url }
         
-        debugLog("Loaded success: $title | Actors: ${actors.size} | Recs: ${recommendations.size}")
-
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = posterUrl
             this.plot = plot
             this.tags = tags
-            this.actors = actors
             this.recommendations = recommendations
         }
     }
@@ -105,6 +104,8 @@ class VlxxProvider : MainAPI() {
         }
         debugLog("Found VideoID: $videoId")
 
+        val currentBaseUrl = getBaseUrl() // Lấy URL hiện tại (vd: vlxx.bz)
+
         listOf(1, 2).forEach { serverNum ->
             debugLog("--- Checking Server $serverNum ---")
             try {
@@ -117,16 +118,26 @@ class VlxxProvider : MainAPI() {
                 val headers = mapOf(
                     "X-Requested-With" to "XMLHttpRequest",
                     "Referer" to data,
-                    "Origin" to getBaseUrl()
+                    "Origin" to currentBaseUrl
                 )
                 
-                val ajaxUrl = "${getBaseUrl()}/ajax.php"
-                debugLog("Posting to $ajaxUrl with data: $postData")
+                val ajaxUrl = "$currentBaseUrl/ajax.php"
+                debugLog("Posting to $ajaxUrl")
                 
-                val ajaxResponse = app.post(ajaxUrl, data = postData, headers = headers).parsed<PlayerResponse>()
-                debugLog("AJAX Response length: ${ajaxResponse.player.length}")
+                // SỬA LỖI: Dùng .text thay vì .parsed để tránh crash khi body rỗng
+                val responseText = app.post(ajaxUrl, data = postData, headers = headers).text
+                debugLog("Raw Ajax Response: $responseText")
+
+                if (responseText.isBlank()) {
+                    debugLog("Server returned empty response. Skipping...")
+                    return@forEach
+                }
                 
-                val iframeDocument = Jsoup.parse(ajaxResponse.player)
+                // Thử parse JSON an toàn
+                val json = AppUtils.tryParseJson<PlayerResponse>(responseText)
+                val iframeHtml = json?.player ?: responseText // Fallback nếu server trả thẳng HTML
+
+                val iframeDocument = Jsoup.parse(iframeHtml)
                 val iframeSrc = iframeDocument.selectFirst("iframe")?.attr("src")
                 debugLog("Extracted Iframe Src: $iframeSrc")
 
@@ -137,18 +148,14 @@ class VlxxProvider : MainAPI() {
                     )
                     
                     val finalPlayerPage = app.get(iframeSrc, headers = iframeHeaders).text
-                    debugLog("Fetched Player Page (${finalPlayerPage.length} chars)")
                     
                     val sourcesMatch = sourcesRegex.find(finalPlayerPage)
                     val sourcesJson = sourcesMatch?.groupValues?.get(1)
                     
                     if (sourcesJson != null) {
-                        debugLog("Found JSON Sources: $sourcesJson")
                         val sources = AppUtils.tryParseJson<List<VideoSource>>(sourcesJson)
-                        debugLog("Parsed Sources count: ${sources?.size}")
                         
                         sources?.forEach { source ->
-                            debugLog("Processing source: ${source.file}")
                             if (source.file.isNotBlank()) {
                                 val isM3u8 = source.type == "hls" || source.file.contains(".m3u8") || source.file.endsWith(".vl")
                                 val linkType = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
@@ -167,15 +174,10 @@ class VlxxProvider : MainAPI() {
                                 debugLog(">>> Added Link: ${source.file}")
                             }
                         }
-                    } else {
-                        debugLog("ERROR: Regex did not match any sources in player page.")
                     }
-                } else {
-                    debugLog("ERROR: Iframe Src is empty.")
                 }
             } catch (e: Exception) {
                 debugLog("EXCEPTION in Server $serverNum: ${e.message}")
-                e.printStackTrace()
             }
         }
         
