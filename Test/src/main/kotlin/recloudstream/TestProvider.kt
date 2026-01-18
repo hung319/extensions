@@ -5,7 +5,8 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.network.CloudflareKiller
-import android.util.Log // Import thư viện Log của Android
+import android.util.Log
+import java.net.URLDecoder
 
 class WatchHentaiProvider : MainAPI() {
     override var mainUrl = "https://watchhentai.net"
@@ -13,11 +14,13 @@ class WatchHentaiProvider : MainAPI() {
     override val hasMainPage = true
     override var lang = "en"
     override val hasDownloadSupport = true
-    override val supportedTypes = setOf(TvType.NSFW)
+    override val supportedTypes = setOf(
+        TvType.NSFW
+    )
 
-    // Tag dùng để filter trong Logcat
+    // Tag log để bạn dễ debug trong Logcat (lệnh: adb logcat -s WatchHentaiDev)
     private val TAG = "WatchHentaiDev"
-
+    
     private val cfInterceptor = CloudflareKiller()
 
     override val mainPage = mainPageOf(
@@ -44,6 +47,7 @@ class WatchHentaiProvider : MainAPI() {
     private fun Element.toSearchResult(): SearchResponse? {
         val href = this.selectFirst("a")?.attr("href") ?: return null
         
+        // FIX: Xử lý lazy load ảnh (ưu tiên data-src)
         val imgElement = this.selectFirst("img")
         val posterUrl = imgElement?.let {
             it.attr("data-src").ifBlank { 
@@ -87,6 +91,7 @@ class WatchHentaiProvider : MainAPI() {
         val document = app.get(url, interceptor = cfInterceptor).document
         val isSeriesPage = url.contains("/series/")
 
+        // Support layout cũ và mới
         val title = document.selectFirst("div.data h1, div.sheader h1")?.text()?.trim() ?: "Unknown"
         val posterUrl = document.selectFirst("div.poster img, div.sheader .poster img")?.let {
              it.attr("data-src").ifBlank { it.attr("src") }
@@ -135,77 +140,91 @@ class WatchHentaiProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         Log.d(TAG, "--> loadLinks STARTED: $data")
-        
         val document = app.get(data, interceptor = cfInterceptor).document
         
-        // 1. Lấy TẤT CẢ iframe trong khu vực player thay vì chỉ cái đầu tiên
-        // Thêm selector "div#playarea iframe" và "div.entry-content iframe" để bao quát hơn
-        val potentialIframes = document.select("iframe.metaframe, #playarea iframe, .player_container iframe, .entry-content iframe")
-        
-        var targetSrc: String? = null
-        
-        Log.d(TAG, "Found ${potentialIframes.size} potential iframes")
+        // Sử dụng Set để chứa các link thô tìm được (tự động loại bỏ trùng lặp)
+        val rawLinks = mutableSetOf<String>()
 
-        // 2. Lặp qua để tìm iframe "xịn"
-        for (iframe in potentialIframes) {
-            var src = iframe.attr("src")
-            
-            // Check thêm data-src phòng trường hợp lazyload
-            if (src.isBlank() || src.contains("about:blank")) {
-                src = iframe.attr("data-src")
-            }
-
-            Log.d(TAG, "Checking iframe: $src")
-
-            // Điều kiện chọn: Không rỗng, không phải about:blank, và phải chứa http hoặc source=
-            if (src.isNotBlank() && !src.contains("about:blank") && (src.startsWith("http") || src.contains("source="))) {
-                targetSrc = src
-                Log.d(TAG, ">> SELECTED Valid Iframe: $targetSrc")
-                break // Tìm thấy rồi thì dừng luôn
-            }
+        // 1. Quét Meta Tag (Thường là link sạch nhất)
+        val metaContentUrl = document.selectFirst("meta[itemprop=contentUrl]")?.attr("content")
+        if (!metaContentUrl.isNullOrBlank()) {
+            Log.d(TAG, "Found Meta ContentUrl: $metaContentUrl")
+            rawLinks.add(metaContentUrl)
         }
 
-        if (targetSrc == null) {
-            Log.e(TAG, "Error: No valid video iframe found (All were blank or missing)")
+        // 2. Quét Iframe (Support lazyload data-src và ID specific)
+        val iframes = document.select("iframe#search_iframe, iframe.metaframe, #playarea iframe, .entry-content iframe")
+        for (iframe in iframes) {
+            val dataSrc = iframe.attr("data-src")
+            val src = iframe.attr("src")
+            
+            if (dataSrc.isNotBlank()) rawLinks.add(dataSrc)
+            if (src.isNotBlank()) rawLinks.add(src)
+        }
+
+        Log.d(TAG, "Total unique raw links found: ${rawLinks.size}")
+
+        if (rawLinks.isEmpty()) {
+            Log.e(TAG, "No potential links found.")
             return false
         }
 
-        // 3. Xử lý logic decode như cũ với link đã tìm được
-        val sourceParam = Regex("""source=([^&]+)""").find(targetSrc)?.groupValues?.get(1)
-        
-        val extractedUrl = if (sourceParam != null) {
-            val decoded = java.net.URLDecoder.decode(sourceParam, "UTF-8")
-            Log.d(TAG, "Decoded source param: $decoded")
-            decoded
-        } else {
-            targetSrc
-        }
-
-        // 4. Phân loại và trả về link
-        val linkType = when {
-            extractedUrl.endsWith(".mp4") || extractedUrl.endsWith(".mkv") -> ExtractorLinkType.VIDEO
-            extractedUrl.contains(".m3u8") -> ExtractorLinkType.M3U8
-            else -> null
-        }
-
-        if (linkType != null) {
-            val link = newExtractorLink(
-                source = this.name,
-                name = "${this.name} VIP",
-                url = extractedUrl,
-                type = linkType
-            ) {
-                this.referer = mainUrl
-                this.quality = Qualities.Unknown.value
+        // 3. Xử lý từng link trong Set
+        var count = 0
+        rawLinks.forEach { rawUrl ->
+            // Bỏ qua link rác
+            if (rawUrl.contains("about:blank") || (!rawUrl.startsWith("http") && !rawUrl.contains("source="))) {
+                return@forEach // continue loop
             }
-            callback.invoke(link)
-        } else {
-            loadExtractor(extractedUrl, mainUrl, subtitleCallback) { link ->
-                callback.invoke(link)
+
+            Log.d(TAG, "Processing raw link: $rawUrl")
+
+            // Decode: Nếu là link JWPlayer chứa param "source=", giải mã nó
+            val sourceParam = Regex("""source=([^&]+)""").find(rawUrl)?.groupValues?.get(1)
+            
+            val finalUrl = if (sourceParam != null) {
+                try {
+                    URLDecoder.decode(sourceParam, "UTF-8")
+                } catch (e: Exception) {
+                    rawUrl // Fallback nếu decode lỗi
+                }
+            } else {
+                rawUrl
+            }
+
+            Log.d(TAG, "-> Resolved URL: $finalUrl")
+
+            // Phân loại link
+            val linkType = when {
+                finalUrl.endsWith(".mp4") || finalUrl.endsWith(".mkv") -> ExtractorLinkType.VIDEO
+                finalUrl.contains(".m3u8") -> ExtractorLinkType.M3U8
+                else -> null
+            }
+
+            if (linkType != null) {
+                // Trường hợp 1: Link trực tiếp (Direct Link/VIP) -> Play luôn
+                callback.invoke(
+                    newExtractorLink(
+                        source = this.name,
+                        name = "${this.name} Source ${count + 1}", 
+                        url = finalUrl,
+                        type = linkType
+                    ) {
+                        this.referer = mainUrl
+                        this.quality = Qualities.Unknown.value
+                    }
+                )
+                count++
+            } else {
+                // Trường hợp 2: Link Embed (Dood, StreamSB...) -> Cần giải mã tiếp
+                loadExtractor(finalUrl, mainUrl, subtitleCallback) { link ->
+                    callback.invoke(link)
+                    count++
+                }
             }
         }
 
-        Log.d(TAG, "<-- loadLinks FINISHED")
+        Log.d(TAG, "<-- loadLinks FINISHED. Generated $count valid links.")
         return true
     }
 }
