@@ -24,7 +24,6 @@ class AnikuroProvider : MainAPI() {
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    // User-Agent ổn định
     private val headers = mapOf(
         "authority" to "anikuro.ru",
         "accept" to "*/*",
@@ -134,7 +133,7 @@ class AnikuroProvider : MainAPI() {
     }
 
     // =========================================================================
-    // 3. LOAD
+    // 3. LOAD (CRAWL HTML)
     // =========================================================================
     private fun getIdFromUrl(url: String): String? {
         val paramId = try { Uri.parse(url).getQueryParameter("id") } catch (e: Exception) { null }
@@ -147,44 +146,51 @@ class AnikuroProvider : MainAPI() {
         val id = rawId?.filter { it.isDigit() } ?: ""
         if (id.isEmpty()) throw ErrorLoadingException("Invalid Anime ID")
 
-        val response = app.get(url, headers = headers)
+        val watchUrl = if (url.contains("/watch/")) url else "$mainUrl/watch/?id=$id"
+        
+        val response = app.get(watchUrl, headers = headers)
         val doc = response.document
 
-        val title = doc.selectFirst(".details-content h2")?.text()?.trim()
-            ?: doc.selectFirst("script:containsData(animeTitle)")?.data()
-                ?.substringAfter("animeTitle = \"")?.substringBefore("\";")
+        val title = doc.selectFirst(".anime-details .details-content h2")?.text()?.trim()
+            ?: doc.selectFirst(".preview-title")?.text()?.trim()
             ?: "Unknown Title"
 
-        var poster = doc.selectFirst("meta[property=og:image]")?.attr("content")
-            ?: doc.selectFirst("img.anime-cover")?.attr("src")
+        var poster = doc.selectFirst("img.anime-cover")?.attr("src")
+            ?: doc.selectFirst("img.preview-cover")?.attr("src")
+            ?: doc.selectFirst("meta[property=og:image]")?.attr("content")
         
         if (poster.isNullOrEmpty()) poster = "https://anikuro.ru/static/images/Anikuro_LogoBlack.svg"
 
-        val description = doc.selectFirst(".details-content .description p")?.text()?.trim()
+        val description = doc.selectFirst(".description p")?.text()?.trim()
             ?: doc.selectFirst("meta[name=description]")?.attr("content")
 
-        val episodesUrl = "$mainUrl/api/getepisodelist/?id=$id"
-        val epResponse = app.get(episodesUrl, headers = headers).parsed<EpisodeListResponse>()
-        val episodes = epResponse.episodes.mapNotNull { (epNumStr, epData) ->
-            val epNum = epNumStr.toIntOrNull() ?: return@mapNotNull null
+        val episodes = doc.select("div.episode-list div.episode").mapNotNull { element ->
+            val epNumString = element.selectFirst(".episode-number-overlay")?.text()?.trim()
+            val epNum = epNumString?.toIntOrNull() ?: return@mapNotNull null
+            
+            val epTitle = element.attr("data-title").takeIf { !it.isNullOrBlank() } 
+                ?: element.selectFirst(".episode-title")?.text() 
+                ?: "Episode $epNum"
+                
+            val epDesc = element.attr("data-description").takeIf { !it.isNullOrBlank() }
+                ?: element.selectFirst(".episode-description")?.text()
+            
+            val epImage = element.attr("data-image").takeIf { !it.isNullOrBlank() }
+                ?: element.selectFirst("img.episode-image")?.attr("src")
+
             newEpisode(data = "$id|$epNum") {
-                this.name = epData.title ?: "Episode $epNum"
+                this.name = epTitle
                 this.episode = epNum
-                this.description = epData.overview
+                this.description = epDesc
+                this.posterUrl = epImage
             }
         }.sortedBy { it.episode }
 
         var ratingScore: Score? = null
         try {
-            val csrfToken = response.cookies["csrftoken"] ?: doc.select("input[name=csrfmiddlewaretoken]").attr("value")
-            if (!csrfToken.isNullOrEmpty()) {
-                val ratingHeaders = headers.toMutableMap().apply {
-                    put("content-type", "application/json")
-                    put("x-csrftoken", csrfToken)
-                    put("cookie", "csrftoken=$csrfToken")
-                }
-                val ratingJson = app.post("$mainUrl/api/getanimerating/", headers = ratingHeaders, json = mapOf("anilist_id" to id.toIntOrNull())).parsed<RatingResponse>()
-                ratingJson.rating?.avgRating?.let { ratingScore = Score.from10(it) }
+            val ratingText = doc.selectFirst(".stats-value")?.text()?.replace("%", "")
+            if (!ratingText.isNullOrEmpty()) {
+                ratingScore = Score.from10(ratingText.toDouble() / 10.0)
             }
         } catch (e: Exception) { /* Ignore */ }
 
@@ -277,7 +283,6 @@ class AnikuroProvider : MainAPI() {
 
             node.fields().forEach { (k, v) ->
                 if (v.isTextual && v.asText().startsWith("http")) {
-                    // FIX: Bỏ qua các key referer để tránh nhận nhầm là source
                     val isNotMetaField = k != "url" && k != "default" && 
                                          !k.contains("referer") && 
                                          k != "backup" && k != "preview"
@@ -293,16 +298,15 @@ class AnikuroProvider : MainAPI() {
         return count
     }
 
+    // FIX: Removed M3u8Helper, pushing link directly to callback
     private suspend fun generateLinks(url: String, server: String, typeStr: String, referer: String, callback: (ExtractorLink) -> Unit) {
         val name = "Anikuro $server $typeStr"
-        val linkHeaders = mapOf("Origin" to mainUrl, "Referer" to referer, "User-Agent" to (headers["user-agent"] ?: ""))
         val type = if (url.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
 
-        if (type == ExtractorLinkType.M3U8) {
-            M3u8Helper.generateM3u8(name, url, referer, headers = linkHeaders).forEach(callback)
-        } else {
-            callback(newExtractorLink(source = name, name = name, url = url, type = type) { this.referer = referer })
-        }
+        // Luôn gửi trực tiếp link, kể cả m3u8
+        callback(newExtractorLink(source = name, name = name, url = url, type = type) { 
+            this.referer = referer 
+        })
     }
 
     // =========================================================================
@@ -344,10 +348,6 @@ class AnikuroProvider : MainAPI() {
     )
     data class Title(@JsonProperty("native") val native: String? = null, @JsonProperty("romaji") val romaji: String? = null, @JsonProperty("english") val english: String? = null)
     data class CoverImage(@JsonProperty("large") val large: String? = null, @JsonProperty("medium") val medium: String? = null)
-    data class EpisodeListResponse(@JsonProperty("episodes") val episodes: Map<String, ApiEpisodeDetail> = emptyMap())
-    data class ApiEpisodeDetail(@JsonProperty("title") val title: String? = null, @JsonProperty("overview") val overview: String? = null)
-    data class RatingResponse(@JsonProperty("rating") val rating: RatingData? = null)
-    data class RatingData(@JsonProperty("avg_rating") val avgRating: Double? = null)
     data class SourceResponse(
         @JsonProperty("sub") val sub: JsonNode? = null,
         @JsonProperty("dub") val dub: JsonNode? = null,
