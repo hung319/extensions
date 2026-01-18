@@ -66,46 +66,47 @@ class BokepIndoProvider : MainAPI() {
         val document = app.get(data).document
         val servers = mutableListOf<String>()
 
-        // 1. Extract links from wpst_ajax_var script variable
-        // Structure: var wpst_ajax_var = { ... "embed_url":"\u003Ciframe src=\"URL\"...", ... };
-        val scriptContent = document.select("script").map { it.data() }.firstOrNull { it.contains("wpst_ajax_var") }
-        
+        // 1. Extract from Meta Tag (Highest Priority & Cleanest)
+        // Target: <meta itemprop="embedURL" content="..." />
+        document.selectFirst("meta[itemprop='embedURL']")?.attr("content")?.let { url ->
+            if (url.isNotBlank()) servers.add(fixUrl(url))
+        }
+
+        // 2. Extract from Script 'wpst_ajax_var'
+        // Target: var wpst_ajax_var = { ... "embed_url":"\u003Ciframe src=\"URL\"...", ... };
+        val scriptContent = document.select("script").firstOrNull { 
+            it.data().contains("wpst_ajax_var") 
+        }?.data()
+
         if (scriptContent != null) {
             // Regex explanation:
-            // ["'](?:embed_url|video_url)["'] : Match key "embed_url" OR "video_url"
-            // \s*:\s*["']                     : Match colon and opening quote
-            // .*?src=\\"                      : Lazy match until src=\" (escaped quote)
-            // (.*?)                           : Capture the URL
-            // \\"                             : Stop at the next escaped quote
-            val regex = Regex("""["'](?:embed_url|video_url)["']\s*:\s*["'].*?src=\\"(.*?)\\"""")
+            // src=\\"      : Match literal characters 'src=\"' (escaped quote in JS string)
+            // (.*?)        : Capture the URL (non-greedy)
+            // \\"          : Stop at the next escaped quote
+            val regex = Regex("""src=\\"(.*?)\\"""")
             
             regex.findAll(scriptContent).forEach { match ->
                 val rawUrl = match.groupValues[1]
-                // Clean up escaped slashes if strictly JSON formatted (e.g. http:\/\/ -> http://)
+                // Clean up escaped slashes (e.g., https:\/\/ -> https://)
                 val cleanUrl = rawUrl.replace("\\/", "/")
                 servers.add(fixUrl(cleanUrl))
             }
         }
 
-        // 2. Fallback: Extract from iframe elements directly (DOM)
-        if (servers.isEmpty()) {
-            document.select("div.responsive-player iframe").forEach { element ->
-                val src = element.attr("src")
-                if (src.isNotBlank()) {
-                    servers.add(fixUrl(src))
-                }
+        // 3. Fallback: Direct DOM elements (if JS didn't render or Meta missing)
+        // Target: <div class="responsive-player"> <iframe src="...">
+        document.select("div.responsive-player iframe, div#bkpdo-player-container iframe").forEach { element ->
+            val src = element.attr("src")
+            if (src.isNotBlank()) {
+                servers.add(fixUrl(src))
             }
         }
 
-        // 3. Process extracted links
-        // Using distinct to avoid duplicates if both script and iframe contain the same link
-        // Using app.get/post inside loadExtractor implies network calls, so we let Cloudstream handle concurrency usually,
-        // but explicit distinct helps performance.
+        // 4. Load Extractors
         val uniqueServers = servers.distinct()
-        
         if (uniqueServers.isEmpty()) return false
 
-        uniqueServers.forEach { serverUrl ->
+        uniqueServers.mapAsync { serverUrl ->
             loadExtractor(serverUrl, data, subtitleCallback, callback)
         }
 
