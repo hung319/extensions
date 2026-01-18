@@ -21,7 +21,6 @@ class FapClubProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/search/?q=$query"
         val document = app.get(searchUrl).document
-        // Cấu trúc search mới: div#contmain chứa các div.video
         return parseHomepage(document.select("div#contmain div.video"))
     }
 
@@ -29,14 +28,12 @@ class FapClubProvider : MainAPI() {
         val url = if (page == 1) {
             "$mainUrl${request.data}"
         } else {
-            // Phân trang có dạng /latest-updates/2/
             "$mainUrl${request.data}$page/"
         }
 
         val document = app.get(url).document
         val home = parseHomepage(document.select("div#contmain div.video"))
         
-        // Kiểm tra nút "Next" trong pagination
         val hasNext = document.select("a.mpages:contains(Next)").isNotEmpty()
         return newHomePageResponse(request.name, home, hasNext)
     }
@@ -44,17 +41,12 @@ class FapClubProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
-        // Tiêu đề video nằm trong h1.movtitl
         val title = document.selectFirst("h1.movtitl")?.text()?.trim()
             ?: throw RuntimeException("Không tìm thấy tiêu đề")
 
-        // Mô tả lấy từ thẻ meta description
         val description = document.selectFirst("meta[name=description]")?.attr("content")
-        
-        // Tags nằm trong div.vcatsp a
         val tags = document.select("div.vcatsp a.video_cat").map { it.text() }
 
-        // Lấy videoId từ div#player để tạo poster chất lượng cao
         val playerDiv = document.selectFirst("div#player")
         val videoId = playerDiv?.attr("data-id")
         
@@ -66,7 +58,6 @@ class FapClubProvider : MainAPI() {
             document.selectFirst("link[rel=image_src]")?.attr("href")
         }
 
-        // Related videos nằm sau h1#rell
         val recommendations = parseHomepage(document.select("h1#rell ~ div.video"))
 
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
@@ -86,7 +77,6 @@ class FapClubProvider : MainAPI() {
         val document = app.get(data).document
         val playerDiv = document.selectFirst("div#player") ?: return false
 
-        // Trích xuất dữ liệu từ data-q, data-id và data-n
         val qualityData = playerDiv.attr("data-q") ?: return false
         val videoId = playerDiv.attr("data-id")
         val serverSubdomain = playerDiv.attr("data-n") ?: "d1"
@@ -97,28 +87,31 @@ class FapClubProvider : MainAPI() {
 
         val domain = "https://$serverSubdomain.vstor.top/"
 
-        // Parse từng chất lượng từ chuỗi data-q
-        qualityData.split(",").forEach { qualityBlock ->
+        // Sử dụng vòng lặp for thay vì forEach để gọi suspend fun newExtractorLink dễ dàng hơn
+        for (qualityBlock in qualityData.split(",")) {
             val parts = qualityBlock.split(";")
-            if (parts.size >= 6) {
-                val qualityLabel = parts[0] // Ví dụ: 1080p, 720p
-                val timestamp = parts[4]
-                val token = parts[5]
+            if (parts.size < 6) continue
 
-                // Theo logic KernelTeam: 720p là mặc định, các loại khác thêm suffix _{label}
-                val qualityPrefix = if (qualityLabel == "720p") "" else "_$qualityLabel"
-                val finalUrl = "${domain}whpvid/$timestamp/$token/$videoPath/${videoId}${qualityPrefix}.mp4"
+            val qualityLabel = parts[0] // e.g. 1080p, 720p
+            val timestamp = parts[4]
+            val token = parts[5]
 
-                callback.invoke(
-                    ExtractorLink(
-                        source = this.name,
-                        name = this.name,
-                        url = finalUrl,
-                        referer = mainUrl,
-                        quality = getQualityFromName(qualityLabel)
-                    )
-                )
+            // Logic: 720p là file gốc (không suffix), các chất lượng khác thêm suffix
+            val qualityPrefix = if (qualityLabel == "720p") "" else "_$qualityLabel"
+            val finalUrl = "${domain}whpvid/$timestamp/$token/$videoPath/${videoId}${qualityPrefix}.mp4"
+
+            // Sử dụng newExtractorLink như yêu cầu
+            val link = newExtractorLink(
+                source = this.name,
+                name = this.name,
+                url = finalUrl,
+                type = ExtractorLinkType.VIDEO
+            ) {
+                this.referer = mainUrl
+                this.quality = getQualityFromName(qualityLabel)
             }
+            
+            callback.invoke(link)
         }
         return true
     }
