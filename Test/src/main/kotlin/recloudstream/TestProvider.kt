@@ -21,7 +21,6 @@ class AnikuroProvider : MainAPI() {
     override val hasQuickSearch = true
     override val supportedTypes = setOf(TvType.Anime)
 
-    // Timeout 30s
     private val extendedClient = app.baseClient.newBuilder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
@@ -50,10 +49,9 @@ class AnikuroProvider : MainAPI() {
     )
 
     // =========================================================================
-    // 1. MAIN PAGE (Toast on Page 1 Only)
+    // 1. MAIN PAGE
     // =========================================================================
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // --- TOAST LOGIC (Only Show on Page 1) ---
         if (page == 1) {
             withContext(Dispatchers.Main) {
                 CommonActivity.activity?.let { activity ->
@@ -61,7 +59,6 @@ class AnikuroProvider : MainAPI() {
                 }
             }
         }
-        // -----------------------------------------
 
         val tasks = listOf(
             HomePageData("Trending") { 
@@ -113,10 +110,14 @@ class AnikuroProvider : MainAPI() {
         val anilistHeaders = mapOf("Content-Type" to "application/json", "Origin" to mainUrl, "Accept" to "application/json")
         
         return try {
-            app.post(graphqlUrl, headers = anilistHeaders, json = body).parsed<AnilistResponse>()
-                .data?.page?.airingSchedules?.mapNotNull { 
-                    it.media?.toSearchResponse(currentEpisode = "Ep ${it.episode}") 
-                } ?: emptyList()
+            val responseText = app.post(graphqlUrl, headers = anilistHeaders, json = body).text
+            val json = parseJson<JsonNode>(responseText)
+            
+            json["data"]["Page"]["airingSchedules"].mapNotNull { item ->
+                val episode = item["episode"]?.asInt()
+                val media = item["media"]
+                media?.toAnimeData()?.toSearchResponse(currentEpisode = "Ep $episode")
+            }
         } catch (e: Exception) { emptyList() }
     }
 
@@ -142,11 +143,32 @@ class AnikuroProvider : MainAPI() {
         val anilistHeaders = mapOf("Content-Type" to "application/json", "Origin" to mainUrl, "Accept" to "application/json")
 
         return try {
-            val response = app.post(graphqlUrl, headers = anilistHeaders, json = body).parsed<AnilistRecommendationsResponse>()
-            response.data?.media?.recommendations?.nodes?.mapNotNull { 
-                it.mediaRecommendation?.toSearchResponse() 
-            } ?: emptyList()
+            val responseText = app.post(graphqlUrl, headers = anilistHeaders, json = body).text
+            val json = parseJson<JsonNode>(responseText)
+            
+            json["data"]["Media"]["recommendations"]["nodes"].mapNotNull { node ->
+                node["mediaRecommendation"]?.toAnimeData()?.toSearchResponse()
+            }
         } catch (e: Exception) { emptyList() }
+    }
+
+    private fun JsonNode.toAnimeData(): AnimeData {
+        val id = this["id"]?.asInt()
+        val titleNode = this["title"]
+        val coverNode = this["coverImage"]
+        
+        return AnimeData(
+            id = id,
+            title = Title(
+                native = titleNode?.get("native")?.asText(),
+                romaji = titleNode?.get("romaji")?.asText(),
+                english = titleNode?.get("english")?.asText()
+            ),
+            coverImage = CoverImage(
+                large = coverNode?.get("large")?.asText(),
+                medium = coverNode?.get("medium")?.asText()
+            )
+        )
     }
 
     // =========================================================================
@@ -170,8 +192,9 @@ class AnikuroProvider : MainAPI() {
         val headers = mapOf("Content-Type" to "application/json", "Origin" to mainUrl, "Accept" to "application/json")
 
         return try {
-            val response = app.post(graphqlUrl, headers = headers, json = body).parsed<AnilistResponse>()
-            response.data?.page?.media?.mapNotNull { it.toSearchResponse() } ?: emptyList()
+            val responseText = app.post(graphqlUrl, headers = headers, json = body).text
+            val json = parseJson<JsonNode>(responseText)
+            json["data"]["Page"]["media"].mapNotNull { it.toAnimeData().toSearchResponse() }
         } catch (e: Exception) { emptyList() }
     }
 
@@ -222,7 +245,6 @@ class AnikuroProvider : MainAPI() {
         
         val episodes = apiResponse.episodes.mapNotNull { (epNumStr, epData) ->
             val epNum = epNumStr.toIntOrNull() ?: return@mapNotNull null
-            
             if (epNum > lastAiredEpisode) return@mapNotNull null
 
             newEpisode(data = "$id|$epNum") {
@@ -255,7 +277,7 @@ class AnikuroProvider : MainAPI() {
     }
 
     // =========================================================================
-    // 4. LOAD LINKS (ADVANCED LINK DETECTION)
+    // 4. LOAD LINKS
     // =========================================================================
     override suspend fun loadLinks(
         data: String,
@@ -269,30 +291,18 @@ class AnikuroProvider : MainAPI() {
         supportedServers.amap { serverCode ->
             try {
                 val url = "$mainUrl/api/getsources/?id=$id&lol=$serverCode&ep=$episodeNum"
-                
-                val request = okhttp3.Request.Builder()
-                    .url(url)
-                    .headers(headers.toHeaders())
-                    .get()
-                    .build()
-                
-                val response = extendedClient.newCall(request).execute()
-                val responseText = response.body?.string() ?: ""
-
+                val responseText = app.get(url, headers = headers.toHeaders()).text
                 if (responseText.contains("error") || responseText.length < 5) return@amap
 
-                val sourceResponse = parseJson<SourceResponse>(responseText)
+                val sourceJson = parseJson<JsonNode>(responseText)
                 
-                // FIX: Use standard constructor to avoid deprecation warning
-                val rootSubs = sourceResponse.subtitles?.mapNotNull { it.toSubtitleFile() } ?: emptyList()
-                rootSubs.forEach(subtitleCallback)
+                // Parse Subtitles (Fix: Use newSubtitleFile)
+                sourceJson["subtitles"]?.forEach { track ->
+                    track.toTrack()?.toSubtitleFile()?.let(subtitleCallback)
+                }
 
-                sourceResponse.sub?.let { 
-                    parseSourceNode(it, serverCode, "Sub", subtitleCallback, callback)
-                }
-                sourceResponse.dub?.let { 
-                    parseSourceNode(it, serverCode, "Dub", subtitleCallback, callback) 
-                }
+                sourceJson["sub"]?.let { parseSourceNode(it, serverCode, "Sub", subtitleCallback, callback) }
+                sourceJson["dub"]?.let { parseSourceNode(it, serverCode, "Dub", subtitleCallback, callback) }
             } catch (e: Exception) { }
         }
         return true
@@ -350,12 +360,14 @@ class AnikuroProvider : MainAPI() {
         return count
     }
 
-    // --- ADVANCED LINK TYPE DETECTION ---
-    private suspend fun getLinkType(url: String): ExtractorLinkType {
+    private fun getLinkType(url: String): ExtractorLinkType {
         val cleanUrl = url.substringBefore("?").lowercase()
         return when {
             cleanUrl.endsWith(".m3u8") -> ExtractorLinkType.M3U8
             cleanUrl.endsWith(".mp4") -> ExtractorLinkType.VIDEO
+            cleanUrl.endsWith(".mkv") -> ExtractorLinkType.VIDEO
+            cleanUrl.contains("googlevideo") -> ExtractorLinkType.VIDEO
+            cleanUrl.contains("hls") -> ExtractorLinkType.M3U8
             else -> ExtractorLinkType.VIDEO 
         }
     }
@@ -385,34 +397,22 @@ class AnikuroProvider : MainAPI() {
 
     private fun JsonNode.toTrack(): Track? = try { AppUtils.parseJson<Track>(this.toString()) } catch (e: Exception) { null }
     
-    // FIX: Removed deprecated constructor call
-    private fun Track.toSubtitleFile(): SubtitleFile? {
+    // FIX: Using suspend newSubtitleFile as requested
+    private suspend fun Track.toSubtitleFile(): SubtitleFile? {
         val url = this.file ?: this.url ?: return null
         if (this.kind == "thumbnails") return null
         val lang = this.lang ?: this.label ?: "Unknown"
-        return SubtitleFile(lang, url)
+        // Sử dụng hàm newSubtitleFile thay vì constructor
+        return newSubtitleFile(lang, url)
     }
     
     private fun Map<String, String>.toHeaders(): okhttp3.Headers = okhttp3.Headers.Builder().apply { this@toHeaders.forEach { (k, v) -> add(k, v) } }.build()
 
+    // Reduced Data Classes to save size
     data class TrendingResponse(@JsonProperty("info") val info: List<AnimeData> = emptyList())
     data class ScheduleResponse(@JsonProperty("info") val info: List<ScheduleItem> = emptyList())
     data class ScheduleItem(@JsonProperty("media") val media: AnimeData? = null, @JsonProperty("episode") val episode: Int? = null)
     
-    data class AnilistResponse(@JsonProperty("data") val data: AnilistData? = null)
-    data class AnilistData(@JsonProperty("Page") val page: AnilistPage? = null)
-    data class AnilistPage(
-        @JsonProperty("airingSchedules") val airingSchedules: List<AnilistSchedule>? = null,
-        @JsonProperty("media") val media: List<AnimeData>? = null
-    )
-    data class AnilistSchedule(@JsonProperty("episode") val episode: Int? = null, @JsonProperty("media") val media: AnimeData? = null)
-    
-    data class AnilistRecommendationsResponse(@JsonProperty("data") val data: AnilistRecData? = null)
-    data class AnilistRecData(@JsonProperty("Media") val media: AnilistRecMedia? = null)
-    data class AnilistRecMedia(@JsonProperty("recommendations") val recommendations: AnilistRecNodes? = null)
-    data class AnilistRecNodes(@JsonProperty("nodes") val nodes: List<AnilistRecItem>? = null)
-    data class AnilistRecItem(@JsonProperty("mediaRecommendation") val mediaRecommendation: AnimeData? = null)
-
     data class AnimeData(
         @JsonProperty("id") val id: Int? = null,
         @JsonProperty("title") val title: Title? = null,
@@ -428,12 +428,5 @@ class AnikuroProvider : MainAPI() {
         @JsonProperty("thumbnail") val thumbnail: String? = null
     )
     
-    data class SourceResponse(
-        @JsonProperty("sub") val sub: JsonNode? = null,
-        @JsonProperty("dub") val dub: JsonNode? = null,
-        @JsonProperty("subtitles") val subtitles: List<Track>? = null,
-        @JsonProperty("sub_referer") val subReferer: String? = null,
-        @JsonProperty("dub_referer") val dubReferer: String? = null
-    )
     data class Track(@JsonProperty("file") val file: String? = null, @JsonProperty("url") val url: String? = null, @JsonProperty("label") val label: String? = null, @JsonProperty("lang") val lang: String? = null, @JsonProperty("kind") val kind: String? = null)
 }
