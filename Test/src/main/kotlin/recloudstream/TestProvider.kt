@@ -7,14 +7,13 @@ import org.jsoup.Jsoup
 
 class VlxxProvider : MainAPI() {
     override var name = "Vlxx"
-    override var mainUrl = "https://vlxx.xxx" // Giữ nguyên theo yêu cầu cũ
+    override var mainUrl = "https://vlxx.xxx"
     override var hasMainPage = true
     override var supportedTypes = setOf(TvType.NSFW)
     override var lang = "vi"
 
     private var baseUrl: String? = null
 
-    // Giữ nguyên hàm getBaseUrl cũ theo yêu cầu
     private suspend fun getBaseUrl(): String {
         if (baseUrl == null) {
             val document = app.get(mainUrl).document
@@ -58,7 +57,11 @@ class VlxxProvider : MainAPI() {
         val plot = document.selectFirst("div.video-description")?.text()?.trim()
         
         val tags = document.select("div.video-tags div.category-tag a").map { it.text() }
-        val actors = document.select("div.video-tags div.actress-tag a").map { it.text() }
+        
+        // Fix lỗi type mismatch: List<String> -> List<ActorData>
+        val actors = document.select("div.video-tags div.actress-tag a").map { 
+            ActorData(Actor(it.text(), null)) 
+        }
         
         val recommendations = document.select("div#video-list div.video-item").mapNotNull {
             it.toSearchResult()
@@ -85,10 +88,8 @@ class VlxxProvider : MainAPI() {
         val document = app.get(data).document
         val videoId = document.selectFirst("div#video")?.attr("data-id") ?: return false
         
-        // Loop qua server 1 và 2
         listOf(1, 2).forEach { serverNum ->
             try {
-                // Request body giống curl: vlxx_server=2&id=...&server=...
                 val postData = mapOf(
                     "vlxx_server" to "2",
                     "id" to videoId,
@@ -98,7 +99,7 @@ class VlxxProvider : MainAPI() {
                 val headers = mapOf(
                     "X-Requested-With" to "XMLHttpRequest",
                     "Referer" to data,
-                    "Origin" to getBaseUrl() // Thêm Origin cho chắc chắn
+                    "Origin" to getBaseUrl()
                 )
                 
                 val ajaxUrl = "${getBaseUrl()}/ajax.php"
@@ -108,7 +109,6 @@ class VlxxProvider : MainAPI() {
                 val iframeSrc = iframeDocument.selectFirst("iframe")?.attr("src")
 
                 if (!iframeSrc.isNullOrBlank()) {
-                    // Quan trọng: Iframe request cần Referer là trang video gốc (vlxx.ms/video/...)
                     val iframeHeaders = mapOf(
                         "Referer" to data,
                         "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
@@ -116,30 +116,31 @@ class VlxxProvider : MainAPI() {
                     
                     val finalPlayerPage = app.get(iframeSrc, headers = iframeHeaders).text
                     
-                    // Parse JSON từ biến window.$$ops hoặc sources: [...]
                     val sourcesJson = sourcesRegex.find(finalPlayerPage)?.groupValues?.get(1)
                     val sources = AppUtils.tryParseJson<List<VideoSource>>(sourcesJson)
                     
                     sources?.forEach { source ->
                         if (source.file.isNotBlank()) {
-                            // Xác định type: Nếu JSON trả về type="hls" hoặc file đuôi .vl/.m3u8 thì là M3U8
                             val isM3u8 = source.type == "hls" || source.file.contains(".m3u8") || source.file.endsWith(".vl")
+                            val linkType = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+
+                            // Sử dụng helper function newExtractorLink
+                            val link = newExtractorLink(
+                                source = this.name,
+                                name = "${this.name} Server $serverNum",
+                                url = source.file,
+                                type = linkType
+                            ) {
+                                this.referer = iframeSrc
+                                this.quality = Qualities.Unknown.value
+                            }
                             
-                            callback.invoke(
-                                ExtractorLink(
-                                    source = this.name,
-                                    name = "${this.name} Server $serverNum",
-                                    url = source.file,
-                                    referer = iframeSrc, // Referer cho stream thường là domain chứa player
-                                    quality = Qualities.Unknown.value,
-                                    type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                                )
-                            )
+                            callback.invoke(link)
                         }
                     }
                 }
             } catch (e: Exception) {
-                // Bỏ qua lỗi server này, thử server khác
+                // Ignore error
             }
         }
         
@@ -156,8 +157,6 @@ class VlxxProvider : MainAPI() {
         }
         
         val title = linkTag.attr("title").trim()
-        
-        // Sử dụng data-original vì site dùng lazyload
         val imgTag = this.selectFirst("img.video-image")
         val posterUrl = imgTag?.attr("data-original") ?: imgTag?.attr("src")
 
