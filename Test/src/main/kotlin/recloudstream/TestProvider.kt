@@ -1,140 +1,235 @@
 package recloudstream
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
+import java.net.URLEncoder
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
+import java.security.MessageDigest
 
-class FullxcinemaProvider : MainAPI() {
-    override var mainUrl = "https://fullxcinema.com"
-    override var name = "Fullxcinema"
+class IhentaiProvider : MainAPI() {
+    // --- Cấu hình Extension ---
+    override var mainUrl = "https://ihentai.to"
+    override var name = "iHentai"
     override val hasMainPage = true
-    override var lang = "en"
-    override val hasDownloadSupport = true
-    
-    override val supportedTypes = setOf(
-        TvType.NSFW
-    )
+    override var lang = "vi"
+    override val supportedTypes = setOf(TvType.NSFW)
 
-    // Hàm xử lý chung để lấy thông tin phim từ thẻ HTML <article>
-    private fun Element.toSearchResponse(): SearchResponse? {
-        // Lấy link bài viết
-        val href = this.selectFirst("a")?.attr("href") ?: return null
-        
-        // Lấy tiêu đề: Dựa vào HTML <header class="entry-header"><span>Title</span></header>
-        val title = this.selectFirst("header.entry-header span")?.text() ?: return null
-        
-        // Lấy ảnh: Dựa vào HTML <img class="video-main-thumb" src="...">
-        // Lưu ý: HTML dùng 'src', không phải 'data-src'
-        val posterUrl = this.selectFirst("div.post-thumbnail img")?.attr("src")
-            ?: this.selectFirst("img")?.attr("src")
+    companion object {
+        // User-Agent giả lập Android để tránh bị chặn
+        private const val USER_AGENT = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
+        private val COMMON_HEADERS = mapOf("User-Agent" to USER_AGENT)
+    }
 
-        return newMovieSearchResponse(title, href, TvType.NSFW) {
+    // --- 1. Trang chủ ---
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val document = app.get(mainUrl, headers = COMMON_HEADERS).document
+        val homePageList = mutableListOf<HomePageList>()
+
+        // Lấy các section chính
+        document.select("main > div.v-container > div.tw-mb-16").forEach { section ->
+            val title = section.selectFirst("h1.tw-text-3xl")?.text()?.trim() ?: return@forEach
+            val items = section.select("div.tw-grid > div.v-card").mapNotNull { parseSearchCard(it) }
+
+            if (items.isNotEmpty()) {
+                homePageList.add(HomePageList(title, items))
+            }
+        }
+
+        // Fallback: Nếu không parse được section nào, thử lấy list mặc định
+        if (homePageList.isEmpty()) {
+            val latestItems = document.select("main.v-main div.v-container div.tw-grid > div.v-card")
+                .mapNotNull { parseSearchCard(it) }
+
+            if (latestItems.isNotEmpty()) {
+                homePageList.add(HomePageList("Truyện Mới", latestItems))
+            }
+        }
+
+        return newHomePageResponse(homePageList, hasNext = false)
+    }
+
+    // --- Helper: Parse Item Card ---
+    private fun parseSearchCard(element: Element): AnimeSearchResponse? {
+        val linkElement = element.selectFirst("a:has(img.tw-w-full)") ?: return null
+        val href = fixUrlNull(linkElement.attr("href"))?.takeIf { it.isNotBlank() && it != "/" } ?: return null
+
+        val imageElement = linkElement.selectFirst("img.tw-w-full")
+        val posterUrl = fixUrlNull(imageElement?.attr("src"))
+            ?: fixUrlNull(imageElement?.attr("data-src"))
+
+        // Logic fallback title
+        val title = imageElement?.attr("alt")?.trim()
+            ?: imageElement?.attr("title")?.trim()
+            ?: element.selectFirst("a > div.v-card-text h2.text-subtitle-1")?.text()?.trim()
+            ?: linkElement.attr("title").trim()
+
+        if (title.isNullOrBlank()) return null
+
+        return newAnimeSearchResponse(title, fixUrl(href), TvType.NSFW) {
             this.posterUrl = posterUrl
-            // Có thể lấy thêm thời lượng nếu muốn
-            // addDuration(this.selectFirst("span.duration")?.text())
         }
     }
 
-    override suspend fun getMainPage(
-        page: Int,
-        request : MainPageRequest
-    ): HomePageResponse {
-        // Cấu trúc phân trang: /page/2/
-        val document = app.get("$mainUrl/page/$page/").document
-        
-        // Selector lấy danh sách video: <article class="loop-video thumb-block ...">
-        val home = document.select("article.loop-video.thumb-block").mapNotNull {
-            it.toSearchResponse()
-        }
-        
-        return newHomePageResponse(
-            list = HomePageList(
-                name = "Latest Movies",
-                list = home,
-                isHorizontalImages = true // Video thường là 16:9
-            ), 
-            hasNext = true
-        )
-    }
-
+    // --- 2. Tìm kiếm ---
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/?s=$query"
-        val document = app.get(searchUrl).document
-        
-        return document.select("article.loop-video.thumb-block").mapNotNull {
-            it.toSearchResponse()
+        return try {
+            val encodedQuery = URLEncoder.encode(query, "UTF-8")
+            val searchUrl = "$mainUrl/search?s=$encodedQuery"
+            val document = app.get(searchUrl, headers = COMMON_HEADERS).document
+
+            document.select("main.v-main div.v-container div.tw-grid > div.v-card")
+                .mapNotNull { parseSearchCard(it) }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            emptyList()
         }
     }
 
+    // --- 3. Chi tiết phim ---
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url).document
+        val document = app.get(url, headers = COMMON_HEADERS).document
 
-        // Tiêu đề trang chi tiết
-        val title = document.selectFirst("h1.entry-title")?.text()?.trim()
-            ?: document.selectFirst("h1.site-title")?.text()?.trim()
-            ?: "Unknown Title"
+        val title = document.selectFirst("div.tw-mb-3 > h1.tw-text-lg")?.text()?.trim()
+            ?: document.selectFirst("h1")?.text()?.trim()
+            ?: throw ErrorLoadingException("Không tìm thấy tiêu đề")
 
-        // Poster & Description
-        val poster = document.selectFirst("meta[property='og:image']")?.attr("content")
-        val description = document.selectFirst("div.video-description div.desc.more")?.text()?.trim()
-        val tags = document.select("div.tags-list a[rel='tag']").map { it.text() }
+        val posterUrl = fixUrlNull(document.selectFirst("div.tw-grid div.tw-col-span-5 img")?.attr("src"))
+        val description = document.selectFirst("div.v-sheet.tw-p-5 > p.tw-text-sm")?.text()?.trim()
+        val genres = document.select("div.v-sheet.tw-p-5 a.v-chip").mapNotNull { it.text()?.trim() }
 
-        // Lấy link Iframe
-        // Dựa trên theme Retrotube, iframe thường nằm trong .responsive-player hoặc .video-embed
-        val iframeUrl = document.selectFirst("div.responsive-player iframe")?.attr("src")
-            ?: document.selectFirst("div.video-embed iframe")?.attr("src")
-            ?: document.selectFirst("iframe[src*='magsrv']")?.attr("src") // Fallback nếu có
-            ?: throw ErrorLoadingException("No video iframe found")
+        // Lấy Recommendations
+        val recommendations = document.select("div.tw-col-span-3.lg\\:tw-col-span-1 > div.tw-mb-5:has(h2)")
+            .flatMap { section ->
+                section.select("div.tw-relative.tw-grid").mapNotNull { item ->
+                    val recTitle = item.selectFirst("h3 a")?.text()?.trim() ?: return@mapNotNull null
+                    val recUrl = fixUrlNull(item.selectFirst("h3 a")?.attr("href")) ?: return@mapNotNull null
+                    val recPoster = fixUrlNull(item.selectFirst("img")?.attr("src"))
 
-        // Lấy danh sách phim đề xuất bên dưới
-        val recommendations = document.select("div.under-video-block article.loop-video.thumb-block").mapNotNull {
-            it.toSearchResponse()
-        }
+                    newAnimeSearchResponse(recTitle, recUrl, TvType.NSFW) {
+                        this.posterUrl = recPoster
+                    }
+                }
+            }.distinctBy { it.url }
 
-        return newMovieLoadResponse(
-            name = title,
-            url = url,
-            type = TvType.NSFW,
-            dataUrl = iframeUrl
-        ) {
-            this.posterUrl = poster
+        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
+            this.posterUrl = posterUrl
             this.plot = description
-            this.tags = tags
+            this.tags = genres
             this.recommendations = recommendations
         }
     }
 
+    // --- 4. Load Links (Direct Decryption + newExtractorLink) ---
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Load nội dung của Iframe
-        val iframeDocument = app.get(data).document
-        
-        // Cố gắng tìm thẻ <video> hoặc source bên trong iframe
-        val videoUrl = iframeDocument.selectFirst("video source")?.attr("src")
-            ?: iframeDocument.selectFirst("video")?.attr("src")
-            ?: return false
+        try {
+            // Bước 1: Lấy HTML để tìm Video ID
+            val document = app.get(data, headers = COMMON_HEADERS).document
+            val iframeSrc = document.selectFirst("iframe.tw-w-full")?.attr("src") ?: return false
 
-        val linkType = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-        
-        // --- PHẦN ĐÃ SỬA ---
-        // Chuyển referer và quality vào trong block lambda {} ở cuối
-        val link = newExtractorLink(
-            source = this.name,
-            name = this.name,
-            url = videoUrl,
-            type = linkType // type là tham số, để ở ngoài
-        ) {
-            this.referer = "$mainUrl/"
-            this.quality = getQualityFromName("")
+            // src format: https://play.sonar-cdn.com/watch?v=UUID
+            val videoId = iframeSrc.substringAfter("?v=").substringBefore("&")
+            if (videoId.isBlank()) return false
+
+            // Bước 2: Gọi API lấy dữ liệu mã hóa (IV:Cipher)
+            // Headers phải chuẩn để bypass CORS/Protection của Mimix
+            val cryptoHeaders = mapOf(
+                "Authority" to "x.mimix.cc",
+                "Accept" to "*/*",
+                "Origin" to "https://play.sonar-cdn.com",
+                "Referer" to "https://play.sonar-cdn.com/",
+                "User-Agent" to USER_AGENT
+            )
+            val apiUrl = "https://x.mimix.cc/watch/$videoId"
+
+            val response = app.get(apiUrl, headers = cryptoHeaders).text
+            
+            // Format mong đợi: HEX_IV:HEX_DATA (VD: 460fe0...:a583...)
+            if (!response.contains(":")) return false
+
+            // Bước 3: Giải mã AES-CTR
+            val decryptedUrl = decryptMimix(response, videoId)
+
+            if (decryptedUrl.startsWith("http")) {
+                // --- SỬ DỤNG newExtractorLink THEO YÊU CẦU ---
+                callback(
+                    newExtractorLink(
+                        source = name,
+                        name = "iHentai (VIP)",
+                        url = decryptedUrl,
+                        type = ExtractorLinkType.M3U8
+                    ) {
+                        this.referer = "https://play.sonar-cdn.com/"
+                        this.quality = Qualities.Unknown.value
+                        // Nếu cần headers tùy chỉnh cho link m3u8, thêm vào đây
+                        // this.headers = mapOf("User-Agent" to USER_AGENT) 
+                    }
+                )
+                return true
+            }
+
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
-        // -------------------
+        return false
+    }
 
-        callback.invoke(link)
-        return true
+    // --- Crypto Helper: AES-CTR + SHA256 ---
+    // Mô phỏng lại logic JS:
+    // Key = SHA-256(videoId)
+    // IV = HexDecode(Parts[0])
+    // Data = HexDecode(Parts[1])
+    // Mode = AES-CTR
+    private fun decryptMimix(encryptedString: String, keySeed: String): String {
+        return try {
+            val parts = encryptedString.split(":")
+            if (parts.size != 2) return ""
+
+            val ivHex = parts[0]
+            val cipherHex = parts[1]
+
+            // 1. Tạo Key từ VideoID (SHA-256)
+            val md = MessageDigest.getInstance("SHA-256")
+            val keyBytes = md.digest(keySeed.toByteArray(Charsets.UTF_8))
+            val secretKey = SecretKeySpec(keyBytes, "AES")
+
+            // 2. Chuyển Hex sang Byte
+            val ivBytes = hexToBytes(ivHex)
+            val cipherBytes = hexToBytes(cipherHex)
+            val ivSpec = IvParameterSpec(ivBytes)
+
+            // 3. Giải mã AES/CTR/NoPadding
+            val cipher = Cipher.getInstance("AES/CTR/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, secretKey, ivSpec)
+
+            val decryptedBytes = cipher.doFinal(cipherBytes)
+            String(decryptedBytes, Charsets.UTF_8)
+
+        } catch (e: Exception) {
+            e.printStackTrace()
+            ""
+        }
+    }
+
+    // Utility: Chuyển Hex String sang ByteArray thủ công (không cần thư viện ngoài)
+    private fun hexToBytes(hex: String): ByteArray {
+        val len = hex.length
+        val data = ByteArray(len / 2)
+        var i = 0
+        while (i < len) {
+            data[i / 2] = ((Character.digit(hex[i], 16) shl 4) +
+                    Character.digit(hex[i + 1], 16)).toByte()
+            i += 2
+        }
+        return data
     }
 }
