@@ -2,21 +2,24 @@ package recloudstream
 
 /*
 * @CloudstreamProvider: BokepIndoProvider
-* @Version: 3.2
+* @Version: 3.3
 * @Author: Coder
 * @Language: id
 * @TvType: Nsfw
-* @Url: https://bokepindoh.monster
-* @Info: Updated extraction logic for wpst_ajax_var JSON structure
+* @Url: https://bokepindoh.wtf
+* @Info: Full implementation with fixed Coroutines and extracting logic from Meta/Script/DOM.
 */
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 
 class BokepIndoProvider : MainAPI() {
     override var name = "BokepIndo"
-    override var mainUrl = "https://bokepindoh.monster"
+    override var mainUrl = "https://bokepindoh.wtf"
     override var supportedTypes = setOf(TvType.NSFW)
     override var lang = "id"
     override var hasMainPage = true
@@ -67,34 +70,30 @@ class BokepIndoProvider : MainAPI() {
         val servers = mutableListOf<String>()
 
         // 1. Extract from Meta Tag (Highest Priority & Cleanest)
-        // Target: <meta itemprop="embedURL" content="..." />
+        // Target: <meta itemprop="embedURL" content="https://bebasnonton.online/..." />
         document.selectFirst("meta[itemprop='embedURL']")?.attr("content")?.let { url ->
             if (url.isNotBlank()) servers.add(fixUrl(url))
         }
 
         // 2. Extract from Script 'wpst_ajax_var'
-        // Target: var wpst_ajax_var = { ... "embed_url":"\u003Ciframe src=\"URL\"...", ... };
+        // Target: "embed_url":"\u003Ciframe src=\"URL\"..."
         val scriptContent = document.select("script").firstOrNull { 
             it.data().contains("wpst_ajax_var") 
         }?.data()
 
         if (scriptContent != null) {
-            // Regex explanation:
-            // src=\\"      : Match literal characters 'src=\"' (escaped quote in JS string)
-            // (.*?)        : Capture the URL (non-greedy)
-            // \\"          : Stop at the next escaped quote
+            // Regex to capture content between src=\" and \" inside the script
             val regex = Regex("""src=\\"(.*?)\\"""")
             
             regex.findAll(scriptContent).forEach { match ->
                 val rawUrl = match.groupValues[1]
-                // Clean up escaped slashes (e.g., https:\/\/ -> https://)
+                // Fix escaped slashes (e.g., https:\/\/ -> https://)
                 val cleanUrl = rawUrl.replace("\\/", "/")
                 servers.add(fixUrl(cleanUrl))
             }
         }
 
         // 3. Fallback: Direct DOM elements (if JS didn't render or Meta missing)
-        // Target: <div class="responsive-player"> <iframe src="...">
         document.select("div.responsive-player iframe, div#bkpdo-player-container iframe").forEach { element ->
             val src = element.attr("src")
             if (src.isNotBlank()) {
@@ -102,12 +101,18 @@ class BokepIndoProvider : MainAPI() {
             }
         }
 
-        // 4. Load Extractors
+        // 4. Load Extractors safely using standard Coroutines
         val uniqueServers = servers.distinct()
+        
         if (uniqueServers.isEmpty()) return false
 
-        uniqueServers.mapAsync { serverUrl ->
-            loadExtractor(serverUrl, data, subtitleCallback, callback)
+        // Standard way to run async tasks in Cloudstream providers
+        coroutineScope {
+            uniqueServers.map { serverUrl ->
+                async {
+                    loadExtractor(serverUrl, data, subtitleCallback, callback)
+                }
+            }.awaitAll()
         }
 
         return true
