@@ -3,16 +3,19 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.mvvm.Resource
 import org.jsoup.Jsoup
 
-class RidoMoviesProvider : MainAPI() {
+class RidoMoviesProvider : MainAPI() { 
     override var mainUrl = "https://ridomovies.tv"
     override var name = "RidoMovies"
+    
+    // hasMainPage = true báo cho app biết Provider này có trang chủ
     override val hasMainPage = true
     override var lang = "en"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
-    // --- FIX: Đổi tên các Data Class để không trùng với Cloudstream Core ---
+    // --- DATA CLASSES (Thêm prefix Api để tránh xung đột) ---
     data class ApiSearchResponse(val data: ApiSearchData?)
     data class ApiSearchData(val items: List<ApiSearchItem>?)
     data class ApiSearchItem(
@@ -27,13 +30,19 @@ class RidoMoviesProvider : MainAPI() {
     data class ApiLinkResponse(val data: List<ApiLinkItem>?)
     data class ApiLinkItem(val url: String?)
 
-    // --- MAIN PAGE ---
-    override suspend fun mainPage(): HomePageResponse {
+    // --- SỬA ĐỔI: Dùng getMainPage thay vì mainPage ---
+    // Override hàm này để trả về dữ liệu trang chủ
+    override suspend fun getMainPage(
+        page: Int, 
+        request: MainPageRequest
+    ): HomePageResponse {
         return try {
-            // Gọi hàm search rỗng để lấy phim mới
+            // Gọi hàm search rỗng để lấy list phim mới nhất
             val searchResults = search("")
+            
+            // Trả về object HomePageResponse chuẩn
             newHomePageResponse(
-                listOf(HomePageList("Latest Movies", searchResults))
+                listOf(HomePageList("Latest Movies / Featured", searchResults))
             )
         } catch (e: Exception) {
             newHomePageResponse(emptyList())
@@ -41,7 +50,6 @@ class RidoMoviesProvider : MainAPI() {
     }
 
     // --- SEARCH ---
-    // Trả về List<SearchResponse> của Cloudstream (không phải class nội bộ)
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/core/api/search?q=$query"
         return try {
@@ -99,10 +107,13 @@ class RidoMoviesProvider : MainAPI() {
         if (isTv) {
             val episodes = mutableListOf<Episode>()
             val episodeRegex = """"fullSlug":"(tv/.*?/season-(\d+)/episode-(\d+))"""".toRegex()
+            
             episodeRegex.findAll(response).forEach { match ->
                 val slug = match.groupValues[1]
                 val season = match.groupValues[2].toIntOrNull()
                 val episode = match.groupValues[3].toIntOrNull()
+                
+                // Url truyền vào đây sẽ được lưu vào biến 'data' của Episode
                 episodes.add(newEpisode("$mainUrl/$slug") {
                     this.season = season
                     this.episode = episode
@@ -110,7 +121,12 @@ class RidoMoviesProvider : MainAPI() {
                 })
             }
             
-            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes.distinctBy { it.url }) {
+            // SỬA ĐỔI QUAN TRỌNG:
+            // 1. Dùng it.data thay vì it.url (Cloudstream Episode lưu link trong 'data')
+            // 2. Định nghĩa kiểu List<Episode> rõ ràng để tránh lỗi "Cannot infer type"
+            val uniqueEpisodes: List<Episode> = episodes.distinctBy { it.data }
+
+            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, uniqueEpisodes) {
                 this.posterUrl = poster
                 this.backgroundPosterUrl = bgPoster
                 this.plot = description
@@ -133,6 +149,7 @@ class RidoMoviesProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // data ở đây chính là url chúng ta đã lưu vào Episode hoặc Movie
         val apiUrl = if (data.contains("/movies/")) {
             data.replace("/movies/", "/api/movies/")
         } else if (data.contains("/tv/")) {
