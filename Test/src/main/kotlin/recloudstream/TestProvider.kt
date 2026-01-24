@@ -12,65 +12,69 @@ class RidoMoviesProvider : MainAPI() {
     override var lang = "en"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
-    // Helper: Parse JSON data classes
-    data class SearchResponse(val data: SearchData?)
-    data class SearchData(val items: List<SearchItem>?)
-    data class SearchItem(
+    // --- FIX: Đổi tên các Data Class để không trùng với Cloudstream Core ---
+    data class ApiSearchResponse(val data: ApiSearchData?)
+    data class ApiSearchData(val items: List<ApiSearchItem>?)
+    data class ApiSearchItem(
         val title: String,
         val fullSlug: String,
         val type: String?,
         val posterPath: String?,
-        val contentable: Contentable?
+        val contentable: ApiContentable?
     )
-    data class Contentable(val releaseYear: String?, val overview: String?)
+    data class ApiContentable(val releaseYear: String?, val overview: String?)
 
-    // Class cho API Links
-    data class LinkResponse(val data: List<LinkItem>?)
-    data class LinkItem(val url: String?) // Chứa chuỗi HTML iframe
+    data class ApiLinkResponse(val data: List<ApiLinkItem>?)
+    data class ApiLinkItem(val url: String?)
 
     // --- MAIN PAGE ---
     override suspend fun mainPage(): HomePageResponse {
-        // Gọi search rỗng để lấy list phim mới nhất thay vì parse HTML phức tạp
         return try {
-            val search = search("")
+            // Gọi hàm search rỗng để lấy phim mới
+            val searchResults = search("")
             newHomePageResponse(
-                listOf(HomePageList("Latest Movies", search))
+                listOf(HomePageList("Latest Movies", searchResults))
             )
         } catch (e: Exception) {
             newHomePageResponse(emptyList())
         }
     }
 
-    // --- SEARCH (Dùng API /core/api/search) ---
+    // --- SEARCH ---
+    // Trả về List<SearchResponse> của Cloudstream (không phải class nội bộ)
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/core/api/search?q=$query"
-        val text = app.get(url).text
-        
-        val json = parseJson<SearchResponse>(text)
-        val items = json.data?.items ?: return emptyList()
+        return try {
+            val text = app.get(url).text
+            val json = parseJson<ApiSearchResponse>(text)
+            val items = json.data?.items ?: return emptyList()
 
-        return items.mapNotNull { item ->
-            val title = item.title
-            val href = "$mainUrl/${item.fullSlug}"
-            val poster = if (item.posterPath != null) "$mainUrl${item.posterPath}" else ""
-            val type = if (item.type == "movie") TvType.Movie else TvType.TvSeries
-            val year = item.contentable?.releaseYear?.toIntOrNull()
+            items.mapNotNull { item ->
+                val title = item.title
+                val href = "$mainUrl/${item.fullSlug}"
+                val poster = if (item.posterPath != null) "$mainUrl${item.posterPath}" else ""
+                val type = if (item.type == "movie") TvType.Movie else TvType.TvSeries
+                val year = item.contentable?.releaseYear?.toIntOrNull()
 
-            if (type == TvType.Movie) {
-                newMovieSearchResponse(title, href, type) {
-                    this.posterUrl = poster
-                    this.year = year
-                }
-            } else {
-                newTvSeriesSearchResponse(title, href, type) {
-                    this.posterUrl = poster
-                    this.year = year
+                if (type == TvType.Movie) {
+                    newMovieSearchResponse(title, href, type) {
+                        this.posterUrl = poster
+                        this.year = year
+                    }
+                } else {
+                    newTvSeriesSearchResponse(title, href, type) {
+                        this.posterUrl = poster
+                        this.year = year
+                    }
                 }
             }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            emptyList()
         }
     }
 
-    // --- LOAD (Metadata - Parse HTML vì API Link thiếu info chi tiết) ---
+    // --- LOAD ---
     override suspend fun load(url: String): LoadResponse {
         val response = app.get(url).text
         val document = Jsoup.parse(response)
@@ -82,7 +86,6 @@ class RidoMoviesProvider : MainAPI() {
         
         val isTv = url.contains("/tv/") || url.contains("season")
 
-        // Lấy danh sách phim đề xuất bên dưới
         val recommendations = document.select("div.grid > a").mapNotNull {
              val recHref = it.attr("href")
              val recTitle = it.select("h3").text()
@@ -95,7 +98,6 @@ class RidoMoviesProvider : MainAPI() {
 
         if (isTv) {
             val episodes = mutableListOf<Episode>()
-            // Regex tìm tập phim trong Next.js script
             val episodeRegex = """"fullSlug":"(tv/.*?/season-(\d+)/episode-(\d+))"""".toRegex()
             episodeRegex.findAll(response).forEach { match ->
                 val slug = match.groupValues[1]
@@ -124,31 +126,27 @@ class RidoMoviesProvider : MainAPI() {
         }
     }
 
-    // --- LOAD LINKS (Dùng API /api/movies/...) ---
+    // --- LOAD LINKS ---
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // data = https://ridomovies.tv/movies/speed-faster
-        // Convert sang API endpoint
         val apiUrl = if (data.contains("/movies/")) {
             data.replace("/movies/", "/api/movies/")
         } else if (data.contains("/tv/")) {
-            data.replace("/tv/", "/api/tv/") // Dự đoán fallback cho TV
+            data.replace("/tv/", "/api/tv/")
         } else {
             data
         }
 
         try {
             val jsonText = app.get(apiUrl).text
-            // API trả về mảng trực tiếp bên trong key "data"
-            val jsonResponse = parseJson<LinkResponse>(jsonText)
+            val jsonResponse = parseJson<ApiLinkResponse>(jsonText)
             
             jsonResponse.data?.forEach { item ->
                 val iframeHtml = item.url ?: return@forEach
-                // Parse HTML string: <iframe ... data-src="...">
                 val doc = Jsoup.parse(iframeHtml)
                 val src = doc.select("iframe").attr("data-src")
                 
@@ -158,7 +156,7 @@ class RidoMoviesProvider : MainAPI() {
             }
         } catch (e: Exception) {
             e.printStackTrace()
-            // Fallback: Parse HTML trang gốc nếu API lỗi
+            // Fallback: Parse HTML gốc
             val html = app.get(data).text
             val embedRegex = """src\\":\\"(https:.*?)(\\?.*?)?\\"""".toRegex()
             embedRegex.findAll(html).forEach { match ->
