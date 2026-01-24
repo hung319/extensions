@@ -4,6 +4,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.mvvm.Resource
+import com.lagradost.cloudstream3.Score // Import class Score
 import org.jsoup.Jsoup
 import java.net.URLDecoder
 
@@ -20,13 +21,13 @@ class RidoMoviesProvider : MainAPI() {
     data class ApiItem(
         val title: String,
         val fullSlug: String,
-        val type: String?, // "movie" or "tv-series"
+        val type: String?, 
         val posterPath: String?,
         val contentable: ApiContentable?
     )
     data class ApiContentable(val releaseYear: String?, val overview: String?)
 
-    // Class cho Load (JSON-LD & Next.js Data)
+    // Class cho Load (JSON-LD)
     data class LdJson(
         val name: String?,
         val description: String?,
@@ -39,7 +40,7 @@ class RidoMoviesProvider : MainAPI() {
     data class LdPerson(val name: String?)
     data class LdRating(val ratingValue: String?)
 
-    // Class cho Episode (Next.js embedded json)
+    // Class cho Episode (Next.js data)
     data class NextSeasons(val seasons: List<NextSeason>?)
     data class NextSeason(val seasonNumber: Int?, val episodes: List<NextEpisode>?)
     data class NextEpisode(
@@ -53,8 +54,7 @@ class RidoMoviesProvider : MainAPI() {
     data class ApiLinkResponse(val data: List<ApiLinkItem>?)
     data class ApiLinkItem(val url: String?)
 
-    // --- MAIN PAGE (Dùng API) ---
-    // Khai báo các mục trang chủ
+    // --- MAIN PAGE ---
     override val mainPage = mainPageOf(
         "$mainUrl/core/api/movies/latest?page%5Bnumber%5D=" to "Latest Movies",
         "$mainUrl/core/api/series/latest?page%5Bnumber%5D=" to "Latest TV Series"
@@ -64,7 +64,7 @@ class RidoMoviesProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        val url = request.data + page // Ghep page number vao URL
+        val url = request.data + page
         
         return try {
             val text = app.get(url).text
@@ -75,10 +75,7 @@ class RidoMoviesProvider : MainAPI() {
                 val title = item.title
                 val href = "$mainUrl/${item.fullSlug}"
                 val poster = if (item.posterPath != null) "$mainUrl${item.posterPath}" else ""
-                
-                // Xác định Type chính xác từ API
                 val type = if (item.type == "tv-series") TvType.TvSeries else TvType.Movie
-                
                 val year = item.contentable?.releaseYear?.toIntOrNull()
 
                 if (type == TvType.Movie) {
@@ -99,8 +96,7 @@ class RidoMoviesProvider : MainAPI() {
         }
     }
 
-    // --- SEARCH (Dùng API Search) ---
-    // API Search cũ: /core/api/search?q=... trả về cấu trúc tương tự
+    // --- SEARCH ---
     data class SearchRoot(val data: SearchContainer?)
     data class SearchContainer(val items: List<ApiItem>?)
 
@@ -136,13 +132,12 @@ class RidoMoviesProvider : MainAPI() {
         }
     }
 
-    // --- LOAD (Parse JSON-LD & Next.js Data) ---
+    // --- LOAD ---
     override suspend fun load(url: String): LoadResponse {
         val response = app.get(url).text
         val isTv = url.contains("/tv/") || url.contains("season")
 
-        // 1. Trích xuất JSON-LD (Schema.org) từ HTML/RSC
-        // Tìm chuỗi: {"@context":"https://schema.org","@type":"..." ...}
+        // Parse JSON-LD
         val ldJsonRegex = """\{"@context":"https://schema.org".*?"@type":"(Movie|TVSeries)".*?\}""".toRegex()
         val ldJsonString = ldJsonRegex.find(response)?.value
         
@@ -150,7 +145,7 @@ class RidoMoviesProvider : MainAPI() {
         var description: String? = null
         var poster: String? = null
         var year: Int? = null
-        var rating: Int? = null
+        var ratingValue: Double? = null // Đổi thành Double để dùng cho Score
         var tags: List<String>? = null
         var actors: List<ActorData>? = null
 
@@ -162,20 +157,19 @@ class RidoMoviesProvider : MainAPI() {
                 poster = ldData.image
                 year = ldData.dateCreated?.take(4)?.toIntOrNull()
                 tags = ldData.genre
-                rating = ldData.aggregateRating?.ratingValue?.toDoubleOrNull()?.times(1000)?.toInt()
+                // Lấy giá trị rating dạng Double (ví dụ 5.4)
+                ratingValue = ldData.aggregateRating?.ratingValue?.toDoubleOrNull()
                 actors = ldData.actor?.mapNotNull { p -> p.name?.let { ActorData(Actor(it)) } }
             } catch (e: Exception) {
                 e.printStackTrace()
             }
         } else {
-            // Fallback parse meta tags nếu JSON-LD lỗi
             val doc = Jsoup.parse(response)
             title = doc.selectFirst("meta[property=og:title]")?.attr("content") ?: title
             description = doc.selectFirst("meta[name=description]")?.attr("content")
             poster = doc.selectFirst("meta[property=og:image]")?.attr("content")
         }
 
-        // Recommendation
         val recommendations = Jsoup.parse(response).select("div.grid > a").mapNotNull {
             val recHref = it.attr("href")
             val recTitle = it.select("h3").text()
@@ -188,10 +182,6 @@ class RidoMoviesProvider : MainAPI() {
 
         if (isTv) {
             val episodes = mutableListOf<Episode>()
-            
-            // 2. Trích xuất danh sách tập từ JSON nhúng của Next.js (RSC data)
-            // Tìm chuỗi: {"seasons":[{"id":...,"episodes":[...]}]}
-            // Pattern này nằm trong RSC payload
             val seasonJsonRegex = """\{"seasons":\[.*?"episodes":\[.*?\]\}\]\}""".toRegex()
             val seasonJsonString = seasonJsonRegex.find(response)?.value
 
@@ -206,18 +196,15 @@ class RidoMoviesProvider : MainAPI() {
                                     this.season = sNum
                                     this.episode = ep.episodeNumber
                                     this.name = ep.title ?: "Episode ${ep.episodeNumber}"
-                                    this.data = "$mainUrl/$slug" // Lưu URL vào data
+                                    this.data = "$mainUrl/$slug"
                                     this.addDate(ep.releaseDate)
                                 })
                             }
                         }
                     }
-                } catch (e: Exception) {
-                   e.printStackTrace()
-                }
+                } catch (e: Exception) { e.printStackTrace() }
             } 
             
-            // Fallback regex cũ nếu JSON parse fail
             if (episodes.isEmpty()) {
                  val episodeRegex = """"fullSlug":"(tv/.*?/season-(\d+)/episode-(\d+))"""".toRegex()
                  episodeRegex.findAll(response).forEach { match ->
@@ -240,7 +227,8 @@ class RidoMoviesProvider : MainAPI() {
                 this.year = year
                 this.plot = description
                 this.tags = tags
-                this.rating = rating
+                // UPDATE: Dùng Score.from10 nếu ratingValue (VD: 5.4) có giá trị
+                this.rating = ratingValue?.let { Score.from10(it) }
                 this.actors = actors
                 this.recommendations = recommendations
             }
@@ -250,7 +238,8 @@ class RidoMoviesProvider : MainAPI() {
                 this.year = year
                 this.plot = description
                 this.tags = tags
-                this.rating = rating
+                // UPDATE: Dùng Score.from10
+                this.rating = ratingValue?.let { Score.from10(it) }
                 this.actors = actors
                 this.recommendations = recommendations
             }
@@ -264,8 +253,6 @@ class RidoMoviesProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // data: https://ridomovies.tv/movies/vieja-loca-rd1
-        // API: https://ridomovies.tv/api/movies/vieja-loca-rd1
         val apiUrl = if (data.contains("/movies/")) {
             data.replace("/movies/", "/api/movies/")
         } else if (data.contains("/tv/")) {
@@ -280,7 +267,6 @@ class RidoMoviesProvider : MainAPI() {
             
             jsonResponse.data?.forEach { item ->
                 val iframeHtml = item.url ?: return@forEach
-                // Decode HTML entities nếu cần, nhưng Jsoup xử lý tốt
                 val doc = Jsoup.parse(iframeHtml)
                 val src = doc.select("iframe").attr("data-src")
                 
@@ -290,7 +276,6 @@ class RidoMoviesProvider : MainAPI() {
             }
         } catch (e: Exception) {
             e.printStackTrace()
-            // Fallback
             val html = app.get(data).text
             val embedRegex = """src\\":\\"(https:.*?)(\\?.*?)?\\"""".toRegex()
             embedRegex.findAll(html).forEach { match ->
