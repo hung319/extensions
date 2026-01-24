@@ -4,7 +4,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.mvvm.Resource
-import com.lagradost.cloudstream3.Score // Import class Score
+import com.lagradost.cloudstream3.Score // Import Score
 import org.jsoup.Jsoup
 import java.net.URLDecoder
 
@@ -145,7 +145,7 @@ class RidoMoviesProvider : MainAPI() {
         var description: String? = null
         var poster: String? = null
         var year: Int? = null
-        var ratingValue: Double? = null // Đổi thành Double để dùng cho Score
+        var ratingValue: Double? = null 
         var tags: List<String>? = null
         var actors: List<ActorData>? = null
 
@@ -157,7 +157,6 @@ class RidoMoviesProvider : MainAPI() {
                 poster = ldData.image
                 year = ldData.dateCreated?.take(4)?.toIntOrNull()
                 tags = ldData.genre
-                // Lấy giá trị rating dạng Double (ví dụ 5.4)
                 ratingValue = ldData.aggregateRating?.ratingValue?.toDoubleOrNull()
                 actors = ldData.actor?.mapNotNull { p -> p.name?.let { ActorData(Actor(it)) } }
             } catch (e: Exception) {
@@ -227,8 +226,8 @@ class RidoMoviesProvider : MainAPI() {
                 this.year = year
                 this.plot = description
                 this.tags = tags
-                // UPDATE: Dùng Score.from10 nếu ratingValue (VD: 5.4) có giá trị
-                this.rating = ratingValue?.let { Score.from10(it) }
+                // FIX: Dùng this.score thay vì this.rating
+                this.score = ratingValue?.let { Score.from10(it) }
                 this.actors = actors
                 this.recommendations = recommendations
             }
@@ -238,8 +237,8 @@ class RidoMoviesProvider : MainAPI() {
                 this.year = year
                 this.plot = description
                 this.tags = tags
-                // UPDATE: Dùng Score.from10
-                this.rating = ratingValue?.let { Score.from10(it) }
+                // FIX: Dùng this.score thay vì this.rating
+                this.score = ratingValue?.let { Score.from10(it) }
                 this.actors = actors
                 this.recommendations = recommendations
             }
