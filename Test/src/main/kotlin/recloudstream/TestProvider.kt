@@ -3,10 +3,8 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import com.lagradost.cloudstream3.mvvm.Resource
 import com.lagradost.cloudstream3.Score // Import Score
 import org.jsoup.Jsoup
-import java.net.URLDecoder
 
 class RidoMoviesProvider : MainAPI() {
     override var mainUrl = "https://ridomovies.tv"
@@ -27,7 +25,11 @@ class RidoMoviesProvider : MainAPI() {
     )
     data class ApiContentable(val releaseYear: String?, val overview: String?)
 
-    // Class cho Load (JSON-LD)
+    // Link API
+    data class ApiLinkResponse(val data: List<ApiLinkItem>?)
+    data class ApiLinkItem(val url: String?)
+
+    // Metadata (JSON-LD)
     data class LdJson(
         val name: String?,
         val description: String?,
@@ -40,7 +42,7 @@ class RidoMoviesProvider : MainAPI() {
     data class LdPerson(val name: String?)
     data class LdRating(val ratingValue: String?)
 
-    // Class cho Episode (Next.js data)
+    // Episode Data (Next.js)
     data class NextSeasons(val seasons: List<NextSeason>?)
     data class NextSeason(val seasonNumber: Int?, val episodes: List<NextEpisode>?)
     data class NextEpisode(
@@ -49,10 +51,6 @@ class RidoMoviesProvider : MainAPI() {
         val fullSlug: String?,
         val releaseDate: String?
     )
-
-    // Class cho Link API
-    data class ApiLinkResponse(val data: List<ApiLinkItem>?)
-    data class ApiLinkItem(val url: String?)
 
     // --- MAIN PAGE ---
     override val mainPage = mainPageOf(
@@ -64,10 +62,24 @@ class RidoMoviesProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
+        // Fix URL: Nối số trang vào sau query param
         val url = request.data + page
         
+        // Thêm Headers để tránh bị chặn (403 Forbidden)
+        val headers = mapOf(
+            "Referer" to "$mainUrl/",
+            "X-Requested-With" to "XMLHttpRequest",
+            "Accept" to "application/json"
+        )
+
         return try {
-            val text = app.get(url).text
+            val response = app.get(url, headers = headers)
+            val text = response.text
+            
+            // In log để debug (xem trong Logcat tag "System.out")
+            // println("RidoMovies Debug URL: $url")
+            // println("RidoMovies Debug Res: $text")
+
             val json = parseJson<ApiResponse>(text)
             val items = json.data?.items ?: emptyList()
 
@@ -75,6 +87,7 @@ class RidoMoviesProvider : MainAPI() {
                 val title = item.title
                 val href = "$mainUrl/${item.fullSlug}"
                 val poster = if (item.posterPath != null) "$mainUrl${item.posterPath}" else ""
+                
                 val type = if (item.type == "tv-series") TvType.TvSeries else TvType.Movie
                 val year = item.contentable?.releaseYear?.toIntOrNull()
 
@@ -92,6 +105,7 @@ class RidoMoviesProvider : MainAPI() {
             }
             newHomePageResponse(request.name, homeList, true)
         } catch (e: Exception) {
+            e.printStackTrace() // Xem lỗi trong Logcat nếu crash
             newHomePageResponse(request.name, emptyList())
         }
     }
@@ -102,8 +116,10 @@ class RidoMoviesProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/core/api/search?q=$query"
+        val headers = mapOf("Referer" to "$mainUrl/")
+        
         return try {
-            val text = app.get(url).text
+            val text = app.get(url, headers = headers).text
             val json = parseJson<SearchRoot>(text)
             val items = json.data?.items ?: return emptyList()
 
@@ -145,7 +161,7 @@ class RidoMoviesProvider : MainAPI() {
         var description: String? = null
         var poster: String? = null
         var year: Int? = null
-        var ratingValue: Double? = null 
+        var ratingValue: Double? = null
         var tags: List<String>? = null
         var actors: List<ActorData>? = null
 
@@ -204,6 +220,7 @@ class RidoMoviesProvider : MainAPI() {
                 } catch (e: Exception) { e.printStackTrace() }
             } 
             
+            // Fallback nếu JSON parse fail
             if (episodes.isEmpty()) {
                  val episodeRegex = """"fullSlug":"(tv/.*?/season-(\d+)/episode-(\d+))"""".toRegex()
                  episodeRegex.findAll(response).forEach { match ->
@@ -226,8 +243,8 @@ class RidoMoviesProvider : MainAPI() {
                 this.year = year
                 this.plot = description
                 this.tags = tags
-                // FIX: Dùng this.score thay vì this.rating
-                this.score = ratingValue?.let { Score.from10(it) }
+                // Fix: Dùng property `rating` (Score) thay vì `rating` (Int) cũ
+                this.rating = ratingValue?.let { Score.from10(it) }
                 this.actors = actors
                 this.recommendations = recommendations
             }
@@ -237,8 +254,8 @@ class RidoMoviesProvider : MainAPI() {
                 this.year = year
                 this.plot = description
                 this.tags = tags
-                // FIX: Dùng this.score thay vì this.rating
-                this.score = ratingValue?.let { Score.from10(it) }
+                // Fix: Dùng property `rating` (Score)
+                this.rating = ratingValue?.let { Score.from10(it) }
                 this.actors = actors
                 this.recommendations = recommendations
             }
@@ -252,6 +269,8 @@ class RidoMoviesProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // data: https://ridomovies.tv/movies/slug
+        // API: https://ridomovies.tv/api/movies/slug
         val apiUrl = if (data.contains("/movies/")) {
             data.replace("/movies/", "/api/movies/")
         } else if (data.contains("/tv/")) {
@@ -261,7 +280,9 @@ class RidoMoviesProvider : MainAPI() {
         }
 
         try {
-            val jsonText = app.get(apiUrl).text
+            // Thêm header cho API Link
+            val headers = mapOf("Referer" to "$mainUrl/")
+            val jsonText = app.get(apiUrl, headers = headers).text
             val jsonResponse = parseJson<ApiLinkResponse>(jsonText)
             
             jsonResponse.data?.forEach { item ->
@@ -275,6 +296,7 @@ class RidoMoviesProvider : MainAPI() {
             }
         } catch (e: Exception) {
             e.printStackTrace()
+            // Fallback parse HTML gốc
             val html = app.get(data).text
             val embedRegex = """src\\":\\"(https:.*?)(\\?.*?)?\\"""".toRegex()
             embedRegex.findAll(html).forEach { match ->
