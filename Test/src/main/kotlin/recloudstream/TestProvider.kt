@@ -12,6 +12,9 @@ class RidoMoviesProvider : MainAPI() {
     override val hasMainPage = true
     override var lang = "en"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
+    
+    // TAG để lọc log trong Logcat
+    private val TAG = "RidoMovies"
 
     // --- API DATA CLASSES ---
     data class ApiResponse(val data: ApiData?)
@@ -62,10 +65,11 @@ class RidoMoviesProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        // Fix URL: Nối số trang vào sau query param
         val url = request.data + page
         
-        // Thêm Headers để tránh bị chặn (403 Forbidden)
+        // Log URL để debug
+        println("$TAG: Requesting Home URL: $url")
+
         val headers = mapOf(
             "Referer" to "$mainUrl/",
             "X-Requested-With" to "XMLHttpRequest",
@@ -74,14 +78,11 @@ class RidoMoviesProvider : MainAPI() {
 
         return try {
             val response = app.get(url, headers = headers)
-            val text = response.text
-            
-            // In log để debug (xem trong Logcat tag "System.out")
-            // println("RidoMovies Debug URL: $url")
-            // println("RidoMovies Debug Res: $text")
-
-            val json = parseJson<ApiResponse>(text)
+            val json = parseJson<ApiResponse>(response.text)
             val items = json.data?.items ?: emptyList()
+
+            // Log số lượng item tìm thấy
+            println("$TAG: Found ${items.size} items on page $page")
 
             val homeList = items.mapNotNull { item ->
                 val title = item.title
@@ -105,7 +106,8 @@ class RidoMoviesProvider : MainAPI() {
             }
             newHomePageResponse(request.name, homeList, true)
         } catch (e: Exception) {
-            e.printStackTrace() // Xem lỗi trong Logcat nếu crash
+            println("$TAG: Error loading Main Page: ${e.message}")
+            e.printStackTrace()
             newHomePageResponse(request.name, emptyList())
         }
     }
@@ -116,6 +118,7 @@ class RidoMoviesProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/core/api/search?q=$query"
+        println("$TAG: Searching for: $query at $url")
         val headers = mapOf("Referer" to "$mainUrl/")
         
         return try {
@@ -143,6 +146,7 @@ class RidoMoviesProvider : MainAPI() {
                 }
             }
         } catch (e: Exception) {
+            println("$TAG: Error Searching: ${e.message}")
             e.printStackTrace()
             emptyList()
         }
@@ -150,6 +154,7 @@ class RidoMoviesProvider : MainAPI() {
 
     // --- LOAD ---
     override suspend fun load(url: String): LoadResponse {
+        println("$TAG: Loading Details for: $url")
         val response = app.get(url).text
         val isTv = url.contains("/tv/") || url.contains("season")
 
@@ -176,7 +181,7 @@ class RidoMoviesProvider : MainAPI() {
                 ratingValue = ldData.aggregateRating?.ratingValue?.toDoubleOrNull()
                 actors = ldData.actor?.mapNotNull { p -> p.name?.let { ActorData(Actor(it)) } }
             } catch (e: Exception) {
-                e.printStackTrace()
+                println("$TAG: Error parsing JSON-LD: ${e.message}")
             }
         } else {
             val doc = Jsoup.parse(response)
@@ -217,10 +222,9 @@ class RidoMoviesProvider : MainAPI() {
                             }
                         }
                     }
-                } catch (e: Exception) { e.printStackTrace() }
+                } catch (e: Exception) { println("$TAG: Error parsing Season JSON: ${e.message}") }
             } 
             
-            // Fallback nếu JSON parse fail
             if (episodes.isEmpty()) {
                  val episodeRegex = """"fullSlug":"(tv/.*?/season-(\d+)/episode-(\d+))"""".toRegex()
                  episodeRegex.findAll(response).forEach { match ->
@@ -237,14 +241,15 @@ class RidoMoviesProvider : MainAPI() {
             }
 
             val uniqueEpisodes: List<Episode> = episodes.distinctBy { it.data }
+            println("$TAG: Found ${uniqueEpisodes.size} episodes")
 
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, uniqueEpisodes) {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = description
                 this.tags = tags
-                // Fix: Dùng property `rating` (Score) thay vì `rating` (Int) cũ
-                this.rating = ratingValue?.let { Score.from10(it) }
+                // FIX: Dùng property score (kiểu Score) thay vì rating (kiểu Int)
+                this.score = ratingValue?.let { Score.from10(it) }
                 this.actors = actors
                 this.recommendations = recommendations
             }
@@ -254,8 +259,8 @@ class RidoMoviesProvider : MainAPI() {
                 this.year = year
                 this.plot = description
                 this.tags = tags
-                // Fix: Dùng property `rating` (Score)
-                this.rating = ratingValue?.let { Score.from10(it) }
+                // FIX: Dùng property score (kiểu Score)
+                this.score = ratingValue?.let { Score.from10(it) }
                 this.actors = actors
                 this.recommendations = recommendations
             }
@@ -269,8 +274,7 @@ class RidoMoviesProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // data: https://ridomovies.tv/movies/slug
-        // API: https://ridomovies.tv/api/movies/slug
+        println("$TAG: Loading Links for: $data")
         val apiUrl = if (data.contains("/movies/")) {
             data.replace("/movies/", "/api/movies/")
         } else if (data.contains("/tv/")) {
@@ -280,27 +284,32 @@ class RidoMoviesProvider : MainAPI() {
         }
 
         try {
-            // Thêm header cho API Link
             val headers = mapOf("Referer" to "$mainUrl/")
             val jsonText = app.get(apiUrl, headers = headers).text
             val jsonResponse = parseJson<ApiLinkResponse>(jsonText)
             
-            jsonResponse.data?.forEach { item ->
+            val sources = jsonResponse.data ?: emptyList()
+            println("$TAG: Found ${sources.size} link sources")
+
+            sources.forEach { item ->
                 val iframeHtml = item.url ?: return@forEach
                 val doc = Jsoup.parse(iframeHtml)
                 val src = doc.select("iframe").attr("data-src")
                 
                 if (src.isNotEmpty()) {
+                    println("$TAG: Found source URL: $src")
                     loadExtractor(src, subtitleCallback, callback)
                 }
             }
         } catch (e: Exception) {
+            println("$TAG: Error loading links: ${e.message}")
             e.printStackTrace()
-            // Fallback parse HTML gốc
+            // Fallback
             val html = app.get(data).text
             val embedRegex = """src\\":\\"(https:.*?)(\\?.*?)?\\"""".toRegex()
             embedRegex.findAll(html).forEach { match ->
                  val url = match.groupValues[1].replace("\\", "")
+                 println("$TAG: Fallback source found: $url")
                  loadExtractor(url, subtitleCallback, callback)
             }
         }
