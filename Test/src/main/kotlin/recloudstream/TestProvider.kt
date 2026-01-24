@@ -3,7 +3,7 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import com.lagradost.cloudstream3.Score // Import Score
+import com.lagradost.cloudstream3.Score
 import org.jsoup.Jsoup
 
 class RidoMoviesProvider : MainAPI() {
@@ -13,19 +13,29 @@ class RidoMoviesProvider : MainAPI() {
     override var lang = "en"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
     
-    // TAG để lọc log trong Logcat
     private val TAG = "RidoMovies"
 
-    // --- API DATA CLASSES ---
+    // --- API DATA CLASSES (FIXED) ---
     data class ApiResponse(val data: ApiData?)
     data class ApiData(val items: List<ApiItem>?)
+
+    // Sửa ApiItem: Cho phép null và thêm field "content" để hứng data lồng nhau
     data class ApiItem(
-        val title: String,
-        val fullSlug: String,
-        val type: String?, 
-        val posterPath: String?,
-        val contentable: ApiContentable?
+        val title: String? = null,
+        val fullSlug: String? = null,
+        val type: String? = null, 
+        val posterPath: String? = null,
+        val releaseYear: String? = null, // Năm ở root (Latest API)
+        val content: ApiNestedContent? = null, // Data lồng nhau (Latest API)
+        val contentable: ApiContentable? = null // Data phụ (Search API)
     )
+
+    data class ApiNestedContent(
+        val title: String?,
+        val fullSlug: String?,
+        val type: String?
+    )
+
     data class ApiContentable(val releaseYear: String?, val overview: String?)
 
     // Link API
@@ -66,8 +76,6 @@ class RidoMoviesProvider : MainAPI() {
         request: MainPageRequest
     ): HomePageResponse {
         val url = request.data + page
-        
-        // Log URL để debug
         println("$TAG: Requesting Home URL: $url")
 
         val headers = mapOf(
@@ -81,16 +89,21 @@ class RidoMoviesProvider : MainAPI() {
             val json = parseJson<ApiResponse>(response.text)
             val items = json.data?.items ?: emptyList()
 
-            // Log số lượng item tìm thấy
             println("$TAG: Found ${items.size} items on page $page")
 
             val homeList = items.mapNotNull { item ->
-                val title = item.title
-                val href = "$mainUrl/${item.fullSlug}"
+                // LOGIC FIX: Lấy title/slug từ root HOẶC từ object content
+                val title = item.title ?: item.content?.title ?: return@mapNotNull null
+                val slug = item.fullSlug ?: item.content?.fullSlug ?: return@mapNotNull null
+                val rawType = item.type ?: item.content?.type
+                
+                val href = "$mainUrl/$slug"
                 val poster = if (item.posterPath != null) "$mainUrl${item.posterPath}" else ""
                 
-                val type = if (item.type == "tv-series") TvType.TvSeries else TvType.Movie
-                val year = item.contentable?.releaseYear?.toIntOrNull()
+                val type = if (rawType == "tv-series" || rawType == "tv") TvType.TvSeries else TvType.Movie
+                
+                // Năm có thể ở root (releaseYear) hoặc trong contentable
+                val year = item.releaseYear?.toIntOrNull() ?: item.contentable?.releaseYear?.toIntOrNull()
 
                 if (type == TvType.Movie) {
                     newMovieSearchResponse(title, href, type) {
@@ -127,11 +140,15 @@ class RidoMoviesProvider : MainAPI() {
             val items = json.data?.items ?: return emptyList()
 
             items.mapNotNull { item ->
-                val title = item.title
-                val href = "$mainUrl/${item.fullSlug}"
+                // Search API thường trả về data ở root
+                val title = item.title ?: item.content?.title ?: return@mapNotNull null
+                val slug = item.fullSlug ?: item.content?.fullSlug ?: return@mapNotNull null
+                val rawType = item.type ?: item.content?.type
+
+                val href = "$mainUrl/$slug"
                 val poster = if (item.posterPath != null) "$mainUrl${item.posterPath}" else ""
-                val type = if (item.type == "tv-series") TvType.TvSeries else TvType.Movie
-                val year = item.contentable?.releaseYear?.toIntOrNull()
+                val type = if (rawType == "tv-series") TvType.TvSeries else TvType.Movie
+                val year = item.releaseYear?.toIntOrNull() ?: item.contentable?.releaseYear?.toIntOrNull()
 
                 if (type == TvType.Movie) {
                     newMovieSearchResponse(title, href, type) {
@@ -248,7 +265,6 @@ class RidoMoviesProvider : MainAPI() {
                 this.year = year
                 this.plot = description
                 this.tags = tags
-                // FIX: Dùng property score (kiểu Score) thay vì rating (kiểu Int)
                 this.score = ratingValue?.let { Score.from10(it) }
                 this.actors = actors
                 this.recommendations = recommendations
@@ -259,7 +275,6 @@ class RidoMoviesProvider : MainAPI() {
                 this.year = year
                 this.plot = description
                 this.tags = tags
-                // FIX: Dùng property score (kiểu Score)
                 this.score = ratingValue?.let { Score.from10(it) }
                 this.actors = actors
                 this.recommendations = recommendations
