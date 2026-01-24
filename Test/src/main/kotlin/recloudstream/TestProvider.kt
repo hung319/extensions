@@ -3,6 +3,7 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.mvvm.Resource
 import com.lagradost.cloudstream3.Score
 import org.jsoup.Jsoup
 
@@ -15,19 +16,19 @@ class RidoMoviesProvider : MainAPI() {
     
     private val TAG = "RidoMovies"
 
-    // --- API DATA CLASSES (FIXED) ---
+    // --- API DATA CLASSES ---
     data class ApiResponse(val data: ApiData?)
     data class ApiData(val items: List<ApiItem>?)
 
-    // Sửa ApiItem: Cho phép null và thêm field "content" để hứng data lồng nhau
+    // ApiItem: Cho phép null và thêm field "content" để hứng data lồng nhau
     data class ApiItem(
         val title: String? = null,
         val fullSlug: String? = null,
         val type: String? = null, 
         val posterPath: String? = null,
-        val releaseYear: String? = null, // Năm ở root (Latest API)
+        val releaseYear: String? = null, 
         val content: ApiNestedContent? = null, // Data lồng nhau (Latest API)
-        val contentable: ApiContentable? = null // Data phụ (Search API)
+        val contentable: ApiContentable? = null 
     )
 
     data class ApiNestedContent(
@@ -92,7 +93,7 @@ class RidoMoviesProvider : MainAPI() {
             println("$TAG: Found ${items.size} items on page $page")
 
             val homeList = items.mapNotNull { item ->
-                // LOGIC FIX: Lấy title/slug từ root HOẶC từ object content
+                // Logic: Lấy title/slug từ root HOẶC từ object content lồng bên trong
                 val title = item.title ?: item.content?.title ?: return@mapNotNull null
                 val slug = item.fullSlug ?: item.content?.fullSlug ?: return@mapNotNull null
                 val rawType = item.type ?: item.content?.type
@@ -140,7 +141,6 @@ class RidoMoviesProvider : MainAPI() {
             val items = json.data?.items ?: return emptyList()
 
             items.mapNotNull { item ->
-                // Search API thường trả về data ở root
                 val title = item.title ?: item.content?.title ?: return@mapNotNull null
                 val slug = item.fullSlug ?: item.content?.fullSlug ?: return@mapNotNull null
                 val rawType = item.type ?: item.content?.type
@@ -175,10 +175,6 @@ class RidoMoviesProvider : MainAPI() {
         val response = app.get(url).text
         val isTv = url.contains("/tv/") || url.contains("season")
 
-        // Parse JSON-LD
-        val ldJsonRegex = """\{"@context":"https://schema.org".*?"@type":"(Movie|TVSeries)".*?\}""".toRegex()
-        val ldJsonString = ldJsonRegex.find(response)?.value
-        
         var title = "Unknown"
         var description: String? = null
         var poster: String? = null
@@ -187,26 +183,41 @@ class RidoMoviesProvider : MainAPI() {
         var tags: List<String>? = null
         var actors: List<ActorData>? = null
 
-        if (ldJsonString != null) {
-            try {
-                val ldData = parseJson<LdJson>(ldJsonString)
-                title = ldData.name ?: title
-                description = ldData.description
-                poster = ldData.image
-                year = ldData.dateCreated?.take(4)?.toIntOrNull()
-                tags = ldData.genre
-                ratingValue = ldData.aggregateRating?.ratingValue?.toDoubleOrNull()
-                actors = ldData.actor?.mapNotNull { p -> p.name?.let { ActorData(Actor(it)) } }
-            } catch (e: Exception) {
-                println("$TAG: Error parsing JSON-LD: ${e.message}")
+        // 1. Parse JSON-LD bằng Jsoup (An toàn hơn Regex)
+        try {
+            val document = Jsoup.parse(response)
+            val scripts = document.select("script[type=application/ld+json]")
+            
+            for (script in scripts) {
+                val jsonString = script.data()
+                // Kiểm tra xem script này có phải là Movie/TVSeries không
+                if (jsonString.contains("\"@type\":\"Movie\"") || jsonString.contains("\"@type\":\"TVSeries\"")) {
+                    val ldData = parseJson<LdJson>(jsonString)
+                    title = ldData.name ?: title
+                    description = ldData.description
+                    poster = ldData.image
+                    year = ldData.dateCreated?.take(4)?.toIntOrNull()
+                    tags = ldData.genre
+                    ratingValue = ldData.aggregateRating?.ratingValue?.toDoubleOrNull()
+                    actors = ldData.actor?.mapNotNull { p -> p.name?.let { ActorData(Actor(it)) } }
+                    println("$TAG: JSON-LD parsed successfully")
+                    break
+                }
             }
-        } else {
-            val doc = Jsoup.parse(response)
-            title = doc.selectFirst("meta[property=og:title]")?.attr("content") ?: title
-            description = doc.selectFirst("meta[name=description]")?.attr("content")
-            poster = doc.selectFirst("meta[property=og:image]")?.attr("content")
+        } catch (e: Exception) {
+            println("$TAG: Error parsing JSON-LD: ${e.message}")
         }
 
+        // 2. Fallback: Parse HTML Meta Tags
+        if (title == "Unknown") {
+            val doc = Jsoup.parse(response)
+            title = doc.selectFirst("meta[property=og:title]")?.attr("content") ?: title
+            description = doc.selectFirst("meta[name=description]")?.attr("content") ?: description
+            poster = doc.selectFirst("meta[property=og:image]")?.attr("content") ?: poster
+            println("$TAG: Fallback to HTML parsing")
+        }
+
+        // Recommendation
         val recommendations = Jsoup.parse(response).select("div.grid > a").mapNotNull {
             val recHref = it.attr("href")
             val recTitle = it.select("h3").text()
@@ -219,30 +230,41 @@ class RidoMoviesProvider : MainAPI() {
 
         if (isTv) {
             val episodes = mutableListOf<Episode>()
+            
+            // 3. Parse Episodes từ Next.js Data embedded trong HTML
+            // Pattern: {"seasons":[{"id":...,"episodes":[...]}]}
             val seasonJsonRegex = """\{"seasons":\[.*?"episodes":\[.*?\]\}\]\}""".toRegex()
-            val seasonJsonString = seasonJsonRegex.find(response)?.value
-
-            if (seasonJsonString != null) {
+            val matchResults = seasonJsonRegex.findAll(response)
+            
+            for (match in matchResults) {
                 try {
-                    val seasonData = parseJson<NextSeasons>(seasonJsonString)
-                    seasonData.seasons?.forEach { s ->
-                        val sNum = s.seasonNumber
-                        s.episodes?.forEach { ep ->
-                            ep.fullSlug?.let { slug ->
-                                episodes.add(newEpisode("$mainUrl/$slug") {
-                                    this.season = sNum
-                                    this.episode = ep.episodeNumber
-                                    this.name = ep.title ?: "Episode ${ep.episodeNumber}"
-                                    this.data = "$mainUrl/$slug"
-                                    this.addDate(ep.releaseDate)
-                                })
+                    val seasonJsonString = match.value
+                    if (seasonJsonString.contains("episodeNumber")) {
+                        val seasonData = parseJson<NextSeasons>(seasonJsonString)
+                        seasonData.seasons?.forEach { s ->
+                            val sNum = s.seasonNumber
+                            s.episodes?.forEach { ep ->
+                                ep.fullSlug?.let { slug ->
+                                    episodes.add(newEpisode("$mainUrl/$slug") {
+                                        this.season = sNum
+                                        this.episode = ep.episodeNumber
+                                        this.name = ep.title ?: "Episode ${ep.episodeNumber}"
+                                        this.data = "$mainUrl/$slug"
+                                        this.addDate(ep.releaseDate)
+                                    })
+                                }
                             }
                         }
+                        if (episodes.isNotEmpty()) break
                     }
-                } catch (e: Exception) { println("$TAG: Error parsing Season JSON: ${e.message}") }
-            } 
+                } catch (e: Exception) {
+                    // Ignore lỗi parse cục bộ
+                }
+            }
             
+            // Fallback Regex cũ
             if (episodes.isEmpty()) {
+                 println("$TAG: Fallback to Regex for Episodes")
                  val episodeRegex = """"fullSlug":"(tv/.*?/season-(\d+)/episode-(\d+))"""".toRegex()
                  episodeRegex.findAll(response).forEach { match ->
                     val slug = match.groupValues[1]
@@ -257,7 +279,7 @@ class RidoMoviesProvider : MainAPI() {
                 }
             }
 
-            val uniqueEpisodes: List<Episode> = episodes.distinctBy { it.data }
+            val uniqueEpisodes = episodes.distinctBy { it.data }
             println("$TAG: Found ${uniqueEpisodes.size} episodes")
 
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, uniqueEpisodes) {
@@ -319,7 +341,7 @@ class RidoMoviesProvider : MainAPI() {
         } catch (e: Exception) {
             println("$TAG: Error loading links: ${e.message}")
             e.printStackTrace()
-            // Fallback
+            // Fallback parse HTML gốc
             val html = app.get(data).text
             val embedRegex = """src\\":\\"(https:.*?)(\\?.*?)?\\"""".toRegex()
             embedRegex.findAll(html).forEach { match ->
