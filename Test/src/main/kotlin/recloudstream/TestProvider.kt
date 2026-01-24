@@ -53,12 +53,12 @@ class RidoMoviesProvider : MainAPI() {
     data class LdPerson(val name: String?)
     data class LdRating(val ratingValue: String?)
 
-    // Episode Data - Cấu trúc match với log bạn gửi
+    // Episode Data
     data class RscSeasonsRoot(val seasons: List<RscSeason>?)
     data class RscSeason(val seasonNumber: Int?, val episodes: List<RscEpisode>?)
     data class RscEpisode(
         val episodeNumber: Int?,
-        val title: String?,     // Tên tập phim (Where's My Money)
+        val title: String?,
         val fullSlug: String?,
         val releaseDate: String?,
         val overview: String?
@@ -70,7 +70,10 @@ class RidoMoviesProvider : MainAPI() {
         "$mainUrl/core/api/series/latest?page%5Bnumber%5D=" to "Latest TV Series"
     )
 
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+    override suspend fun getMainPage(
+        page: Int,
+        request: MainPageRequest
+    ): HomePageResponse {
         val url = request.data + page
         val headers = mapOf(
             "Referer" to "$mainUrl/",
@@ -113,15 +116,17 @@ class RidoMoviesProvider : MainAPI() {
         }
     }
 
+    // --- SEARCH ---
+    data class SearchRoot(val data: SearchContainer?)
+    data class SearchContainer(val items: List<ApiItem>?)
+
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/core/api/search?q=$query"
         val headers = mapOf("Referer" to "$mainUrl/")
         
         return try {
             val text = app.get(url, headers = headers).text
-            // Re-use data class of SearchRoot if needed, or mapping logic similar to mainPage
-            // For brevity, using same logic as mainPage manually adapted
-            val json = parseJson<ApiResponse>(text) // API Search shares similar structure
+            val json = parseJson<SearchRoot>(text)
             val items = json.data?.items ?: return emptyList()
 
             items.mapNotNull { item ->
@@ -152,7 +157,7 @@ class RidoMoviesProvider : MainAPI() {
         }
     }
 
-    // --- LOAD (LINE-BY-LINE PARSING) ---
+    // --- LOAD ---
     override suspend fun load(url: String): LoadResponse {
         println("$TAG: Loading Details for: $url")
         val response = app.get(url).text
@@ -169,18 +174,14 @@ class RidoMoviesProvider : MainAPI() {
         val episodes = mutableListOf<Episode>()
         val recommendations = mutableListOf<SearchResponse>()
 
-        // Xử lý từng dòng của RSC payload để tránh lỗi parse cục lớn
+        // Line-by-Line Parsing
         response.lines().forEach { line ->
-            // 1. Tìm Metadata (JSON-LD)
-            // Dòng thường bắt đầu dạng: 1c:T550,{"@context":...
+            // 1. Metadata (JSON-LD)
             if (line.contains("https://schema.org") && (line.contains("\"Movie\"") || line.contains("\"TVSeries\""))) {
                 try {
-                    // Tìm vị trí bắt đầu JSON thực sự
                     val startIndex = line.indexOf("{\"@context\"")
                     if (startIndex != -1) {
-                        // Cắt chuỗi rác phía trước (ví dụ 1c:T550,)
                         var jsonStr = line.substring(startIndex)
-                        // Nếu dòng kết thúc bằng script tag đóng, cắt bỏ
                         if (jsonStr.contains("</script>")) {
                             jsonStr = jsonStr.substringBefore("</script>")
                         }
@@ -193,24 +194,16 @@ class RidoMoviesProvider : MainAPI() {
                         tags = ldData.genre
                         ratingValue = ldData.aggregateRating?.ratingValue?.toDoubleOrNull()
                         actors = ldData.actor?.mapNotNull { p -> p.name?.let { ActorData(Actor(it)) } }
-                        println("$TAG: Metadata loaded via Line-Parsing")
                     }
                 } catch (e: Exception) {
-                    println("$TAG: JSON-LD Line Parse Error: ${e.message}")
+                    println("$TAG: JSON-LD Parse Error: ${e.message}")
                 }
             }
 
-            // 2. Tìm Episodes (TV Series)
-            // Dòng chứa: "seasons":[{"id":... "episodes":[{...}]}]
+            // 2. Episodes (TV Series)
             if (isTv && line.contains("\"seasons\":") && line.contains("\"episodes\":")) {
                 try {
-                    // Dữ liệu này thường bị escape (có dấu \) và nằm lồng trong array RSC
-                    // Ví dụ: 10:["$","$L18",null,{"seasons":[...]}]
-                    
-                    // Unescape trước để dễ xử lý regex
                     val cleanLine = line.replace("\\\"", "\"")
-                    
-                    // Regex trích xuất object seasons: {"seasons": [...]}
                     val seasonBlockRegex = """\{"seasons":\[.*?"episodes":\[.*?\]\}\]\}""".toRegex()
                     val seasonMatch = seasonBlockRegex.find(cleanLine)
                     
@@ -223,7 +216,6 @@ class RidoMoviesProvider : MainAPI() {
                             s.episodes?.forEach { ep ->
                                 val epNum = ep.episodeNumber
                                 val epSlug = ep.fullSlug
-                                // Ưu tiên tên tập từ API, nếu không có thì fallback "Episode X"
                                 val epTitle = ep.title ?: "Episode $epNum"
                                 val epDate = ep.releaseDate
                                 
@@ -233,20 +225,20 @@ class RidoMoviesProvider : MainAPI() {
                                         this.episode = epNum
                                         this.name = epTitle
                                         this.data = "$mainUrl/$epSlug"
-                                        this.plot = ep.overview
+                                        // FIX: Dùng this.description thay vì this.plot cho Episode
+                                        this.description = ep.overview 
                                         this.addDate(epDate)
                                     })
                                 }
                             }
                         }
-                        println("$TAG: Episodes parsed via Line-Parsing: ${episodes.size}")
                     }
                 } catch (e: Exception) {
-                    println("$TAG: Episodes Line Parse Error: ${e.message}")
+                    println("$TAG: Episodes Parse Error: ${e.message}")
                 }
             }
             
-            // 3. Tìm Recommendations (Quét URL trong từng dòng)
+            // 3. Recommendations
             val recRegex = """["']\/(movies|tv)\/([a-zA-Z0-9-]+)["']""".toRegex()
             recRegex.findAll(line).forEach { m ->
                 val typeStr = m.groupValues[1]
@@ -260,7 +252,7 @@ class RidoMoviesProvider : MainAPI() {
             }
         }
 
-        // Fallback HTML nếu JSON-LD vẫn tạch
+        // Fallback HTML Metadata
         if (title == "Unknown") {
             val doc = Jsoup.parse(response)
             title = doc.selectFirst("meta[property=og:title]")?.attr("content") ?: title
@@ -268,7 +260,7 @@ class RidoMoviesProvider : MainAPI() {
             poster = fixUrl(doc.selectFirst("meta[property=og:image]")?.attr("content") ?: "")
         }
         
-        // Fallback Episodes regex thô nếu JSON episodes tạch
+        // Fallback Episodes Regex
         if (isTv && episodes.isEmpty()) {
              val epSlugRegex = """(tv\/[a-zA-Z0-9-]+\/season-(\d+)\/episode-(\d+)(?:-[a-zA-Z0-9-]+)?)""".toRegex()
              epSlugRegex.findAll(response).forEach { match ->
@@ -343,6 +335,7 @@ class RidoMoviesProvider : MainAPI() {
             }
         } catch (e: Exception) {
             e.printStackTrace()
+            // Fallback
             val html = app.get(data).text
             val embedRegex = """src\\":\\"(https:.*?)(\\?.*?)?\\"""".toRegex()
             embedRegex.findAll(html).forEach { match ->
@@ -353,7 +346,6 @@ class RidoMoviesProvider : MainAPI() {
         return true
     }
     
-    // Helpers
     private fun fixUrl(url: String): String {
         return when {
             url.isEmpty() -> ""
