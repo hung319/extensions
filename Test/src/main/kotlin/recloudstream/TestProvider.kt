@@ -3,8 +3,10 @@ package recloudstream
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.Score
 import org.jsoup.Jsoup
+import kotlin.random.Random
 
 class RidoMoviesProvider : MainAPI() {
     override var mainUrl = "https://ridomovies.tv"
@@ -50,6 +52,32 @@ class RidoMoviesProvider : MainAPI() {
     )
     data class LdPerson(val name: String?)
     data class LdRating(val ratingValue: String?)
+
+    // Data class cho Season/Episode parsing từ RSC
+    data class RidoSeason(
+        val seasonNumber: Int?,
+        val episodes: List<RidoEpisode>?
+    )
+    data class RidoEpisode(
+        val id: String?,
+        val episodeNumber: Int?,
+        val title: String?,
+        val overview: String?,
+        val fullSlug: String?,
+        val releaseDate: String?
+    )
+
+    // Data classes cho Genre Response
+    data class GenreResponseRoot(val listingRow: GenreListingRow?)
+    data class GenreListingRow(val data: List<GenreItem>?)
+    data class GenreItem(
+        val title: String?,
+        val originalTitle: String?,
+        val fullSlug: String?,
+        val posterPath: String?,
+        val content: GenreContent? // Đôi khi nó nằm trong object content con
+    )
+    data class GenreContent(val title: String?, val fullSlug: String?, val type: String?)
 
     // --- MAIN PAGE ---
     override val mainPage = mainPageOf(
@@ -141,9 +169,8 @@ class RidoMoviesProvider : MainAPI() {
         }
     }
 
-    // --- LOAD (UPDATED FOR RSC FORMAT) ---
+    // --- LOAD ---
     override suspend fun load(url: String): LoadResponse {
-        // Thêm header rsc: 1 để đảm bảo server trả về format text stream như log bạn cung cấp
         val headers = mapOf(
             "rsc" to "1",
             "Referer" to "$mainUrl/"
@@ -152,11 +179,10 @@ class RidoMoviesProvider : MainAPI() {
         val rawResponse = app.get(url, headers = headers).text
         val isTv = url.contains("/tv/") || url.contains("season")
 
-        // 1. Làm sạch response (RSC format escape rất nhiều quote \")
-        // Biến thành string dễ regex hơn
+        // 1. Clean response (Unescape quotes)
         val cleanResponse = rawResponse.replace("\\\"", "\"").replace("\\n", " ")
 
-        // Khởi tạo biến
+        // Variables
         var title: String = "Unknown"
         var description: String? = null
         var poster: String = ""
@@ -165,9 +191,7 @@ class RidoMoviesProvider : MainAPI() {
         var tags: List<String>? = null
         var actors: List<ActorData>? = null
 
-        // 2. Chiến thuật chính: Tìm JSON-LD Block
-        // Trong log của bạn có đoạn: "dangerouslySetInnerHTML":{"__html":"{"@context":"https://schema.org"..."
-        // Regex này bắt cụm JSON bắt đầu bằng @context và @type
+        // 2. Metadata Extraction (JSON-LD)
         val jsonLdRegex = """\{"@context":"https://schema.org".*?"@type":"(Movie|TVSeries)".*?\}""".toRegex()
         val jsonLdMatch = jsonLdRegex.find(cleanResponse)?.value
 
@@ -181,117 +205,143 @@ class RidoMoviesProvider : MainAPI() {
                 tags = ldData.genre
                 ratingValue = ldData.aggregateRating?.ratingValue?.toDoubleOrNull()
                 actors = ldData.actor?.mapNotNull { p -> p.name?.let { ActorData(Actor(it)) } }
+            } catch (e: Exception) { e.printStackTrace() }
+        }
+
+        // Fallback for Metadata
+        if (poster.isEmpty()) {
+            val posterRegex = """\"src\":\"(https:[^"]+?\/uploads\/posters\/[^"]+?)\"""".toRegex()
+            poster = posterRegex.find(cleanResponse)?.groupValues?.get(1) ?: ""
+        }
+        if (title == "Unknown") {
+            val titleRegex = """\"title\":\"([^\"]+?)\"""".toRegex()
+            title = titleRegex.find(cleanResponse)?.groupValues?.get(1) ?: "Unknown"
+        }
+        poster = fixUrl(poster)
+
+        // 3. Episodes Extraction (Improved for RSC)
+        val episodes = mutableListOf<Episode>()
+        if (isTv) {
+            try {
+                // Tìm chuỗi JSON bắt đầu bằng "seasons":[
+                // Do RSC response rất hỗn loạn, ta dùng logic tìm ngoặc vuông cân bằng
+                val seasonStartIndex = cleanResponse.indexOf("\"seasons\":[")
+                if (seasonStartIndex != -1) {
+                    val jsonStart = seasonStartIndex + 10 // skip "seasons":
+                    var balance = 0
+                    var jsonEnd = jsonStart
+                    
+                    // Thuật toán tìm ngoặc đóng tương ứng ']'
+                    for (i in jsonStart until cleanResponse.length) {
+                        if (cleanResponse[i] == '[') balance++
+                        else if (cleanResponse[i] == ']') {
+                            balance--
+                            if (balance == 0) {
+                                jsonEnd = i + 1
+                                break
+                            }
+                        }
+                    }
+                    
+                    if (jsonEnd > jsonStart) {
+                        val seasonsJson = cleanResponse.substring(jsonStart, jsonEnd)
+                        val seasonsList = tryParseJson<List<RidoSeason>>(seasonsJson)
+                        
+                        seasonsList?.forEach { season ->
+                            season.episodes?.forEach { ep ->
+                                val epNum = ep.episodeNumber
+                                val fullSlug = ep.fullSlug ?: ""
+                                if (epNum != null && fullSlug.isNotEmpty()) {
+                                    episodes.add(newEpisode("$mainUrl/$fullSlug") {
+                                        this.season = season.seasonNumber
+                                        this.episode = epNum
+                                        this.name = ep.title ?: "Episode $epNum"
+                                        this.overview = ep.overview
+                                        this.data = "$mainUrl/$fullSlug" // Data cho loadLinks
+                                        ep.releaseDate?.let { addDate(it) }
+                                    })
+                                }
+                            }
+                        }
+                    }
+                }
             } catch (e: Exception) {
                 e.printStackTrace()
             }
         }
 
-        // 3. Chiến thuật phụ (Fallback nếu JSON-LD lỗi hoặc thiếu)
-        
-        // Tìm Poster: Tìm pattern "src":".../uploads/posters/..."
-        if (poster.isEmpty()) {
-            val posterRegex = """\"src\":\"(https:[^"]+?\/uploads\/posters\/[^"]+?)\"""".toRegex()
-            val pMatch = posterRegex.find(cleanResponse)
-            if (pMatch != null) {
-                poster = pMatch.groupValues[1]
-            } else {
-                // Fallback tìm backdrops nếu không có poster
-                val backdropRegex = """\"src\":\"(https:[^"]+?\/uploads\/backdrops\/[^"]+?)\"""".toRegex()
-                poster = backdropRegex.find(cleanResponse)?.groupValues?.get(1) ?: ""
-            }
-        }
+        // 4. Recommendations (Random from Genre)
+        var recommendations = emptyList<SearchResponse>()
+        try {
+            // Tìm tất cả các link thể loại có trong trang: href="/genre/..."
+            val genreRegex = """href":"\/genre\/([a-zA-Z0-9-]+)" """.toRegex()
+            val genres = genreRegex.findAll(cleanResponse)
+                .map { it.groupValues[1] }
+                .distinct()
+                .toList()
 
-        // Tìm Description: Tìm trong block "className":"post-overview" text="..."
-        if (description == null) {
-            // Regex tìm value của text key đứng sau post-overview
-            val descRegex = """post-overview".*?"text":"(.*?)"""".toRegex()
-            val dMatch = descRegex.find(cleanResponse)
-            if (dMatch != null) {
-                // Remove HTML tags <p>, </p>
-                description = dMatch.groupValues[1].replace("<[^>]*>".toRegex(), "")
-            }
-        }
-        
-        // Tìm Title (nếu chưa có)
-        if (title == "Unknown") {
-            val titleRegex = """\"title\":\"([^\"]+?)\"""".toRegex() // Basic fallback
-            title = titleRegex.find(cleanResponse)?.groupValues?.get(1) ?: "Unknown"
-        }
-
-        // Fix URL poster lần cuối
-        poster = fixUrl(poster)
-
-        // 4. Recommendations
-        val recommendations = mutableListOf<SearchResponse>()
-        // Pattern: href="/movies/slug" inside the messy RSC string
-        val recRegex = """\"href\":\"(\/(movies|tv)\/[a-zA-Z0-9-]+)\"""".toRegex()
-        val currentSlug = url.substringAfterLast("/")
-        
-        recRegex.findAll(cleanResponse).forEach { match ->
-            val href = match.groupValues[1]
-            if (!href.contains(currentSlug) && !href.contains("genre") && !href.contains("search")) {
-                val slugName = href.substringAfterLast("/").replace("-", " ").capitalize()
-                val fullUrl = "$mainUrl$href"
-                val type = if(href.contains("/tv/")) TvType.TvSeries else TvType.Movie
-                recommendations.add(newMovieSearchResponse(slugName, fullUrl, type))
-            }
-        }
-
-        if (isTv) {
-            val episodes = mutableListOf<Episode>()
-            
-            // Xử lý Episodes trong RSC
-            // Tìm block chứa episodes. Thường nằm trong structure phức tạp. 
-            // Ta quét pattern rộng: "episodeNumber":1 ... "fullSlug":"..."
-            
-            // Regex quét từng cụm episode
-            val epRegex = """\{"id".*?"episodeNumber":(\d+).*?"title":"(.*?)".*?"fullSlug":"(.*?)"(?:.*?"releaseDate":"(.*?)")?""".toRegex()
-            epRegex.findAll(cleanResponse).forEach { epMatch ->
-                val epNum = epMatch.groupValues[1].toIntOrNull()
-                val epTitle = epMatch.groupValues[2]
-                val epSlug = epMatch.groupValues[3]
-                val epDate = epMatch.groupValues[4]
+            if (genres.isNotEmpty()) {
+                // Chọn ngẫu nhiên 1 thể loại
+                val randomGenre = genres[Random.nextInt(genres.size)]
+                val genreUrl = "$mainUrl/genre/$randomGenre"
                 
-                if (epNum != null && epSlug.contains("season")) {
-                    episodes.add(newEpisode("$mainUrl/$epSlug") {
-                        val seasonNum = Regex("""season-(\d+)""").find(epSlug)?.groupValues?.get(1)?.toIntOrNull() ?: 1
-                        this.season = seasonNum
-                        this.episode = epNum
-                        this.name = epTitle.ifEmpty { "Episode $epNum" }
-                        this.data = "$mainUrl/$epSlug"
-                        this.addDate(epDate)
-                    })
-                }
-            }
-            
-            // Regex backup đơn giản hơn cho link
-            if (episodes.isEmpty()) {
-                 val linkRegex = """\"(\/tv\/[^\/]+\/season-(\d+)\/episode-(\d+)(?:-[^\/"']+)?)[\"']""".toRegex()
-                 linkRegex.findAll(cleanResponse).forEach { match ->
-                    val href = match.groupValues[1]
-                    val s = match.groupValues[2].toIntOrNull()
-                    val e = match.groupValues[3].toIntOrNull()
-                    if (s != null && e != null) {
-                        episodes.add(newEpisode("$mainUrl$href") {
-                            this.season = s
-                            this.episode = e
-                            this.name = "Episode $e"
-                            this.data = "$mainUrl$href"
+                // Gọi request lấy list phim của thể loại đó (RSC)
+                val genreResponse = app.get(genreUrl, headers = headers).text
+                val cleanGenreResponse = genreResponse.replace("\\\"", "\"")
+                
+                // Parse tìm "listingRow" hoặc quét data thủ công
+                // Trong log bạn gửi: listingRow nằm trong chuỗi JSON lớn.
+                // Ta dùng regex quét mảng data chứa phim: "id":...,"originalTitle":...
+                // Regex đơn giản để bắt các object phim trong response thể loại
+                val movieItemRegex = """\{"id":"\d+","contentId".*?"originalTitle":"(.*?)".*?"fullSlug":"(.*?)".*?"posterPath":"(.*?)".*?"releaseYear":"?(\d+)"?.*?"id":.*?"type":"(movie|tv)"""".toRegex()
+                
+                val recs = mutableListOf<SearchResponse>()
+                movieItemRegex.findAll(cleanGenreResponse).forEach { match ->
+                    val recTitle = match.groupValues[1]
+                    val recSlug = match.groupValues[2]
+                    val recPoster = match.groupValues[3]
+                    val recYear = match.groupValues[4].toIntOrNull()
+                    // val recTypeStr = match.groupValues[5] // movie or tv - regex này hơi strict, có thể chỉnh lỏng hơn
+                    
+                    val recUrl = "$mainUrl/$recSlug"
+                    if (recUrl != url) { // Không recommend chính phim đang xem
+                         recs.add(newMovieSearchResponse(recTitle, recUrl, TvType.Movie) {
+                            this.posterUrl = fixUrl(recPoster)
+                            this.year = recYear
                         })
                     }
                 }
+                
+                // Fallback nếu Regex trên trượt (do format thay đổi): Quét lỏng hơn
+                if (recs.isEmpty()) {
+                     // Pattern đơn giản hơn tìm slug và title
+                     val simpleRegex = """fullSlug":"(movies\/[^"]+|tv\/[^"]+)","title":"([^"]+)".*?posterPath":"([^"]+)"""".toRegex()
+                     simpleRegex.findAll(cleanGenreResponse).forEach { m ->
+                         val s = m.groupValues[1]
+                         val t = m.groupValues[2]
+                         val p = m.groupValues[3]
+                         recs.add(newMovieSearchResponse(t, "$mainUrl/$s", TvType.Movie) {
+                             this.posterUrl = fixUrl(p)
+                         })
+                     }
+                }
+                
+                recommendations = recs.distinctBy { it.url }.shuffled().take(10)
             }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
 
-            val uniqueEpisodes = episodes.distinctBy { it.data }
-
-            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, uniqueEpisodes) {
+        // Return Result
+        if (isTv) {
+            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = description
                 this.tags = tags
                 this.score = ratingValue?.let { Score.from10(it) }
                 this.actors = actors
-                this.recommendations = recommendations.distinctBy { it.url }
+                this.recommendations = recommendations
             }
         } else {
             return newMovieLoadResponse(title, url, TvType.Movie, url) {
@@ -301,7 +351,7 @@ class RidoMoviesProvider : MainAPI() {
                 this.tags = tags
                 this.score = ratingValue?.let { Score.from10(it) }
                 this.actors = actors
-                this.recommendations = recommendations.distinctBy { it.url }
+                this.recommendations = recommendations
             }
         }
     }
@@ -326,7 +376,6 @@ class RidoMoviesProvider : MainAPI() {
             val headers = mapOf("Referer" to "$mainUrl/")
             val jsonText = app.get(apiUrl, headers = headers).text
             
-            // Cố gắng parse JSON
             try {
                 val jsonResponse = parseJson<ApiLinkResponse>(jsonText)
                 jsonResponse.data?.forEach { item ->
@@ -337,7 +386,6 @@ class RidoMoviesProvider : MainAPI() {
                 }
             } catch (e: Exception) { }
 
-            // Fallback Regex tìm src embed trong response
             val embedRegex = """src\\?":\\?"(https:.*?)(\\?.*?)?\\?"""".toRegex()
             embedRegex.findAll(jsonText).forEach { match ->
                  val url = match.groupValues[1].replace("\\", "")
