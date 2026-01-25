@@ -6,6 +6,7 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.Score
 import org.jsoup.Jsoup
+import android.util.Log
 import kotlin.random.Random
 
 class RidoMoviesProvider : MainAPI() {
@@ -14,6 +15,8 @@ class RidoMoviesProvider : MainAPI() {
     override val hasMainPage = true
     override var lang = "en"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
+    
+    private val TAG = "RidoMovies"
     
     // --- API DATA CLASSES ---
     data class ApiResponse(val data: ApiData?)
@@ -66,18 +69,6 @@ class RidoMoviesProvider : MainAPI() {
         val fullSlug: String?,
         val releaseDate: String?
     )
-
-    // Data classes cho Genre Response
-    data class GenreResponseRoot(val listingRow: GenreListingRow?)
-    data class GenreListingRow(val data: List<GenreItem>?)
-    data class GenreItem(
-        val title: String?,
-        val originalTitle: String?,
-        val fullSlug: String?,
-        val posterPath: String?,
-        val content: GenreContent? // Đôi khi nó nằm trong object content con
-    )
-    data class GenreContent(val title: String?, val fullSlug: String?, val type: String?)
 
     // --- MAIN PAGE ---
     override val mainPage = mainPageOf(
@@ -223,15 +214,12 @@ class RidoMoviesProvider : MainAPI() {
         val episodes = mutableListOf<Episode>()
         if (isTv) {
             try {
-                // Tìm chuỗi JSON bắt đầu bằng "seasons":[
-                // Do RSC response rất hỗn loạn, ta dùng logic tìm ngoặc vuông cân bằng
                 val seasonStartIndex = cleanResponse.indexOf("\"seasons\":[")
                 if (seasonStartIndex != -1) {
                     val jsonStart = seasonStartIndex + 10 // skip "seasons":
                     var balance = 0
                     var jsonEnd = jsonStart
                     
-                    // Thuật toán tìm ngoặc đóng tương ứng ']'
                     for (i in jsonStart until cleanResponse.length) {
                         if (cleanResponse[i] == '[') balance++
                         else if (cleanResponse[i] == ']') {
@@ -256,8 +244,9 @@ class RidoMoviesProvider : MainAPI() {
                                         this.season = season.seasonNumber
                                         this.episode = epNum
                                         this.name = ep.title ?: "Episode $epNum"
-                                        this.overview = ep.overview
-                                        this.data = "$mainUrl/$fullSlug" // Data cho loadLinks
+                                        // FIX: Cloudstream Episode uses 'description', not 'overview'
+                                        this.description = ep.overview 
+                                        this.data = "$mainUrl/$fullSlug"
                                         ep.releaseDate?.let { addDate(it) }
                                     })
                                 }
@@ -273,7 +262,6 @@ class RidoMoviesProvider : MainAPI() {
         // 4. Recommendations (Random from Genre)
         var recommendations = emptyList<SearchResponse>()
         try {
-            // Tìm tất cả các link thể loại có trong trang: href="/genre/..."
             val genreRegex = """href":"\/genre\/([a-zA-Z0-9-]+)" """.toRegex()
             val genres = genreRegex.findAll(cleanResponse)
                 .map { it.groupValues[1] }
@@ -281,18 +269,12 @@ class RidoMoviesProvider : MainAPI() {
                 .toList()
 
             if (genres.isNotEmpty()) {
-                // Chọn ngẫu nhiên 1 thể loại
                 val randomGenre = genres[Random.nextInt(genres.size)]
                 val genreUrl = "$mainUrl/genre/$randomGenre"
                 
-                // Gọi request lấy list phim của thể loại đó (RSC)
                 val genreResponse = app.get(genreUrl, headers = headers).text
                 val cleanGenreResponse = genreResponse.replace("\\\"", "\"")
                 
-                // Parse tìm "listingRow" hoặc quét data thủ công
-                // Trong log bạn gửi: listingRow nằm trong chuỗi JSON lớn.
-                // Ta dùng regex quét mảng data chứa phim: "id":...,"originalTitle":...
-                // Regex đơn giản để bắt các object phim trong response thể loại
                 val movieItemRegex = """\{"id":"\d+","contentId".*?"originalTitle":"(.*?)".*?"fullSlug":"(.*?)".*?"posterPath":"(.*?)".*?"releaseYear":"?(\d+)"?.*?"id":.*?"type":"(movie|tv)"""".toRegex()
                 
                 val recs = mutableListOf<SearchResponse>()
@@ -301,10 +283,9 @@ class RidoMoviesProvider : MainAPI() {
                     val recSlug = match.groupValues[2]
                     val recPoster = match.groupValues[3]
                     val recYear = match.groupValues[4].toIntOrNull()
-                    // val recTypeStr = match.groupValues[5] // movie or tv - regex này hơi strict, có thể chỉnh lỏng hơn
                     
                     val recUrl = "$mainUrl/$recSlug"
-                    if (recUrl != url) { // Không recommend chính phim đang xem
+                    if (recUrl != url) {
                          recs.add(newMovieSearchResponse(recTitle, recUrl, TvType.Movie) {
                             this.posterUrl = fixUrl(recPoster)
                             this.year = recYear
@@ -312,9 +293,7 @@ class RidoMoviesProvider : MainAPI() {
                     }
                 }
                 
-                // Fallback nếu Regex trên trượt (do format thay đổi): Quét lỏng hơn
                 if (recs.isEmpty()) {
-                     // Pattern đơn giản hơn tìm slug và title
                      val simpleRegex = """fullSlug":"(movies\/[^"]+|tv\/[^"]+)","title":"([^"]+)".*?posterPath":"([^"]+)"""".toRegex()
                      simpleRegex.findAll(cleanGenreResponse).forEach { m ->
                          val s = m.groupValues[1]
@@ -332,7 +311,6 @@ class RidoMoviesProvider : MainAPI() {
             e.printStackTrace()
         }
 
-        // Return Result
         if (isTv) {
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = poster
@@ -363,7 +341,9 @@ class RidoMoviesProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // data: https://ridomovies.tv/movies/slug hoặc URL web
+        // Log Data Input
+        Log.d(TAG, "loadLinks: Input URL -> $data")
+
         val apiUrl = if (data.contains("/movies/")) {
             data.replace("/movies/", "/api/movies/")
         } else if (data.contains("/tv/")) {
@@ -371,6 +351,8 @@ class RidoMoviesProvider : MainAPI() {
         } else {
             data
         }
+        
+        Log.d(TAG, "loadLinks: API URL -> $apiUrl")
 
         try {
             val headers = mapOf("Referer" to "$mainUrl/")
@@ -382,18 +364,26 @@ class RidoMoviesProvider : MainAPI() {
                     val iframeHtml = item.url ?: return@forEach
                     val doc = Jsoup.parse(iframeHtml)
                     val src = doc.select("iframe").attr("data-src")
-                    if (src.isNotEmpty()) loadExtractor(src, subtitleCallback, callback)
+                    if (src.isNotEmpty()) {
+                        Log.d(TAG, "loadLinks: Found Iframe JSON -> $src")
+                        loadExtractor(src, subtitleCallback, callback)
+                    }
                 }
-            } catch (e: Exception) { }
+            } catch (e: Exception) { 
+                Log.d(TAG, "loadLinks: JSON parse failed, trying regex fallback")
+            }
 
             val embedRegex = """src\\?":\\?"(https:.*?)(\\?.*?)?\\?"""".toRegex()
             embedRegex.findAll(jsonText).forEach { match ->
                  val url = match.groupValues[1].replace("\\", "")
-                 if(!url.contains("google")) 
+                 if(!url.contains("google")) {
+                    Log.d(TAG, "loadLinks: Found Iframe Regex -> $url")
                     loadExtractor(url, subtitleCallback, callback)
+                 }
             }
 
         } catch (e: Exception) {
+            Log.e(TAG, "loadLinks: Error -> ${e.message}")
             e.printStackTrace()
         }
         return true
