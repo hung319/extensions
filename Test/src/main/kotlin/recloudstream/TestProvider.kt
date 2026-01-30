@@ -114,9 +114,16 @@ class RidoMoviesProvider : MainAPI() {
                 val poster = fixUrl(item.posterPath ?: "")
                 val year = item.releaseYear?.toIntOrNull() ?: item.contentable?.releaseYear?.toIntOrNull()
 
-                newMovieSearchResponse(title, "$mainUrl/$slug", type) {
-                    this.posterUrl = poster
-                    this.year = year
+                if (type == TvType.Movie) {
+                    newMovieSearchResponse(title, "$mainUrl/$slug", type) {
+                        this.posterUrl = poster
+                        this.year = year
+                    }
+                } else {
+                    newTvSeriesSearchResponse(title, "$mainUrl/$slug", type) {
+                        this.posterUrl = poster
+                        this.year = year
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -124,7 +131,7 @@ class RidoMoviesProvider : MainAPI() {
         }
     }
 
-    // --- LOAD (THUMBNAIL LOGIC REVERTED) ---
+    // --- LOAD (THUMBNAIL FIXED BY PATH SCANNING) ---
     override suspend fun load(url: String): LoadResponse {
         val headers = mapOf("rsc" to "1", "Referer" to "$mainUrl/")
         val responseText = app.get(url, headers = headers).text
@@ -141,7 +148,7 @@ class RidoMoviesProvider : MainAPI() {
         var ratingValue: Double? = null
         var tags: List<String>? = null
 
-        // 1. JSON-LD
+        // 1. JSON-LD (Best source)
         val jsonLdRegex = """\{"@context":"https://schema.org".*?"@type":"(Movie|TVSeries)".*?\}""".toRegex()
         val jsonLdMatch = jsonLdRegex.find(cleanResponse)?.value
         if (jsonLdMatch != null) {
@@ -158,7 +165,7 @@ class RidoMoviesProvider : MainAPI() {
 
         // 2. Regex Fallback
         
-        // FIX TITLE (Skip 404)
+        // FIX TITLE
         if (title == "Unknown" || title.contains("404") || title == "Home") {
             val h1Regex = """\["\$","h1",null,\{"children":"(.*?)"\}\]""".toRegex()
             val h1Match = h1Regex.find(cleanResponse)
@@ -170,20 +177,21 @@ class RidoMoviesProvider : MainAPI() {
             }
         }
         
-        // FIX POSTER (Reverted to robust regex)
+        // FIX POSTER: Tìm theo đường dẫn đặc trưng của Rido (/uploads/posters/...)
+        // Bất chấp key là gì (posterPath, src, image...)
         if (poster.isEmpty()) {
-            // Tìm bất kỳ chuỗi nào có định dạng ảnh (jpg/png/webp) nằm trong cặp ngoặc kép
-            // Và ưu tiên chuỗi chứa "posters" hoặc "backdrops"
-            val pRegex = """(?:posterPath|src|image)["']\s*:\s*["']([^"']+\.(?:jpg|png|webp))["']""".toRegex()
-            val matches = pRegex.findAll(cleanResponse)
+            // Pattern: Tìm chuỗi bắt đầu bằng " và chứa /uploads/posters/ hoặc /uploads/backdrops/ và kết thúc bằng đuôi ảnh
+            val pathPosterRegex = """\"([^\"]*?\/uploads\/posters\/[^\"]*?\.(?:webp|jpg|png))\"""".toRegex()
+            var pMatch = pathPosterRegex.find(cleanResponse)
             
-            for (match in matches) {
-                val p = match.groupValues[1]
-                // Lọc rác: Chỉ lấy nếu đường dẫn có vẻ đúng format của Rido
-                if (p.contains("posters") || p.contains("backdrops") || p.contains("uploads")) {
-                    poster = fixUrl(p)
-                    break
-                }
+            if (pMatch == null) {
+                // Fallback sang backdrop nếu không có poster
+                val pathBackdropRegex = """\"([^\"]*?\/uploads\/backdrops\/[^\"]*?\.(?:webp|jpg|png))\"""".toRegex()
+                pMatch = pathBackdropRegex.find(cleanResponse)
+            }
+            
+            if (pMatch != null) {
+                poster = fixUrl(pMatch.groupValues[1])
             }
         }
 
@@ -238,7 +246,6 @@ class RidoMoviesProvider : MainAPI() {
                 val cleanGenreRes = genreRes.replace("\\\"", "\"")
                 
                 // Regex bắt phim trong genre: title, slug, poster
-                // Sử dụng lại logic lấy ảnh robust cho recommendation
                 val recRegex = """\"originalTitle\":\"(.*?)\".*?\"fullSlug\":\"(.*?)\".*?\"posterPath\":\"(.*?)\"""".toRegex()
                 
                 recRegex.findAll(cleanGenreRes).forEach { m ->
