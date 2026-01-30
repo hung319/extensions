@@ -82,6 +82,7 @@ class RidoMoviesProvider : MainAPI() {
                 val href = "$mainUrl/$slug"
                 val poster = fixUrl(item.posterPath ?: "")
                 val type = if (rawType?.contains("tv") == true) TvType.TvSeries else TvType.Movie
+                
                 val year = item.releaseYear?.toIntOrNull() ?: item.contentable?.releaseYear?.toIntOrNull()
 
                 newMovieSearchResponse(title, href, type) {
@@ -114,16 +115,9 @@ class RidoMoviesProvider : MainAPI() {
                 val poster = fixUrl(item.posterPath ?: "")
                 val year = item.releaseYear?.toIntOrNull() ?: item.contentable?.releaseYear?.toIntOrNull()
 
-                if (type == TvType.Movie) {
-                    newMovieSearchResponse(title, "$mainUrl/$slug", type) {
-                        this.posterUrl = poster
-                        this.year = year
-                    }
-                } else {
-                    newTvSeriesSearchResponse(title, "$mainUrl/$slug", type) {
-                        this.posterUrl = poster
-                        this.year = year
-                    }
+                newMovieSearchResponse(title, "$mainUrl/$slug", type) {
+                    this.posterUrl = poster
+                    this.year = year
                 }
             }
         } catch (e: Exception) {
@@ -131,7 +125,7 @@ class RidoMoviesProvider : MainAPI() {
         }
     }
 
-    // --- LOAD (THUMBNAIL FIXED BY PATH SCANNING) ---
+    // --- LOAD (FIXED THUMBNAIL) ---
     override suspend fun load(url: String): LoadResponse {
         val headers = mapOf("rsc" to "1", "Referer" to "$mainUrl/")
         val responseText = app.get(url, headers = headers).text
@@ -148,7 +142,7 @@ class RidoMoviesProvider : MainAPI() {
         var ratingValue: Double? = null
         var tags: List<String>? = null
 
-        // 1. JSON-LD (Best source)
+        // Strategy 1: JSON-LD
         val jsonLdRegex = """\{"@context":"https://schema.org".*?"@type":"(Movie|TVSeries)".*?\}""".toRegex()
         val jsonLdMatch = jsonLdRegex.find(cleanResponse)?.value
         if (jsonLdMatch != null) {
@@ -163,9 +157,9 @@ class RidoMoviesProvider : MainAPI() {
             } catch (e: Exception) { }
         }
 
-        // 2. Regex Fallback
+        // Strategy 2: Regex Fallback
         
-        // FIX TITLE
+        // FIX TITLE (Skip 404)
         if (title == "Unknown" || title.contains("404") || title == "Home") {
             val h1Regex = """\["\$","h1",null,\{"children":"(.*?)"\}\]""".toRegex()
             val h1Match = h1Regex.find(cleanResponse)
@@ -177,21 +171,31 @@ class RidoMoviesProvider : MainAPI() {
             }
         }
         
-        // FIX POSTER: Tìm theo đường dẫn đặc trưng của Rido (/uploads/posters/...)
-        // Bất chấp key là gì (posterPath, src, image...)
+        // FIX POSTER: Quét tất cả các URL ảnh có chứa "posters" hoặc "backdrops"
         if (poster.isEmpty()) {
-            // Pattern: Tìm chuỗi bắt đầu bằng " và chứa /uploads/posters/ hoặc /uploads/backdrops/ và kết thúc bằng đuôi ảnh
-            val pathPosterRegex = """\"([^\"]*?\/uploads\/posters\/[^\"]*?\.(?:webp|jpg|png))\"""".toRegex()
-            var pMatch = pathPosterRegex.find(cleanResponse)
-            
-            if (pMatch == null) {
-                // Fallback sang backdrop nếu không có poster
-                val pathBackdropRegex = """\"([^\"]*?\/uploads\/backdrops\/[^\"]*?\.(?:webp|jpg|png))\"""".toRegex()
-                pMatch = pathBackdropRegex.find(cleanResponse)
-            }
+            // Pattern 1: Absolute URL (https://...)
+            // Tìm chuỗi bắt đầu bằng https, chứa uploads/posters, kết thúc bằng đuôi ảnh
+            val absRegex = """(https:[^"']*?\/uploads\/(?:posters|backdrops)\/[^"']*?\.(?:webp|jpg|png))""".toRegex()
+            var pMatch = absRegex.find(cleanResponse)
             
             if (pMatch != null) {
-                poster = fixUrl(pMatch.groupValues[1])
+                poster = pMatch.groupValues[1]
+            } else {
+                // Pattern 2: Relative URL (/uploads/...) nằm trong ngoặc kép
+                val relRegex = """["'](\/uploads\/(?:posters|backdrops)\/[^"']*?\.(?:webp|jpg|png))["']""".toRegex()
+                pMatch = relRegex.find(cleanResponse)
+                if (pMatch != null) {
+                    poster = fixUrl(pMatch.groupValues[1])
+                }
+            }
+            
+            // Fallback cuối cùng: Meta tag OG:Image
+            if (poster.isEmpty()) {
+                val ogImageRegex = """property="og:image" content="(.*?)"""".toRegex()
+                val ogMatch = ogImageRegex.find(responseText) // Dùng responseText gốc chưa replace
+                if (ogMatch != null) {
+                    poster = fixUrl(ogMatch.groupValues[1])
+                }
             }
         }
 
@@ -206,7 +210,7 @@ class RidoMoviesProvider : MainAPI() {
             }
         }
 
-        // --- B. EXTRACT EPISODES (ROBUST) ---
+        // --- B. EXTRACT EPISODES ---
         val episodes = mutableListOf<Episode>()
         if (isTv) {
             val slugRegex = """\"fullSlug\":\"(tv\/[^\"]+?\/season-(\d+)\/episode-(\d+)[^\"]*)\"""".toRegex()
@@ -245,7 +249,6 @@ class RidoMoviesProvider : MainAPI() {
                 val genreRes = app.get(genreUrl, headers = headers).text
                 val cleanGenreRes = genreRes.replace("\\\"", "\"")
                 
-                // Regex bắt phim trong genre: title, slug, poster
                 val recRegex = """\"originalTitle\":\"(.*?)\".*?\"fullSlug\":\"(.*?)\".*?\"posterPath\":\"(.*?)\"""".toRegex()
                 
                 recRegex.findAll(cleanGenreRes).forEach { m ->
@@ -331,6 +334,10 @@ class RidoMoviesProvider : MainAPI() {
     private fun fixUrl(url: String): String {
         if (url.isEmpty()) return ""
         if (url.startsWith("http")) return url
+        
+        // Fix: Một số link ảnh bắt đầu bằng /core/uploads thì phải nối đúng
+        // Nếu link bắt đầu bằng /uploads -> https://ridomovies.tv/uploads...
+        // Nếu link bắt đầu bằng /core -> https://ridomovies.tv/core...
         return if (url.startsWith("/")) "$mainUrl$url" else "$mainUrl/$url"
     }
     
