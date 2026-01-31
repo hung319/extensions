@@ -9,7 +9,7 @@ import com.lagradost.cloudstream3.Score
 import android.util.Log
 import kotlin.random.Random
 
-class RidoMoviesProvider : MainAPI() {
+class TestProvider : MainAPI() {
     override var mainUrl = "https://ridomovies.tv"
     override var name = "RidoMovies"
     override val hasMainPage = true
@@ -17,6 +17,9 @@ class RidoMoviesProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
     
     private val TAG = "RidoMovies"
+    
+    // FIX 1: Tự định nghĩa UserAgent để tránh lỗi Unresolved reference từ AppUtils
+    private val commonUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
     // --- DTOs ---
     data class RidoLinkData(
@@ -110,11 +113,11 @@ class RidoMoviesProvider : MainAPI() {
         val linkData = tryParseJson<RidoLinkData>(url)
         val realUrl = linkData?.url ?: url
         
-        // 1. Lấy RSC Data
+        // FIX 1: Sử dụng commonUserAgent thay vì AppUtils.userAgent
         val headers = mapOf(
             "rsc" to "1", 
             "Referer" to "$mainUrl/",
-            "User-Agent" to AppUtils.userAgent
+            "User-Agent" to commonUserAgent
         )
         
         val responseText = app.get(realUrl, headers = headers).text
@@ -128,7 +131,7 @@ class RidoMoviesProvider : MainAPI() {
         val poster = posterRegex.find(responseText)?.groupValues?.get(1)?.let { fixUrl(it) } ?: linkData?.poster
         
         val ratingRegex = """ratingValue":([\d.]+)""".toRegex()
-        val rating = ratingRegex.find(responseText)?.groupValues?.get(1)?.toDoubleOrNull()
+        val ratingVal = ratingRegex.find(responseText)?.groupValues?.get(1)?.toDoubleOrNull()
 
         val title = linkData?.title ?: "RidoMovies"
         val year = linkData?.year
@@ -169,7 +172,11 @@ class RidoMoviesProvider : MainAPI() {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = description
-                this.rating = rating?.let { Score.from10(it) }?.rating
+                
+                // FIX 2: Thay thế rating (Int) bằng score (Score Object)
+                // Rating deprecated, dùng score = Score.from10(...)
+                this.score = ratingVal?.let { Score.from10(it) }
+                
                 this.recommendations = emptyList() 
             }
         } else {
@@ -177,7 +184,10 @@ class RidoMoviesProvider : MainAPI() {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = description
-                this.rating = rating?.let { Score.from10(it) }?.rating
+                
+                // FIX 2: Thay thế rating (Int) bằng score (Score Object)
+                this.score = ratingVal?.let { Score.from10(it) }
+                
                 this.recommendations = emptyList()
             }
         }
@@ -224,7 +234,6 @@ class RidoMoviesProvider : MainAPI() {
         return true
     }
 
-    // --- EXTRACTOR 1: RIDOO (Sử dụng newExtractorLink) ---
     private suspend fun extractRidoo(url: String, callback: (ExtractorLink) -> Unit) {
         try {
             val text = app.get(url, headers = mapOf("Referer" to "$mainUrl/")).text
@@ -242,7 +251,6 @@ class RidoMoviesProvider : MainAPI() {
         } catch (e: Exception) { Log.e(TAG, "Ridoo Error", e) }
     }
 
-    // --- EXTRACTOR 2: CLOSELOAD (Sử dụng newExtractorLink) ---
     private suspend fun extractCloseload(url: String, callback: (ExtractorLink) -> Unit) {
         try {
             val text = app.get(url, headers = mapOf("Referer" to "$mainUrl/")).text
@@ -263,7 +271,11 @@ class RidoMoviesProvider : MainAPI() {
                 val packedRegex = """eval\(function\(p,a,c,k,e,d\).*?\.split\('\|'\)\)\)""".toRegex()
                 val packedJs = packedRegex.find(text)?.value
                 if (packedJs != null) {
-                    val unpacked = JsUnpacker.unpackAndCombine(packedJs) ?: ""
+                    
+                    // FIX 3: Sửa cách gọi JsUnpacker.
+                    // Hàm static unpackAndCombine không tồn tại, dùng constructor JsUnpacker(string).unpack()
+                    val unpacked = JsUnpacker(packedJs).unpack() ?: ""
+                    
                     val fileMatch = """file:"([^"]+)"""".toRegex().find(unpacked)
                     val m3u8 = fileMatch?.groupValues?.get(1)
                     
