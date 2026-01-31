@@ -17,10 +17,10 @@ class RidoMoviesProvider : MainAPI() {
     
     private val TAG = "RidoMovies"
     
-    // UserAgent cứng giả lập Chrome Android để request ổn định
-    private val commonUserAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36"
+    // UserAgent chuẩn
+    private val commonUserAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
 
-    // --- DTOs (Data Transfer Objects) ---
+    // --- DTOs ---
     data class RidoLinkData(
         val url: String,
         val title: String? = null,
@@ -36,16 +36,16 @@ class RidoMoviesProvider : MainAPI() {
     data class ApiResponse(val data: ApiData?)
     data class ApiData(val items: List<ApiItem>?)
     data class ApiItem(
-        val title: String? = null,
-        val fullSlug: String? = null,
-        val type: String? = null, 
-        val posterPath: String? = null,
-        val releaseYear: String? = null,
-        val content: ApiNestedContent? = null,
-        val contentable: ApiContentable? = null
+        val title: String?,
+        val fullSlug: String?,
+        val type: String?, 
+        val posterPath: String?,
+        val releaseYear: String?,
+        val content: ApiNestedContent?,
+        val contentable: ApiContentable?
     )
     data class ApiNestedContent(val title: String?, val fullSlug: String?, val type: String?)
-    data class ApiContentable(val releaseYear: String? = null)
+    data class ApiContentable(val releaseYear: String?)
 
     // --- MAIN PAGE ---
     override val mainPage = mainPageOf(
@@ -75,11 +75,9 @@ class RidoMoviesProvider : MainAPI() {
                 val type = if (rawType?.contains("tv") == true) TvType.TvSeries else TvType.Movie
                 val year = item.releaseYear?.toIntOrNull() ?: item.contentable?.releaseYear?.toIntOrNull()
 
-                // KHÔI PHỤC LOGIC GỐC: Đóng gói data thành JSON string
+                // Đóng gói data để truyền sang Load
                 val data = RidoLinkData(href, title, poster, year, rawType)
-                val dataStr = data.toJson()
-
-                newMovieSearchResponse(title, dataStr, type) {
+                newMovieSearchResponse(title, data.toJson(), type) {
                     this.posterUrl = poster
                     this.year = year
                 }
@@ -93,10 +91,8 @@ class RidoMoviesProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/core/api/search?q=$query"
         return try {
-            val headers = mapOf("Referer" to "$mainUrl/")
-            val response = app.get(url, headers = headers)
-            val json = parseJson<ApiResponse>(response.text)
-            json.data?.items?.mapNotNull { item ->
+            val response = app.get(url, headers = mapOf("Referer" to "$mainUrl/"))
+            parseJson<ApiResponse>(response.text).data?.items?.mapNotNull { item ->
                 val title = item.title ?: item.content?.title ?: return@mapNotNull null
                 val slug = item.fullSlug ?: item.content?.fullSlug ?: return@mapNotNull null
                 val type = if (item.type?.contains("tv") == true) TvType.TvSeries else TvType.Movie
@@ -114,14 +110,11 @@ class RidoMoviesProvider : MainAPI() {
 
     // --- LOAD ---
     override suspend fun load(url: String): LoadResponse {
-        // KHÔI PHỤC LOGIC GỐC: Parse data từ JSON string truyền vào
         val linkData = tryParseJson<RidoLinkData>(url)
         val realUrl = linkData?.url ?: url
-        val title = linkData?.title ?: "Unknown"
-        val year = linkData?.year
-        val poster = linkData?.poster
+        val isTv = realUrl.contains("/tv/") || linkData?.type?.contains("tv") == true
         
-        // Gọi RSC để lấy ID tập/phim
+        // Headers giả lập browser để lấy RSC payload
         val headers = mapOf(
             "rsc" to "1", 
             "Referer" to "$mainUrl/",
@@ -129,11 +122,16 @@ class RidoMoviesProvider : MainAPI() {
         )
         
         val responseText = app.get(realUrl, headers = headers).text
-        val isTv = realUrl.contains("/tv/") || linkData?.type?.contains("tv") == true
 
-        // Metadata bổ sung (Description, Rating)
-        val descRegex = """name":"description","content":"(.*?)"""".toRegex()
-        val description = descRegex.find(responseText)?.groupValues?.get(1)
+        // 1. FIX DESCRIPTION: Lấy từ 'post-overview' thay vì meta tags
+        // Mẫu RSC: "className":"post-overview","text":"<p>Nội dung...</p>"
+        val descRegex = """className":"post-overview","text":"(.*?)"""".toRegex()
+        val rawDesc = descRegex.find(responseText)?.groupValues?.get(1)
+        // Clean tags <p>, </p> và unescape
+        val description = rawDesc?.replace(Regex("<.*?>"), "")?.replace("\\\"", "\"")
+
+        val posterRegex = """image":"(https:[^"]+?)"""".toRegex()
+        val poster = posterRegex.find(responseText)?.groupValues?.get(1)?.let { fixUrl(it) } ?: linkData?.poster
         val ratingRegex = """ratingValue":([\d.]+)""".toRegex()
         val ratingVal = ratingRegex.find(responseText)?.groupValues?.get(1)?.toDoubleOrNull()
 
@@ -141,6 +139,7 @@ class RidoMoviesProvider : MainAPI() {
         val finalUrl: String
 
         if (isTv) {
+            // TV Series: Cần ID số để gọi API (VD: /api/episodes/28245)
             val epRegex = """\{"id":"(\d+)","slug":"([^"]*?\/season-(\d+)\/episode-(\d+)[^"]*)"""".toRegex()
             val addedIds = mutableSetOf<String>()
             
@@ -151,7 +150,7 @@ class RidoMoviesProvider : MainAPI() {
                 
                 if (addedIds.add(epId)) {
                     val apiLink = "$mainUrl/api/episodes/$epId"
-                    episodes.add(newEpisode(apiLink) { // apiLink này sẽ vào loadLinks
+                    episodes.add(newEpisode(apiLink) {
                         this.season = season
                         this.episode = episode
                         this.name = "Episode $episode"
@@ -161,34 +160,33 @@ class RidoMoviesProvider : MainAPI() {
             }
             finalUrl = realUrl
         } else {
-            // Movie: Tìm ID để tạo API Link
-            val movieIdRegex = """postid":"(\d+)"""".toRegex()
-            val movieId = movieIdRegex.find(responseText)?.groupValues?.get(1)
+            // MOVIE FIX: Dùng SLUG, KHÔNG dùng ID số
+            // URL gốc: https://ridomovies.tv/movies/grizzly-night -> slug: grizzly-night
+            // API đúng: https://ridomovies.tv/api/movies/grizzly-night
+            val slug = realUrl.split("/").lastOrNull { it.isNotEmpty() }?.substringBefore("?") ?: ""
+            finalUrl = "$mainUrl/api/movies/$slug"
             
-            if (movieId != null) {
-                finalUrl = "$mainUrl/api/movies/$movieId" 
-            } else {
-                val slug = realUrl.split("/").lastOrNull { it.isNotEmpty() }?.substringBefore("?") ?: ""
-                finalUrl = "$mainUrl/api/movies/$slug"
-            }
+            Log.d(TAG, "Movie API URL generated: $finalUrl")
         }
 
         val sortedEpisodes = episodes.sortedWith(compareBy({ it.season }, { it.episode }))
 
         return if (isTv) {
-            newTvSeriesLoadResponse(title, realUrl, TvType.TvSeries, sortedEpisodes) {
+            newTvSeriesLoadResponse(linkData?.title ?: "Unknown", realUrl, TvType.TvSeries, sortedEpisodes) {
                 this.posterUrl = poster
-                this.year = year
+                this.year = linkData?.year
                 this.plot = description
                 this.score = ratingVal?.let { Score.from10(it) }
+                this.recommendations = emptyList()
             }
         } else {
-            // Truyền finalUrl (Link API) vào biến data của LoadResponse
-            newMovieLoadResponse(title, realUrl, TvType.Movie, finalUrl) {
+            // Truyền finalUrl (API Link) vào data
+            newMovieLoadResponse(linkData?.title ?: "Unknown", realUrl, TvType.Movie, finalUrl) {
                 this.posterUrl = poster
-                this.year = year
+                this.year = linkData?.year
                 this.plot = description
                 this.score = ratingVal?.let { Score.from10(it) }
+                this.recommendations = emptyList()
             }
         }
     }
@@ -200,8 +198,8 @@ class RidoMoviesProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // data ở đây là API Link (vd: https://ridomovies.tv/api/movies/12345)
-        Log.d(TAG, "LoadLinks API: $data") 
+        // data chính là Link API (vd: .../api/movies/grizzly-night)
+        Log.d(TAG, "LoadLinks Fetching: $data")
         try {
             val headers = mapOf(
                 "Authority" to "ridomovies.tv",
@@ -209,14 +207,17 @@ class RidoMoviesProvider : MainAPI() {
                 "Referer" to "$mainUrl/"
             )
             
-            val jsonText = app.get(data, headers = headers).text
+            val response = app.get(data, headers = headers)
+            Log.d(TAG, "API Response Code: ${response.code}") // Check log này!
             
-            // Tìm URL embed trong JSON trả về
+            val jsonText = response.text
+            
+            // Tìm URL embed (iframe)
             val srcRegex = """data-src\s*=\s*["'](https:\/\/[^"']+)["']""".toRegex()
             val embedUrl = srcRegex.find(jsonText)?.groupValues?.get(1)
             
             if (embedUrl != null) {
-                Log.d(TAG, "Found Embed: $embedUrl")
+                Log.d(TAG, "Embed Found: $embedUrl")
                 if (embedUrl.contains("closeload")) {
                     extractCloseload(embedUrl, callback)
                 } else if (embedUrl.contains("ridoo")) {
@@ -225,7 +226,7 @@ class RidoMoviesProvider : MainAPI() {
                     loadExtractor(embedUrl, subtitleCallback, callback)
                 }
             } else {
-                Log.e(TAG, "No embed URL found in API response")
+                Log.e(TAG, "No embed URL found in API response. JSON: ${jsonText.take(100)}...")
             }
         } catch (e: Exception) {
             Log.e(TAG, "LoadLinks Error", e)
@@ -233,70 +234,43 @@ class RidoMoviesProvider : MainAPI() {
         return true
     }
 
-    // --- EXTRACTOR 1: CLOSELOAD (Đã thêm Log & Logic Unpacker) ---
     private suspend fun extractCloseload(url: String, callback: (ExtractorLink) -> Unit) {
         try {
-            // Header giả lập browser để tránh bị chặn
             val headers = mapOf(
                 "Referer" to "$mainUrl/",
-                "User-Agent" to commonUserAgent,
-                "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+                "User-Agent" to commonUserAgent
             )
+            val text = app.get(url, headers = headers).text
             
-            val response = app.get(url, headers = headers)
-            val text = response.text
-            
-            Log.d(TAG, "Closeload Code: ${response.code}")
-            
-            // 1. Tìm đoạn mã hóa (Packed JS)
-            // Regex tìm đoạn: eval(function(p,a,c,k,e,d)...
+            // Tìm Packed JS
             val packedRegex = """eval\(function\(p,a,c,k,e,d\).*?\.split\('\|'\)\)\)""".toRegex()
             val packedJs = packedRegex.find(text)?.value
             
             if (packedJs != null) {
-                Log.d(TAG, "Found Packed JS")
                 // Giải nén
                 val unpacked = JsUnpacker(packedJs).unpack() ?: ""
                 
-                // Debug xem bên trong có gì (Tìm từ khóa 'file')
-                Log.d(TAG, "Unpacked Content (partial): ${unpacked.take(200)}") 
-                
-                // Tìm link trong mã đã giải nén
-                // Mẫu: file:"https://srv12..." hoặc file: "https://..."
+                // Tìm file link (Master URL)
                 val fileMatch = """file\s*:\s*["']([^"']+)["']""".toRegex().find(unpacked)
                 val masterUrl = fileMatch?.groupValues?.get(1)
                 
                 if (masterUrl != null) {
-                    Log.d(TAG, "Found Master URL: $masterUrl")
+                    Log.d(TAG, "Closeload Master URL: $masterUrl")
                     callback.invoke(
-                        newExtractorLink(name, "Closeload (Server 12)", masterUrl, ExtractorLinkType.M3U8) {
-                            this.referer = "https://closeload.top/" // Header quan trọng
+                        newExtractorLink(name, "Closeload", masterUrl, ExtractorLinkType.M3U8) {
+                            this.referer = "https://closeload.top/" // QUAN TRỌNG
                             this.quality = Qualities.Unknown.value
                         }
                     )
-                } else {
-                    Log.e(TAG, "Unpacked but NO file link found")
                 }
             } else {
-                Log.e(TAG, "No Packed JS found in Closeload HTML")
-                // Fallback: Thử tìm trong JSON-LD (Dù bạn bảo không dùng, nhưng để backup)
-                val jsonLdRegex = """"contentUrl"\s*:\s*"([^"]+)"""".toRegex()
-                val contentUrl = jsonLdRegex.find(text)?.groupValues?.get(1)
-                if (contentUrl != null) {
-                    Log.d(TAG, "Fallback to JSON-LD link")
-                    callback.invoke(
-                        newExtractorLink(name, "Closeload (JSON)", contentUrl, ExtractorLinkType.M3U8) {
-                            this.referer = "https://closeload.top/"
-                        }
-                    )
-                }
+                Log.e(TAG, "Closeload: No Packed JS found")
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Closeload Extract Error", e)
+            Log.e(TAG, "Closeload Error", e)
         }
     }
 
-    // --- EXTRACTOR 2: RIDOO ---
     private suspend fun extractRidoo(url: String, callback: (ExtractorLink) -> Unit) {
         try {
             val text = app.get(url, headers = mapOf("Referer" to "$mainUrl/")).text
@@ -305,7 +279,7 @@ class RidoMoviesProvider : MainAPI() {
             
             if (m3u8 != null) {
                 callback.invoke(
-                    newExtractorLink(name, "RidoMovies (HLS)", m3u8, ExtractorLinkType.M3U8) {
+                    newExtractorLink(name, "RidoMovies", m3u8, ExtractorLinkType.M3U8) {
                         this.referer = url
                         this.quality = Qualities.Unknown.value
                     }
