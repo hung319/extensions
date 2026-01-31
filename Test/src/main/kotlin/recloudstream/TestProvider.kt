@@ -19,20 +19,38 @@ class KingBokep : MainAPI() {
         "$mainUrl/category/scandal/" to "Scandal"
     )
 
+    // Hàm phụ trợ để xử lý thời gian (MM:SS hoặc HH:MM:SS) sang mili-giây
+    private fun getDuration(text: String?): Long? {
+        if (text.isNullOrBlank()) return null
+        return try {
+            val parts = text.trim().split(":").map { it.toLong() }
+            when (parts.size) {
+                2 -> (parts[0] * 60 + parts[1]) * 1000L // MM:SS
+                3 -> (parts[0] * 3600 + parts[1] * 60 + parts[2]) * 1000L // HH:MM:SS
+                else -> null
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     private fun Element.toSearchResult(): SearchResponse? {
         val link = this.selectFirst("a.group") ?: return null
-        val href = fixUrl(link.attr("href"))
+        val rawHref = link.attr("href")
+        if (rawHref.isBlank()) return null
+        val href = fixUrl(rawHref)
+
         val title = this.selectFirst(".video-card-title")?.text()?.trim() ?: return null
         
         val imgTag = this.selectFirst("img")
-        // Ưu tiên data-src (lazy load) trước, nếu không có mới lấy src
         val posterUrl = fixUrl(imgTag?.attr("data-src") ?: imgTag?.attr("src"))
         
-        val duration = this.selectFirst(".video-card-badge .text-xs")?.text()?.trim()
+        val durationText = this.selectFirst(".video-card-badge .text-xs")?.text()?.trim()
 
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
-            addDuration(duration)
+            // Sửa lỗi Unresolved reference 'addDuration'
+            this.duration = getDuration(durationText)
         }
     }
 
@@ -65,7 +83,7 @@ class KingBokep : MainAPI() {
 
         val title = document.selectFirst("h1")?.text()?.trim() ?: "Unknown"
         val date = document.selectFirst("span:contains(Tanggal:)")?.nextSibling()?.toString()?.trim()
-        val duration = document.selectFirst("span[data-pagefind-meta=duration]")?.text()
+        val durationText = document.selectFirst("span[data-pagefind-meta=duration]")?.text()
         val description = document.select("meta[name=description]").attr("content")
         
         val poster = document.selectFirst("video#bokep-player")?.attr("poster") 
@@ -84,7 +102,8 @@ class KingBokep : MainAPI() {
             this.tags = tags
             this.year = date?.takeLast(4)?.toIntOrNull()
             this.recommendations = recommendations
-            addDuration(duration)
+            // Sửa lỗi Unresolved reference 'addDuration'
+            this.duration = getDuration(durationText)
         }
     }
 
@@ -96,7 +115,6 @@ class KingBokep : MainAPI() {
     ): Boolean {
         val document = app.get(data).document
         
-        // Lấy link playlist từ attribute data-playlist của thẻ video
         val videoTag = document.selectFirst("#bokep-player")
         val playlistUrl = videoTag?.attr("data-playlist")
 
@@ -110,7 +128,6 @@ class KingBokep : MainAPI() {
                 ) {
                     referer = mainUrl
                     quality = Qualities.Unknown.value
-                    // Đã bỏ isM3u8 = true theo yêu cầu
                 }
             )
             return true
