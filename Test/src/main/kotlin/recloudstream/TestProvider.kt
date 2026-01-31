@@ -1,14 +1,19 @@
 package recloudstream
 
+import android.widget.Toast
+import android.util.Base64
+import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.Score
+import com.lagradost.cloudstream3.CommonActivity
+import com.lagradost.cloudstream3.CommonActivity.showToast
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
-import android.util.Base64
-import android.util.Log
 import java.nio.charset.Charset
 import kotlin.random.Random
 
@@ -52,6 +57,15 @@ class RidoMoviesProvider : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        // === THÊM TOAST (Credit) ===
+        if (page == 1) {
+            withContext(Dispatchers.Main) {
+                CommonActivity.activity?.let { activity ->
+                    showToast(activity, "Free Repo From H4RS", Toast.LENGTH_LONG)
+                }
+            }
+        }
+
         val url = request.data + page
         return try {
             val headers = mapOf("Referer" to "$mainUrl/", "X-Requested-With" to "XMLHttpRequest", "Accept" to "application/json")
@@ -115,7 +129,6 @@ class RidoMoviesProvider : MainAPI() {
         val descRegex = """className":"post-overview","text":"(.*?)"""".toRegex()
         val rawDesc = descRegex.find(cleanText)?.groupValues?.get(1)
         
-        // Fix mô tả: Unescape unicode và xóa thẻ HTML
         val description = rawDesc
             ?.replace("\\u003c", "<")
             ?.replace("\\u003e", ">")
@@ -124,7 +137,7 @@ class RidoMoviesProvider : MainAPI() {
 
         val ratingVal = """ratingValue":([\d.]+)""".toRegex().find(cleanText)?.groupValues?.get(1)?.toDoubleOrNull()
 
-        // Recommendations (Logic Gốc)
+        // Recommendations
         val recommendations = mutableListOf<SearchResponse>()
         try {
             val genreRegex = """href":"\/genre\/([a-zA-Z0-9-]+)"""".toRegex()
@@ -219,49 +232,38 @@ class RidoMoviesProvider : MainAPI() {
     // --- EXTRACTOR 1: CLOSELOAD (DECRYPTION + SUBTITLES) ---
     private suspend fun extractCloseload(
         url: String, 
-        subtitleCallback: (SubtitleFile) -> Unit, // Thêm callback
+        subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
         try {
             val headers = mapOf("Referer" to "$mainUrl/", "User-Agent" to commonUserAgent)
             val text = app.get(url, headers = headers).text
             
-            // --- A. GET SUBTITLES (MỚI THÊM) ---
-            // Tìm tất cả thẻ <track>
+            // A. Subtitles
             val trackRegex = """<track\s+(.*?)>""".toRegex()
             trackRegex.findAll(text).forEach { match ->
                 val attrs = match.groupValues[1]
-                
-                // Trích xuất src và label từ attributes
                 val src = """src=["']([^"']+)["']""".toRegex().find(attrs)?.groupValues?.get(1)
                 val label = """label=["']([^"']+)["']""".toRegex().find(attrs)?.groupValues?.get(1) ?: "Unknown"
-                
                 if (src != null) {
-                    // Nếu src là đường dẫn tương đối (/vtt/...), nối thêm domain
                     val fullSubUrl = if (src.startsWith("http")) src else "https://closeload.top$src"
-                    
-                    subtitleCallback.invoke(
-                        SubtitleFile(label, fullSubUrl)
-                    )
+                    subtitleCallback.invoke(SubtitleFile(label, fullSubUrl))
                 }
             }
 
-            // --- B. DECRYPT VIDEO LINK ---
+            // B. Decrypt Video
             val packedRegex = """(?s)eval\(function\(p,a,c,k,e,d\).*?\.split\('\|'\).*?\)""".toRegex()
             val match = packedRegex.find(text)
             
             if (match != null) {
                 val unpacked = JsUnpacker(match.value).unpack() ?: ""
-                
                 val keyRegex = """(\d+)%\(i\+5\)""".toRegex()
                 val key = keyRegex.find(unpacked)?.groupValues?.get(1)?.toLongOrNull() ?: 399756995L
-                
                 val arrayRegex = """var\s+\w+\s*=\s*\w+\(\[(.*?)\]\)""".toRegex()
                 val arrayRaw = arrayRegex.find(unpacked)?.groupValues?.get(1)
                 
                 if (arrayRaw != null) {
                     val masterUrl = decryptCloseload(arrayRaw, key)
-                    
                     if (masterUrl != null && masterUrl.startsWith("http")) {
                         callback.invoke(
                             newExtractorLink(name, "Closeload", masterUrl, ExtractorLinkType.M3U8) {
