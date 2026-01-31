@@ -9,7 +9,7 @@ import com.lagradost.cloudstream3.Score
 import android.util.Log
 import kotlin.random.Random
 
-class TestProvider : MainAPI() {
+class RidoMoviesProvider : MainAPI() {
     override var mainUrl = "https://ridomovies.tv"
     override var name = "RidoMovies"
     override val hasMainPage = true
