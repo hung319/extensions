@@ -6,6 +6,7 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.Score
+import org.jsoup.Jsoup
 import android.util.Base64
 import android.util.Log
 import java.nio.charset.Charset
@@ -21,13 +22,26 @@ class RidoMoviesProvider : MainAPI() {
     private val TAG = "RidoMovies"
     private val commonUserAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
 
-    // --- DTOs & API ---
-    data class RidoLinkData(val url: String, val title: String? = null, val poster: String? = null, val year: Int? = null, val type: String? = null)
+    // --- DTOs ---
+    data class RidoLinkData(
+        val url: String,
+        val title: String? = null,
+        val poster: String? = null,
+        val year: Int? = null,
+        val type: String? = null
+    )
+
     data class RidoEpResponse(val data: List<RidoEpData>?)
     data class RidoEpData(val url: String?)
+
+    // --- API STRUCTURES ---
     data class ApiResponse(val data: ApiData?)
     data class ApiData(val items: List<ApiItem>?)
-    data class ApiItem(val title: String?, val fullSlug: String?, val type: String?, val posterPath: String?, val releaseYear: String?, val content: ApiNestedContent?, val contentable: ApiContentable?)
+    data class ApiItem(
+        val title: String?, val fullSlug: String?, val type: String?, 
+        val posterPath: String?, val releaseYear: String?,
+        val content: ApiNestedContent?, val contentable: ApiContentable?
+    )
     data class ApiNestedContent(val title: String?, val fullSlug: String?, val type: String?)
     data class ApiContentable(val releaseYear: String?)
 
@@ -43,6 +57,7 @@ class RidoMoviesProvider : MainAPI() {
             val headers = mapOf("Referer" to "$mainUrl/", "X-Requested-With" to "XMLHttpRequest", "Accept" to "application/json")
             val response = app.get(url, headers = headers)
             val json = parseJson<ApiResponse>(response.text)
+            
             val homeList = json.data?.items?.mapNotNull { item ->
                 val title = item.title ?: item.content?.title ?: return@mapNotNull null
                 val slug = item.fullSlug ?: item.content?.fullSlug ?: return@mapNotNull null
@@ -51,6 +66,7 @@ class RidoMoviesProvider : MainAPI() {
                 val poster = fixUrl(item.posterPath ?: "")
                 val type = if (rawType?.contains("tv") == true) TvType.TvSeries else TvType.Movie
                 val year = item.releaseYear?.toIntOrNull() ?: item.contentable?.releaseYear?.toIntOrNull()
+
                 val data = RidoLinkData(href, title, poster, year, rawType)
                 newMovieSearchResponse(title, data.toJson(), type) {
                     this.posterUrl = poster
@@ -58,7 +74,9 @@ class RidoMoviesProvider : MainAPI() {
                 }
             } ?: emptyList()
             newHomePageResponse(request.name, homeList, true)
-        } catch (e: Exception) { newHomePageResponse(request.name, emptyList()) }
+        } catch (e: Exception) {
+            newHomePageResponse(request.name, emptyList())
+        }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -91,11 +109,19 @@ class RidoMoviesProvider : MainAPI() {
         val headers = mapOf("rsc" to "1", "Referer" to "$mainUrl/", "User-Agent" to commonUserAgent)
         val responseText = app.get(realUrl, headers = headers).text
         val isTv = realUrl.contains("/tv/") || linkData?.type?.contains("tv") == true
+
         val cleanText = responseText.replace("\\\"", "\"").replace("\\n", " ")
 
         val descRegex = """className":"post-overview","text":"(.*?)"""".toRegex()
         val rawDesc = descRegex.find(cleanText)?.groupValues?.get(1)
-        val description = rawDesc?.replace("\\u003c", "<")?.replace("\\u003e", ">")?.replace(Regex("<.*?>"), "") 
+        
+        // Fix mô tả: Unescape unicode và xóa thẻ HTML
+        val description = rawDesc
+            ?.replace("\\u003c", "<")
+            ?.replace("\\u003e", ">")
+            ?.replace(Regex("<.*?>"), "") 
+            ?: ""
+
         val ratingVal = """ratingValue":([\d.]+)""".toRegex().find(cleanText)?.groupValues?.get(1)?.toDoubleOrNull()
 
         // Recommendations (Logic Gốc)
@@ -107,13 +133,22 @@ class RidoMoviesProvider : MainAPI() {
                 val randomGenre = genres[Random.nextInt(genres.size)]
                 val genreUrl = "$mainUrl/genre/$randomGenre"
                 val genreRes = app.get(genreUrl, headers = mapOf("Referer" to "$mainUrl/")).text
-                val cleanGenreRes = genreRes.replace("\\\"", "\"")
-                val recRegex = """originalTitle":"(.*?)".*?fullSlug":"(.*?)".*?posterPath":"(.*?)"""".toRegex()
-                recRegex.findAll(cleanGenreRes).take(10).forEach { m ->
-                    val rTitle = m.groupValues[1]; val rSlug = m.groupValues[2]; val rPoster = fixUrl(m.groupValues[3]); val rUrl = fixUrl(rSlug)
-                    if (!rUrl.contains(realUrl)) {
-                        val recData = RidoLinkData(rUrl, rTitle, rPoster)
-                        recommendations.add(newMovieSearchResponse(rTitle, recData.toJson(), TvType.Movie) { this.posterUrl = rPoster })
+                val doc = Jsoup.parse(genreRes)
+                
+                doc.select("div.grid > div").forEach { item ->
+                    val aTag = item.selectFirst("a")
+                    val imgTag = item.selectFirst("img")
+                    val titleText = item.text()
+                    
+                    if (aTag != null && imgTag != null) {
+                        val rHref = fixUrl(aTag.attr("href"))
+                        val rTitle = if(titleText.length > 50) titleText.take(20) else titleText
+                        val rPoster = fixUrl(imgTag.attr("src") ?: imgTag.attr("data-src") ?: "")
+                        
+                        if (rHref.isNotEmpty() && !rHref.contains(realUrl)) {
+                            val recData = RidoLinkData(rHref, rTitle, rPoster)
+                            recommendations.add(newMovieSearchResponse(rTitle, recData.toJson(), TvType.Movie) { this.posterUrl = rPoster })
+                        }
                     }
                 }
             }
@@ -161,15 +196,16 @@ class RidoMoviesProvider : MainAPI() {
         try {
             val headers = mapOf("Authority" to "ridomovies.tv", "X-Requested-With" to "XMLHttpRequest", "Referer" to "$mainUrl/")
             val jsonText = app.get(data, headers = headers).text
+            
             val jsonResponse = tryParseJson<RidoEpResponse>(jsonText)
             val iframeHtml = jsonResponse?.data?.firstOrNull()?.url ?: ""
+            
             val srcRegex = """data-src=["'](https:.*?)["']""".toRegex()
             val embedUrl = srcRegex.find(iframeHtml)?.groupValues?.get(1)
             
             if (embedUrl != null) {
-                Log.d(TAG, "Embed: $embedUrl")
                 if (embedUrl.contains("closeload")) {
-                    extractCloseload(embedUrl, callback)
+                    extractCloseload(embedUrl, subtitleCallback, callback)
                 } else if (embedUrl.contains("ridoo")) {
                     extractRidoo(embedUrl, callback)
                 } else {
@@ -180,12 +216,37 @@ class RidoMoviesProvider : MainAPI() {
         return true
     }
 
-    // --- EXTRACTOR: CLOSELOAD (FIXED DECRYPTION) ---
-    private suspend fun extractCloseload(url: String, callback: (ExtractorLink) -> Unit) {
+    // --- EXTRACTOR 1: CLOSELOAD (DECRYPTION + SUBTITLES) ---
+    private suspend fun extractCloseload(
+        url: String, 
+        subtitleCallback: (SubtitleFile) -> Unit, // Thêm callback
+        callback: (ExtractorLink) -> Unit
+    ) {
         try {
             val headers = mapOf("Referer" to "$mainUrl/", "User-Agent" to commonUserAgent)
             val text = app.get(url, headers = headers).text
             
+            // --- A. GET SUBTITLES (MỚI THÊM) ---
+            // Tìm tất cả thẻ <track>
+            val trackRegex = """<track\s+(.*?)>""".toRegex()
+            trackRegex.findAll(text).forEach { match ->
+                val attrs = match.groupValues[1]
+                
+                // Trích xuất src và label từ attributes
+                val src = """src=["']([^"']+)["']""".toRegex().find(attrs)?.groupValues?.get(1)
+                val label = """label=["']([^"']+)["']""".toRegex().find(attrs)?.groupValues?.get(1) ?: "Unknown"
+                
+                if (src != null) {
+                    // Nếu src là đường dẫn tương đối (/vtt/...), nối thêm domain
+                    val fullSubUrl = if (src.startsWith("http")) src else "https://closeload.top$src"
+                    
+                    subtitleCallback.invoke(
+                        SubtitleFile(label, fullSubUrl)
+                    )
+                }
+            }
+
+            // --- B. DECRYPT VIDEO LINK ---
             val packedRegex = """(?s)eval\(function\(p,a,c,k,e,d\).*?\.split\('\|'\).*?\)""".toRegex()
             val match = packedRegex.find(text)
             
@@ -202,54 +263,38 @@ class RidoMoviesProvider : MainAPI() {
                     val masterUrl = decryptCloseload(arrayRaw, key)
                     
                     if (masterUrl != null && masterUrl.startsWith("http")) {
-                        Log.d(TAG, "Closeload Stream: $masterUrl") // URL sẽ chuẩn ở đây
                         callback.invoke(
                             newExtractorLink(name, "Closeload", masterUrl, ExtractorLinkType.M3U8) {
                                 this.referer = "https://closeload.top/"
                                 this.quality = Qualities.Unknown.value
                             }
                         )
-                    } else {
-                        Log.e(TAG, "Decryption produced invalid URL: $masterUrl")
                     }
                 }
             }
         } catch (e: Exception) { Log.e(TAG, "Closeload Err", e) }
     }
 
-    // --- THUẬT TOÁN GIẢI MÃ (FIX KÝ TỰ LẠ) ---
     private fun decryptCloseload(input: String, key: Long): String? {
         try {
-            // 1. Clean & Reverse
             val joined = input.replace("\"", "").replace(",", "")
             val reversed = joined.reversed()
-            
-            // 2. Decode Base64 lần 1 (ra ByteArray)
             val b64_1 = Base64.decode(reversed, Base64.DEFAULT)
-            
-            // QUAN TRỌNG: Chuyển ByteArray thành String 1-1 (ISO_8859_1) để giữ nguyên giá trị byte
-            // Không được dùng UTF-8 vì sẽ làm hỏng các byte > 127
             val b64_1_str = String(b64_1, Charsets.ISO_8859_1)
-            
-            // 3. Decode Base64 lần 2 (ra ByteArray cuối cùng để tính toán)
             val b64_2 = Base64.decode(b64_1_str, Base64.DEFAULT)
             
             val sb = StringBuilder()
             for (i in b64_2.indices) {
-                // QUAN TRỌNG: Ép kiểu Byte (có dấu) thành Int (không dấu 0-255)
                 val charCode = b64_2[i].toInt() and 0xFF
-                
                 val shift = (key % (i + 5)).toInt()
                 val result = (charCode - shift + 256) % 256
                 sb.append(result.toChar())
             }
             return sb.toString()
-        } catch (e: Exception) {
-            Log.e(TAG, "Decryption Failed", e)
-            return null
-        }
+        } catch (e: Exception) { return null }
     }
 
+    // --- EXTRACTOR 2: RIDOO ---
     private suspend fun extractRidoo(url: String, callback: (ExtractorLink) -> Unit) {
         try {
             val text = app.get(url, headers = mapOf("Referer" to "$mainUrl/")).text
