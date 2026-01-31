@@ -19,15 +19,14 @@ class KingBokep : MainAPI() {
         "$mainUrl/category/scandal/" to "Scandal"
     )
 
-    // Sửa đổi: Hàm chuyển đổi thời gian sang Phút (Int) thay vì mili-giây (Long)
-    // Input: "01:17" (1 phút 17 giây) -> Output: 1
+    // Hàm chuyển đổi thời gian sang Phút (Int)
     private fun getDurationMinutes(text: String?): Int? {
         if (text.isNullOrBlank()) return null
         return try {
             val parts = text.trim().split(":").map { it.toInt() }
             when (parts.size) {
-                2 -> parts[0] // MM:SS -> Lấy MM
-                3 -> parts[0] * 60 + parts[1] // HH:MM:SS -> HH*60 + MM
+                2 -> parts[0] // MM:SS -> Lấy phút
+                3 -> parts[0] * 60 + parts[1] // HH:MM:SS -> Đổi ra phút
                 else -> null
             }
         } catch (e: Exception) {
@@ -36,21 +35,30 @@ class KingBokep : MainAPI() {
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
+        // 1. Lấy thẻ A, nếu không có -> bỏ qua
         val link = this.selectFirst("a.group") ?: return null
+        
+        // 2. Lấy href raw, nếu null/blank -> bỏ qua
         val rawHref = link.attr("href")
-        if (rawHref.isBlank()) return null
+        if (rawHref.isNullOrBlank()) return null
         
-        // Sửa lỗi String?: Ép kiểu String rõ ràng
-        val href: String = fixUrl(rawHref)
-        val title: String = this.selectFirst(".video-card-title")?.text()?.trim() ?: return null
-        
+        // 3. Fix URL và ép kiểu String (Non-null)
+        val href = fixUrl(rawHref)
+
+        // 4. Lấy Title, nếu null/blank -> bỏ qua
+        val rawTitle = this.selectFirst(".video-card-title")?.text()?.trim()
+        if (rawTitle.isNullOrBlank()) return null
+        val title = rawTitle!! // Khẳng định non-null
+
+        // 5. Xử lý Poster (An toàn với fixUrl)
         val imgTag = this.selectFirst("img")
-        val posterUrl = fixUrl(imgTag?.attr("data-src") ?: imgTag?.attr("src"))
-        
-        // Removed duration parsing here to fix "Unresolved reference" error in SearchResponse
-        
+        val rawPoster = imgTag?.attr("data-src") ?: imgTag?.attr("src")
+        val posterUrl = if (!rawPoster.isNullOrBlank()) fixUrl(rawPoster!!) else null
+
+        // 6. Return (Title và Href chắc chắn là String)
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
+            // Không set duration ở đây để tránh lỗi unresolved reference trong SearchResponse
         }
     }
 
@@ -81,13 +89,18 @@ class KingBokep : MainAPI() {
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
+        // Xử lý Title và Description
         val title = document.selectFirst("h1")?.text()?.trim() ?: "Unknown"
-        val date = document.selectFirst("span:contains(Tanggal:)")?.nextSibling()?.toString()?.trim()
-        val durationText = document.selectFirst("span[data-pagefind-meta=duration]")?.text()
         val description = document.select("meta[name=description]").attr("content")
         
-        val poster = document.selectFirst("video#bokep-player")?.attr("poster") 
+        // Xử lý Metadata
+        val date = document.selectFirst("span:contains(Tanggal:)")?.nextSibling()?.toString()?.trim()
+        val durationText = document.selectFirst("span[data-pagefind-meta=duration]")?.text()
+        
+        // Xử lý Poster
+        val rawPoster = document.selectFirst("video#bokep-player")?.attr("poster") 
             ?: document.select("meta[property=og:image]").attr("content")
+        val poster = if (!rawPoster.isNullOrBlank()) fixUrl(rawPoster) else null
 
         val recommendations = document.select("li.video-card").mapNotNull {
             it.toSearchResult()
@@ -102,8 +115,7 @@ class KingBokep : MainAPI() {
             this.tags = tags
             this.year = date?.takeLast(4)?.toIntOrNull()
             this.recommendations = recommendations
-            // Sửa lỗi: Gán giá trị Int (phút) vào duration
-            this.duration = getDurationMinutes(durationText)
+            this.duration = getDurationMinutes(durationText) // Trả về Int (phút)
         }
     }
 
@@ -116,14 +128,14 @@ class KingBokep : MainAPI() {
         val document = app.get(data).document
         
         val videoTag = document.selectFirst("#bokep-player")
-        val playlistUrl = videoTag?.attr("data-playlist")
+        val rawPlaylistUrl = videoTag?.attr("data-playlist")
 
-        if (!playlistUrl.isNullOrBlank()) {
+        if (!rawPlaylistUrl.isNullOrBlank()) {
             callback.invoke(
                 newExtractorLink(
                     source = name,
                     name = name,
-                    url = fixUrl(playlistUrl),
+                    url = fixUrl(rawPlaylistUrl),
                     type = ExtractorLinkType.M3U8
                 ) {
                     referer = mainUrl
