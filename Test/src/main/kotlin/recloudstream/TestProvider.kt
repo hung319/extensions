@@ -19,14 +19,15 @@ class KingBokep : MainAPI() {
         "$mainUrl/category/scandal/" to "Scandal"
     )
 
-    // Hàm phụ trợ để xử lý thời gian (MM:SS hoặc HH:MM:SS) sang mili-giây
-    private fun getDuration(text: String?): Long? {
+    // Sửa đổi: Hàm chuyển đổi thời gian sang Phút (Int) thay vì mili-giây (Long)
+    // Input: "01:17" (1 phút 17 giây) -> Output: 1
+    private fun getDurationMinutes(text: String?): Int? {
         if (text.isNullOrBlank()) return null
         return try {
-            val parts = text.trim().split(":").map { it.toLong() }
+            val parts = text.trim().split(":").map { it.toInt() }
             when (parts.size) {
-                2 -> (parts[0] * 60 + parts[1]) * 1000L // MM:SS
-                3 -> (parts[0] * 3600 + parts[1] * 60 + parts[2]) * 1000L // HH:MM:SS
+                2 -> parts[0] // MM:SS -> Lấy MM
+                3 -> parts[0] * 60 + parts[1] // HH:MM:SS -> HH*60 + MM
                 else -> null
             }
         } catch (e: Exception) {
@@ -38,19 +39,18 @@ class KingBokep : MainAPI() {
         val link = this.selectFirst("a.group") ?: return null
         val rawHref = link.attr("href")
         if (rawHref.isBlank()) return null
-        val href = fixUrl(rawHref)
-
-        val title = this.selectFirst(".video-card-title")?.text()?.trim() ?: return null
+        
+        // Sửa lỗi String?: Ép kiểu String rõ ràng
+        val href: String = fixUrl(rawHref)
+        val title: String = this.selectFirst(".video-card-title")?.text()?.trim() ?: return null
         
         val imgTag = this.selectFirst("img")
         val posterUrl = fixUrl(imgTag?.attr("data-src") ?: imgTag?.attr("src"))
         
-        val durationText = this.selectFirst(".video-card-badge .text-xs")?.text()?.trim()
-
+        // Removed duration parsing here to fix "Unresolved reference" error in SearchResponse
+        
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
-            // Sửa lỗi Unresolved reference 'addDuration'
-            this.duration = getDuration(durationText)
         }
     }
 
@@ -102,8 +102,8 @@ class KingBokep : MainAPI() {
             this.tags = tags
             this.year = date?.takeLast(4)?.toIntOrNull()
             this.recommendations = recommendations
-            // Sửa lỗi Unresolved reference 'addDuration'
-            this.duration = getDuration(durationText)
+            // Sửa lỗi: Gán giá trị Int (phút) vào duration
+            this.duration = getDurationMinutes(durationText)
         }
     }
 
