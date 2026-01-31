@@ -19,7 +19,7 @@ class RidoMoviesProvider : MainAPI() {
     
     private val TAG = "RidoMovies"
 
-    // --- DATA TRANSFER OBJECT (Thêm title vào để truyền sang Load) ---
+    // --- DATA TRANSFER OBJECT ---
     data class RidoLinkData(
         val url: String,
         val title: String? = null,
@@ -93,9 +93,9 @@ class RidoMoviesProvider : MainAPI() {
                 val type = if (rawType?.contains("tv") == true) TvType.TvSeries else TvType.Movie
                 val year = item.releaseYear?.toIntOrNull() ?: item.contentable?.releaseYear?.toIntOrNull()
 
-                // Đóng gói URL + Title + Poster + Year vào JSON
+                // FIX: Gọi toJson() như extension function
                 val data = RidoLinkData(href, title, poster, year)
-                val dataStr = toJson(data)
+                val dataStr = data.toJson()
 
                 newMovieSearchResponse(title, dataStr, type) {
                     this.posterUrl = poster
@@ -127,9 +127,9 @@ class RidoMoviesProvider : MainAPI() {
                 val poster = fixUrl(item.posterPath ?: "")
                 val year = item.releaseYear?.toIntOrNull() ?: item.contentable?.releaseYear?.toIntOrNull()
 
-                // Đóng gói data truyền đi
+                // FIX: Gọi toJson() như extension function
                 val data = RidoLinkData("$mainUrl/$slug", title, poster, year)
-                val dataStr = toJson(data)
+                val dataStr = data.toJson()
 
                 newMovieSearchResponse(title, dataStr, type) {
                     this.posterUrl = poster
@@ -141,14 +141,11 @@ class RidoMoviesProvider : MainAPI() {
         }
     }
 
-    // --- LOAD (USE PASSED DATA FIRST) ---
+    // --- LOAD ---
     override suspend fun load(url: String): LoadResponse {
-        // 1. Giải nén dữ liệu từ MainPage/Search
         val linkData = tryParseJson<RidoLinkData>(url)
         val realUrl = linkData?.url ?: url
         
-        // Ưu tiên lấy dữ liệu đã truyền qua (Chính xác 100%)
-        // Nếu không có (null/empty) thì gán giá trị mặc định để lát tìm sau
         var title = if (!linkData?.title.isNullOrEmpty()) linkData!!.title!! else "Unknown"
         var poster = linkData?.poster ?: ""
         var year = linkData?.year
@@ -157,21 +154,18 @@ class RidoMoviesProvider : MainAPI() {
         val responseText = app.get(realUrl, headers = headers).text
         val isTv = realUrl.contains("/tv/") || realUrl.contains("season")
 
-        // Clean response
         val cleanResponse = responseText.replace("\\\"", "\"").replace("\\n", " ")
 
-        // --- A. EXTRACT METADATA (Fallback only) ---
+        // --- A. EXTRACT METADATA ---
         var description: String? = null
         var ratingValue: Double? = null
         var tags: List<String>? = null
 
-        // 1. JSON-LD Extraction (Scan for details we might miss)
         val jsonLdRegex = """\{"@context":"https://schema.org".*?"@type":"(Movie|TVSeries)".*?\}""".toRegex()
         val jsonLdMatch = jsonLdRegex.find(cleanResponse)?.value
         if (jsonLdMatch != null) {
             try {
                 val ldData = parseJson<LdJson>(jsonLdMatch)
-                // Chỉ override nếu dữ liệu hiện tại chưa có hoặc là "Unknown"
                 if (title == "Unknown") title = ldData.name ?: title
                 description = ldData.description
                 if (poster.isEmpty()) poster = fixUrl(ldData.image ?: "")
@@ -181,10 +175,9 @@ class RidoMoviesProvider : MainAPI() {
             } catch (e: Exception) { }
         }
 
-        // 2. Regex Fallback (Nếu vẫn thiếu thông tin)
-        if (title == "Unknown") {
-            // Tìm title trong thẻ H1 nếu vẫn chưa có tên
-            val h1Match = """\["\$","h1",null,\{"children":"(.*?)"\}\]""".toRegex().find(cleanResponse)
+        if (title == "Unknown" || title.contains("404") || title == "Home") {
+            val h1Regex = """\["\$","h1",null,\{"children":"(.*?)"\}\]""".toRegex()
+            val h1Match = h1Regex.find(cleanResponse)
             if (h1Match != null) {
                 title = h1Match.groupValues[1]
             } else {
@@ -238,7 +231,7 @@ class RidoMoviesProvider : MainAPI() {
             }
         }
 
-        // --- C. RECOMMENDATIONS (Pack Data for Next Load) ---
+        // --- C. RECOMMENDATIONS ---
         var recommendations = mutableListOf<SearchResponse>()
         try {
             val genreRegex = """href\":\"\/genre\/([a-zA-Z0-9-]+)\"""".toRegex()
@@ -262,9 +255,9 @@ class RidoMoviesProvider : MainAPI() {
                     val rPoster = fixUrl(m.groupValues[3])
                     
                     if (!rSlug.contains(realUrl)) {
-                        // Đóng gói thông tin cho phim gợi ý luôn
+                        // FIX: Gọi toJson() như extension function
                         val recData = RidoLinkData("$mainUrl/$rSlug", rTitle, rPoster)
-                        val recDataStr = toJson(recData)
+                        val recDataStr = recData.toJson()
                         
                         recommendations.add(newMovieSearchResponse(rTitle, recDataStr, TvType.Movie) {
                             this.posterUrl = rPoster
@@ -277,7 +270,6 @@ class RidoMoviesProvider : MainAPI() {
         val finalEpisodes = episodes.sortedWith(compareBy({ it.season }, { it.episode }))
         val finalRecs = recommendations.distinctBy { it.url }.shuffled().take(10)
 
-        // Return Result (Sử dụng realUrl làm URL định danh)
         if (isTv) {
             return newTvSeriesLoadResponse(title, realUrl, TvType.TvSeries, finalEpisodes) {
                 this.posterUrl = poster
@@ -306,7 +298,6 @@ class RidoMoviesProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Data vào đây là Real URL (do LoadResponse trả về)
         Log.d(TAG, "loadLinks Input: $data")
         val apiUrl = if (data.contains("/movies/")) {
             data.replace("/movies/", "/api/movies/")
@@ -345,7 +336,6 @@ class RidoMoviesProvider : MainAPI() {
     private fun fixUrl(url: String): String {
         if (url.isEmpty()) return ""
         if (url.startsWith("http")) return url
-        // Nếu bắt đầu bằng / thì nối mainUrl
         val cleanUrl = if (url.startsWith("/")) url else "/$url"
         return "$mainUrl$cleanUrl"
     }
