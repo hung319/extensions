@@ -6,6 +6,7 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.Score
+import org.jsoup.Jsoup
 import android.util.Log
 import kotlin.random.Random
 
@@ -31,7 +32,7 @@ class RidoMoviesProvider : MainAPI() {
     data class RidoEpResponse(val data: List<RidoEpData>?)
     data class RidoEpData(val url: String?)
 
-    // --- MAIN PAGE ---
+    // --- MAIN PAGE (Giữ nguyên vì đã ổn định) ---
     data class ApiResponse(val data: ApiData?)
     data class ApiData(val items: List<ApiItem>?)
     data class ApiItem(
@@ -62,7 +63,6 @@ class RidoMoviesProvider : MainAPI() {
                 val type = if (rawType?.contains("tv") == true) TvType.TvSeries else TvType.Movie
                 val year = item.releaseYear?.toIntOrNull() ?: item.contentable?.releaseYear?.toIntOrNull()
 
-                // Data Passing: Chuẩn hóa JSON string
                 val data = RidoLinkData(href, title, poster, year, rawType)
                 newMovieSearchResponse(title, data.toJson(), type) {
                     this.posterUrl = poster
@@ -102,6 +102,7 @@ class RidoMoviesProvider : MainAPI() {
         val year = linkData?.year
         val poster = linkData?.poster
         
+        // Fetch RSC Data (Chứa ID tập phim và thông tin chi tiết)
         val headers = mapOf("rsc" to "1", "Referer" to "$mainUrl/", "User-Agent" to commonUserAgent)
         val responseText = app.get(realUrl, headers = headers).text
         val isTv = realUrl.contains("/tv/") || linkData?.type?.contains("tv") == true
@@ -115,11 +116,10 @@ class RidoMoviesProvider : MainAPI() {
         val description = rawDesc?.replace(Regex("<.*?>"), "") 
         val ratingVal = """ratingValue":([\d.]+)""".toRegex().find(cleanText)?.groupValues?.get(1)?.toDoubleOrNull()
 
-        // --- FIX RECOMMENDATIONS ---
+        // --- KHÔI PHỤC RECOMMENDATIONS (Sử dụng Jsoup cho an toàn) ---
         val recommendations = mutableListOf<SearchResponse>()
         try {
-            // Regex tìm genre trong RSC payload (đã clean)
-            // Pattern: href:"/genre/action"
+            // 1. Tìm ngẫu nhiên 1 genre từ RSC payload
             val genreRegex = """href":"\/genre\/([a-zA-Z0-9-]+)"""".toRegex()
             val genres = genreRegex.findAll(cleanText)
                 .map { it.groupValues[1] }
@@ -130,21 +130,24 @@ class RidoMoviesProvider : MainAPI() {
             if (genres.isNotEmpty()) {
                 val randomGenre = genres[Random.nextInt(genres.size)]
                 val genreUrl = "$mainUrl/genre/$randomGenre"
-                // Gọi trang Genre (HTML thường) để dễ parse
+                
+                // 2. Fetch trang Genre (Đây là HTML thường, KHÔNG phải RSC)
                 val genreRes = app.get(genreUrl, headers = mapOf("Referer" to "$mainUrl/")).text
+                val doc = Jsoup.parse(genreRes)
                 
-                // Regex tìm phim trong trang Genre
-                // Pattern: "originalTitle":"...","fullSlug":"..."
-                val recRegex = """originalTitle":"(.*?)".*?fullSlug":"(.*?)".*?posterPath":"(.*?)"""".toRegex()
-                
-                recRegex.findAll(genreRes).take(10).forEach { m ->
-                    val rTitle = m.groupValues[1]
-                    val rSlug = m.groupValues[2]
-                    val rPoster = fixUrl(m.groupValues[3])
-                    val rUrl = fixUrl(rSlug)
+                // 3. Parse list phim bằng CSS Selector (Chuẩn như file gốc)
+                // Selector này dựa trên cấu trúc common của Ridomovies
+                doc.select("div.grid > div").forEach { item ->
+                    val aTag = item.selectFirst("a") ?: return@forEach
+                    val imgTag = item.selectFirst("img")
+                    val titleTag = item.selectFirst("h3, div.truncate") // Fallback selector
                     
-                    if (!rUrl.contains(realUrl)) {
-                        val recData = RidoLinkData(rUrl, rTitle, rPoster)
+                    val rHref = fixUrl(aTag.attr("href"))
+                    val rTitle = titleTag?.text() ?: ""
+                    val rPoster = fixUrl(imgTag?.attr("src") ?: imgTag?.attr("data-src") ?: "")
+                    
+                    if (rHref.isNotEmpty() && !rHref.contains(realUrl) && rTitle.isNotEmpty()) {
+                        val recData = RidoLinkData(rHref, rTitle, rPoster)
                         recommendations.add(newMovieSearchResponse(rTitle, recData.toJson(), TvType.Movie) {
                             this.posterUrl = rPoster
                         })
@@ -176,7 +179,7 @@ class RidoMoviesProvider : MainAPI() {
             }
             finalUrl = realUrl
         } else {
-            // Movie: Dùng slug
+            // Movie: Dùng slug để tạo API link chuẩn
             val slug = realUrl.split("/").lastOrNull { it.isNotEmpty() }?.substringBefore("?") ?: ""
             finalUrl = "$mainUrl/api/movies/$slug"
         }
@@ -213,7 +216,7 @@ class RidoMoviesProvider : MainAPI() {
             val headers = mapOf("Authority" to "ridomovies.tv", "X-Requested-With" to "XMLHttpRequest", "Referer" to "$mainUrl/")
             val jsonText = app.get(data, headers = headers).text
             
-            // Parse JSON để lấy iframe HTML sạch
+            // Parse JSON API
             val jsonResponse = tryParseJson<RidoEpResponse>(jsonText)
             val iframeHtml = jsonResponse?.data?.firstOrNull()?.url ?: ""
             
@@ -234,44 +237,38 @@ class RidoMoviesProvider : MainAPI() {
         return true
     }
 
-    // --- EXTRACTOR 1: CLOSELOAD (FIXED) ---
+    // --- EXTRACTOR 1: CLOSELOAD (Siêu bền) ---
     private suspend fun extractCloseload(url: String, callback: (ExtractorLink) -> Unit) {
         try {
+            // Referer Rido để truy cập embed page
             val headers = mapOf("Referer" to "$mainUrl/", "User-Agent" to commonUserAgent)
             val text = app.get(url, headers = headers).text
             
-            // 1. Tìm đoạn mã hóa JS
-            val packedRegex = """eval\(function\(p,a,c,k,e,d\).*?\.split\('\|'\)\)\)""".toRegex()
-            val packedJs = packedRegex.find(text)?.value
+            // Regex lỏng hơn để bắt mọi biến thể của packed function
+            // Bắt đầu bằng eval(function(p,a,c,k,e,d) và kết thúc bằng .split('|')))
+            val packedRegex = """(eval\(function\(p,a,c,k,e,d\).*?\.split\('\|'\).*?\)\))""".toRegex(RegexOption.DOT_MATCHES_ALL)
+            val match = packedRegex.find(text)
             
-            if (packedJs != null) {
-                // 2. Unpack
+            if (match != null) {
+                val packedJs = match.value
                 val unpacked = JsUnpacker(packedJs).unpack() ?: ""
                 
-                // 3. Tìm link "file:" trong đoạn mã đã giải nén
-                // Link chuẩn thường là https://srv12... hoặc domain lạ khác playmix
+                // Tìm link master.txt hoặc m3u8
                 val fileMatch = """file\s*:\s*["']([^"']+)["']""".toRegex().find(unpacked)
                 val masterUrl = fileMatch?.groupValues?.get(1)
                 
-                if (masterUrl != null) {
-                    // BLOCK link playmix.uno vì nó là rác (404)
-                    if (!masterUrl.contains("playmix.uno")) {
-                        callback.invoke(
-                            newExtractorLink(name, "Closeload (Server VIP)", masterUrl, ExtractorLinkType.M3U8) {
-                                this.referer = "https://closeload.top/" // Bắt buộc
-                                this.quality = Qualities.Unknown.value
-                            }
-                        )
-                    } else {
-                        Log.d(TAG, "Blocked Playmix URL: $masterUrl")
-                    }
+                if (masterUrl != null && !masterUrl.contains("playmix.uno")) {
+                    Log.d(TAG, "Closeload Stream: $masterUrl")
+                    callback.invoke(
+                        newExtractorLink(name, "Closeload", masterUrl, ExtractorLinkType.M3U8) {
+                            this.referer = "https://closeload.top/" // Referer bắt buộc cho stream
+                            this.quality = Qualities.Unknown.value
+                        }
+                    )
                 }
             } else {
-                Log.e(TAG, "Closeload: No Packed JS found")
+                Log.e(TAG, "Closeload: Packed JS not found. HTML Dump: ${text.take(300)}")
             }
-            
-            // LƯU Ý: Đã xóa phần fallback JSON-LD vì nó trả về link chết
-            
         } catch (e: Exception) { Log.e(TAG, "Closeload Err", e) }
     }
 
