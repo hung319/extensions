@@ -6,7 +6,6 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.Score
-import org.jsoup.Jsoup
 import android.util.Log
 import kotlin.random.Random
 
@@ -19,18 +18,21 @@ class RidoMoviesProvider : MainAPI() {
     
     private val TAG = "RidoMovies"
 
-    // --- DATA TRANSFER OBJECT ---
+    // --- DTOs ---
     data class RidoLinkData(
         val url: String,
         val title: String? = null,
         val poster: String? = null,
-        val year: Int? = null
+        val year: Int? = null,
+        val type: String? = null
     )
 
-    // --- API DATA CLASSES ---
+    data class RidoEpResponse(val data: List<RidoEpData>?)
+    data class RidoEpData(val url: String?)
+
+    // --- MAIN PAGE ---
     data class ApiResponse(val data: ApiData?)
     data class ApiData(val items: List<ApiItem>?)
-
     data class ApiItem(
         val title: String? = null,
         val fullSlug: String? = null,
@@ -40,32 +42,9 @@ class RidoMoviesProvider : MainAPI() {
         val content: ApiNestedContent? = null,
         val contentable: ApiContentable? = null
     )
+    data class ApiNestedContent(val title: String?, val fullSlug: String?, val type: String?)
+    data class ApiContentable(val releaseYear: String? = null)
 
-    data class ApiNestedContent(
-        val title: String?,
-        val fullSlug: String?,
-        val type: String?
-    )
-    
-    data class ApiContentable(
-        val releaseYear: String? = null, 
-        val overview: String? = null
-    )
-
-    data class ApiLinkResponse(val data: List<ApiLinkItem>?)
-    data class ApiLinkItem(val url: String?)
-
-    data class LdJson(
-        val name: String?,
-        val description: String?,
-        val image: String?,
-        val dateCreated: String?,
-        val genre: List<String>?,
-        val aggregateRating: LdRating?
-    )
-    data class LdRating(val ratingValue: String?)
-
-    // --- MAIN PAGE ---
     override val mainPage = mainPageOf(
         "$mainUrl/core/api/movies/latest?page%5Bnumber%5D=" to "Latest Movies",
         "$mainUrl/core/api/series/latest?page%5Bnumber%5D=" to "Latest TV Series"
@@ -93,11 +72,8 @@ class RidoMoviesProvider : MainAPI() {
                 val type = if (rawType?.contains("tv") == true) TvType.TvSeries else TvType.Movie
                 val year = item.releaseYear?.toIntOrNull() ?: item.contentable?.releaseYear?.toIntOrNull()
 
-                // FIX: Gọi toJson() như extension function
-                val data = RidoLinkData(href, title, poster, year)
-                val dataStr = data.toJson()
-
-                newMovieSearchResponse(title, dataStr, type) {
+                val data = RidoLinkData(href, title, poster, year, rawType)
+                newMovieSearchResponse(title, data.toJson(), type) {
                     this.posterUrl = poster
                     this.year = year
                 }
@@ -108,37 +84,25 @@ class RidoMoviesProvider : MainAPI() {
         }
     }
 
-    // --- SEARCH ---
-    data class SearchRoot(val data: SearchContainer?)
-    data class SearchContainer(val items: List<ApiItem>?)
-
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/core/api/search?q=$query"
         return try {
             val headers = mapOf("Referer" to "$mainUrl/")
-            val text = app.get(url, headers = headers).text
-            val json = parseJson<SearchRoot>(text)
-            val items = json.data?.items ?: return emptyList()
-
-            items.mapNotNull { item ->
+            val response = app.get(url, headers = headers)
+            val json = parseJson<ApiResponse>(response.text)
+            json.data?.items?.mapNotNull { item ->
                 val title = item.title ?: item.content?.title ?: return@mapNotNull null
                 val slug = item.fullSlug ?: item.content?.fullSlug ?: return@mapNotNull null
                 val type = if (item.type?.contains("tv") == true) TvType.TvSeries else TvType.Movie
                 val poster = fixUrl(item.posterPath ?: "")
                 val year = item.releaseYear?.toIntOrNull() ?: item.contentable?.releaseYear?.toIntOrNull()
-
-                // FIX: Gọi toJson() như extension function
                 val data = RidoLinkData("$mainUrl/$slug", title, poster, year)
-                val dataStr = data.toJson()
-
-                newMovieSearchResponse(title, dataStr, type) {
+                newMovieSearchResponse(title, data.toJson(), type) {
                     this.posterUrl = poster
                     this.year = year
                 }
-            }
-        } catch (e: Exception) {
-            emptyList()
-        }
+            } ?: emptyList()
+        } catch (e: Exception) { emptyList() }
     }
 
     // --- LOAD ---
@@ -146,147 +110,75 @@ class RidoMoviesProvider : MainAPI() {
         val linkData = tryParseJson<RidoLinkData>(url)
         val realUrl = linkData?.url ?: url
         
-        var title = if (!linkData?.title.isNullOrEmpty()) linkData!!.title!! else "Unknown"
-        var poster = linkData?.poster ?: ""
-        var year = linkData?.year
+        // 1. Lấy RSC Data
+        val headers = mapOf(
+            "rsc" to "1", 
+            "Referer" to "$mainUrl/",
+            "User-Agent" to AppUtils.userAgent
+        )
         
-        val headers = mapOf("rsc" to "1", "Referer" to "$mainUrl/")
         val responseText = app.get(realUrl, headers = headers).text
-        val isTv = realUrl.contains("/tv/") || realUrl.contains("season")
+        val isTv = realUrl.contains("/tv/") || linkData?.type?.contains("tv") == true
 
-        val cleanResponse = responseText.replace("\\\"", "\"").replace("\\n", " ")
-
-        // --- A. EXTRACT METADATA ---
-        var description: String? = null
-        var ratingValue: Double? = null
-        var tags: List<String>? = null
-
-        val jsonLdRegex = """\{"@context":"https://schema.org".*?"@type":"(Movie|TVSeries)".*?\}""".toRegex()
-        val jsonLdMatch = jsonLdRegex.find(cleanResponse)?.value
-        if (jsonLdMatch != null) {
-            try {
-                val ldData = parseJson<LdJson>(jsonLdMatch)
-                if (title == "Unknown") title = ldData.name ?: title
-                description = ldData.description
-                if (poster.isEmpty()) poster = fixUrl(ldData.image ?: "")
-                if (year == null) year = ldData.dateCreated?.take(4)?.toIntOrNull()
-                tags = ldData.genre
-                ratingValue = ldData.aggregateRating?.ratingValue?.toDoubleOrNull()
-            } catch (e: Exception) { }
-        }
-
-        if (title == "Unknown" || title.contains("404") || title == "Home") {
-            val h1Regex = """\["\$","h1",null,\{"children":"(.*?)"\}\]""".toRegex()
-            val h1Match = h1Regex.find(cleanResponse)
-            if (h1Match != null) {
-                title = h1Match.groupValues[1]
-            } else {
-                val origTitle = """\"originalTitle\":\"([^\"]+?)\"""".toRegex().find(cleanResponse)
-                if (origTitle != null) title = origTitle.groupValues[1]
-            }
-        }
+        // 2. Parse Metadata
+        val descRegex = """name":"description","content":"(.*?)"""".toRegex()
+        val description = descRegex.find(responseText)?.groupValues?.get(1)
         
-        if (poster.isEmpty()) {
-            val absUrlRegex = """\"(https:[^\"]*?\/uploads\/(?:posters|backdrops)\/[^\"]*?\.(?:webp|jpg|png))\"""".toRegex()
-            var pMatch = absUrlRegex.find(cleanResponse)
-            if (pMatch != null) {
-                poster = pMatch.groupValues[1]
-            } else {
-                val relUrlRegex = """\"(\/uploads\/(?:posters|backdrops)\/[^\"]*?\.(?:webp|jpg|png))\"""".toRegex()
-                pMatch = relUrlRegex.find(cleanResponse)
-                if (pMatch != null) poster = fixUrl(pMatch.groupValues[1])
-            }
-        }
+        val posterRegex = """image":"(https:[^"]+?)"""".toRegex()
+        val poster = posterRegex.find(responseText)?.groupValues?.get(1)?.let { fixUrl(it) } ?: linkData?.poster
+        
+        val ratingRegex = """ratingValue":([\d.]+)""".toRegex()
+        val rating = ratingRegex.find(responseText)?.groupValues?.get(1)?.toDoubleOrNull()
 
-        if (description.isNullOrEmpty()) {
-            val textRegex = """\"text\":\"<p>(.*?)<\/p>\"""".toRegex()
-            description = textRegex.find(cleanResponse)?.groupValues?.get(1)
-            
-            if (description == null) {
-                val overviewRegex = """\"overview\":\"([^\"]{20,}?)\"""".toRegex()
-                description = overviewRegex.find(cleanResponse)?.groupValues?.get(1)
-            }
-        }
+        val title = linkData?.title ?: "RidoMovies"
+        val year = linkData?.year
 
-        // --- B. EXTRACT EPISODES ---
+        // 3. Episodes / Movie Data
         val episodes = mutableListOf<Episode>()
+        val finalUrl: String
+
         if (isTv) {
-            val slugRegex = """\"fullSlug\":\"(tv\/[^\"]+?\/season-(\d+)\/episode-(\d+)[^\"]*)\"""".toRegex()
-            val addedEps = mutableSetOf<String>()
+            val epRegex = """\{"id":"(\d+)","slug":"([^"]*?\/season-(\d+)\/episode-(\d+)[^"]*)"""".toRegex()
+            val addedIds = mutableSetOf<String>()
             
-            slugRegex.findAll(cleanResponse).forEach { match ->
-                val fullSlug = match.groupValues[1]
-                val seasonNum = match.groupValues[2].toIntOrNull() ?: 1
-                val episodeNum = match.groupValues[3].toIntOrNull() ?: 1
+            epRegex.findAll(responseText).forEach { match ->
+                val epId = match.groupValues[1]
+                val season = match.groupValues[3].toIntOrNull() ?: 1
+                val episode = match.groupValues[4].toIntOrNull() ?: 1
                 
-                if (addedEps.add(fullSlug)) {
-                    val epTitle = "Episode $episodeNum"
-                    episodes.add(newEpisode("$mainUrl/$fullSlug") {
-                        this.season = seasonNum
-                        this.episode = episodeNum
-                        this.name = epTitle
-                        this.data = "$mainUrl/$fullSlug"
+                if (addedIds.add(epId)) {
+                    val apiLink = "$mainUrl/api/episodes/$epId"
+                    episodes.add(newEpisode(apiLink) {
+                        this.season = season
+                        this.episode = episode
+                        this.name = "Episode $episode"
+                        this.data = apiLink 
                     })
                 }
             }
+            finalUrl = realUrl
+        } else {
+            val slug = realUrl.split("/").lastOrNull { it.isNotEmpty() }?.substringBefore("?") ?: ""
+            finalUrl = "$mainUrl/api/movies/$slug"
         }
 
-        // --- C. RECOMMENDATIONS ---
-        var recommendations = mutableListOf<SearchResponse>()
-        try {
-            val genreRegex = """href\":\"\/genre\/([a-zA-Z0-9-]+)\"""".toRegex()
-            val genres = genreRegex.findAll(cleanResponse)
-                .map { it.groupValues[1] }
-                .distinct()
-                .filter { !it.contains("search") }
-                .toList()
+        val sortedEpisodes = episodes.sortedWith(compareBy({ it.season }, { it.episode }))
 
-            if (genres.isNotEmpty()) {
-                val randomGenre = genres[Random.nextInt(genres.size)]
-                val genreUrl = "$mainUrl/genre/$randomGenre"
-                val genreRes = app.get(genreUrl, headers = headers).text
-                val cleanGenreRes = genreRes.replace("\\\"", "\"")
-                
-                val recRegex = """\"originalTitle\":\"(.*?)\".*?\"fullSlug\":\"(.*?)\".*?\"posterPath\":\"(.*?)\"""".toRegex()
-                
-                recRegex.findAll(cleanGenreRes).forEach { m ->
-                    val rTitle = m.groupValues[1]
-                    val rSlug = m.groupValues[2]
-                    val rPoster = fixUrl(m.groupValues[3])
-                    
-                    if (!rSlug.contains(realUrl)) {
-                        // FIX: Gọi toJson() như extension function
-                        val recData = RidoLinkData("$mainUrl/$rSlug", rTitle, rPoster)
-                        val recDataStr = recData.toJson()
-                        
-                        recommendations.add(newMovieSearchResponse(rTitle, recDataStr, TvType.Movie) {
-                            this.posterUrl = rPoster
-                        })
-                    }
-                }
-            }
-        } catch (e: Exception) { }
-
-        val finalEpisodes = episodes.sortedWith(compareBy({ it.season }, { it.episode }))
-        val finalRecs = recommendations.distinctBy { it.url }.shuffled().take(10)
-
-        if (isTv) {
-            return newTvSeriesLoadResponse(title, realUrl, TvType.TvSeries, finalEpisodes) {
+        return if (isTv) {
+            newTvSeriesLoadResponse(title, realUrl, TvType.TvSeries, sortedEpisodes) {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = description
-                this.tags = tags
-                this.score = ratingValue?.let { Score.from10(it) }
-                this.recommendations = finalRecs
+                this.rating = rating?.let { Score.from10(it) }?.rating
+                this.recommendations = emptyList() 
             }
         } else {
-            return newMovieLoadResponse(title, realUrl, TvType.Movie, realUrl) {
+            newMovieLoadResponse(title, realUrl, TvType.Movie, finalUrl) {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = description
-                this.tags = tags
-                this.score = ratingValue?.let { Score.from10(it) }
-                this.recommendations = finalRecs
+                this.rating = rating?.let { Score.from10(it) }?.rating
+                this.recommendations = emptyList()
             }
         }
     }
@@ -298,49 +190,100 @@ class RidoMoviesProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d(TAG, "loadLinks Input: $data")
-        val apiUrl = if (data.contains("/movies/")) {
-            data.replace("/movies/", "/api/movies/")
-        } else if (data.contains("/tv/")) {
-            data.replace("/tv/", "/api/tv/")
-        } else {
-            data
-        }
-
+        Log.d(TAG, "loadLinks Data: $data")
         try {
-            val headers = mapOf("Referer" to "$mainUrl/")
-            val jsonText = app.get(apiUrl, headers = headers).text
+            val headers = mapOf(
+                "Authority" to "ridomovies.tv",
+                "X-Requested-With" to "XMLHttpRequest",
+                "Referer" to "$mainUrl/"
+            )
             
-            val embedRegex = """src\\?":\\?"(https:.*?)(\\?.*?)?\\?"""".toRegex()
-            embedRegex.findAll(jsonText).forEach { match ->
-                 val url = match.groupValues[1].replace("\\", "")
-                 if(!url.contains("google") && !url.contains("facebook")) {
-                    loadExtractor(url, subtitleCallback, callback)
-                 }
-            }
+            val jsonText = app.get(data, headers = headers).text
+            val json = tryParseJson<RidoEpResponse>(jsonText)
+            val iframeHtml = json?.data?.firstOrNull()?.url
             
-            val dataSrcRegex = """data-src=\\?["'](https:.*?)(\\?.*?)?\\?["']""".toRegex()
-            dataSrcRegex.findAll(jsonText).forEach { match ->
-                val url = match.groupValues[1].replace("\\", "")
-                if(!url.contains("google")) {
-                    loadExtractor(url, subtitleCallback, callback)
+            if (iframeHtml != null) {
+                val srcRegex = """data-src\s*=\s*["'](https:\/\/[^"']+)["']""".toRegex()
+                val embedUrl = srcRegex.find(iframeHtml)?.groupValues?.get(1)
+                
+                if (embedUrl != null) {
+                    Log.d(TAG, "Embed found: $embedUrl")
+                    
+                    if (embedUrl.contains("closeload") || embedUrl.contains("closeload.top")) {
+                        extractCloseload(embedUrl, callback)
+                    } else if (embedUrl.contains("ridoo")) {
+                        extractRidoo(embedUrl, callback)
+                    } else {
+                        loadExtractor(embedUrl, subtitleCallback, callback)
+                    }
                 }
             }
-
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e(TAG, "Error loadLinks", e)
         }
         return true
     }
-    
+
+    // --- EXTRACTOR 1: RIDOO (Sử dụng newExtractorLink) ---
+    private suspend fun extractRidoo(url: String, callback: (ExtractorLink) -> Unit) {
+        try {
+            val text = app.get(url, headers = mapOf("Referer" to "$mainUrl/")).text
+            val fileRegex = """file\s*:\s*["']([^"']+)["']""".toRegex()
+            val m3u8 = fileRegex.find(text)?.groupValues?.get(1)
+            
+            if (m3u8 != null) {
+                callback.invoke(
+                    newExtractorLink(name, "RidoMovies (HLS)", m3u8, ExtractorLinkType.M3U8) {
+                        this.referer = url
+                        this.quality = Qualities.Unknown.value
+                    }
+                )
+            }
+        } catch (e: Exception) { Log.e(TAG, "Ridoo Error", e) }
+    }
+
+    // --- EXTRACTOR 2: CLOSELOAD (Sử dụng newExtractorLink) ---
+    private suspend fun extractCloseload(url: String, callback: (ExtractorLink) -> Unit) {
+        try {
+            val text = app.get(url, headers = mapOf("Referer" to "$mainUrl/")).text
+            
+            // A. JSON-LD Priority
+            val jsonLdRegex = """"contentUrl"\s*:\s*"([^"]+)"""".toRegex()
+            val contentUrl = jsonLdRegex.find(text)?.groupValues?.get(1)
+            
+            if (contentUrl != null) {
+                callback.invoke(
+                    newExtractorLink(name, "Closeload (HLS)", contentUrl, ExtractorLinkType.M3U8) {
+                        this.referer = url
+                        this.quality = Qualities.Unknown.value
+                    }
+                )
+            } else {
+                // B. Packed JS Fallback
+                val packedRegex = """eval\(function\(p,a,c,k,e,d\).*?\.split\('\|'\)\)\)""".toRegex()
+                val packedJs = packedRegex.find(text)?.value
+                if (packedJs != null) {
+                    val unpacked = JsUnpacker.unpackAndCombine(packedJs) ?: ""
+                    val fileMatch = """file:"([^"]+)"""".toRegex().find(unpacked)
+                    val m3u8 = fileMatch?.groupValues?.get(1)
+                    
+                    if (m3u8 != null) {
+                        callback.invoke(
+                            newExtractorLink(name, "Closeload (Packed)", m3u8, ExtractorLinkType.M3U8) {
+                                this.referer = url
+                                this.quality = Qualities.Unknown.value
+                            }
+                        )
+                    }
+                }
+            }
+        } catch (e: Exception) { Log.e(TAG, "Closeload Error", e) }
+    }
+
     private fun fixUrl(url: String): String {
         if (url.isEmpty()) return ""
         if (url.startsWith("http")) return url
         val cleanUrl = if (url.startsWith("/")) url else "/$url"
         return "$mainUrl$cleanUrl"
-    }
-    
-    private fun String.capitalize(): String {
-        return this.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
     }
 }
