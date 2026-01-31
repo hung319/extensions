@@ -25,6 +25,7 @@ class KingBokep : MainAPI() {
         val title = this.selectFirst(".video-card-title")?.text()?.trim() ?: return null
         
         val imgTag = this.selectFirst("img")
+        // Ưu tiên data-src (lazy load) trước, nếu không có mới lấy src
         val posterUrl = fixUrl(imgTag?.attr("data-src") ?: imgTag?.attr("src"))
         
         val duration = this.selectFirst(".video-card-badge .text-xs")?.text()?.trim()
@@ -95,7 +96,7 @@ class KingBokep : MainAPI() {
     ): Boolean {
         val document = app.get(data).document
         
-        // Lấy link m3u8 từ attribute data-playlist của thẻ video
+        // Lấy link playlist từ attribute data-playlist của thẻ video
         val videoTag = document.selectFirst("#bokep-player")
         val playlistUrl = videoTag?.attr("data-playlist")
 
@@ -109,7 +110,7 @@ class KingBokep : MainAPI() {
                 ) {
                     referer = mainUrl
                     quality = Qualities.Unknown.value
-                    isM3u8 = true
+                    // Đã bỏ isM3u8 = true theo yêu cầu
                 }
             )
             return true
