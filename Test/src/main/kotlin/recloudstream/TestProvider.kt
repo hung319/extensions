@@ -11,7 +11,6 @@ class BFlixProvider : MainAPI() {
     override var lang = "en"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
-    // Header giả lập Chrome Android để tránh bị chặn
     private val commonHeaders = mapOf(
         "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
         "X-Requested-With" to "XMLHttpRequest",
@@ -22,14 +21,14 @@ class BFlixProvider : MainAPI() {
         val document = app.get(mainUrl, headers = commonHeaders).document
         val homeSets = mutableListOf<HomePageList>()
 
-        // 1. Trending Slider
+        // 1. Trending
         val trendingElements = document.select(".swiper-slide .swiper-inner")
         if (trendingElements.isNotEmpty()) {
             val trendingList = trendingElements.mapNotNull { it.toSearchResponse() }
             homeSets.add(HomePageList("Trending", trendingList))
         }
 
-        // 2. Các mục Latest Movies / TV Shows
+        // 2. Latest Movies / TV Shows
         document.select(".zone").forEach { zone ->
             val title = zone.select(".zone-title").text().trim()
             val elements = zone.select(".film")
@@ -38,7 +37,9 @@ class BFlixProvider : MainAPI() {
                 homeSets.add(HomePageList(title, list))
             }
         }
-        return HomePageResponse(homeSets)
+        
+        // FIX 1: Dùng newHomePageResponse thay vì HomePageResponse constructor
+        return newHomePageResponse(homeSets)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -51,7 +52,6 @@ class BFlixProvider : MainAPI() {
         val url = this.selectFirst("a")?.attr("href") ?: return null
         val title = this.selectFirst(".film-name")?.text() ?: return null
         
-        // Lấy ảnh, ưu tiên data-src nếu có (lazy load)
         val poster = this.selectFirst("img")?.let { img ->
             img.attr("src").takeIf { it.startsWith("http") } ?: img.attr("data-src")
         }?.replace("w185", "w300")
@@ -87,27 +87,24 @@ class BFlixProvider : MainAPI() {
             val episodes = mutableListOf<Episode>()
             val scriptContent = document.select("script").html()
 
-            // Logic lấy danh sách tập phim:
-            // 1. Tìm URL ajax trong script: ajax.php?episode=... hoặc ajax.php?vds=...
             val episodeAjaxUrl = Regex("""['"]([^"']*ajax\.php\?episode=[^"']*)['"]""").find(scriptContent)?.groupValues?.get(1)
                 ?: Regex("""['"]([^"']*ajax\.php\?vds=[^"']*)['"]""").find(scriptContent)?.groupValues?.get(1)
 
             if (episodeAjaxUrl != null) {
                 val fullUrl = if (episodeAjaxUrl.startsWith("http")) episodeAjaxUrl else "$mainUrl$episodeAjaxUrl"
                 
-                // 2. Gọi API để lấy HTML chứa danh sách <li><a>...</a></li>
                 val responseHtml = app.get(fullUrl, headers = commonHeaders).text
                 val epDoc = org.jsoup.Jsoup.parse(responseHtml)
                 
                 epDoc.select("li a").forEach { aTag ->
-                    val epUrl = aTag.attr("href") // URL này sẽ được dùng trong loadLinks
+                    val epUrl = aTag.attr("href")
                     val epName = aTag.select("span").joinToString(" ") { it.text() }
                     
                     if (epUrl.contains("/series/")) {
-                        episodes.add(Episode(
-                            data = epUrl,
-                            name = epName
-                        ))
+                        // FIX 2: Dùng newEpisode thay vì Episode constructor
+                        episodes.add(newEpisode(epUrl) {
+                            this.name = epName
+                        })
                     }
                 }
             }
@@ -134,11 +131,9 @@ class BFlixProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // data = URL trang phim/tập phim
         val document = app.get(data, headers = commonHeaders).document
         val scriptContent = document.select("script").html()
 
-        // 1. Tìm hash 'vdkz' trong script
         val serverAjaxHash = Regex("""vdkz\s*=\s*['"]([^'"]+)['"]""").find(scriptContent)?.groupValues?.get(1)
             ?: Regex("""vdkz=([^'&"]+)""").find(scriptContent)?.groupValues?.get(1)
             ?: Regex("""['"]([^"']*ajax\.php\?vdkz=[^"']*)['"]""").find(scriptContent)?.groupValues?.get(1)
@@ -150,16 +145,13 @@ class BFlixProvider : MainAPI() {
                 "$mainUrl/ajax/ajax.php?vdkz=$serverAjaxHash"
             }
 
-            // 2. Gọi API để lấy danh sách server
             val serverResponseHtml = app.get(ajaxUrl, headers = commonHeaders).text
             val serverDoc = org.jsoup.Jsoup.parse(serverResponseHtml)
 
             serverDoc.select(".sv-item").forEach { server ->
-                val embedUrl = server.attr("data-id") // Ví dụ: https://subdrc.xyz/...
+                val embedUrl = server.attr("data-id")
                 
                 if (embedUrl.isNotBlank()) {
-                    // 3. Sử dụng loadExtractor có sẵn của CloudStream
-                    // Quan trọng: Phải truyền Referer để bypass check của VidCloud
                     loadExtractor(
                         url = embedUrl,
                         referer = "$mainUrl/",
