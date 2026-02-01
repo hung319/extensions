@@ -1,78 +1,130 @@
 package recloudstream
 
-import android.util.Base64
-import com.lagradost.cloudstream3.* // Wildcard: MainAPI, TvType, SearchResponse, HomePageResponse...
-import com.lagradost.cloudstream3.utils.* // Wildcard: ExtractorLink, ExtractorLinkType, newExtractorLink, etc.
+import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 
-class SexxTrungQuoc : MainAPI() {
-    override var mainUrl = "https://sexxtrungquoc.vip"
-    override var name = "SexxTrungQuoc"
+class BFlixProvider : MainAPI() {
+    override var mainUrl = "https://bflix.sh"
+    override var name = "BFlix"
     override val hasMainPage = true
-    override var lang = "vi"
-    
-    // Website nội dung người lớn
-    override val supportedTypes = setOf(TvType.NSFW) 
+    override var lang = "en"
+    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
-    override val mainPage = mainPageOf(
-        "$mainUrl/" to "Mới Nhất",
-        "$mainUrl/category/phim-sex-trung-quoc/" to "Trung Quốc",
-        "$mainUrl/category/phim-sex-hong-kong/" to "Hồng Kông",
-        "$mainUrl/category/phim-sex-vietsub/" to "Vietsub",
-        "$mainUrl/category/phim-sex-khong-che/" to "Không Che",
+    // Header giả lập Chrome Android để tránh bị chặn
+    private val commonHeaders = mapOf(
+        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
+        "X-Requested-With" to "XMLHttpRequest",
+        "Referer" to "$mainUrl/"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Pagination: /page/2/
-        val url = if (page == 1) request.data else "${request.data}page/$page/"
-        val document = app.get(url).document
-        
-        val home = document.select("ul.list-movies li.item-movie").mapNotNull {
-            it.toSearchResult()
-        }
-        
-        return newHomePageResponse(request.name, home)
-    }
+        val document = app.get(mainUrl, headers = commonHeaders).document
+        val homeSets = mutableListOf<HomePageList>()
 
-    private fun Element.toSearchResult(): SearchResponse? {
-        val linkElement = this.selectFirst("a") ?: return null
-        val title = this.selectFirst(".title-movie")?.text() ?: linkElement.attr("title")
-        val href = fixUrl(linkElement.attr("href"))
-        val img = this.selectFirst("img")?.attr("src") ?: ""
-        val quality = this.selectFirst(".label")?.text()
-
-        return newMovieSearchResponse(title, href, TvType.NSFW) {
-            this.posterUrl = img
-            this.quality = getQualityFromString(quality)
+        // 1. Trending Slider
+        val trendingElements = document.select(".swiper-slide .swiper-inner")
+        if (trendingElements.isNotEmpty()) {
+            val trendingList = trendingElements.mapNotNull { it.toSearchResponse() }
+            homeSets.add(HomePageList("Trending", trendingList))
         }
+
+        // 2. Các mục Latest Movies / TV Shows
+        document.select(".zone").forEach { zone ->
+            val title = zone.select(".zone-title").text().trim()
+            val elements = zone.select(".film")
+            if (title.isNotEmpty() && elements.isNotEmpty() && !title.contains("Comment")) {
+                val list = elements.mapNotNull { it.toSearchResponse() }
+                homeSets.add(HomePageList(title, list))
+            }
+        }
+        return HomePageResponse(homeSets)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$mainUrl/?s=$query"
-        val document = app.get(url).document
+        val url = "$mainUrl/search?keyword=$query"
+        val document = app.get(url, headers = commonHeaders).document
+        return document.select(".film").mapNotNull { it.toSearchResponse() }
+    }
+
+    private fun Element.toSearchResponse(): SearchResponse? {
+        val url = this.selectFirst("a")?.attr("href") ?: return null
+        val title = this.selectFirst(".film-name")?.text() ?: return null
         
-        return document.select("ul.list-movies li.item-movie").mapNotNull {
-            it.toSearchResult()
+        // Lấy ảnh, ưu tiên data-src nếu có (lazy load)
+        val poster = this.selectFirst("img")?.let { img ->
+            img.attr("src").takeIf { it.startsWith("http") } ?: img.attr("data-src")
+        }?.replace("w185", "w300")
+
+        val isTv = url.contains("/series/") || this.select(".film-meta .end").text().contains("TV", true)
+
+        return if (isTv) {
+            newTvSeriesSearchResponse(title, url, TvType.TvSeries) {
+                this.posterUrl = poster
+            }
+        } else {
+            newMovieSearchResponse(title, url, TvType.Movie) {
+                this.posterUrl = poster
+            }
         }
     }
 
-    override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url).document
+    override suspend fun load(url: String): LoadResponse? {
+        val document = app.get(url, headers = commonHeaders).document
 
-        val title = document.selectFirst("h1.single-title")?.text()?.trim() ?: ""
-        val description = document.select(".entry-content p").text().trim()
-        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
-        val tags = document.select("#extras a").map { it.text() }
-        
-        val recommendations = document.select(".tab-movies1 .list-movies .item-movie").mapNotNull {
-            it.toSearchResult()
-        }
+        val title = document.selectFirst("h1.film-title")?.text()?.trim() ?: return null
+        val desc = document.selectFirst(".film-desc")?.text()?.trim()
+        val poster = document.selectFirst(".film-poster img")?.attr("src")?.replace("w185", "original")
+        val bgStyle = document.selectFirst(".film-background")?.attr("style")
+        val background = bgStyle?.substringAfter("url(")?.substringBefore(")")
 
-        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
-            this.posterUrl = poster
-            this.plot = description
-            this.tags = tags
-            this.recommendations = recommendations
+        val tags = document.select(".film-meta div").map { it.text() }
+        val year = tags.firstOrNull { it.contains("Year:") }?.substringAfter("Year:")?.trim()?.toIntOrNull()
+
+        val isTv = url.contains("/series/")
+
+        if (isTv) {
+            val episodes = mutableListOf<Episode>()
+            val scriptContent = document.select("script").html()
+
+            // Logic lấy danh sách tập phim:
+            // 1. Tìm URL ajax trong script: ajax.php?episode=... hoặc ajax.php?vds=...
+            val episodeAjaxUrl = Regex("""['"]([^"']*ajax\.php\?episode=[^"']*)['"]""").find(scriptContent)?.groupValues?.get(1)
+                ?: Regex("""['"]([^"']*ajax\.php\?vds=[^"']*)['"]""").find(scriptContent)?.groupValues?.get(1)
+
+            if (episodeAjaxUrl != null) {
+                val fullUrl = if (episodeAjaxUrl.startsWith("http")) episodeAjaxUrl else "$mainUrl$episodeAjaxUrl"
+                
+                // 2. Gọi API để lấy HTML chứa danh sách <li><a>...</a></li>
+                val responseHtml = app.get(fullUrl, headers = commonHeaders).text
+                val epDoc = org.jsoup.Jsoup.parse(responseHtml)
+                
+                epDoc.select("li a").forEach { aTag ->
+                    val epUrl = aTag.attr("href") // URL này sẽ được dùng trong loadLinks
+                    val epName = aTag.select("span").joinToString(" ") { it.text() }
+                    
+                    if (epUrl.contains("/series/")) {
+                        episodes.add(Episode(
+                            data = epUrl,
+                            name = epName
+                        ))
+                    }
+                }
+            }
+
+            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+                this.posterUrl = poster
+                this.backgroundPosterUrl = background
+                this.plot = desc
+                this.year = year
+            }
+        } else {
+            return newMovieLoadResponse(title, url, TvType.Movie, url) {
+                this.posterUrl = poster
+                this.backgroundPosterUrl = background
+                this.plot = desc
+                this.year = year
+            }
         }
     }
 
@@ -82,46 +134,42 @@ class SexxTrungQuoc : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data).document
+        // data = URL trang phim/tập phim
+        val document = app.get(data, headers = commonHeaders).document
+        val scriptContent = document.select("script").html()
 
-        // Tìm các script base64 chứa link video
-        val scriptSrcs = document.select("script[src^='data:text/javascript;base64,']")
-        
-        var videoUrl: String? = null
+        // 1. Tìm hash 'vdkz' trong script
+        val serverAjaxHash = Regex("""vdkz\s*=\s*['"]([^'"]+)['"]""").find(scriptContent)?.groupValues?.get(1)
+            ?: Regex("""vdkz=([^'&"]+)""").find(scriptContent)?.groupValues?.get(1)
+            ?: Regex("""['"]([^"']*ajax\.php\?vdkz=[^"']*)['"]""").find(scriptContent)?.groupValues?.get(1)
 
-        for (script in scriptSrcs) {
-            try {
-                // Decode Base64 từ src
-                val base64Data = script.attr("src").substringAfter("base64,")
-                val decoded = String(Base64.decode(base64Data, Base64.DEFAULT))
-                
-                // Regex tìm biến video_url
-                val regex = """var\s+video_url\s*=\s*['"]([^'"]+)['"]""".toRegex()
-                val match = regex.find(decoded)
-                
-                if (match != null) {
-                    videoUrl = match.groupValues[1]
-                    break 
-                }
-            } catch (e: Exception) {
-                continue
+        if (serverAjaxHash != null) {
+            val ajaxUrl = if (serverAjaxHash.startsWith("http")) {
+                serverAjaxHash
+            } else {
+                "$mainUrl/ajax/ajax.php?vdkz=$serverAjaxHash"
             }
-        }
 
-        if (videoUrl != null && videoUrl.isNotEmpty()) {
-            callback(
-                newExtractorLink(
-                    source = name,
-                    name = "$name HD",
-                    url = videoUrl,
-                    type = ExtractorLinkType.M3U8
-                ) {
-                    referer = "$mainUrl/" 
+            // 2. Gọi API để lấy danh sách server
+            val serverResponseHtml = app.get(ajaxUrl, headers = commonHeaders).text
+            val serverDoc = org.jsoup.Jsoup.parse(serverResponseHtml)
+
+            serverDoc.select(".sv-item").forEach { server ->
+                val embedUrl = server.attr("data-id") // Ví dụ: https://subdrc.xyz/...
+                
+                if (embedUrl.isNotBlank()) {
+                    // 3. Sử dụng loadExtractor có sẵn của CloudStream
+                    // Quan trọng: Phải truyền Referer để bypass check của VidCloud
+                    loadExtractor(
+                        url = embedUrl,
+                        referer = "$mainUrl/",
+                        subtitleCallback = subtitleCallback,
+                        callback = callback
+                    )
                 }
-            )
+            }
             return true
         }
-
         return false
     }
 }
