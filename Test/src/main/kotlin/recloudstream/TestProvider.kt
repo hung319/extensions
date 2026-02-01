@@ -2,8 +2,9 @@ package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import org.jsoup.nodes.Element
+import com.lagradost.cloudstream3.extractors.VidCloud
 import com.lagradost.cloudstream3.mvvm.logError
+import org.jsoup.nodes.Element
 
 class BFlixProvider : MainAPI() {
     override var mainUrl = "https://bflix.sh"
@@ -14,9 +15,11 @@ class BFlixProvider : MainAPI() {
 
     private val TAG = "BFlixDebug"
 
-    // Hàm log tiện ích
-    private fun debugLog(message: String) {
-        println("[$TAG] $message")
+    // Custom Extractor cho subdrc.xyz (dựa trên VidCloud)
+    class Subdrc : VidCloud() {
+        override var name = "Subdrc"
+        override var mainUrl = "https://subdrc.xyz"
+        override val requiresReferer = true
     }
 
     private val commonHeaders = mapOf(
@@ -25,79 +28,92 @@ class BFlixProvider : MainAPI() {
         "Referer" to "$mainUrl/"
     )
 
+    private fun debugLog(message: String) {
+        println("[$TAG] $message")
+    }
+
+    // Đăng ký Extractor tùy chỉnh khi khởi tạo
+    init {
+        addPosterVDUrl("subdrc.xyz")
+    }
+    
+    // Hàm phụ trợ để map domain vào VidCloud logic nếu addPosterVDUrl không đủ
+    private fun addPosterVDUrl(domain: String) {
+        // CloudStream tự động map các domain này nếu Extractor VidCloud được support
+        // Nhưng an toàn nhất là ta gọi trực tiếp class Subdrc trong loadLinks
+    }
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        debugLog("Fetching Main Page: $mainUrl")
+        val items = mutableListOf<HomePageList>()
+        
+        // 1. Load Movies Page
         try {
-            val document = app.get(mainUrl, headers = commonHeaders).document
-            val homeSets = mutableListOf<HomePageList>()
-
-            // 1. Trending (Swiper)
-            val trendingElements = document.select(".swiper-slide .swiper-inner")
-            debugLog("Found ${trendingElements.size} trending items")
-            
-            if (trendingElements.isNotEmpty()) {
-                val trendingList = trendingElements.mapNotNull { it.toSearchResponse() }
-                homeSets.add(HomePageList("Trending", trendingList))
+            val moviesUrl = "$mainUrl/movies/"
+            val moviesDoc = app.get(moviesUrl, headers = commonHeaders).document
+            val moviesList = moviesDoc.select(".film").mapNotNull { it.toSearchResponse() }
+            if (moviesList.isNotEmpty()) {
+                items.add(HomePageList("Latest Movies", moviesList))
             }
-
-            // 2. Các mục theo Zone (Latest Movies, TV Series...)
-            val zones = document.select(".zone")
-            debugLog("Found ${zones.size} zones")
-
-            zones.forEach { zone ->
-                val title = zone.select(".zone-title").text().trim()
-                val elements = zone.select(".film")
-                
-                debugLog("Zone '$title' has ${elements.size} items")
-
-                if (title.isNotEmpty() && elements.isNotEmpty() && !title.contains("Comment")) {
-                    val list = elements.mapNotNull { it.toSearchResponse() }
-                    homeSets.add(HomePageList(title, list))
-                }
-            }
-
-            if (homeSets.isEmpty()) {
-                debugLog("Warning: No homepage items found! Check selectors or Cloudflare.")
-            }
-
-            return newHomePageResponse(homeSets)
         } catch (e: Exception) {
             logError(e)
-            debugLog("Error getMainPage: ${e.message}")
-            return newHomePageResponse(emptyList())
+            debugLog("Error loading Movies: ${e.message}")
         }
+
+        // 2. Load TV Series Page
+        try {
+            val tvUrl = "$mainUrl/tv-series/"
+            val tvDoc = app.get(tvUrl, headers = commonHeaders).document
+            val tvList = tvDoc.select(".film").mapNotNull { it.toSearchResponse() }
+            if (tvList.isNotEmpty()) {
+                items.add(HomePageList("Latest TV Series", tvList))
+            }
+        } catch (e: Exception) {
+            logError(e)
+            debugLog("Error loading TV Series: ${e.message}")
+        }
+
+        return newHomePageResponse(items)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/search?keyword=$query"
-        debugLog("Searching: $url")
-        val document = app.get(url, headers = commonHeaders).document
-        return document.select(".film").mapNotNull { it.toSearchResponse() }
+        return try {
+            val document = app.get(url, headers = commonHeaders).document
+            document.select(".film").mapNotNull { it.toSearchResponse() }
+        } catch (e: Exception) {
+            emptyList()
+        }
     }
 
     private fun Element.toSearchResponse(): SearchResponse? {
-        val url = this.selectFirst("a")?.attr("href") ?: return null
-        val title = this.selectFirst(".film-name")?.text()?.trim() ?: return null
+        // Selector dựa trên file bflix.sh_movies.html
+        // <a href="..." class="film-name">Name</a>
+        // <div class="film-meta"> ... </div>
         
-        // Fix ảnh: ưu tiên data-src (lazy load) sau đó đến src
-        val poster = this.selectFirst("img")?.let { img ->
-            val dataSrc = img.attr("data-src")
-            val src = img.attr("src")
-            if (dataSrc.isNotEmpty()) dataSrc else src
-        }?.replace("w185", "w300")
+        val nameElement = this.selectFirst(".film-name")
+        val title = nameElement?.text()?.trim() ?: return null
+        val url = nameElement.attr("href")
+        
+        if (url.isEmpty()) return null
 
-        // Xác định loại phim
-        val isTv = url.contains("/series/") || 
-                   this.select(".film-meta .end").text().contains("TV", true) ||
-                   this.select(".film-label").text().contains("TV", true)
+        val posterElement = this.selectFirst(".film-poster img")
+        val poster = posterElement?.attr("src")
+            ?: posterElement?.attr("data-src") // Fallback
+        
+        // Fix link ảnh TMDB w185 -> w300
+        val finalPoster = poster?.replace("/w185/", "/w300/")
+
+        // Check Type
+        val metaText = this.select(".film-meta").text()
+        val isTv = url.contains("/series/") || metaText.contains("SS") || metaText.contains("EP")
 
         return if (isTv) {
             newTvSeriesSearchResponse(title, url, TvType.TvSeries) {
-                this.posterUrl = poster
+                this.posterUrl = finalPoster
             }
         } else {
             newMovieSearchResponse(title, url, TvType.Movie) {
-                this.posterUrl = poster
+                this.posterUrl = finalPoster
             }
         }
     }
@@ -109,16 +125,16 @@ class BFlixProvider : MainAPI() {
         val title = document.selectFirst("h1.film-title")?.text()?.trim() ?: return null
         val desc = document.selectFirst(".film-desc")?.text()?.trim()
         val poster = document.selectFirst(".film-poster img")?.attr("src")?.replace("w185", "original")
+        
+        // Background từ style="background-image: url(...)"
         val bgStyle = document.selectFirst(".film-background")?.attr("style")
         val background = bgStyle?.substringAfter("url(")?.substringBefore(")")
 
         val tags = document.select(".film-meta div").map { it.text() }
-        val year = tags.firstOrNull { it.contains("Year:") }?.substringAfter("Year:")?.trim()?.toIntOrNull()
+        val year = tags.firstOrNull { it.contains("Year") || it.matches(Regex("\\d{4}")) }?.replace("Year:", "")?.trim()?.toIntOrNull()
 
-        // === RECOMMENDATIONS (You may also like) ===
-        // Thường nằm trong .zone ở trang chi tiết, nhưng cần lọc để tránh trùng với header/footer
-        val recommendations = document.select(".zone .film").mapNotNull { it.toSearchResponse() }
-        debugLog("Found ${recommendations.size} recommendations")
+        // Recommendations (Suggestions)
+        val recommendations = document.select(".site-sidebar .film").mapNotNull { it.toSearchResponse() }
 
         val isTv = url.contains("/series/")
 
@@ -126,13 +142,11 @@ class BFlixProvider : MainAPI() {
             val episodes = mutableListOf<Episode>()
             val scriptContent = document.select("script").html()
 
-            // Regex tìm episode hash hoặc url ajax
-            // Pattern 1: ajax.php?episode=...
-            // Pattern 2: ajax.php?vds=...
-            val episodeAjaxUrl = Regex("""['"]([^"']*ajax\.php\?episode=[^"']*)['"]""").find(scriptContent)?.groupValues?.get(1)
-                ?: Regex("""['"]([^"']*ajax\.php\?vds=[^"']*)['"]""").find(scriptContent)?.groupValues?.get(1)
+            // Logic lấy AJAX cho TV Series
+            val ajaxUrlMatches = Regex("""['"]([^"']*ajax\.php\?episode=[^"']*)['"]""").find(scriptContent)
+                ?: Regex("""['"]([^"']*ajax\.php\?vds=[^"']*)['"]""").find(scriptContent)
             
-            debugLog("TV Series Ajax URL match: $episodeAjaxUrl")
+            val episodeAjaxUrl = ajaxUrlMatches?.groupValues?.get(1)
 
             if (episodeAjaxUrl != null) {
                 val fullUrl = if (episodeAjaxUrl.startsWith("http")) episodeAjaxUrl else "$mainUrl$episodeAjaxUrl"
@@ -145,16 +159,14 @@ class BFlixProvider : MainAPI() {
                         val epUrl = aTag.attr("href")
                         val epName = aTag.select("span").joinToString(" ") { it.text() }
                         
-                        // Chỉ lấy link dẫn tới series/episode cụ thể
                         if (epUrl.contains("/series/")) {
                             episodes.add(newEpisode(epUrl) {
                                 this.name = epName
                             })
                         }
                     }
-                    debugLog("Parsed ${episodes.size} episodes")
                 } catch (e: Exception) {
-                    debugLog("Error loading episodes: ${e.message}")
+                    debugLog("Error parsing episodes: ${e.message}")
                 }
             }
 
@@ -182,91 +194,51 @@ class BFlixProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        debugLog("Loading links for data: $data")
-        
-        try {
-            val document = app.get(data, headers = commonHeaders).document
-            val scriptContent = document.select("script").html()
+        debugLog("Loading links: $data")
+        val document = app.get(data, headers = commonHeaders).document
+        val scriptContent = document.select("script").html()
 
-            // 1. Tìm Hash (vdkz hoặc episode hash)
-            // Regex được mở rộng để bắt nhiều trường hợp hơn
-            val vdkzMatch = Regex("""vdkz\s*[:=]\s*['"]([^'"]+)['"]""").find(scriptContent)?.groupValues?.get(1)
-                ?: Regex("""vdkz=([^'&"]+)""").find(scriptContent)?.groupValues?.get(1)
+        // Tìm Hash vdkz
+        val hash = Regex("""vdkz\s*[:=]\s*['"]([^'"]+)['"]""").find(scriptContent)?.groupValues?.get(1)
+            ?: Regex("""vdkz=([^'&"]+)""").find(scriptContent)?.groupValues?.get(1)
+            ?: Regex("""episode\s*[:=]\s*['"]([^'"]+)['"]""").find(scriptContent)?.groupValues?.get(1)
+
+        if (hash != null) {
+            val ajaxUrl = if (hash.startsWith("http")) hash else "$mainUrl/ajax/ajax.php?vdkz=$hash"
             
-            val episodeMatch = Regex("""episode\s*[:=]\s*['"]([^'"]+)['"]""").find(scriptContent)?.groupValues?.get(1)
+            try {
+                val response = app.get(ajaxUrl, headers = commonHeaders).text
+                val serverDoc = org.jsoup.Jsoup.parse(response)
+                var foundLinks = false
 
-            // Ưu tiên vdkz cho Movie, episode cho TV (nhưng site này khá lộn xộn, nên ta thử cả hai)
-            val hashesToCheck = listOfNotNull(vdkzMatch, episodeMatch, 
-                Regex("""['"]([^"']*ajax\.php\?vdkz=[^"']*)['"]""").find(scriptContent)?.groupValues?.get(1)
-            ).distinct()
+                serverDoc.select(".sv-item, .server-item").forEach { server ->
+                    val embedUrl = server.attr("data-id")
+                    debugLog("Found embed URL: $embedUrl")
 
-            debugLog("Found potential hashes: $hashesToCheck")
-
-            if (hashesToCheck.isEmpty()) {
-                debugLog("Error: No hash found in script content.")
-                return false
-            }
-
-            var linksFound = false
-
-            // Thử từng hash tìm được
-            for (hash in hashesToCheck) {
-                // Xử lý nếu hash là URL đầy đủ
-                val ajaxUrl = if (hash.startsWith("http")) {
-                    hash
-                } else {
-                    // Nếu hash ngắn, thử ghép vào vdkz, nếu thất bại thử episode
-                     "$mainUrl/ajax/ajax.php?vdkz=$hash"
-                }
-                
-                debugLog("Requesting AJAX: $ajaxUrl")
-                
-                try {
-                    val serverResponse = app.get(ajaxUrl, headers = commonHeaders)
-                    val serverResponseHtml = serverResponse.text
-                    debugLog("AJAX Response Code: ${serverResponse.code}")
-                    // debugLog("AJAX Content: $serverResponseHtml") // Uncomment nếu cần xem full html
-
-                    val serverDoc = org.jsoup.Jsoup.parse(serverResponseHtml)
-                    val serverItems = serverDoc.select(".sv-item, .server-item") // Backup selector
-                    
-                    if (serverItems.isEmpty()) {
-                        debugLog("No server items found in response.")
-                        // Fallback: Thử gọi lại với param 'episode' nếu URL trước đó là 'vdkz' và ngược lại?
-                        // Ở đây ta đơn giản hóa là loop tiếp hash khác nếu có.
-                        continue
-                    }
-
-                    serverItems.forEach { server ->
-                        val serverName = server.select("div > div, span").text()
-                        val embedUrl = server.attr("data-id") // Target chính
+                    if (embedUrl.isNotBlank()) {
+                        foundLinks = true
                         
-                        debugLog("Server: $serverName | URL: $embedUrl")
-
-                        if (embedUrl.isNotBlank()) {
-                            linksFound = true
+                        // Xử lý đặc biệt cho Subdrc (VidCloud clone)
+                        if (embedUrl.contains("subdrc.xyz") || embedUrl.contains("f16px.com")) {
+                            // Gọi trực tiếp Extractor của chúng ta
+                            Subdrc().getSafeUrl(embedUrl, "$mainUrl/", subtitleCallback, callback)
+                        } else {
+                            // Link khác (Vidstream, MegaUp...) dùng hệ thống chung
                             loadExtractor(
                                 url = embedUrl,
-                                referer = "$mainUrl/", // Quan trọng
+                                referer = "$mainUrl/",
                                 subtitleCallback = subtitleCallback,
                                 callback = callback
                             )
                         }
                     }
-                    
-                    if (linksFound) break // Nếu đã tìm thấy link ở hash này rồi thì stop
-                    
-                } catch (e: Exception) {
-                    debugLog("Error fetching AJAX for hash $hash: ${e.message}")
                 }
+                return foundLinks
+            } catch (e: Exception) {
+                logError(e)
+                debugLog("Error in loadLinks AJAX: ${e.message}")
             }
-            
-            return linksFound
-
-        } catch (e: Exception) {
-            logError(e)
-            debugLog("Critical error in loadLinks: ${e.message}")
-            return false
         }
+        return false
     }
 }
