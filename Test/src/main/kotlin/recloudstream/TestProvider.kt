@@ -43,6 +43,27 @@ class Anime47Provider : MainAPI() {
         "/anime/filter?lang=vi&type=movie" to "Anime Movie"
     )
 
+    // === Subtitle Language Map (Đã phục hồi đầy đủ) ===
+    private val subtitleLanguageMap: Map<String, List<String>> = mapOf(
+        "Vietnamese" to listOf("tiếng việt", "vietnamese", "vietsub", "viet", "vi"),
+        "English" to listOf("tiếng anh", "english", "engsub", "eng", "en"),
+        "Chinese" to listOf("tiếng trung", "chinese", "mandarin", "cn", "zh"),
+        "Japanese" to listOf("tiếng nhật", "japanese", "jpn", "ja"),
+        "Korean" to listOf("tiếng hàn", "korean", "kor", "ko"),
+        "French" to listOf("tiếng pháp", "français", "french", "fra", "fr"),
+        "German" to listOf("tiếng đức", "deutsch", "german", "deu", "de"),
+        "Spanish" to listOf("español", "spanish", "spa", "es"),
+        "Russian" to listOf("русский", "russian", "rus", "ru"),
+        "Portuguese" to listOf("português", "portuguese", "por", "pt"),
+        "Italian" to listOf("italiano", "italian", "ita", "it"),
+        "Arabic" to listOf("العربية", "arabic", "ara", "ar"),
+        "Thai" to listOf("ไทย", "thai", "tha", "th"),
+        "Indonesian" to listOf("bahasa indonesia", "indonesian", "ind", "id"),
+        "Malay" to listOf("bahasa melayu", "malay", "may", "ms"),
+        "Esperanto" to listOf("esperanto", "epo", "eo"),
+        "Estonian" to listOf("eesti", "estonian", "est", "et")
+    )
+
     // === Data Classes ===
     private data class GenreInfo(val name: String?)
     private data class Post(
@@ -282,16 +303,20 @@ class Anime47Provider : MainAPI() {
         return loaded.get()
     }
 
+    // === Updated: Logic map subtitle sử dụng map đầy đủ ===
     private fun mapSubtitleLabel(label: String): String {
-        val lower = label.lowercase(Locale.ROOT)
-        return when {
-            lower.contains("vi") -> "Vietnamese"
-            lower.contains("en") -> "English"
-            else -> label
+        val lowerLabel = label.trim().lowercase(Locale.ROOT)
+        if (lowerLabel.isBlank()) return "Subtitle"
+
+        for ((language, keywords) in subtitleLanguageMap) {
+            if (keywords.any { keyword -> lowerLabel.contains(keyword) }) {
+                return language
+            }
         }
+        return label.trim().replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
     }
 
-    // === INTERCEPTOR FIX: Xử lý Range Request và Image Masking chuẩn xác ===
+    // === INTERCEPTOR FIX: Fix lỗi mã hóa 3001 & Range Request ===
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
         val nonprofitRegex = Regex("""nonprofit\.asia|cdn\d+\.nonprofit""")
 
@@ -304,9 +329,7 @@ class Anime47Provider : MainAPI() {
                     return chain.proceed(request)
                 }
 
-                // 1. Kiểm tra Range Request (QUAN TRỌNG ĐỂ FIX LỖI 3001)
-                // Nếu request có Range: bytes=X- (với X > 0), nghĩa là player đang xin tải đoạn giữa.
-                // Lúc này KHÔNG được phép can thiệp/cắt bớt dữ liệu nữa vì header ảnh nằm ở đầu file.
+                // Nếu là Range Request (tải đoạn giữa), không cắt gì cả để tránh lỗi 3001
                 val rangeHeader = request.header("Range")
                 val isPartialRequest = rangeHeader != null && !rangeHeader.startsWith("bytes=0")
 
@@ -320,22 +343,19 @@ class Anime47Provider : MainAPI() {
                 val response = chain.proceed(newRequest)
 
                 if (!response.isSuccessful) return response
+                if (isPartialRequest) return response // Trả về luôn nếu là Partial Content
 
-                // Nếu là request tải đoạn giữa (Partial), trả về luôn
-                if (isPartialRequest) return response
-
-                // Safety checks khác
                 val contentType = response.header("Content-Type")?.lowercase()
                 if (contentType != null && (contentType.contains("html") || contentType.contains("text"))) {
                     return response
                 }
+
                 val contentLength = response.body?.contentLength() ?: 0L
-                if (contentLength > 30 * 1024 * 1024) return response // Tăng limit lên 30MB
+                if (contentLength > 50 * 1024 * 1024) return response // Limit 50MB
 
                 return try {
                     val body = response.body ?: return response
                     val bytes = body.bytes()
-                    // Gọi hàm xử lý header
                     val cleanBytes = removeImageHeader(bytes)
                     val newBody = cleanBytes.toResponseBody(body.contentType())
 
@@ -348,15 +368,12 @@ class Anime47Provider : MainAPI() {
         }
     }
 
-    // Logic quét header được tối ưu và nghiêm ngặt hơn
+    // Quét 50KB & Kiểm tra 3 gói tin liên tiếp
     private fun removeImageHeader(data: ByteArray): ByteArray {
-        if (data.size < 188 * 3) return data // Quá nhỏ để chứa 3 gói tin
-        // Tăng vùng tìm kiếm lên 50KB phòng trường hợp header ảnh giả quá lớn
+        if (data.size < 188 * 3) return data
         val searchLimit = minOf(data.size - 188 * 3, 50 * 1024)
 
         for (i in 0 until searchLimit) {
-            // STRICT MODE: Kiểm tra 3 sync byte liên tiếp để chắc chắn 100% đây là video
-            // (byte 0, byte 188, byte 376 phải là 0x47)
             if (data[i] == 0x47.toByte() &&
                 data[i + 188] == 0x47.toByte() &&
                 data[i + 376] == 0x47.toByte()) {
