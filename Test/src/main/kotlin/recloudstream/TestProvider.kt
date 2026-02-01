@@ -1,13 +1,13 @@
 package recloudstream
 
-// === Wildcard Imports theo yêu cầu ===
+// === Wildcard Imports ===
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.mvvm.logError
-import com.lagradost.cloudstream3.CommonActivity.showToast // Import Toast
+import com.lagradost.cloudstream3.CommonActivity.showToast
 
 import okhttp3.Interceptor
 import okhttp3.Response
@@ -124,8 +124,6 @@ class Anime47Provider : MainAPI() {
 
     // === Main Functions ===
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // === TOAST BẢN QUYỀN ===
-        // Chạy trên Main Thread để tránh crash
         withContext(Dispatchers.Main) {
             try {
                 CommonActivity.activity?.let {
@@ -293,7 +291,7 @@ class Anime47Provider : MainAPI() {
         }
     }
 
-    // === INTERCEPTOR FIX: Xử lý file .ts bị mã hóa (Image Masking) ===
+    // === INTERCEPTOR FIX: Xử lý Range Request và Image Masking chuẩn xác ===
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
         val nonprofitRegex = Regex("""nonprofit\.asia|cdn\d+\.nonprofit""")
 
@@ -306,6 +304,12 @@ class Anime47Provider : MainAPI() {
                     return chain.proceed(request)
                 }
 
+                // 1. Kiểm tra Range Request (QUAN TRỌNG ĐỂ FIX LỖI 3001)
+                // Nếu request có Range: bytes=X- (với X > 0), nghĩa là player đang xin tải đoạn giữa.
+                // Lúc này KHÔNG được phép can thiệp/cắt bớt dữ liệu nữa vì header ảnh nằm ở đầu file.
+                val rangeHeader = request.header("Range")
+                val isPartialRequest = rangeHeader != null && !rangeHeader.startsWith("bytes=0")
+
                 val newRequest = request.newBuilder()
                     .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
                     .header("Accept", "*/*")
@@ -317,17 +321,21 @@ class Anime47Provider : MainAPI() {
 
                 if (!response.isSuccessful) return response
 
+                // Nếu là request tải đoạn giữa (Partial), trả về luôn
+                if (isPartialRequest) return response
+
+                // Safety checks khác
                 val contentType = response.header("Content-Type")?.lowercase()
                 if (contentType != null && (contentType.contains("html") || contentType.contains("text"))) {
                     return response
                 }
-
                 val contentLength = response.body?.contentLength() ?: 0L
-                if (contentLength > 20 * 1024 * 1024) return response
+                if (contentLength > 30 * 1024 * 1024) return response // Tăng limit lên 30MB
 
                 return try {
                     val body = response.body ?: return response
                     val bytes = body.bytes()
+                    // Gọi hàm xử lý header
                     val cleanBytes = removeImageHeader(bytes)
                     val newBody = cleanBytes.toResponseBody(body.contentType())
 
@@ -340,13 +348,18 @@ class Anime47Provider : MainAPI() {
         }
     }
 
-    // Quét tối đa 4KB đầu để tìm Sync Byte (0x47)
+    // Logic quét header được tối ưu và nghiêm ngặt hơn
     private fun removeImageHeader(data: ByteArray): ByteArray {
-        if (data.size < 188) return data
-        val searchLimit = minOf(data.size - 188, 4096)
+        if (data.size < 188 * 3) return data // Quá nhỏ để chứa 3 gói tin
+        // Tăng vùng tìm kiếm lên 50KB phòng trường hợp header ảnh giả quá lớn
+        val searchLimit = minOf(data.size - 188 * 3, 50 * 1024)
 
         for (i in 0 until searchLimit) {
-            if (data[i] == 0x47.toByte() && (i + 188 < data.size && data[i + 188] == 0x47.toByte())) {
+            // STRICT MODE: Kiểm tra 3 sync byte liên tiếp để chắc chắn 100% đây là video
+            // (byte 0, byte 188, byte 376 phải là 0x47)
+            if (data[i] == 0x47.toByte() &&
+                data[i + 188] == 0x47.toByte() &&
+                data[i + 376] == 0x47.toByte()) {
                 return data.copyOfRange(i, data.size)
             }
         }
