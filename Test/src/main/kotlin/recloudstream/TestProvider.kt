@@ -1,13 +1,8 @@
 package recloudstream
 
 import android.util.Base64
-import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.loadExtractor 
-// Lưu ý: Nếu newExtractorLink là hàm custom của bạn, hãy đảm bảo import đúng file chứa nó.
-// Trong code dưới, tôi giả định newExtractorLink có sẵn trong context extension.
-
+import com.lagradost.cloudstream3.* // Wildcard: MainAPI, TvType, SearchResponse, HomePageResponse...
+import com.lagradost.cloudstream3.utils.* // Wildcard: ExtractorLink, ExtractorLinkType, newExtractorLink, etc.
 import org.jsoup.nodes.Element
 
 class SexxTrungQuoc : MainAPI() {
@@ -16,6 +11,7 @@ class SexxTrungQuoc : MainAPI() {
     override val hasMainPage = true
     override var lang = "vi"
     
+    // Website nội dung người lớn
     override val supportedTypes = setOf(TvType.NSFW) 
 
     override val mainPage = mainPageOf(
@@ -27,6 +23,7 @@ class SexxTrungQuoc : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        // Pagination: /page/2/
         val url = if (page == 1) request.data else "${request.data}page/$page/"
         val document = app.get(url).document
         
@@ -94,10 +91,11 @@ class SexxTrungQuoc : MainAPI() {
 
         for (script in scriptSrcs) {
             try {
+                // Decode Base64 từ src
                 val base64Data = script.attr("src").substringAfter("base64,")
                 val decoded = String(Base64.decode(base64Data, Base64.DEFAULT))
                 
-                // Regex lấy video_url
+                // Regex tìm biến video_url
                 val regex = """var\s+video_url\s*=\s*['"]([^'"]+)['"]""".toRegex()
                 val match = regex.find(decoded)
                 
@@ -111,15 +109,13 @@ class SexxTrungQuoc : MainAPI() {
         }
 
         if (videoUrl != null && videoUrl.isNotEmpty()) {
-            // Sử dụng newExtractorLink thay vì M3u8Helper
             callback(
                 newExtractorLink(
                     source = name,
-                    name = "$name HD", // Đặt tên hiển thị trong player
+                    name = "$name HD",
                     url = videoUrl,
-                    type = ExtractorLinkType.M3U8 // Định dạng là M3U8 (HLS)
+                    type = ExtractorLinkType.M3U8
                 ) {
-                    // Initializer block: Thêm Referer để tránh bị chặn 403
                     referer = "$mainUrl/" 
                 }
             )
