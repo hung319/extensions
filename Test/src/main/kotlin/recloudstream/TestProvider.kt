@@ -1,121 +1,81 @@
 package recloudstream
 
+import android.util.Base64
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.loadExtractor 
+// Lưu ý: Nếu newExtractorLink là hàm custom của bạn, hãy đảm bảo import đúng file chứa nó.
+// Trong code dưới, tôi giả định newExtractorLink có sẵn trong context extension.
+
 import org.jsoup.nodes.Element
 
-class KingBokep : MainAPI() {
-    override var mainUrl = "https://kingbokep.tv"
-    override var name = "KingBokep"
+class SexxTrungQuoc : MainAPI() {
+    override var mainUrl = "https://sexxtrungquoc.vip"
+    override var name = "SexxTrungQuoc"
     override val hasMainPage = true
-    override var lang = "id"
-    override val supportedTypes = setOf(TvType.NSFW)
+    override var lang = "vi"
+    
+    override val supportedTypes = setOf(TvType.NSFW) 
 
     override val mainPage = mainPageOf(
-        "$mainUrl/" to "Home",
-        "$mainUrl/category/indonesia/" to "Bokep Indo",
-        "$mainUrl/category/viral/" to "Indo Viral",
-        "$mainUrl/category/jilbab/" to "Jilbab",
-        "$mainUrl/category/scandal/" to "Scandal"
+        "$mainUrl/" to "Mới Nhất",
+        "$mainUrl/category/phim-sex-trung-quoc/" to "Trung Quốc",
+        "$mainUrl/category/phim-sex-hong-kong/" to "Hồng Kông",
+        "$mainUrl/category/phim-sex-vietsub/" to "Vietsub",
+        "$mainUrl/category/phim-sex-khong-che/" to "Không Che",
     )
 
-    // Hàm chuyển đổi thời gian sang Phút (Int)
-    private fun getDurationMinutes(text: String?): Int? {
-        if (text.isNullOrBlank()) return null
-        return try {
-            val parts = text.trim().split(":").map { it.toInt() }
-            when (parts.size) {
-                2 -> parts[0] // MM:SS -> Lấy phút
-                3 -> parts[0] * 60 + parts[1] // HH:MM:SS -> Đổi ra phút
-                else -> null
-            }
-        } catch (e: Exception) {
-            null
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val url = if (page == 1) request.data else "${request.data}page/$page/"
+        val document = app.get(url).document
+        
+        val home = document.select("ul.list-movies li.item-movie").mapNotNull {
+            it.toSearchResult()
         }
+        
+        return newHomePageResponse(request.name, home)
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
-        // 1. Lấy thẻ A, nếu không có -> bỏ qua
-        val link = this.selectFirst("a.group") ?: return null
-        
-        // 2. Lấy href raw, nếu null/blank -> bỏ qua
-        val rawHref = link.attr("href")
-        if (rawHref.isNullOrBlank()) return null
-        
-        // 3. Fix URL và ép kiểu String (Non-null)
-        val href = fixUrl(rawHref)
+        val linkElement = this.selectFirst("a") ?: return null
+        val title = this.selectFirst(".title-movie")?.text() ?: linkElement.attr("title")
+        val href = fixUrl(linkElement.attr("href"))
+        val img = this.selectFirst("img")?.attr("src") ?: ""
+        val quality = this.selectFirst(".label")?.text()
 
-        // 4. Lấy Title, nếu null/blank -> bỏ qua
-        val rawTitle = this.selectFirst(".video-card-title")?.text()?.trim()
-        if (rawTitle.isNullOrBlank()) return null
-        val title = rawTitle!! // Khẳng định non-null
-
-        // 5. Xử lý Poster (An toàn với fixUrl)
-        val imgTag = this.selectFirst("img")
-        val rawPoster = imgTag?.attr("data-src") ?: imgTag?.attr("src")
-        val posterUrl = if (!rawPoster.isNullOrBlank()) fixUrl(rawPoster!!) else null
-
-        // 6. Return (Title và Href chắc chắn là String)
         return newMovieSearchResponse(title, href, TvType.NSFW) {
-            this.posterUrl = posterUrl
-            // Không set duration ở đây để tránh lỗi unresolved reference trong SearchResponse
+            this.posterUrl = img
+            this.quality = getQualityFromString(quality)
         }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$mainUrl/search/?keyword=$query"
-        return app.get(url).document.select("li.video-card").mapNotNull {
-            it.toSearchResult()
-        }
-    }
-
-    override suspend fun getMainPage(
-        page: Int,
-        request: MainPageRequest
-    ): HomePageResponse {
-        val url = if (page == 1) {
-            request.data
-        } else {
-            "${request.data.removeSuffix("/")}/page/$page/"
-        }
-
+        val url = "$mainUrl/?s=$query"
         val document = app.get(url).document
-        val home = document.select("li.video-card").mapNotNull {
+        
+        return document.select("ul.list-movies li.item-movie").mapNotNull {
             it.toSearchResult()
         }
-        return newHomePageResponse(request.name, home)
     }
 
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
-        // Xử lý Title và Description
-        val title = document.selectFirst("h1")?.text()?.trim() ?: "Unknown"
-        val description = document.select("meta[name=description]").attr("content")
+        val title = document.selectFirst("h1.single-title")?.text()?.trim() ?: ""
+        val description = document.select(".entry-content p").text().trim()
+        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
+        val tags = document.select("#extras a").map { it.text() }
         
-        // Xử lý Metadata
-        val date = document.selectFirst("span:contains(Tanggal:)")?.nextSibling()?.toString()?.trim()
-        val durationText = document.selectFirst("span[data-pagefind-meta=duration]")?.text()
-        
-        // Xử lý Poster
-        val rawPoster = document.selectFirst("video#bokep-player")?.attr("poster") 
-            ?: document.select("meta[property=og:image]").attr("content")
-        val poster = if (!rawPoster.isNullOrBlank()) fixUrl(rawPoster) else null
-
-        val recommendations = document.select("li.video-card").mapNotNull {
+        val recommendations = document.select(".tab-movies1 .list-movies .item-movie").mapNotNull {
             it.toSearchResult()
         }
-        
-        val tags = document.select("meta[name=keywords]").attr("content")
-            .split(",").map { it.trim() }
 
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
             this.plot = description
             this.tags = tags
-            this.year = date?.takeLast(4)?.toIntOrNull()
             this.recommendations = recommendations
-            this.duration = getDurationMinutes(durationText) // Trả về Int (phút)
         }
     }
 
@@ -126,24 +86,46 @@ class KingBokep : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val document = app.get(data).document
-        
-        val videoTag = document.selectFirst("#bokep-player")
-        val rawPlaylistUrl = videoTag?.attr("data-playlist")
 
-        if (!rawPlaylistUrl.isNullOrBlank()) {
-            callback.invoke(
+        // Tìm các script base64 chứa link video
+        val scriptSrcs = document.select("script[src^='data:text/javascript;base64,']")
+        
+        var videoUrl: String? = null
+
+        for (script in scriptSrcs) {
+            try {
+                val base64Data = script.attr("src").substringAfter("base64,")
+                val decoded = String(Base64.decode(base64Data, Base64.DEFAULT))
+                
+                // Regex lấy video_url
+                val regex = """var\s+video_url\s*=\s*['"]([^'"]+)['"]""".toRegex()
+                val match = regex.find(decoded)
+                
+                if (match != null) {
+                    videoUrl = match.groupValues[1]
+                    break 
+                }
+            } catch (e: Exception) {
+                continue
+            }
+        }
+
+        if (videoUrl != null && videoUrl.isNotEmpty()) {
+            // Sử dụng newExtractorLink thay vì M3u8Helper
+            callback(
                 newExtractorLink(
                     source = name,
-                    name = name,
-                    url = fixUrl(rawPlaylistUrl),
-                    type = ExtractorLinkType.M3U8
+                    name = "$name HD", // Đặt tên hiển thị trong player
+                    url = videoUrl,
+                    type = ExtractorLinkType.M3U8 // Định dạng là M3U8 (HLS)
                 ) {
-                    referer = mainUrl
-                    quality = Qualities.Unknown.value
+                    // Initializer block: Thêm Referer để tránh bị chặn 403
+                    referer = "$mainUrl/" 
                 }
             )
             return true
         }
+
         return false
     }
 }
