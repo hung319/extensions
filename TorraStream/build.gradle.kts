@@ -1,4 +1,3 @@
-// Removed local.properties usage
 
 // use an integer for version numbers
 version = 65
@@ -8,9 +7,6 @@ android {
         buildConfig = true
         viewBinding = true
     }
-    defaultConfig {
-        android.buildFeatures.buildConfig = true
-    }
 }
 
 cloudstream {
@@ -18,7 +14,7 @@ cloudstream {
 
     description = "#1 Best Extension – MultiAPI-Based with 4K Torrent Support (Debian) Use Extension Settings"
     language    = "en"
-    authors = listOf("SIX")
+    authors = listOf("Phisher98")
 
     /**
     * Status int as the following:
