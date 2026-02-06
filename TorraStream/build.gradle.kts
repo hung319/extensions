@@ -1,4 +1,4 @@
-import org.jetbrains.kotlin.konan.properties.Properties
+// Removed local.properties usage
 
 // use an integer for version numbers
 version = 65
@@ -9,9 +9,7 @@ android {
         viewBinding = true
     }
     defaultConfig {
-        val properties = Properties()
-        properties.load(project.rootProject.file("local.properties").inputStream())
-        android.buildFeatures.buildConfig=true
+        android.buildFeatures.buildConfig = true
     }
 }
 
