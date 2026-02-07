@@ -637,18 +637,79 @@ suspend fun invokeAIOStreams(
 }
 
 suspend fun invokeDebianTorbox(
-    torBoxAPI: String,
+    torboxAPI: String,
     key: String,
     id: String? =null,
     season: Int? = null,
     episode: Int? = null,
     callback: (ExtractorLink) -> Unit
 ) {
+    val useTorrserver = sharedPref.getBoolean("use_torrserver", false)
+    val torboxUrl = buildApiUrl(sharedPref, torboxAPI, useTorrserver = useTorrserver)
+    
     val url = if (season == null) {
-        "$torBoxAPI/$key/stream/movie/$id.json"
+        "$torboxUrl/stream/movie/$id.json"
     } else {
-        "$torBoxAPI/$key/stream/series/$id:$season:$episode.json"
+        "$torboxUrl/stream/series/$id:$season:$episode.json"
     }
+    
+    val response = app.get(url, timeout = 10_000).parsedSafe<TorBoxDebian>() ?: return
+    
+    response.streams.forEach { stream ->
+        val resolution = extractResolutionFromDescription(stream.description)
+        
+        val sourceName = stream.name
+            .substringBeforeLast("(")
+            .trim()
+            .ifBlank { "TorBox" }
+        
+        val cache = Regex("""\((.*?)\)""").find(stream.name)
+            ?.groupValues?.get(1)
+            ?.takeIf { it == "Instant" }
+            ?: "TorBox Download"
+        
+        val displayName = buildString {
+            append("TorBox+ | [$cache] | ")
+            val rawName = stream.behaviorHints.filename
+            val baseName = rawName
+                .substringBeforeLast(".")
+                .replace(".", " ")
+                .trim()
+            
+            if (baseName.isNotBlank())
+                append(baseName)
+            
+            // --- filesize ---
+            val fileSize = Regex("Size:\\s*([^|\\n]+)")
+                .find(stream.description)
+                ?.groupValues?.get(1)
+                ?.trim()
+            if (!fileSize.isNullOrBlank())
+                append(" | 📦 $fileSize")
+            
+            // --- seeders ---
+            val seeders = Regex("Seeders:\\s*(\\d+)")
+                .find(stream.description)
+                ?.groupValues?.get(1)
+                ?.trim()
+            if (!seeders.isNullOrBlank())
+                append(" | 🌱 $seeders")
+            
+        }.trim()
+        
+        callback(
+            newExtractorLink(
+                "$sourceName [$cache]",
+                displayName,
+                url = stream.url,
+                INFER_TYPE
+            ).apply {
+                referer = ""
+                this.quality = getQualityFromName(resolution)
+            }
+        )
+    }
+}
     
     val response = app.get(url, timeout = 10_000).parsedSafe<TorBoxDebian>() ?: return
     response.streams.forEach { stream ->
