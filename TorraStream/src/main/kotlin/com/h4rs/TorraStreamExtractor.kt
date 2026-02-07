@@ -18,7 +18,7 @@ import com.lagradost.cloudstream3.utils.getQualityFromName
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import java.util.Locale
 
-private lateinit var torraStreamPrefs: SharedPreferences
+internal lateinit var torraStreamPrefs: SharedPreferences
 private const val torboxAPI = TorraStream.TorboxAPI
 
 private fun buildApiUrl(
