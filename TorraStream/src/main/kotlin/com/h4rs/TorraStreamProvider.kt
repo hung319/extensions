@@ -10,6 +10,7 @@ import com.h4rs.settings.SettingsFragment
 class TorraStreamProvider: Plugin() {
     override fun load(context: Context) {
         val sharedPref = context.getSharedPreferences("TorraStream", Context.MODE_PRIVATE)
+        torraStreamPrefs = sharedPref
         registerMainAPI(TorraStream(sharedPref))
         registerMainAPI(TorraStreamAnime(sharedPref))
 
