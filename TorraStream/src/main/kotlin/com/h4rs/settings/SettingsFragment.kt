@@ -11,7 +11,6 @@ import android.view.*
 import android.widget.*
 import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AlertDialog
-import androidx.core.content.edit
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import com.lagradost.cloudstream3.CommonActivity.showToast
 import com.h4rs.BuildConfig
@@ -218,7 +217,7 @@ class SettingsFragment(
         useTorrserverToggle.text = "Use TorrServer with Debrid"
         useTorrserverToggle.isChecked = sharedPref.getBoolean("use_torrserver", false)
         useTorrserverToggle.setOnCheckedChangeListener { _, isChecked ->
-            sharedPref.edit { putBoolean("use_torrserver", isChecked) }.apply()
+            sharedPref.edit().putBoolean("use_torrserver", isChecked).apply()
         }
 
         // ===== DEBRID PROVIDERS =====
