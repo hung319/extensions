@@ -201,11 +201,25 @@ class SettingsFragment(
         val limitInput = root.findView<EditText>("limit_input")
         limitInput.setText(sharedPref.getString("limit", ""))
         limitInput.makeTvCompatible()
+        limitInput.hint = "Max number of links to load (0 for unlimited)"
 
         // ===== SIZE =====
         val sizeInput = root.findView<EditText>("size_filter_input")
         sizeInput.setText(sharedPref.getString("sizefilter", ""))
         sizeInput.makeTvCompatible()
+
+        // ===== LINK LIMIT =====
+        val linkLimitInput = root.findView<EditText>("link_limit_input")
+        linkLimitInput.setText(sharedPref.getString("link_limit", ""))
+        linkLimitInput.hint = "Maximum links to load per source (0 for unlimited)"
+        linkLimitInput.makeTvCompatible()
+
+        val useTorrserverToggle = root.findView<CheckBox>("use_torrserver_checkbox")
+        useTorrserverToggle.text = "Use TorrServer with Debrid"
+        useTorrserverToggle.isChecked = sharedPref.getBoolean("use_torrserver", false)
+        useTorrserverToggle.setOnCheckedChangeListener { _, isChecked ->
+            sharedPref.edit { putBoolean("use_torrserver", isChecked) }.apply()
+        }
 
         // ===== DEBRID PROVIDERS =====
         val debridSpinner = root.findView<Spinner>("debrid_provider_spinner")

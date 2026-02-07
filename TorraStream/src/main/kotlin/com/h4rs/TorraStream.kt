@@ -304,8 +304,9 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
         }
 
         if (provider == "TorBox" && !key.isNullOrEmpty()) {
+            val torboxUrl = buildApiUrl(sharedPref, torboxAPI)
             runAllAsync(
-                { invokeDebianTorbox(TorboxAPI, key, id, season, episode, callback) }
+                { invokeDebianTorbox(torboxUrl, key, id, season, episode, callback) }
             )
         }
 
@@ -375,28 +376,35 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
         url ?: return null
         return "https://$url"
     }
-    private fun buildApiUrl(sharedPref: SharedPreferences, mainUrl: String): String {
+    private fun buildApiUrl(sharedPref: SharedPreferences, apiBase: String): String {
         val sort = sharedPref.getString("sort", "qualitysize")
         val languageOption = sharedPref.getString("language", "")
         val qualityFilter = sharedPref.getString("qualityfilter", "")
         val limit = sharedPref.getString("limit", "")
         val sizeFilter = sharedPref.getString("sizefilter", "")
+        val linkLimit = sharedPref.getString("link_limit", "") // max links to load
+        val useTorrserver = sharedPref.getBoolean("use_torrserver", false) // use torrserver with debrid
         val debridProvider = sharedPref.getString("debrid_provider", "") // e.g., "easydebrid"
         val debridKey = sharedPref.getString("debrid_key", "") // e.g., "12345abc"
-
+        
         val params = mutableListOf<String>()
         if (!sort.isNullOrEmpty()) params += "sort=$sort"
         if (!languageOption.isNullOrEmpty()) params += "language=${languageOption.lowercase()}"
         if (!qualityFilter.isNullOrEmpty()) params += "qualityfilter=$qualityFilter"
         if (!limit.isNullOrEmpty()) params += "limit=$limit"
         if (!sizeFilter.isNullOrEmpty()) params += "sizefilter=$sizeFilter"
-
+        if (!linkLimit.isNullOrEmpty()) params += "link_limit=$linkLimit"
+        
+        if (debridProvider == "TorBox" && useTorrserver) {
+            params += "torrserver=1"
+        }
+        
         if (!debridProvider.isNullOrEmpty() && !debridKey.isNullOrEmpty()) {
             params += "$debridProvider=$debridKey"
         }
-
+        
         val query = params.joinToString("%7C")
-        return "$mainUrl/$query"
+        return "$apiBase/$query"
     }
 }
 

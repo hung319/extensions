@@ -78,11 +78,51 @@ suspend fun invokeTorrentioDebian(
     episode: Int? = null,
     callback: (ExtractorLink) -> Unit
 ) {
+    val apiUrl = buildApiUrl(sharedPref, mainUrl)
     val url = if (season == null) {
-        "$mainUrl/stream/movie/$id.json"
+        "${apiUrl}/stream/movie/$id.json"
     } else {
-        "$mainUrl/stream/series/$id:$season:$episode.json"
+        "${apiUrl}/stream/series/$id:$season:$episode.json"
     }
+    val res = app.get(url).parsedSafe<DebianRoot>()
+    res?.streams?.forEach { stream ->
+        val fileUrl = stream.url
+
+        val size = Regex("""(\d+(?:[.,]\d+)?)\s*(GB|MB)""", RegexOption.IGNORE_CASE)
+            .find(stream.title)
+            ?.let { m -> "${m.groupValues[1].replace(',', '.')} ${m.groupValues[2].uppercase()}" }
+        
+        val seedersNum = Regex("""(\d+)$""").find(stream.title)?.groupValues?.get(1)
+
+        val name = stream.behaviorHints.filename ?: stream.title.substringBefore("\n")
+        val cache = Regex("""\[(.*?)]""").find(stream.name)?.groupValues?.get(1)
+        val formattedName = name
+            .substringBeforeLast('.')
+            .replace('.', ' ')
+            .trim()
+        
+        val parts = listOfNotNull(
+            size?.let { "📦 $it" },
+            seedersNum?.let { "🌱 $it" }
+        )
+        
+        val suffix = if (parts.isNotEmpty()) " | ${parts.joinToString(" | ")}" else ""
+        
+        val finalTitle = "Torrentio+ | [$cache] | $formattedName$suffix"
+        
+        callback.invoke(
+            newExtractorLink(
+                "Torrentio+ [$cache]",
+                finalTitle,
+                url = fileUrl,
+                INFER_TYPE
+            ) {
+                this.referer = ""
+                this.quality = getIndexQuality(stream.name)
+            }
+        )
+    }
+}
     val res = app.get(url).parsedSafe<DebianRoot>()
     res?.streams?.forEach { stream ->
         val fileUrl = stream.url
@@ -544,10 +584,11 @@ suspend fun invokeAIOStreamsDebian(
     episode: Int? = null,
     callback: (ExtractorLink) -> Unit
 ) {
+    val apiUrl = buildApiUrl(sharedPref, mainUrl)
     val mainurl = if (season == null) {
-        "${mainUrl.substringBeforeLast("/manifest.json")}/stream/movie/$id.json"
+        "${apiUrl}/stream/movie/$id.json"
     } else {
-        "${mainUrl.substringBeforeLast("/manifest.json")}/stream/series/$id:$season:$episode.json"
+        "${apiUrl}/stream/series/$id:$season:$episode.json"
     }
     app.get(mainurl).parsedSafe<AIODebian>()?.streams?.map {
         val qualityRegex = Regex("""\b(4K|2160p|1080p|720p|WEB[-\s]?DL|BluRay|HDRip|DVDRip)\b""", RegexOption.IGNORE_CASE)
@@ -608,6 +649,63 @@ suspend fun invokeDebianTorbox(
     } else {
         "$torBoxAPI/$key/stream/series/$id:$season:$episode.json"
     }
+    
+    val response = app.get(url, timeout = 10_000).parsedSafe<TorBoxDebian>() ?: return
+    response.streams.forEach { stream ->
+        val resolution = extractResolutionFromDescription(stream.description)
+        
+        val sourceName = stream.name
+            .substringBeforeLast("(")
+            .trim()
+            .ifBlank { "TorBox" }
+        
+        val cache = Regex("""\((.*?)\)""").find(stream.name)
+            ?.groupValues?.get(1)
+            ?.takeIf { it == "Instant" }
+            ?: "TorBox Download"
+        
+        val displayName = buildString {
+            append("TorBox+ | [$cache] | ")
+            val rawName = stream.behaviorHints.filename
+            val baseName = rawName
+                .substringBeforeLast(".")
+                .replace(".", " ")
+                .trim()
+            
+            if (baseName.isNotBlank())
+                append(baseName)
+            
+            // --- filesize ---
+            val fileSize = Regex("Size:\\s*([^|\\n]+)")
+                .find(stream.description)
+                ?.groupValues?.get(1)
+                ?.trim()
+            if (!fileSize.isNullOrBlank())
+                append(" | 📦 $fileSize")
+            
+            // --- seeders ---
+            val seeders = Regex("Seeders:\\s*(\\d+)")
+                .find(stream.description)
+                ?.groupValues?.get(1)
+                ?.trim()
+            if (!seeders.isNullOrBlank())
+                append(" | 🌱 $seeders")
+            
+        }.trim()
+        
+        callback(
+            newExtractorLink(
+                "$sourceName [$cache]",
+                displayName,
+                url = stream.url,
+                INFER_TYPE
+            ).apply {
+                referer = ""
+                this.quality = getQualityFromName(resolution)
+            }
+        )
+    }
+}
 
     val response = app.get(url, timeout = 10_000).parsedSafe<TorBoxDebian>() ?: return
 
@@ -872,11 +970,55 @@ suspend fun invokeTorboxAnimeDebian(
     episode: Int? = null,
     callback: (ExtractorLink) -> Unit
 ) {
+    val apiUrl = buildApiUrl(sharedPref, mainUrl)
     val url = if (type == TvType.Movie) {
-        "$mainUrl/$key/stream/movie/kitsu:$id.json"
+        "$apiUrl/$key/stream/movie/kitsu:$id.json"
     } else {
-        "$mainUrl/$key/stream/series/kitsu:$id:$episode.json"
+        "$apiUrl/$key/stream/series/kitsu:$id:$episode.json"
     }
+    val res = app.get(url, timeout = 10_000).parsedSafe<DebianRoot>()
+    res?.streams?.forEach { stream ->
+        val fileUrl = stream.url
+        
+        val size = Regex("""(\d+(?:[.,]\d+)?)\s*(GB|MB)""", RegexOption.IGNORE_CASE)
+            .find(stream.title)
+            ?.let { m -> "${m.groupValues[1].replace(',', '.')} ${m.groupValues[2].uppercase()}" }
+        
+        val seedersNum = Regex("""(\d+)$""").find(stream.title)?.groupValues?.get(1)
+
+        val name = stream.behaviorHints.filename ?: stream.title.substringBefore("\n")
+        val cache = Regex("""\((.*?)\)""").find(stream.name)
+            ?.groupValues?.get(1)
+            ?.takeIf { it == "Instant" }
+            ?: "TorBox Download"
+        
+        val formattedName = name
+            .substringBeforeLast('.')
+            .replace('.', ' ')
+            .trim()
+        
+        val parts = listOfNotNull(
+            size?.let { "📦 $it" },
+            seedersNum?.let { "🌱 $it" }
+        )
+        
+        val suffix = if (parts.isNotEmpty()) " | ${parts.joinToString(" | ")}" else ""
+        
+        val finalTitle = "TorBox+ Anime | [$cache] | $formattedName$suffix"
+        
+        callback.invoke(
+            newExtractorLink(
+                "TorBox+ [$cache]",
+                finalTitle,
+                url = fileUrl,
+                INFER_TYPE
+            ) {
+                this.referer = ""
+                this.quality = getIndexQuality(stream.name)
+            }
+        )
+    }
+}
     val res = app.get(url, timeout = 10_000).parsedSafe<DebianRoot>()
     res?.streams?.forEach { stream ->
         val fileUrl = stream.url
