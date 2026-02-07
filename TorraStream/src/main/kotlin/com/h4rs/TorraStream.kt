@@ -304,7 +304,7 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
         }
 
         if (provider == "TorBox" && !key.isNullOrEmpty()) {
-            val torboxUrl = buildApiUrl(sharedPref, torboxAPI)
+            val torboxUrl = buildApiUrl(sharedPref, TorboxAPI)
             runAllAsync(
                 { invokeDebianTorbox(torboxUrl, key, id, season, episode, callback) }
             )
@@ -408,6 +408,8 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
     }
 }
 
+
+
 suspend fun generateMagnetLink(
     trackerUrls: List<String>,
     hash: String?,
@@ -445,4 +447,3 @@ suspend fun generateMagnetLink(
             }
     }
 }
-
