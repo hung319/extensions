@@ -235,38 +235,39 @@ suspend fun invoke1337x(
     year: Int? = null,
     callback: (ExtractorLink) -> Unit
 ) {
-    app.get("$OnethreethreesevenxAPI/category-search/${title?.replace(" ", "+")}+$year/Movies/1/")
-        .documentLarge.select("tbody > tr > td a:nth-child(2)").amap {
-            val iframe = OnethreethreesevenxAPI + it.attr("href")
-            val doc = app.get(iframe).documentLarge
+    val doc = app.get("$OnethreethreesevenxAPI/category-search/${title?.replace(" ", "+")}+$year/Movies/1/").document
 
-            val magnet = doc.select("#openPopup").attr("href").trim()
-            val qualityRaw = doc.select("div.box-info ul.list li:contains(Type) span").text()
-            val quality = getQuality(qualityRaw)
+    doc.select("tbody > tr > td a:nth-child(2)").forEach { element ->
+        val iframe = OnethreethreesevenxAPI + element.attr("href")
+        val pageDoc = app.get(iframe).document
 
-            val size = doc.select("div.box-info ul.list li:contains(Total size) span").text()
-            val language = doc.select("div.box-info ul.list li:contains(Language) span").text()
-            val seeders = doc.select("div.box-info ul.list li:contains(Seeders) span.seeds").text()
+        val magnet = pageDoc.select("#openPopup").attr("href").trim()
+        val qualityRaw = pageDoc.select("div.box-info ul.list li:contains(Type) span").text()
+        val quality = getQuality(qualityRaw)
 
-            val displayName = buildString {
-                append("Torrent1337x $qualityRaw")
-                if (size.isNotBlank()) append(" | Size: $size")
-                if (language.isNotBlank()) append(" | Lang: $language")
-                if (seeders.isNotBlank()) append(" | 🟢$seeders")
-            }
+        val size = pageDoc.select("div.box-info ul.list li:contains(Total size) span").text()
+        val language = pageDoc.select("div.box-info ul.list li:contains(Language) span").text()
+        val seeders = pageDoc.select("div.box-info ul.list li:contains(Seeders) span.seeds").text()
 
-            callback.invoke(
-                newExtractorLink(
-                    "Torrent1337x",
-                    displayName,
-                    url = magnet,
-                    INFER_TYPE
-                ) {
-                    this.referer = ""
-                    this.quality = quality
-                }
-            )
+        val displayName = buildString {
+            append("Torrent1337x $qualityRaw")
+            if (size.isNotBlank()) append(" | Size: $size")
+            if (language.isNotBlank()) append(" | Lang: $language")
+            if (seeders.isNotBlank()) append(" | 🟢$seeders")
         }
+
+        callback.invoke(
+            newExtractorLink(
+                "Torrent1337x",
+                displayName,
+                url = magnet,
+                INFER_TYPE
+            ) {
+                this.referer = ""
+                this.quality = quality
+            }
+        )
+    }
 }
 
 
@@ -695,7 +696,84 @@ suspend fun invokeUindex(
         "User-Agent" to "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
     )
 
-    val rows = app.get(url, headers = headers).documentLarge.select("tr")
+    val doc = app.get(url, headers = headers).document
+    val rows = doc.select("tr")
+
+    val episodePatterns: List<Regex> = if (isTv && episode != null) {
+        val rawPatterns = listOf(
+            String.format(Locale.US, "S%02dE%02d", season, episode),
+            "S${season}E$episode",
+            String.format(Locale.US, "S%02dE%d", season, episode),
+            String.format(Locale.US, "S%dE%02d", season, episode),
+        )
+
+        rawPatterns.distinct().map {
+            Regex("\\b$it\\b", RegexOption.IGNORE_CASE)
+        }
+    } else {
+        emptyList()
+    }
+
+    rows.forEach { row ->
+        val rowTitle = row.select("td:nth-child(2) > a:nth-child(2)").text()
+        val magnet = row.select("td:nth-child(2) > a:nth-child(1)").attr("href")
+
+        if (rowTitle.isBlank() || magnet.isBlank()) return@forEach
+
+        if (isTv && episodePatterns.isNotEmpty()) {
+            if (episodePatterns.none { it.containsMatchIn(rowTitle) }) return@forEach
+        }
+
+        val qualityMatch = "(2160p|1080p|720p)"
+            .toRegex(RegexOption.IGNORE_CASE)
+            .find(rowTitle)
+            ?.value
+            ?.lowercase()
+
+        val seeder = row
+            .select("td:nth-child(4) > span")
+            .text()
+            .replace(",", "")
+            .ifBlank { "0" }
+
+        val fileSize = row.select("td:nth-child(3)").text()
+
+        val formattedTitleName = run {
+            val qualityTermsRegex =
+                "(WEBRip|WEB-DL|x265|x264|10bit|HEVC|H264)"
+                    .toRegex(RegexOption.IGNORE_CASE)
+
+            val tags = qualityTermsRegex.findAll(rowTitle)
+                .map { it.value.uppercase() }
+                .distinct()
+                .joinToString(" | ")
+
+            "UIndex | $tags | Seeder: $seeder | FileSize: $fileSize".trim()
+        }
+
+        callback.invoke(
+            newExtractorLink(
+                "UIndex",
+                formattedTitleName.ifBlank { rowTitle },
+                url = magnet,
+                type = INFER_TYPE
+            ) {
+                this.quality = getQualityFromName(qualityMatch)
+            }
+        )
+    }
+}
+    }.replace(' ', '+')
+
+    val url = "$uindex/search.php?search=$searchQuery&c=${if (isTv) 2 else 1}"
+
+    val headers = mapOf(
+        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "User-Agent" to "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    )
+
+    val doc = app.get(url, headers = headers).document
+    val rows = doc.select("tr")
 
     val episodePatterns: List<Regex> = if (isTv && episode != null) {
         val rawPatterns = listOf(
