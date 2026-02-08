@@ -35,6 +35,7 @@ import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.lagradost.cloudstream3.utils.RequestBodyTypes
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -42,10 +43,17 @@ import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.text.SimpleDateFormat
 import java.util.Locale
 
 class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
+
+    private fun metadataLanguage(): String {
+        return sharedPref.getString("metadata_language", "en-US")?.trim().takeUnless { it.isNullOrEmpty() }
+            ?: "en-US"
+    }
     override var name = "TorraStream"
     override var mainUrl = "https://torrentio.strem.fun"
     override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.AsianDrama, TvType.Torrent)
@@ -90,26 +98,26 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
     }
 
     override val mainPage = mainPageOf(
-        "$tmdbAPI/trending/all/day?api_key=$apiKey&region=US" to "Trending",
-        "$tmdbAPI/trending/movie/week?api_key=$apiKey&region=US&with_original_language=en" to "Popular Movies",
-        "$tmdbAPI/trending/tv/week?api_key=$apiKey&region=US&with_original_language=en" to "Popular TV Shows",
-        "$tmdbAPI/tv/airing_today?api_key=$apiKey&region=US&with_original_language=en" to "Airing Today TV Shows",
-        "$tmdbAPI/discover/tv?api_key=$apiKey&with_networks=213" to "Netflix",
-        "$tmdbAPI/discover/tv?api_key=$apiKey&with_networks=1024" to "Amazon",
-        "$tmdbAPI/discover/tv?api_key=$apiKey&with_networks=2739" to "Disney+",
-        "$tmdbAPI/discover/tv?api_key=$apiKey&with_networks=453" to "Hulu",
-        "$tmdbAPI/discover/tv?api_key=$apiKey&with_networks=2552" to "Apple TV+",
-        "$tmdbAPI/discover/tv?api_key=$apiKey&with_networks=49" to "HBO",
-        "$tmdbAPI/discover/tv?api_key=$apiKey&with_networks=4330" to "Paramount+",
-        "$tmdbAPI/discover/tv?api_key=$apiKey&with_networks=3353" to "Peacock",
-        "$tmdbAPI/discover/movie?api_key=$apiKey&language=en-US&page=1&sort_by=popularity.desc&with_origin_country=IN&release_date.gte=${getDate().lastWeekStart}&release_date.lte=${getDate().today}" to "Trending Indian Movies",
-        "$tmdbAPI/discover/tv?api_key=$apiKey&with_keywords=210024|222243&sort_by=popularity.desc&air_date.lte=${getDate().today}&air_date.gte=${getDate().today}" to "Airing Today Anime",
-        "$tmdbAPI/discover/tv?api_key=$apiKey&with_keywords=210024|222243&sort_by=popularity.desc&air_date.lte=${getDate().nextWeek}&air_date.gte=${getDate().today}" to "On The Air Anime",
-        "$tmdbAPI/discover/movie?api_key=$apiKey&with_keywords=210024|222243" to "Anime Movies",
-        "$tmdbAPI/movie/top_rated?api_key=$apiKey&region=US" to "Top Rated Movies",
-        "$tmdbAPI/tv/top_rated?api_key=$apiKey&region=US" to "Top Rated TV Shows",
-        "$tmdbAPI/discover/tv?api_key=$apiKey&with_original_language=ko" to "Korean Shows",
-        "$tmdbAPI/discover/tv?api_key=$apiKey&with_genres=99" to "Documentary",
+        "$tmdbAPI/trending/all/day?api_key=$apiKey&region=US&language=${metadataLanguage()}" to "Trending",
+        "$tmdbAPI/trending/movie/week?api_key=$apiKey&region=US&with_original_language=en&language=${metadataLanguage()}" to "Popular Movies",
+        "$tmdbAPI/trending/tv/week?api_key=$apiKey&region=US&with_original_language=en&language=${metadataLanguage()}" to "Popular TV Shows",
+        "$tmdbAPI/tv/airing_today?api_key=$apiKey&region=US&with_original_language=en&language=${metadataLanguage()}" to "Airing Today TV Shows",
+        "$tmdbAPI/discover/tv?api_key=$apiKey&with_networks=213&language=${metadataLanguage()}" to "Netflix",
+        "$tmdbAPI/discover/tv?api_key=$apiKey&with_networks=1024&language=${metadataLanguage()}" to "Amazon",
+        "$tmdbAPI/discover/tv?api_key=$apiKey&with_networks=2739&language=${metadataLanguage()}" to "Disney+",
+        "$tmdbAPI/discover/tv?api_key=$apiKey&with_networks=453&language=${metadataLanguage()}" to "Hulu",
+        "$tmdbAPI/discover/tv?api_key=$apiKey&with_networks=2552&language=${metadataLanguage()}" to "Apple TV+",
+        "$tmdbAPI/discover/tv?api_key=$apiKey&with_networks=49&language=${metadataLanguage()}" to "HBO",
+        "$tmdbAPI/discover/tv?api_key=$apiKey&with_networks=4330&language=${metadataLanguage()}" to "Paramount+",
+        "$tmdbAPI/discover/tv?api_key=$apiKey&with_networks=3353&language=${metadataLanguage()}" to "Peacock",
+        "$tmdbAPI/discover/movie?api_key=$apiKey&language=${metadataLanguage()}&page=1&sort_by=popularity.desc&with_origin_country=IN&release_date.gte=${getDate().lastWeekStart}&release_date.lte=${getDate().today}" to "Trending Indian Movies",
+        "$tmdbAPI/discover/tv?api_key=$apiKey&with_keywords=210024|222243&sort_by=popularity.desc&air_date.lte=${getDate().today}&air_date.gte=${getDate().today}&language=${metadataLanguage()}" to "Airing Today Anime",
+        "$tmdbAPI/discover/tv?api_key=$apiKey&with_keywords=210024|222243&sort_by=popularity.desc&air_date.lte=${getDate().nextWeek}&air_date.gte=${getDate().today}&language=${metadataLanguage()}" to "On The Air Anime",
+        "$tmdbAPI/discover/movie?api_key=$apiKey&with_keywords=210024|222243&language=${metadataLanguage()}" to "Anime Movies",
+        "$tmdbAPI/movie/top_rated?api_key=$apiKey&region=US&language=${metadataLanguage()}" to "Top Rated Movies",
+        "$tmdbAPI/tv/top_rated?api_key=$apiKey&region=US&language=${metadataLanguage()}" to "Top Rated TV Shows",
+        "$tmdbAPI/discover/tv?api_key=$apiKey&with_original_language=ko&language=${metadataLanguage()}" to "Korean Shows",
+        "$tmdbAPI/discover/tv?api_key=$apiKey&with_genres=99&language=${metadataLanguage()}" to "Documentary",
     )
 
     private fun getImageUrl(link: String?): String? {
@@ -150,7 +158,7 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
 
     override suspend fun search(query: String, page: Int): SearchResponseList? {
         return app.get(
-            "$tmdbAPI/search/multi?api_key=$apiKey&language=en-US&query=$query&page=$page&include_adult=${settingsForProvider.enableAdult}"
+            "$tmdbAPI/search/multi?api_key=$apiKey&language=${metadataLanguage()}&query=$query&page=$page&include_adult=${settingsForProvider.enableAdult}"
         ).parsedSafe<Results>()?.results?.mapNotNull { media ->
             media.toSearchResponse()
         }?.toNewSearchResponseList()
@@ -161,9 +169,9 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
         val data = parseJson<Data>(url)
         val type = getType(data.type)
         val resUrl = if (type == TvType.Movie) {
-            "$tmdbAPI/movie/${data.id}?api_key=$apiKey&append_to_response=keywords,credits,external_ids,videos,recommendations"
+            "$tmdbAPI/movie/${data.id}?api_key=$apiKey&language=${metadataLanguage()}&append_to_response=keywords,credits,external_ids,videos,recommendations"
         } else {
-            "$tmdbAPI/tv/${data.id}?api_key=$apiKey&append_to_response=keywords,credits,external_ids,videos,recommendations"
+            "$tmdbAPI/tv/${data.id}?api_key=$apiKey&language=${metadataLanguage()}&append_to_response=keywords,credits,external_ids,videos,recommendations"
         }
         val res = app.get(resUrl).parsedSafe<MediaDetail>()
             ?: throw ErrorLoadingException("Invalid Json Response")
@@ -195,7 +203,7 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
 
         return if (type == TvType.TvSeries) {
             val episodes = res.seasons?.mapNotNull { season ->
-                app.get("$tmdbAPI/${data.type}/${data.id}/season/${season.seasonNumber}?api_key=$apiKey")
+                app.get("$tmdbAPI/${data.type}/${data.id}/season/${season.seasonNumber}?api_key=$apiKey&language=${metadataLanguage()}")
                     .parsedSafe<MediaDetailEpisodes>()?.episodes?.map { eps ->
                         newEpisode(LoadData(
                             res.title,
@@ -482,8 +490,11 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
             category = category,
             save_to_db = true
         )
-        return app.post(url, headers = headers, requestBody = request.toJson())
-            .parsedSafe<TorrServerTorrentStatus>()
+        return app.post(
+            url,
+            headers = headers,
+            requestBody = request.toJson().toRequestBody(RequestBodyTypes.JSON.toMediaTypeOrNull())
+        ).parsedSafe<TorrServerTorrentStatus>()
     }
 
     private fun toTorrServerLink(

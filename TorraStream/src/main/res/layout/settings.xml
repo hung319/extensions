@@ -90,7 +90,26 @@
             android:background="@android:drawable/btn_dropdown"
             android:padding="8dp"
             android:text="Select Languages"
-            android:focusable="true" />
+            android:focusable="true"
+            android:nextFocusDown="@id/metadata_language_spinner" />
+
+        <!-- Metadata Language -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Metadata Language"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:layout_marginTop="10dp" />
+
+        <Spinner
+            android:id="@+id/metadata_language_spinner"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@android:drawable/btn_dropdown"
+            android:focusable="true"
+            android:nextFocusUp="@id/language_spinner"
+            android:nextFocusDown="@id/quality_spinner" />
 
         <!-- Exclude Qualities -->
         <TextView
@@ -108,7 +127,7 @@
             android:background="@android:drawable/btn_dropdown"
             android:padding="8dp"
             android:focusable="true"
-            android:nextFocusUp="@id/language_spinner"
+            android:nextFocusUp="@id/metadata_language_spinner"
             android:nextFocusDown="@id/limit_input"
             android:text="Select Qualities"
             android:ellipsize="end"

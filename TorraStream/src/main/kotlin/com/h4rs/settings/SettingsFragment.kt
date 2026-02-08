@@ -12,15 +12,24 @@ import android.widget.*
 import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AlertDialog
 import androidx.core.content.edit
+import androidx.lifecycle.lifecycleScope
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import com.lagradost.cloudstream3.CommonActivity.showToast
+import com.lagradost.cloudstream3.app
 import com.h4rs.BuildConfig
 import com.h4rs.TorraStreamProvider
+import kotlinx.coroutines.launch
 
 class SettingsFragment(
     private val plugin: TorraStreamProvider,
     private val sharedPref: SharedPreferences
 ) : BottomSheetDialogFragment() {
+
+    private data class TmdbLanguage(
+        val iso_639_1: String?,
+        val english_name: String?,
+        val name: String?
+    )
 
     private val res: Resources = plugin.resources ?: throw Exception("Unable to read resources")
 
@@ -157,6 +166,55 @@ class SettingsFragment(
         }
         languageTextView.makeTvCompatible()
 
+        // ===== METADATA LANGUAGE =====
+        val metadataLanguageSpinner = root.findView<Spinner>("metadata_language_spinner")
+        val metadataLanguageOptions = mutableListOf<Pair<String, String>>()
+        val savedMetadataLanguage = sharedPref.getString("metadata_language", "en-US")?.trim().orEmpty()
+        val defaultCodes = listOf("en", "vi", "ja", "ko", "zh", "th", "id", "es", "fr", "de")
+        if (savedMetadataLanguage.isNotEmpty()) {
+            metadataLanguageOptions += savedMetadataLanguage to savedMetadataLanguage
+        }
+        defaultCodes.forEach { code ->
+            if (metadataLanguageOptions.none { it.first == code }) {
+                metadataLanguageOptions += code to code
+            }
+        }
+        val metadataAdapter = ArrayAdapter(
+            requireContext(),
+            android.R.layout.simple_spinner_item,
+            metadataLanguageOptions.map { it.second }
+        ).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+        metadataLanguageSpinner.adapter = metadataAdapter
+        val initialMetadataIndex = metadataLanguageOptions.indexOfFirst { it.first == savedMetadataLanguage }
+        if (initialMetadataIndex >= 0) metadataLanguageSpinner.setSelection(initialMetadataIndex)
+        viewLifecycleOwner.lifecycleScope.launch {
+            runCatching {
+                val tmdbApiKey = "1865f43a0549ca50d341dd9ab8b29f49"
+                val response = app.get("https://api.themoviedb.org/3/configuration/languages?api_key=$tmdbApiKey")
+                    .parsedSafe<List<TmdbLanguage>>()
+                    .orEmpty()
+                val mapped = response.mapNotNull { lang ->
+                    val code = lang.iso_639_1?.trim().orEmpty()
+                    if (code.isEmpty()) return@mapNotNull null
+                    val displayName = lang.english_name?.takeIf { it.isNotBlank() }
+                        ?: lang.name?.takeIf { it.isNotBlank() }
+                        ?: code
+                    val label = "$code - $displayName"
+                    code to label
+                }.distinctBy { it.first }.sortedBy { it.first }
+
+                if (mapped.isNotEmpty()) {
+                    metadataLanguageOptions.clear()
+                    metadataLanguageOptions.addAll(mapped)
+                    metadataAdapter.clear()
+                    metadataAdapter.addAll(metadataLanguageOptions.map { it.second })
+                    val idx = metadataLanguageOptions.indexOfFirst { it.first == savedMetadataLanguage }
+                    if (idx >= 0) metadataLanguageSpinner.setSelection(idx)
+                }
+            }
+        }
+        metadataLanguageSpinner.makeTvCompatible()
+
         // ===== QUALITY FILTER =====
         val qualityTextView = root.findView<TextView>("quality_spinner")
         val qualities = listOf(
@@ -268,6 +326,9 @@ class SettingsFragment(
             sharedPref.edit {
                 putString("provider", providers.filterIndexed { i, _ -> selectedProviders[i] }.joinToString(","))
                 putString("language", languages.filterIndexed { i, _ -> selectedLanguages[i] }.joinToString(","))
+                val selectedMetadataIndex = metadataLanguageSpinner.selectedItemPosition
+                val selectedMetadataCode = metadataLanguageOptions.getOrNull(selectedMetadataIndex)?.first ?: "en"
+                putString("metadata_language", selectedMetadataCode)
                 putString("qualityfilter", qualities.filterIndexed { i, _ -> selectedQualities[i] }.joinToString(","))
                 putString("sort", sortSpinner.selectedItem?.toString() ?: "")
                 val limitValue = limitInput.text?.toString()?.trim().orEmpty()
