@@ -24,7 +24,6 @@ private const val torboxAPI = TorraStream.TorboxAPI
 private fun buildApiUrl(
     sharedPref: SharedPreferences,
     apiBase: String,
-    useTorrserver: Boolean = sharedPref.getBoolean("use_torrserver", false),
 ): String {
     val sort = sharedPref.getString("sort", "qualitysize")
     val languageOption = sharedPref.getString("language", "")
@@ -43,11 +42,7 @@ private fun buildApiUrl(
     if (!sizeFilter.isNullOrEmpty()) params += "sizefilter=$sizeFilter"
     if (!linkLimit.isNullOrEmpty()) params += "link_limit=$linkLimit"
 
-    if (debridProvider == "TorBox" && useTorrserver) {
-        params += "torrserver=1"
-    }
-
-    if (!debridProvider.isNullOrEmpty() && !debridKey.isNullOrEmpty()) {
+    if (!debridProvider.isNullOrEmpty() && !debridKey.isNullOrEmpty() && debridProvider != "TorrServer") {
         params += "$debridProvider=$debridKey"
     }
 
@@ -643,8 +638,7 @@ suspend fun invokeDebianTorbox(
     episode: Int? = null,
     callback: (ExtractorLink) -> Unit
 ) {
-    val useTorrserver = torraStreamPrefs.getBoolean("use_torrserver", false)
-    val torboxUrl = buildApiUrl(torraStreamPrefs, torboxAPI, useTorrserver = useTorrserver)
+    val torboxUrl = buildApiUrl(torraStreamPrefs, torboxAPI)
     
     val url = if (season == null) {
         "$torboxUrl/stream/movie/$id.json"

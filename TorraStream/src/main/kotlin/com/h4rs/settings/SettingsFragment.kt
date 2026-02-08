@@ -214,18 +214,11 @@ class SettingsFragment(
         linkLimitInput.hint = "Maximum links to load per source (0 for unlimited)"
         linkLimitInput.makeTvCompatible()
 
-        val useTorrserverToggle = root.findView<CheckBox>("use_torrserver_checkbox")
-        useTorrserverToggle.text = "Use TorrServer with Debrid"
-        useTorrserverToggle.isChecked = sharedPref.getBoolean("use_torrserver", false)
-        useTorrserverToggle.setOnCheckedChangeListener { _, isChecked ->
-            sharedPref.edit().putBoolean("use_torrserver", isChecked).apply()
-        }
-
         // ===== DEBRID PROVIDERS =====
         val debridSpinner = root.findView<Spinner>("debrid_provider_spinner")
         val debridProviders = listOf(
             "None", "RealDebrid", "Premiumize", "AllDebrid", "DebridLink",
-            "EasyDebrid", "Offcloud", "TorBox", "Put.io", "AIO Streams"
+            "EasyDebrid", "Offcloud", "TorBox", "TorrServer", "Put.io", "AIO Streams"
         )
         debridSpinner.adapter =
             ArrayAdapter(requireContext(), android.R.layout.simple_spinner_item, debridProviders).also {
@@ -242,6 +235,31 @@ class SettingsFragment(
         debridKeyInput.setText(sharedPref.getString("debrid_key", ""))
         debridKeyInput.makeTvCompatible()
 
+        fun updateDebridKeyHint(provider: String) {
+            debridKeyInput.hint = if (provider == "TorrServer") {
+                "TorrServer URL (http://127.0.0.1:8090)"
+            } else {
+                "Debrid API key"
+            }
+        }
+
+        val initialProvider = debridSpinner.selectedItem?.toString().orEmpty()
+        updateDebridKeyHint(initialProvider)
+
+        debridSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(
+                parent: AdapterView<*>?,
+                view: View?,
+                position: Int,
+                id: Long
+            ) {
+                val selected = debridProviders.getOrNull(position).orEmpty()
+                updateDebridKeyHint(selected)
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
+
         // ===== SAVE =====
         val saveBtn = root.findView<ImageView>("save")
         saveBtn.setImageDrawable(getDrawable("save_icon"))
@@ -254,7 +272,8 @@ class SettingsFragment(
                 putString("sort", sortSpinner.selectedItem?.toString() ?: "")
                 putString("limit", limitInput.text.toString())
                 putString("sizefilter", sizeInput.text.toString())
-                putString("debrid_provider", debridSpinner.selectedItem?.toString() ?: "")
+                val selectedDebrid = debridSpinner.selectedItem?.toString() ?: ""
+                putString("debrid_provider", selectedDebrid)
                 putString("debrid_key", debridKeyInput.text.toString())
             }
 

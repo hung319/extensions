@@ -12,7 +12,6 @@ class TorraStreamProvider: Plugin() {
         val sharedPref = context.getSharedPreferences("TorraStream", Context.MODE_PRIVATE)
         torraStreamPrefs = sharedPref
         registerMainAPI(TorraStream(sharedPref))
-        registerMainAPI(TorraStreamAnime(sharedPref))
 
         openSettings = { ctx ->
             val activity = ctx as AppCompatActivity

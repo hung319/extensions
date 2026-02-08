@@ -33,6 +33,8 @@ import com.lagradost.cloudstream3.toNewSearchResponseList
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.INFER_TYPE
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -297,31 +299,41 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
 
         val apiUrl = buildApiUrl(sharedPref, mainUrl)
 
-        if (provider == "AIO Streams" && !key.isNullOrEmpty()) {
+        val hasKey = !key.isNullOrEmpty()
+        val isTorrServer = provider == "TorrServer"
+        val torrServerBaseUrl = if (isTorrServer) normalizeTorrServerBaseUrl(key) else null
+        val torrServerCategory = if (season == null) "movie" else "tv"
+        val linkCallback: (ExtractorLink) -> Unit = if (isTorrServer && torrServerBaseUrl != null) {
+            { link -> callback(toTorrServerLink(link, torrServerBaseUrl, title, torrServerCategory)) }
+        } else {
+            callback
+        }
+
+        if (provider == "AIO Streams" && hasKey) {
             runAllAsync(
                 { invokeAIOStreamsDebian(key, id, season, episode, callback) }
             )
         }
 
-        if (provider == "TorBox" && !key.isNullOrEmpty()) {
+        if (provider == "TorBox" && hasKey) {
             val torboxUrl = buildApiUrl(sharedPref, TorboxAPI)
             runAllAsync(
                 { invokeDebianTorbox(torboxUrl, key, id, season, episode, callback) }
             )
         }
 
-        if (!key.isNullOrEmpty()) {
+        if (hasKey && !isTorrServer) {
             runAllAsync(
                 { invokeTorrentioDebian(apiUrl, id, season, episode, callback) }
             )
         } else {
             runAllAsync(
-                { if (!dataObj.isAnime) invokeTorrentio(apiUrl, id, season, episode, callback) },
-                { if (!dataObj.isAnime) invokeThepiratebay(ThePirateBayApi, id, season, episode, callback) },
-                { if (dataObj.isAnime) invokeAnimetosho(anidbEid, callback) },
-                { if (dataObj.isAnime) invokeTorrentioAnime(TorrentioAnimeAPI, kitsuId, season, episode, callback) },
-                { if (!dataObj.isAnime) invokeUindex(Uindex, title, year, season, episode, callback) },
-                { invokeKnaben(Knaben, isAnime, title, year, season, episode, callback) },
+                { if (!dataObj.isAnime) invokeTorrentio(apiUrl, id, season, episode, linkCallback) },
+                { if (!dataObj.isAnime) invokeThepiratebay(ThePirateBayApi, id, season, episode, linkCallback) },
+                { if (dataObj.isAnime) invokeAnimetosho(anidbEid, linkCallback) },
+                { if (dataObj.isAnime) invokeTorrentioAnime(TorrentioAnimeAPI, kitsuId, season, episode, linkCallback) },
+                { if (!dataObj.isAnime) invokeUindex(Uindex, title, year, season, episode, linkCallback) },
+                { invokeKnaben(Knaben, isAnime, title, year, season, episode, linkCallback) },
                 { invokeSubtitleAPI(id, season, episode, subtitleCallback) }
             )
         }
@@ -383,7 +395,6 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
         val limit = sharedPref.getString("limit", "")
         val sizeFilter = sharedPref.getString("sizefilter", "")
         val linkLimit = sharedPref.getString("link_limit", "") // max links to load
-        val useTorrserver = sharedPref.getBoolean("use_torrserver", false) // use torrserver with debrid
         val debridProvider = sharedPref.getString("debrid_provider", "") // e.g., "easydebrid"
         val debridKey = sharedPref.getString("debrid_key", "") // e.g., "12345abc"
         
@@ -395,16 +406,68 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
         if (!sizeFilter.isNullOrEmpty()) params += "sizefilter=$sizeFilter"
         if (!linkLimit.isNullOrEmpty()) params += "link_limit=$linkLimit"
         
-        if (debridProvider == "TorBox" && useTorrserver) {
-            params += "torrserver=1"
-        }
-        
-        if (!debridProvider.isNullOrEmpty() && !debridKey.isNullOrEmpty()) {
+        if (!debridProvider.isNullOrEmpty() && !debridKey.isNullOrEmpty() && debridProvider != "TorrServer") {
             params += "$debridProvider=$debridKey"
         }
         
         val query = params.joinToString("%7C")
         return "$apiBase/$query"
+    }
+
+    private fun normalizeTorrServerBaseUrl(raw: String?): String {
+        val trimmed = raw?.trim().orEmpty()
+        val base = if (trimmed.isBlank()) {
+            "http://127.0.0.1:8090"
+        } else if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+            trimmed
+        } else {
+            "http://$trimmed"
+        }
+        return base.trimEnd('/')
+    }
+
+    private fun isTorrentLink(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        return url.startsWith("magnet:?", ignoreCase = true) || url.endsWith(".torrent", ignoreCase = true)
+    }
+
+    private fun buildTorrServerStreamUrl(
+        baseUrl: String,
+        link: String,
+        title: String?,
+        category: String?,
+    ): String {
+        val params = mutableListOf(
+            "link=${URLEncoder.encode(link, StandardCharsets.UTF_8.name())}",
+            "play=1",
+            "save=1",
+        )
+        if (!title.isNullOrBlank()) {
+            params += "title=${URLEncoder.encode(title, StandardCharsets.UTF_8.name())}"
+        }
+        if (!category.isNullOrBlank()) {
+            params += "category=${URLEncoder.encode(category, StandardCharsets.UTF_8.name())}"
+        }
+        return "${baseUrl.trimEnd('/')}/stream?${params.joinToString("&")}"
+    }
+
+    private fun toTorrServerLink(
+        link: ExtractorLink,
+        baseUrl: String,
+        title: String?,
+        category: String?,
+    ): ExtractorLink {
+        if (!isTorrentLink(link.url)) return link
+
+        val streamUrl = buildTorrServerStreamUrl(baseUrl, link.url, title, category)
+        return newExtractorLink(
+            "TorrServer",
+            link.name,
+            streamUrl,
+            INFER_TYPE
+        ).apply {
+            this.quality = link.quality
+        }
     }
 }
 

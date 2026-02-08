@@ -173,16 +173,6 @@
             android:padding="8dp"
             android:focusable="true"
             android:nextFocusUp="@id/size_filter_input"
-            android:nextFocusDown="@id/use_torrserver_checkbox" />
-
-        <CheckBox
-            android:id="@+id/use_torrserver_checkbox"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Use TorrServer with Debrid"
-            android:layout_marginTop="10dp"
-            android:focusable="true"
-            android:nextFocusUp="@id/link_limit_input"
             android:nextFocusDown="@id/debrid_provider_spinner" />
 
         <!-- Debrid Providers -->
@@ -200,7 +190,7 @@
             android:layout_height="wrap_content"
             android:background="@android:drawable/btn_dropdown"
             android:focusable="true"
-            android:nextFocusUp="@id/use_torrserver_checkbox"
+            android:nextFocusUp="@id/link_limit_input"
             android:nextFocusDown="@id/debrid_key_input" />
 
         <EditText
