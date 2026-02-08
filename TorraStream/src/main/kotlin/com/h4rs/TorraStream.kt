@@ -42,8 +42,6 @@ import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
-import okhttp3.MediaType.Companion.toMediaTypeOrNull
-import okhttp3.RequestBody.Companion.toRequestBody
 import java.text.SimpleDateFormat
 import java.util.Locale
 
@@ -459,42 +457,6 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
         return "${baseUrl.trimEnd('/')}/stream?${params.joinToString("&")}"
     }
 
-    private fun buildTorrServerPlayUrl(baseUrl: String, hash: String, fileId: Int): String {
-        return "${baseUrl.trimEnd('/')}/play/$hash/$fileId"
-    }
-
-    private fun pickTorrServerFileId(files: List<TorrServerFileStat>?): Int? {
-        val videoExtensions = setOf("mkv", "mp4", "avi", "webm", "mov", "flv", "ts", "m4v")
-        val candidates = files.orEmpty().filter { file ->
-            val path = file.path?.lowercase().orEmpty()
-            val ext = path.substringAfterLast('.', "")
-            file.id != null && ext in videoExtensions
-        }
-        val best = candidates.maxByOrNull { it.length ?: 0L } ?: files?.firstOrNull { it.id != null }
-        return best?.id
-    }
-
-    private suspend fun addTorrentToTorrServer(
-        baseUrl: String,
-        link: String,
-        title: String?,
-        category: String?,
-    ): TorrServerTorrentStatus? {
-        val url = "${baseUrl.trimEnd('/')}/torrents"
-        val headers = mapOf("Accept" to "application/json", "Content-Type" to "application/json")
-        val request = TorrServerTorrentsRequest(
-            action = "add",
-            link = link,
-            title = title,
-            category = category,
-            save_to_db = true
-        )
-        return app.post(
-            url,
-            headers = headers,
-            requestBody = request.toJson().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
-        ).parsedSafe<TorrServerTorrentStatus>()
-    }
 
     private fun toTorrServerLink(
         link: ExtractorLink,
@@ -504,16 +466,7 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
     ): ExtractorLink {
         if (!isTorrentLink(link.url)) return link
 
-        val streamUrl = runBlocking {
-            val status = addTorrentToTorrServer(baseUrl, link.url, title, category)
-            val hash = status?.hash
-            val fileId = pickTorrServerFileId(status?.file_stats)
-            if (!hash.isNullOrBlank() && fileId != null) {
-                buildTorrServerPlayUrl(baseUrl, hash, fileId)
-            } else {
-                buildTorrServerStreamUrl(baseUrl, link.url, title, category)
-            }
-        }
+        val streamUrl = buildTorrServerStreamUrl(baseUrl, link.url, title, category)
         return runBlocking {
             newExtractorLink(
                 "TorrServer",
@@ -526,24 +479,6 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
         }
     }
 
-    private data class TorrServerTorrentsRequest(
-        val action: String,
-        val link: String? = null,
-        val title: String? = null,
-        val category: String? = null,
-        val save_to_db: Boolean? = null,
-    )
-
-    private data class TorrServerTorrentStatus(
-        val hash: String? = null,
-        val file_stats: List<TorrServerFileStat>? = null,
-    )
-
-    private data class TorrServerFileStat(
-        val id: Int? = null,
-        val length: Long? = null,
-        val path: String? = null,
-    )
 }
 
 

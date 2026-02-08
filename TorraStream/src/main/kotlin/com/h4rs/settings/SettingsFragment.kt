@@ -12,24 +12,15 @@ import android.widget.*
 import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AlertDialog
 import androidx.core.content.edit
-import androidx.lifecycle.lifecycleScope
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import com.lagradost.cloudstream3.CommonActivity.showToast
-import com.lagradost.cloudstream3.app
 import com.h4rs.BuildConfig
 import com.h4rs.TorraStreamProvider
-import kotlinx.coroutines.launch
 
 class SettingsFragment(
     private val plugin: TorraStreamProvider,
     private val sharedPref: SharedPreferences
 ) : BottomSheetDialogFragment() {
-
-    private data class TmdbLanguage(
-        val iso_639_1: String?,
-        val english_name: String?,
-        val name: String?
-    )
 
     private val res: Resources = plugin.resources ?: throw Exception("Unable to read resources")
 
@@ -168,51 +159,204 @@ class SettingsFragment(
 
         // ===== METADATA LANGUAGE =====
         val metadataLanguageSpinner = root.findView<Spinner>("metadata_language_spinner")
-        val metadataLanguageOptions = mutableListOf<Pair<String, String>>()
-        val savedMetadataLanguage = sharedPref.getString("metadata_language", "en-US")?.trim().orEmpty()
-        val defaultCodes = listOf("en", "vi", "ja", "ko", "zh", "th", "id", "es", "fr", "de")
-        if (savedMetadataLanguage.isNotEmpty()) {
-            metadataLanguageOptions += savedMetadataLanguage to savedMetadataLanguage
-        }
-        defaultCodes.forEach { code ->
-            if (metadataLanguageOptions.none { it.first == code }) {
-                metadataLanguageOptions += code to code
-            }
-        }
+        val metadataLanguageOptions = listOf(
+            "aa" to "Afar",
+            "ab" to "Abkhazian",
+            "ae" to "Avestan",
+            "af" to "Afrikaans",
+            "ak" to "Akan",
+            "am" to "Amharic",
+            "an" to "Aragonese",
+            "ar" to "Arabic",
+            "as" to "Assamese",
+            "av" to "Avaric",
+            "ay" to "Aymara",
+            "az" to "Azerbaijani",
+            "ba" to "Bashkir",
+            "be" to "Belarusian",
+            "bg" to "Bulgarian",
+            "bi" to "Bislama",
+            "bm" to "Bambara",
+            "bn" to "Bengali",
+            "bo" to "Tibetan",
+            "br" to "Breton",
+            "bs" to "Bosnian",
+            "ca" to "Catalan",
+            "ce" to "Chechen",
+            "ch" to "Chamorro",
+            "cn" to "Cantonese",
+            "co" to "Corsican",
+            "cr" to "Cree",
+            "cs" to "Czech",
+            "cu" to "Slavic",
+            "cv" to "Chuvash",
+            "cy" to "Welsh",
+            "da" to "Danish",
+            "de" to "German",
+            "dv" to "Divehi",
+            "dz" to "Dzongkha",
+            "ee" to "Ewe",
+            "el" to "Greek",
+            "en" to "English",
+            "eo" to "Esperanto",
+            "es" to "Spanish",
+            "et" to "Estonian",
+            "eu" to "Basque",
+            "fa" to "Persian",
+            "ff" to "Fulah",
+            "fi" to "Finnish",
+            "fj" to "Fijian",
+            "fo" to "Faroese",
+            "fr" to "French",
+            "fy" to "Frisian",
+            "ga" to "Irish",
+            "gd" to "Gaelic",
+            "gl" to "Galician",
+            "gn" to "Guarani",
+            "gu" to "Gujarati",
+            "gv" to "Manx",
+            "ha" to "Hausa",
+            "he" to "Hebrew",
+            "hi" to "Hindi",
+            "ho" to "Hiri Motu",
+            "hr" to "Croatian",
+            "ht" to "Haitian; Haitian Creole",
+            "hu" to "Hungarian",
+            "hy" to "Armenian",
+            "hz" to "Herero",
+            "ia" to "Interlingua",
+            "id" to "Indonesian",
+            "ie" to "Interlingue",
+            "ig" to "Igbo",
+            "ii" to "Yi",
+            "ik" to "Inupiaq",
+            "io" to "Ido",
+            "is" to "Icelandic",
+            "it" to "Italian",
+            "iu" to "Inuktitut",
+            "ja" to "Japanese",
+            "jv" to "Javanese",
+            "ka" to "Georgian",
+            "kg" to "Kongo",
+            "ki" to "Kikuyu",
+            "kj" to "Kuanyama",
+            "kk" to "Kazakh",
+            "kl" to "Kalaallisut",
+            "km" to "Khmer",
+            "kn" to "Kannada",
+            "ko" to "Korean",
+            "kr" to "Kanuri",
+            "ks" to "Kashmiri",
+            "ku" to "Kurdish",
+            "kv" to "Komi",
+            "kw" to "Cornish",
+            "ky" to "Kirghiz",
+            "la" to "Latin",
+            "lb" to "Letzeburgesch",
+            "lg" to "Ganda",
+            "li" to "Limburgish",
+            "ln" to "Lingala",
+            "lo" to "Lao",
+            "lt" to "Lithuanian",
+            "lu" to "Luba-Katanga",
+            "lv" to "Latvian",
+            "mg" to "Malagasy",
+            "mh" to "Marshall",
+            "mi" to "Maori",
+            "mk" to "Macedonian",
+            "ml" to "Malayalam",
+            "mn" to "Mongolian",
+            "mo" to "Moldavian",
+            "mr" to "Marathi",
+            "ms" to "Malay",
+            "mt" to "Maltese",
+            "my" to "Burmese",
+            "na" to "Nauru",
+            "nb" to "Norwegian Bokmal",
+            "nd" to "Ndebele",
+            "ne" to "Nepali",
+            "ng" to "Ndonga",
+            "nl" to "Dutch",
+            "nn" to "Norwegian Nynorsk",
+            "no" to "Norwegian",
+            "nr" to "Ndebele",
+            "nv" to "Navajo",
+            "ny" to "Chichewa; Nyanja",
+            "oc" to "Occitan",
+            "oj" to "Ojibwa",
+            "om" to "Oromo",
+            "or" to "Oriya",
+            "os" to "Ossetian; Ossetic",
+            "pa" to "Punjabi",
+            "pi" to "Pali",
+            "pl" to "Polish",
+            "ps" to "Pushto",
+            "pt" to "Portuguese",
+            "qu" to "Quechua",
+            "rm" to "Raeto-Romance",
+            "rn" to "Rundi",
+            "ro" to "Romanian",
+            "ru" to "Russian",
+            "rw" to "Kinyarwanda",
+            "sa" to "Sanskrit",
+            "sc" to "Sardinian",
+            "sd" to "Sindhi",
+            "se" to "Northern Sami",
+            "sg" to "Sango",
+            "sh" to "Serbo-Croatian",
+            "si" to "Sinhalese",
+            "sk" to "Slovak",
+            "sl" to "Slovenian",
+            "sm" to "Samoan",
+            "sn" to "Shona",
+            "so" to "Somali",
+            "sq" to "Albanian",
+            "sr" to "Serbian",
+            "ss" to "Swati",
+            "st" to "Sotho",
+            "su" to "Sundanese",
+            "sv" to "Swedish",
+            "sw" to "Swahili",
+            "ta" to "Tamil",
+            "te" to "Telugu",
+            "tg" to "Tajik",
+            "th" to "Thai",
+            "ti" to "Tigrinya",
+            "tk" to "Turkmen",
+            "tl" to "Tagalog",
+            "tn" to "Tswana",
+            "to" to "Tonga",
+            "tr" to "Turkish",
+            "ts" to "Tsonga",
+            "tt" to "Tatar",
+            "tw" to "Twi",
+            "ty" to "Tahitian",
+            "ug" to "Uighur",
+            "uk" to "Ukrainian",
+            "ur" to "Urdu",
+            "uz" to "Uzbek",
+            "ve" to "Venda",
+            "vi" to "Vietnamese",
+            "vo" to "Volapuk",
+            "wa" to "Walloon",
+            "wo" to "Wolof",
+            "xh" to "Xhosa",
+            "xx" to "No Language",
+            "yi" to "Yiddish",
+            "yo" to "Yoruba",
+            "za" to "Zhuang",
+            "zh" to "Mandarin",
+            "zu" to "Zulu"
+        )
         val metadataAdapter = ArrayAdapter(
             requireContext(),
             android.R.layout.simple_spinner_item,
-            metadataLanguageOptions.map { it.second }
+            metadataLanguageOptions.map { "${it.first} - ${it.second}" }
         ).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
         metadataLanguageSpinner.adapter = metadataAdapter
+        val savedMetadataLanguage = sharedPref.getString("metadata_language", "en")?.trim().orEmpty()
         val initialMetadataIndex = metadataLanguageOptions.indexOfFirst { it.first == savedMetadataLanguage }
         if (initialMetadataIndex >= 0) metadataLanguageSpinner.setSelection(initialMetadataIndex)
-        viewLifecycleOwner.lifecycleScope.launch {
-            runCatching {
-                val tmdbApiKey = "1865f43a0549ca50d341dd9ab8b29f49"
-                val response = app.get("https://api.themoviedb.org/3/configuration/languages?api_key=$tmdbApiKey")
-                    .parsedSafe<List<TmdbLanguage>>()
-                    .orEmpty()
-                val mapped = response.mapNotNull { lang ->
-                    val code = lang.iso_639_1?.trim().orEmpty()
-                    if (code.isEmpty()) return@mapNotNull null
-                    val displayName = lang.english_name?.takeIf { it.isNotBlank() }
-                        ?: lang.name?.takeIf { it.isNotBlank() }
-                        ?: code
-                    val label = "$code - $displayName"
-                    code to label
-                }.distinctBy { it.first }.sortedBy { it.first }
-
-                if (mapped.isNotEmpty()) {
-                    metadataLanguageOptions.clear()
-                    metadataLanguageOptions.addAll(mapped)
-                    metadataAdapter.clear()
-                    metadataAdapter.addAll(metadataLanguageOptions.map { it.second })
-                    val idx = metadataLanguageOptions.indexOfFirst { it.first == savedMetadataLanguage }
-                    if (idx >= 0) metadataLanguageSpinner.setSelection(idx)
-                }
-            }
-        }
         metadataLanguageSpinner.makeTvCompatible()
 
         // ===== QUALITY FILTER =====
