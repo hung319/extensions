@@ -270,8 +270,15 @@ class SettingsFragment(
                 putString("language", languages.filterIndexed { i, _ -> selectedLanguages[i] }.joinToString(","))
                 putString("qualityfilter", qualities.filterIndexed { i, _ -> selectedQualities[i] }.joinToString(","))
                 putString("sort", sortSpinner.selectedItem?.toString() ?: "")
-                putString("limit", limitInput.text.toString())
+                val limitValue = limitInput.text?.toString()?.trim().orEmpty()
+                if (limitValue.isNotEmpty()) {
+                    putString("limit", limitValue)
+                }
                 putString("sizefilter", sizeInput.text.toString())
+                val linkLimitValue = linkLimitInput.text?.toString()?.trim().orEmpty()
+                if (linkLimitValue.isNotEmpty()) {
+                    putString("link_limit", linkLimitValue)
+                }
                 val selectedDebrid = debridSpinner.selectedItem?.toString() ?: ""
                 putString("debrid_provider", selectedDebrid)
                 putString("debrid_key", debridKeyInput.text.toString())
