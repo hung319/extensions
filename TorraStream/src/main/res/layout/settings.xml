@@ -174,11 +174,11 @@
             android:nextFocusUp="@id/limit_input"
             android:nextFocusDown="@id/link_limit_input" />
 
-        <!-- Link Limit per Source -->
+        <!-- Total Link Limit -->
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Link Limit per Source"
+            android:text="Total Link Limit"
             android:textSize="16sp"
             android:textStyle="bold"
             android:layout_marginTop="10dp" />

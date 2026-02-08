@@ -413,7 +413,7 @@ class SettingsFragment(
         // ===== LINK LIMIT =====
         val linkLimitInput = root.findView<EditText>("link_limit_input")
         linkLimitInput.setText(sharedPref.getString("link_limit", ""))
-        linkLimitInput.hint = "Maximum links to load per source (0 for unlimited)"
+        linkLimitInput.hint = "Maximum total links to load (0 for unlimited)"
         linkLimitInput.makeTvCompatible()
 
         // ===== DEBRID PROVIDERS =====

@@ -42,6 +42,7 @@ import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.atomic.AtomicInteger
 import java.text.SimpleDateFormat
 import java.util.Locale
 
@@ -304,33 +305,44 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
         }
 
         val apiUrl = buildApiUrl(sharedPref, mainUrl)
+        val totalLinkLimit = sharedPref.getString("link_limit", "")?.trim()?.toIntOrNull() ?: 0
+        val linkCounter = AtomicInteger(0)
+        val limitedCallback: (ExtractorLink) -> Unit = if (totalLinkLimit > 0) {
+            { link ->
+                if (linkCounter.incrementAndGet() <= totalLinkLimit) {
+                    callback(link)
+                }
+            }
+        } else {
+            callback
+        }
 
         val hasKey = !key.isNullOrEmpty()
         val isTorrServer = provider == "TorrServer"
         val torrServerBaseUrl = if (isTorrServer) normalizeTorrServerBaseUrl(key) else null
         val torrServerCategory = if (season == null) "movie" else "tv"
         val linkCallback: (ExtractorLink) -> Unit = if (isTorrServer && torrServerBaseUrl != null) {
-            { link -> callback(toTorrServerLink(link, torrServerBaseUrl, title, torrServerCategory)) }
+            { link -> limitedCallback(toTorrServerLink(link, torrServerBaseUrl, title, torrServerCategory)) }
         } else {
-            callback
+            limitedCallback
         }
 
         if (provider == "AIO Streams" && hasKey) {
             runAllAsync(
-                { invokeAIOStreamsDebian(key, id, season, episode, callback) }
+                { invokeAIOStreamsDebian(key, id, season, episode, limitedCallback) }
             )
         }
 
         if (provider == "TorBox" && hasKey) {
             val torboxUrl = buildApiUrl(sharedPref, TorboxAPI)
             runAllAsync(
-                { invokeDebianTorbox(torboxUrl, key, id, season, episode, callback) }
+                { invokeDebianTorbox(torboxUrl, key, id, season, episode, limitedCallback) }
             )
         }
 
         if (hasKey && !isTorrServer) {
             runAllAsync(
-                { invokeTorrentioDebian(apiUrl, id, season, episode, callback) }
+                { invokeTorrentioDebian(apiUrl, id, season, episode, limitedCallback) }
             )
         } else {
             runAllAsync(
