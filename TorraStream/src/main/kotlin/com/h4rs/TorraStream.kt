@@ -38,6 +38,7 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
@@ -460,13 +461,15 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
         if (!isTorrentLink(link.url)) return link
 
         val streamUrl = buildTorrServerStreamUrl(baseUrl, link.url, title, category)
-        return newExtractorLink(
-            "TorrServer",
-            link.name,
-            streamUrl,
-            INFER_TYPE
-        ).apply {
-            this.quality = link.quality
+        return runBlocking {
+            newExtractorLink(
+                "TorrServer",
+                link.name,
+                streamUrl,
+                INFER_TYPE
+            ).apply {
+                this.quality = link.quality
+            }
         }
     }
 }
