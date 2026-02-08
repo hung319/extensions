@@ -482,7 +482,8 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
             category = category,
             save_to_db = true
         )
-        return app.post(url, headers = headers, data = request).parsedSafe<TorrServerTorrentStatus>()
+        return app.post(url, headers = headers, requestBody = request.toJson())
+            .parsedSafe<TorrServerTorrentStatus>()
     }
 
     private fun toTorrServerLink(
