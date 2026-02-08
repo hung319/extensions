@@ -35,7 +35,6 @@ import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import com.lagradost.cloudstream3.utils.RequestBodyTypes
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -493,7 +492,7 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
         return app.post(
             url,
             headers = headers,
-            requestBody = request.toJson().toRequestBody(RequestBodyTypes.JSON.toMediaTypeOrNull())
+            requestBody = request.toJson().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
         ).parsedSafe<TorrServerTorrentStatus>()
     }
 
