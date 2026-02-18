@@ -620,6 +620,44 @@ suspend fun invokeSubSenseSubtitleAPI(
 private fun displaySubtitleLanguage(raw: String?): String {
     val trimmed = raw?.trim().orEmpty()
     if (trimmed.isBlank()) return "Unknown"
+    
+    val nativeToEnglishMap = mapOf(
+        "Tiếng Việt" to "Vietnamese",
+        "Tiếng Anh" to "English", 
+        "Tiếng Pháp" to "French",
+        "Tiếng Tây Ban Nha" to "Spanish",
+        "Tiếng Đức" to "German",
+        "Tiếng Nhật" to "Japanese",
+        "Tiếng Hàn" to "Korean",
+        "Tiếng Trung" to "Chinese",
+        "Português" to "Portuguese",
+        "Español" to "Spanish",
+        "Français" to "French",
+        "Deutsch" to "German",
+        "Italiano" to "Italian",
+        "Nederlands" to "Dutch",
+        "Русский" to "Russian",
+        "Polski" to "Polish",
+        "Čeština" to "Czech",
+        "Svenska" to "Swedish",
+        "Norsk" to "Norwegian",
+        "Dansk" to "Danish",
+        "Suomi" to "Finnish",
+        "Magyar" to "Hungarian",
+        "Română" to "Romanian",
+        "Türkçe" to "Turkish",
+        "Ελληνικά" to "Greek",
+        "العربية" to "Arabic",
+        "हिन्दी" to "Hindi",
+        "ภาษาไทย" to "Thai",
+        "Bahasa Indonesia" to "Indonesian"
+    )
+    
+    val nativeLanguageEnglishName = nativeToEnglishMap[trimmed]
+    if (nativeLanguageEnglishName != null) {
+        return nativeLanguageEnglishName
+    }
+    
     val lower = trimmed.lowercase()
     if (lower == "vi" || lower == "vie" || lower == "vietnamese" || lower == "vietnam") return "Vietnamese"
 
@@ -675,6 +713,7 @@ private fun matchesAllowedLanguage(rawLanguage: String?, allowed: Set<String>?):
     if (allowed == null || allowed.isEmpty()) return true
     val raw = rawLanguage?.trim().orEmpty()
     if (raw.isBlank()) return false
+    
     val normalized = normalizeLanguageTag(raw)
     val base = normalized.substringBefore("-")
     val display = displaySubtitleLanguage(raw).lowercase()
@@ -683,14 +722,51 @@ private fun matchesAllowedLanguage(rawLanguage: String?, allowed: Set<String>?):
     val matchesVietnamese = (normalized == "vie" && allowed.contains("vi"))
         || (normalized == "vi" && allowed.contains("vie"))
         || (display == "vietnamese" && allowed.contains("vi"))
+        || (raw.equals("Tiếng Việt", ignoreCase = true) && (allowed.contains("vi") || allowed.contains("vie") || allowed.contains("vietnamese")))
+        || (raw.equals("Vietnamese", ignoreCase = true) && allowed.contains("vi"))
 
     val normalizedAllowed = allowed.map { normalizeLanguageTag(it) }.toSet()
 
+    val nativeToCodeMap = mapOf(
+        "Tiếng Việt" to "vi",
+        "Tiếng Anh" to "en",
+        "Tiếng Pháp" to "fr",
+        "Tiếng Tây Ban Nha" to "es",
+        "Tiếng Đức" to "de",
+        "Tiếng Nhật" to "ja",
+        "Tiếng Hàn" to "ko",
+        "Tiếng Trung" to "zh",
+        "Português" to "pt",
+        "Español" to "es",
+        "Français" to "fr",
+        "Deutsch" to "de",
+        "Italiano" to "it",
+        "Nederlands" to "nl",
+        "Русский" to "ru",
+        "Polski" to "pl",
+        "Čeština" to "cs",
+        "Svenska" to "sv",
+        "Norsk" to "no",
+        "Dansk" to "da",
+        "Suomi" to "fi",
+        "Magyar" to "hu",
+        "Română" to "ro",
+        "Türkçe" to "tr",
+        "Ελληνικά" to "el",
+        "العربية" to "ar",
+        "हिन्दी" to "hi",
+        "ภาษาไทย" to "th",
+        "Bahasa Indonesia" to "id"
+    )
+    
+    val nativeCode = nativeToCodeMap[raw] ?: nativeToCodeMap[raw.split(" ", limit = 2).first()]
+    
     return matchesVietnamese
         || normalized in normalizedAllowed
         || base in normalizedAllowed
         || display in allowedDisplay
         || display in allowed
+        || (nativeCode != null && normalizeLanguageTag(nativeCode) in normalizedAllowed)
 }
 
 data class SubSenseResponse(
