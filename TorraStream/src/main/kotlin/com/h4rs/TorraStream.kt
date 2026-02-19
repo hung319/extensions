@@ -393,7 +393,7 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
                         { if (!dataObj.isAnime) invokeTorrentio(apiUrl, id, season, episode, linkCallback) },
                         { if (!dataObj.isAnime) invokeThepiratebay(ThePirateBayApi, id, season, episode, linkCallback) },
                         { if (dataObj.isAnime) invokeAnimetosho(anidbEid, linkCallback) },
-                        { if (dataObj.isAnime) invokeTorrentioAnime(TorrentioAnimeAPI, kitsuId, season, episode, linkCallback) },
+                        { if (dataObj.isAnime) invokeTorrentioAnime(TorrentioAnimeAPI, if (season != null) TvType.TvSeries else TvType.Movie, kitsuId, episode, linkCallback) },
                         { if (!dataObj.isAnime) invokeUindex(Uindex, title, year, season, episode, linkCallback) },
                         { invokeKnaben(Knaben, isAnime, title, year, season, episode, linkCallback) }
                     )

@@ -481,9 +481,8 @@ suspend fun invoke1337x(
                     this.referer = ""
                     this.quality = quality
                 }
-            )
-        }
-}
+     }
+ }
 
 
 suspend fun invokeMediaFusion(
