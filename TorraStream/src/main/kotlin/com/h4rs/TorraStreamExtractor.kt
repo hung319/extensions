@@ -148,9 +148,10 @@ private fun shouldIncludeStreamByLanguage(streamText: String?): Boolean {
             foundLanguageIndicators = true
             if (code in selectedLanguages || indicator.lowercase() in selectedLanguages) {
                 return true
-            }
-        }
-    }
+                 }
+             }
+         }
+     }
     
     return !foundLanguageIndicators
 }
@@ -1335,8 +1336,6 @@ suspend fun invokeTorboxAnimeDebian(
                 this.referer = ""
                 this.quality = getIndexQuality(stream.name)
             }
-        )
-    }
-        )
-    }
+         )
+     }
 }
