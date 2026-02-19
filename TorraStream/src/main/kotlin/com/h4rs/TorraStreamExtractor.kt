@@ -148,10 +148,9 @@ private fun shouldIncludeStreamByLanguage(streamText: String?): Boolean {
             foundLanguageIndicators = true
             if (code in selectedLanguages || indicator.lowercase() in selectedLanguages) {
                 return true
-                 }
-             }
-         }
-     }
+            }
+        }
+    }
     
     return !foundLanguageIndicators
 }
@@ -451,39 +450,40 @@ suspend fun invoke1337x(
 ) {
     val doc = app.get("$OnethreethreesevenxAPI/category-search/${title?.replace(" ", "+")}+$year/Movies/1/").document
 
-        doc.select("tbody > tr > td a:nth-child(2)").forEach { element ->
-            val iframe = OnethreethreesevenxAPI + element.attr("href")
-            val pageDoc = app.get(iframe).document
+    doc.select("tbody > tr > td a:nth-child(2)").forEach { element ->
+        val iframe = OnethreethreesevenxAPI + element.attr("href")
+        val pageDoc = app.get(iframe).document
 
-            val magnet = pageDoc.select("#openPopup").attr("href").trim()
-            val qualityRaw = pageDoc.select("div.box-info ul.list li:contains(Type) span").text()
-            val quality = getQuality(qualityRaw)
+        val magnet = pageDoc.select("#openPopup").attr("href").trim()
+        val qualityRaw = pageDoc.select("div.box-info ul.list li:contains(Type) span").text()
+        val quality = getQuality(qualityRaw)
 
-            val size = pageDoc.select("div.box-info ul.list li:contains(Total size) span").text()
-            val language = pageDoc.select("div.box-info ul.list li:contains(Language) span").text()
-            val seeders = pageDoc.select("div.box-info ul.list li:contains(Seeders) span.seeds").text()
+        val size = pageDoc.select("div.box-info ul.list li:contains(Total size) span").text()
+        val language = pageDoc.select("div.box-info ul.list li:contains(Language) span").text()
+        val seeders = pageDoc.select("div.box-info ul.list li:contains(Seeders) span.seeds").text()
 
-            val displayName = buildString {
-                append("Torrent1337x $qualityRaw")
-                if (size.isNotBlank()) append(" | Size: $size")
-                if (language.isNotBlank()) append(" | Lang: $language")
-                if (seeders.isNotBlank()) append(" | 🟢$seeders")
+        val displayName = buildString {
+            append("Torrent1337x $qualityRaw")
+            if (size.isNotBlank()) append(" | Size: $size")
+            if (language.isNotBlank()) append(" | Lang: $language")
+            if (seeders.isNotBlank()) append(" | 🟢$seeders")
+        }
+        
+        if (!shouldIncludeStreamByLanguage(displayName)) return@forEach
+
+        callback.invoke(
+            newExtractorLink(
+                "Torrent1337x",
+                displayName,
+                url = magnet,
+                INFER_TYPE
+            ) {
+                this.referer = ""
+                this.quality = quality
             }
-            
-            if (!shouldIncludeStreamByLanguage(displayName)) return@forEach
-
-            callback.invoke(
-                newExtractorLink(
-                    "Torrent1337x",
-                    displayName,
-                    url = magnet,
-                    INFER_TYPE
-                ) {
-                    this.referer = ""
-                    this.quality = quality
-                }
-     }
- }
+        )
+    }
+}
 
 
 suspend fun invokeMediaFusion(
