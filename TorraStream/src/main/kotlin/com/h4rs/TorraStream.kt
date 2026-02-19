@@ -46,6 +46,7 @@ import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.atomic.AtomicInteger
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Locale
 
 class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
@@ -95,6 +96,22 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
                 else -> ShowStatus.Completed
             }
         }
+        
+        fun getEpisodeCount(title: String): Int = 0
+    }
+
+    private fun getDate(): TmdbDate {
+        val today = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(System.currentTimeMillis())
+        val cal = Calendar.getInstance()
+        cal.add(Calendar.YEAR, -1)
+        val yearAgo = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(cal.time)
+        return TmdbDate(
+            today = today,
+            nextWeek = "",
+            lastWeekStart = "",
+            monthStart = "",
+            yearAgo = yearAgo
+        )
     }
 
     override val mainPage = mainPageOf(
@@ -103,6 +120,8 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
         "$tmdbAPI/trending/tv/week?api_key=$apiKey&region=US&with_original_language=en&language=${metadataLanguage()}" to "Popular TV Shows",
         "$tmdbAPI/discover/tv?api_key=$apiKey&with_keywords=210024|222243&sort_by=popularity.desc&air_date.lte=${getDate().today}&air_date.gte=${getDate().today}&language=${metadataLanguage()}" to "Airing Today Anime",
         "$tmdbAPI/discover/movie?api_key=$apiKey&with_keywords=210024|222243&language=${metadataLanguage()}" to "Anime Movies",
+        "$tmdbAPI/discover/tv?api_key=$apiKey&with_keywords=210024|222243&sort_by=popularity.desc&air_date.lte=${getDate().today}&language=${metadataLanguage()}" to "Popular Anime",
+        "$tmdbAPI/discover/tv?api_key=$apiKey&with_keywords=210024|222243&first_air_date.lte=${getDate().today}&first_air_date.gte=${getDate().yearAgo}&sort_by=first_air_date.desc&language=${metadataLanguage()}" to "New Anime",
     )
 
     private fun getImageUrl(link: String?): String? {
@@ -129,13 +148,16 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
     }
 
     private fun Media.toSearchResponse(type: String? = null): SearchResponse? {
+        val mediaType = mediaType ?: type
+        val title = title ?: name ?: originalTitle ?: return null
+        
         return newMovieSearchResponse(
-            title ?: name ?: originalTitle ?: return null,
-            Data(id = id, type = mediaType ?: type).toJson(),
-            TvType.Movie,
+            title,
+            Data(id = id, type = mediaType).toJson(),
+            if (mediaType == "tv") TvType.TvSeries else TvType.Movie,
         ) {
             this.posterUrl = getImageUrl(posterPath)
-            this.score= Score.from10(voteAverage)
+            this.score = Score.from10(voteAverage)
         }
     }
 
@@ -172,47 +194,77 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
         val keywords = res.keywords?.results?.mapNotNull { it.name }.orEmpty()
             .ifEmpty { res.keywords?.keywords?.mapNotNull { it.name } }
 
-        val actors = res.credits?.cast?.mapNotNull { cast ->
-            ActorData(
-                Actor(
-                    cast.name ?: cast.originalName ?: return@mapNotNull null,
-                    getImageUrl(cast.profilePath)
-                ), roleString = cast.character
-            )
-        } ?: return null
+        val actors = try {
+            res.credits?.cast?.mapNotNull { cast ->
+                runCatching {
+                    ActorData(
+                        Actor(
+                            cast.name ?: cast.originalName ?: return@mapNotNull null,
+                            getImageUrl(cast.profilePath)
+                        ), roleString = cast.character
+                    )
+                }.getOrNull()
+            }?.filterNotNull()
+        } catch (e: Exception) {
+            logError(e)
+            null
+        }
         val recommendationType = if (type == TvType.Movie) "movie" else "tv"
-        val recommendations =
-            res.recommendations?.results?.mapNotNull { media -> media.toSearchResponse(recommendationType) }
+        val recommendations = runCatching {
+            res.recommendations?.results?.mapNotNull { media -> 
+                runCatching {
+                    media.toSearchResponse(recommendationType)
+                }.getOrNull()
+            }
+        }.getOrNull()
 
-        val trailer =
+        val trailer = try {
             res.videos?.results?.map { "https://www.youtube.com/watch?v=${it.key}" }?.randomOrNull()
+        } catch (e: Exception) {
+            logError(e)
+            null
+        }
 
         return if (type == TvType.TvSeries) {
-            val episodes = res.seasons?.mapNotNull { season ->
-                app.get("$tmdbAPI/${data.type}/${data.id}/season/${season.seasonNumber}?api_key=$apiKey&language=${metadataLanguage()}")
-                    .parsedSafe<MediaDetailEpisodes>()?.episodes?.map { eps ->
-                        newEpisode(LoadData(
-                            res.title,
-                            year,
-                            isAnime,
-                            res.external_ids?.imdb_id,
-                            eps.seasonNumber,
-                            eps.episodeNumber
-                        ).toJson())
-                        {
-                            this.name = eps.name + if (isUpcoming(eps.airDate)) " • [UPCOMING]" else ""
-                            this.season = eps.seasonNumber
-                            this.episode = eps.episodeNumber
-                            this.posterUrl = getImageUrl(eps.stillPath)
-                            this.score = Score.from10(eps.voteAverage)
-                            this.description = eps.overview
-                            this.addDate(eps.airDate)
-                        }
-                    }
-            }?.flatten() ?: listOf()
+            val episodes = try {
+                res.seasons?.mapNotNull { season ->
+                    runCatching {
+                        app.get("$tmdbAPI/${data.type}/${data.id}/season/${season.seasonNumber}?api_key=$apiKey&language=${metadataLanguage()}")
+                            .parsedSafe<MediaDetailEpisodes>()?.episodes?.map { eps ->
+                                newEpisode(LoadData(
+                                    res.title,
+                                    year,
+                                    isAnime,
+                                    res.external_ids?.imdb_id,
+                                    eps.seasonNumber,
+                                    eps.episodeNumber
+                                ).toJson())
+                                {
+                                    this.name = eps.name + if (isUpcoming(eps.airDate)) " • [UPCOMING]" else ""
+                                    this.season = eps.seasonNumber
+                                    this.episode = eps.episodeNumber
+                                    this.posterUrl = getImageUrl(eps.stillPath)
+                                    this.score = Score.from10(eps.voteAverage)
+                                    this.description = eps.overview
+                                    this.addDate(eps.airDate)
+                                }
+                            }
+                    }.getOrNull()
+                }?.flatten() ?: listOf()
+            } catch (e: Exception) {
+                logError(e)
+                listOf()
+            }
+
+            val totalEpisodes = episodes.size
+            val displayedTitle = if (totalEpisodes > 0) {
+                "$title ($totalEpisodes bộ)"
+            } else {
+                title
+            }
 
             newTvSeriesLoadResponse(
-                title, url, if (isAnime) TvType.Anime else TvType.TvSeries, episodes
+                displayedTitle, url, if (isAnime) TvType.Anime else TvType.TvSeries, episodes
             ) {
                 this.posterUrl = poster
                 this.backgroundPosterUrl = bgPoster
@@ -259,6 +311,7 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        torraStreamPrefs = sharedPref
         val provider = sharedPref.getString("debrid_provider", null)
         val key = sharedPref.getString("debrid_key", null)
         val useTorrServerFork = sharedPref.getBoolean("torrserver_use_fork", false)

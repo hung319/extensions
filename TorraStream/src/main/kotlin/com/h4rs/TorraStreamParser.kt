@@ -372,5 +372,6 @@ data class TmdbDate(
     val today: String,
     val nextWeek: String,
     val lastWeekStart: String,
-    val monthStart: String
+    val monthStart: String,
+    val yearAgo: String
 )
