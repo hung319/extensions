@@ -49,6 +49,112 @@ private fun seedersFromText(text: String?): Int {
     return trailingNumber?.toIntOrNull() ?: 0
 }
 
+private fun shouldIncludeStreamByLanguage(streamText: String?): Boolean {
+    val languagePref = torraStreamPrefs.getString("language", "")?.trim().orEmpty()
+    if (languagePref.isEmpty()) return true
+    
+    val selectedLanguages = languagePref.split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+    if (selectedLanguages.isEmpty()) return true
+    
+    val streamTextLower = streamText?.lowercase().orEmpty()
+    
+    val languageIndicators = mapOf(
+        "french" to "fr",
+        "français" to "fr",
+        "fr" to "fr",
+        "spanish" to "es", 
+        "español" to "es",
+        "esp" to "es",
+        "es" to "es",
+        "german" to "de",
+        "deutsch" to "de",
+        "de" to "de",
+        "italian" to "it",
+        "italiano" to "it",
+        "it" to "it",
+        "portuguese" to "pt",
+        "português" to "pt",
+        "pt" to "pt",
+        "russian" to "ru",
+        "русский" to "ru",
+        "ru" to "ru",
+        "japanese" to "ja",
+        "日本語" to "ja",
+        "ja" to "ja",
+        "korean" to "ko",
+        "한국어" to "ko",
+        "ko" to "ko",
+        "chinese" to "zh",
+        "中文" to "zh",
+        "中文(简体)" to "zh",
+        "zh" to "zh",
+        "vietnamese" to "vi",
+        "tiếng việt" to "vi",
+        "viet" to "vi", 
+        "vi" to "vi",
+        "dutch" to "nl",
+        "nederlands" to "nl",
+        "nl" to "nl",
+        "arabic" to "ar",
+        "العربية" to "ar",
+        "ar" to "ar",
+        "hindi" to "hi",
+        "हिन्दी" to "hi",
+        "hi" to "hi",
+        "thai" to "th",
+        "ภาษาไทย" to "th",
+        "th" to "th",
+        "indonesian" to "id",
+        "bahasa indonesia" to "id",
+        "id" to "id",
+        "turkish" to "tr",
+        "türkçe" to "tr",
+        "tr" to "tr",
+        "polish" to "pl",
+        "polski" to "pl",
+        "pl" to "pl",
+        "czech" to "cs",
+        "čeština" to "cs",
+        "cs" to "cs",
+        "swedish" to "sv",
+        "svenska" to "sv",
+        "sv" to "sv",
+        "norwegian" to "no",
+        "norsk" to "no",
+        "no" to "no",
+        "danish" to "da",
+        "dansk" to "da",
+        "da" to "da",
+        "finnish" to "fi",
+        "suomi" to "fi",
+        "fi" to "fi",
+        "greek" to "el",
+        "ελληνικά" to "el",
+        "el" to "el",
+        "hebrew" to "he",
+        "עברית" to "he",
+        "he" to "he",
+        "hungarian" to "hu",
+        "magyar" to "hu",
+        "hu" to "hu",
+        "romanian" to "ro",
+        "română" to "ro",
+        "ro" to "ro"
+    )
+    
+    var foundLanguageIndicators = false
+    for ((indicator, code) in languageIndicators) {
+        if (indicator in streamTextLower) {
+            foundLanguageIndicators = true
+            if (code in selectedLanguages || indicator.lowercase() in selectedLanguages) {
+                return true
+            }
+        }
+    }
+    
+    return !foundLanguageIndicators
+}
+
 private fun <T> sortByQualityThenSeeders(
     items: List<T>,
     textSelector: (T) -> String?
@@ -59,6 +165,7 @@ private fun <T> sortByQualityThenSeeders(
             .thenByDescending { seedersFromText(textSelector(it)) }
     )
 }
+
 
 private fun buildApiUrl(
     sharedPref: SharedPreferences,
@@ -123,6 +230,8 @@ suspend fun invokeTorrentio(
         val res = app.get(url, headers = headers, timeout = 100L).parsedSafe<TorrentioResponse>()
     val streams = sortByQualityThenSeeders(res?.streams.orEmpty()) { it.title ?: it.name }
     streams.forEach { stream ->
+        if (!shouldIncludeStreamByLanguage(stream.title ?: stream.name)) return@forEach
+        
         val formattedTitleName = stream.title
             ?.let { title ->
                 val qualityTermsRegex = "(2160p|1080p|720p|WEBRip|WEB-DL|x265|x264|10bit|HEVC|H264)".toRegex(RegexOption.IGNORE_CASE)
@@ -181,6 +290,8 @@ suspend fun invokeTorrentioDebian(
     val res = app.get(url).parsedSafe<DebianRoot>()
     val streams = sortByQualityThenSeeders(res?.streams.orEmpty()) { it.title }
     streams.forEach { stream ->
+        if (!shouldIncludeStreamByLanguage(stream.title)) return@forEach
+        
         val fileUrl = stream.url
 
         val size = Regex("""(\d+(?:[.,]\d+)?)\s*(GB|MB)""", RegexOption.IGNORE_CASE)
@@ -235,6 +346,8 @@ suspend fun invokeTorrentioAnimeDebian(
     val res = app.get(url).parsedSafe<DebianRoot>()
     val streams = sortByQualityThenSeeders(res?.streams.orEmpty()) { it.title }
     streams.forEach { stream ->
+        if (!shouldIncludeStreamByLanguage(stream.title)) return@forEach
+        
         val fileUrl = stream.url
 
         val size = Regex("""(\d+(?:[.,]\d+)?)\s*(GB|MB)""", RegexOption.IGNORE_CASE)
@@ -293,6 +406,8 @@ suspend fun invokeTorrentioAnime(
     val res = app.get(url, headers = headers, timeout = 100L).parsedSafe<TorrentioResponse>()
     val streams = sortByQualityThenSeeders(res?.streams.orEmpty()) { it.title ?: it.name }
     streams.forEach { stream ->
+        if (!shouldIncludeStreamByLanguage(stream.title ?: stream.name)) return@forEach
+        
         val formattedTitleName = stream.title
             ?.let { title ->
                 val qualityTermsRegex = "(2160p|1080p|720p|WEBRip|WEB-DL|x265|x264|10bit|HEVC|H264)".toRegex(RegexOption.IGNORE_CASE)
@@ -335,37 +450,39 @@ suspend fun invoke1337x(
 ) {
     val doc = app.get("$OnethreethreesevenxAPI/category-search/${title?.replace(" ", "+")}+$year/Movies/1/").document
 
-    doc.select("tbody > tr > td a:nth-child(2)").forEach { element ->
-        val iframe = OnethreethreesevenxAPI + element.attr("href")
-        val pageDoc = app.get(iframe).document
+        doc.select("tbody > tr > td a:nth-child(2)").forEach { element ->
+            val iframe = OnethreethreesevenxAPI + element.attr("href")
+            val pageDoc = app.get(iframe).document
 
-        val magnet = pageDoc.select("#openPopup").attr("href").trim()
-        val qualityRaw = pageDoc.select("div.box-info ul.list li:contains(Type) span").text()
-        val quality = getQuality(qualityRaw)
+            val magnet = pageDoc.select("#openPopup").attr("href").trim()
+            val qualityRaw = pageDoc.select("div.box-info ul.list li:contains(Type) span").text()
+            val quality = getQuality(qualityRaw)
 
-        val size = pageDoc.select("div.box-info ul.list li:contains(Total size) span").text()
-        val language = pageDoc.select("div.box-info ul.list li:contains(Language) span").text()
-        val seeders = pageDoc.select("div.box-info ul.list li:contains(Seeders) span.seeds").text()
+            val size = pageDoc.select("div.box-info ul.list li:contains(Total size) span").text()
+            val language = pageDoc.select("div.box-info ul.list li:contains(Language) span").text()
+            val seeders = pageDoc.select("div.box-info ul.list li:contains(Seeders) span.seeds").text()
 
-        val displayName = buildString {
-            append("Torrent1337x $qualityRaw")
-            if (size.isNotBlank()) append(" | Size: $size")
-            if (language.isNotBlank()) append(" | Lang: $language")
-            if (seeders.isNotBlank()) append(" | 🟢$seeders")
-        }
-
-        callback.invoke(
-            newExtractorLink(
-                "Torrent1337x",
-                displayName,
-                url = magnet,
-                INFER_TYPE
-            ) {
-                this.referer = ""
-                this.quality = quality
+            val displayName = buildString {
+                append("Torrent1337x $qualityRaw")
+                if (size.isNotBlank()) append(" | Size: $size")
+                if (language.isNotBlank()) append(" | Lang: $language")
+                if (seeders.isNotBlank()) append(" | 🟢$seeders")
             }
-        )
-    }
+            
+            if (!shouldIncludeStreamByLanguage(displayName)) return@forEach
+
+            callback.invoke(
+                newExtractorLink(
+                    "Torrent1337x",
+                    displayName,
+                    url = magnet,
+                    INFER_TYPE
+                ) {
+                    this.referer = ""
+                    this.quality = quality
+                }
+            )
+        }
 }
 
 
@@ -386,6 +503,8 @@ suspend fun invokeMediaFusion(
         val res = app.get(url, timeout = 10).parsedSafe<MediafusionResponse>()
         for(stream in res?.streams!!)
         {
+            if (!shouldIncludeStreamByLanguage(stream.description)) continue
+            
             val magnetLink = generateMagnetLink(TRACKER_LIST_URL,stream.infoHash).trim()
             val qualityFromName = getIndexQuality(stream.name)
 
@@ -421,6 +540,8 @@ suspend fun invokeThepiratebay(
         val res = app.get(url, timeout = 10).parsedSafe<TBPResponse>()
         for(stream in res?.streams!!)
         {
+            if (!shouldIncludeStreamByLanguage(stream.title)) continue
+            
             val magnetLink = generateMagnetLink(TRACKER_LIST_URL,stream.infoHash).trim()
             callback.invoke(
                 newExtractorLink(
@@ -452,6 +573,8 @@ suspend fun invokePeerFlix(
         }
         val res = app.get(url, timeout = 10).parsedSafe<PeerflixResponse>()
         for (stream in res?.streams!!) {
+            if (!shouldIncludeStreamByLanguage(stream.name)) continue
+            
             val magnetLink = generateMagnetLink(TRACKER_LIST_URL,stream.infoHash).trim()
             callback.invoke(
                 newExtractorLink(
@@ -513,6 +636,8 @@ suspend fun invokeComet(
                     if (!provider.isNullOrEmpty()) append(" | Provider: $provider")
                 }
             }
+            
+            if (!shouldIncludeStreamByLanguage(formattedTitleName)) continue
 
             val magnetLink = generateMagnetLink(TRACKER_LIST_URL,stream.infoHash)
             callback.invoke(
@@ -790,6 +915,8 @@ suspend fun invokeAnimetosho(
     val jsonResponse = app.get(url).toString()
     val parsedList = Gson().fromJson(jsonResponse, Array<AnimetoshoItem>::class.java)?.toList() ?: emptyList()
     parsedList.sortedByDescending { it.seeders }.forEach { item ->
+        if (!shouldIncludeStreamByLanguage(item.torrentName)) return@forEach
+        
         item.magnetUri.let { magnet ->
             val formattedTitleName = item.torrentName
                 .let { title ->
@@ -814,60 +941,7 @@ suspend fun invokeAnimetosho(
     }
 }
 
-suspend fun invokeTorrentioAnime(
-    mainUrl:String,
-    id: Int? = null,
-    season: Int? = null,
-    episode: Int? = null,
-    callback: (ExtractorLink) -> Unit
-) {
 
-    val torrentioAPI:String = mainUrl
-    val url = if(season == null) {
-        "$torrentioAPI/stream/movie/kitsu:$id.json"
-    }
-    else {
-        "$torrentioAPI/stream/series/kitsu:$id:$episode.json"
-    }
-    val headers = mapOf(
-        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "User-Agent" to "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    )
-    val res = app.get(url, headers = headers, timeout = 100L).parsedSafe<TorrentioResponse>()
-    res?.streams?.forEach { stream ->
-        val magnet = generateMagnetLink(TRACKER_LIST_URL, stream.infoHash)
-        val formattedTitleName = stream.title
-            ?.let { title ->
-                val tags = "\\[(.*?)]".toRegex().findAll(title)
-                    .map { match -> "[${match.groupValues[1]}]" }
-                    .joinToString(" | ")
-                val seeder = "👤\\s*(\\d+)".toRegex().find(title)?.groupValues?.get(1) ?: "0"
-                val provider = "⚙️\\s*([^\\\\]+)".toRegex().find(title)?.groupValues?.get(1)?.trim() ?: "Unknown"
-                val size = "💾\\s*([^\\n]+)".toRegex().find(title)?.groupValues?.get(1)?.trim() ?: ""
-
-                val parts = listOfNotNull(
-                    if (tags.isNotBlank()) tags else null,
-                    if (size.isNotBlank()) "Size: $size" else null,
-                    "Seeder: $seeder",
-                    if (provider != "Unknown") "Provider: $provider" else null
-                )
-
-                "Torrentio | ${parts.joinToString(" | ")}".trim()
-            }
-
-        callback.invoke(
-            newExtractorLink(
-                "Torrentio ",
-                formattedTitleName ?: "Torrentio",
-                url = magnet,
-                INFER_TYPE
-            ) {
-                this.referer = ""
-                this.quality = getIndexQuality(stream.name)
-            }
-        )
-    }
-}
 
 suspend fun invokeAIOStreamsDebian(
     mainUrl:String,
@@ -882,14 +956,16 @@ suspend fun invokeAIOStreamsDebian(
     } else {
         "${apiUrl}/stream/series/$id:$season:$episode.json"
     }
-    app.get(mainurl).parsedSafe<AIODebian>()?.streams?.map {
+    app.get(mainurl).parsedSafe<AIODebian>()?.streams?.filter { stream ->
+        shouldIncludeStreamByLanguage(stream.name)
+    }?.map { stream ->
         val qualityRegex = Regex("""\b(4K|2160p|1080p|720p|WEB[-\s]?DL|BluRay|HDRip|DVDRip)\b""", RegexOption.IGNORE_CASE)
-        val qualityMatch = qualityRegex.find(it.name)?.value ?: "Unknown"
+        val qualityMatch = qualityRegex.find(stream.name)?.value ?: "Unknown"
         callback.invoke(
             newExtractorLink(
                 "Torrentio AIO Debian ${getIndexQuality(qualityMatch)}",
-                it.behaviorHints.filename,
-                it.url,
+                stream.behaviorHints.filename,
+                stream.url,
                 INFER_TYPE
             ) {
                 this.referer = ""
@@ -913,16 +989,18 @@ suspend fun invokeAIOStreams(
     }
     val json= app.get(mainurl).toString()
     val magnetLink = parseStreamsToMagnetLinks(json)
-    magnetLink.forEach {
+    magnetLink.forEach { stream ->
+        if (!shouldIncludeStreamByLanguage(stream.title)) return@forEach
+        
         callback.invoke(
             newExtractorLink(
-                "Torrentio AIO ${it.title}",
-                it.title,
-                it.magnet,
+                "Torrentio AIO ${stream.title}",
+                stream.title,
+                stream.magnet,
                 INFER_TYPE
             ) {
                 this.referer = ""
-                this.quality = getIndexQuality(it.quality)
+                this.quality = getIndexQuality(stream.quality)
             }
         )
     }
@@ -947,6 +1025,8 @@ suspend fun invokeDebianTorbox(
     val response = app.get(url, timeout = 10_000).parsedSafe<TorBoxDebian>() ?: return
     
     response.streams.forEach { stream ->
+        if (!shouldIncludeStreamByLanguage(stream.name)) return@forEach
+        
         val resolution = extractResolutionFromDescription(stream.description)
         
         val sourceName = stream.name
@@ -1056,6 +1136,8 @@ suspend fun invokeUindex(
             if (episodePatterns.none { it.containsMatchIn(rowTitle) }) return@forEach
         }
 
+        if (!shouldIncludeStreamByLanguage(rowTitle)) return@forEach
+
         val qualityMatch = "(2160p|1080p|720p)"
             .toRegex(RegexOption.IGNORE_CASE)
             .find(rowTitle)
@@ -1144,6 +1226,8 @@ suspend fun invokeKnaben(
             val titleElement = infoTd.selectFirst("a[title]") ?: return@forEach
             val rawTitle = titleElement.attr("title").ifBlank { titleElement.text() }
 
+            if (!shouldIncludeStreamByLanguage(rawTitle)) return@forEach
+
             val magnet = infoTd.selectFirst("a[href^=magnet:?]")?.attr("href") ?: return@forEach
 
             val source = row
@@ -1212,6 +1296,8 @@ suspend fun invokeTorboxAnimeDebian(
     }
     val res = app.get(url, timeout = 10_000).parsedSafe<DebianRoot>()
     res?.streams?.forEach { stream ->
+        if (!shouldIncludeStreamByLanguage(stream.title)) return@forEach
+        
         val fileUrl = stream.url
         
         val size = Regex("""(\d+(?:[.,]\d+)?)\s*(GB|MB)""", RegexOption.IGNORE_CASE)
@@ -1250,6 +1336,8 @@ suspend fun invokeTorboxAnimeDebian(
                 this.referer = ""
                 this.quality = getIndexQuality(stream.name)
             }
+        )
+    }
         )
     }
 }
