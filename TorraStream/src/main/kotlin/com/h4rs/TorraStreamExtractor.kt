@@ -237,19 +237,8 @@ suspend fun invokeTorrentio(
                 val qualityTermsRegex = "(2160p|1080p|720p|WEBRip|WEB-DL|x265|x264|10bit|HEVC|H264)".toRegex(RegexOption.IGNORE_CASE)
                 val tagsList = qualityTermsRegex.findAll(title).map { it.value.uppercase() }.toList()
                 val tags = tagsList.distinct().joinToString(" | ")
-
-                val seeder = "👤\\s*(\\d+)".toRegex().find(title)?.groupValues?.get(1) ?: "0"
-                val provider = "⚙️\\s*([^\\n]+)".toRegex().find(title)?.groupValues?.get(1)?.trim() ?: "Unknown"
-                val size = "💾\\s*([^\\n]+)".toRegex().find(title)?.groupValues?.get(1)?.trim() ?: ""
-
-                val parts = listOfNotNull(
-                    if (tags.isNotBlank()) tags else null,
-                    if (size.isNotBlank()) "Size: $size" else null,
-                    "Seeder: $seeder",
-                    if (provider != "Unknown") "Provider: $provider" else null
-                )
-
-                "Torrentio | ${parts.joinToString(" | ")}".trim()
+                
+                "Torrentio | ${if (tags.isNotBlank()) tags else "Unknown"}".trim()
             }
 
         val qualityMatch = "(2160p|1080p|720p)".toRegex(RegexOption.IGNORE_CASE)
@@ -294,12 +283,6 @@ suspend fun invokeTorrentioDebian(
         
         val fileUrl = stream.url
 
-        val size = Regex("""(\d+(?:[.,]\d+)?)\s*(GB|MB)""", RegexOption.IGNORE_CASE)
-            .find(stream.title)
-            ?.let { m -> "${m.groupValues[1].replace(',', '.')} ${m.groupValues[2].uppercase()}" }
-        
-        val seedersNum = Regex("""(\d+)$""").find(stream.title)?.groupValues?.get(1)
-
         val name = stream.behaviorHints.filename ?: stream.title.substringBefore("\n")
         val cache = Regex("""\[(.*?)]""").find(stream.name)?.groupValues?.get(1)
         val formattedName = name
@@ -307,14 +290,7 @@ suspend fun invokeTorrentioDebian(
             .replace('.', ' ')
             .trim()
         
-        val parts = listOfNotNull(
-            size?.let { "📦 $it" },
-            seedersNum?.let { "🌱 $it" }
-        )
-        
-        val suffix = if (parts.isNotEmpty()) " | ${parts.joinToString(" | ")}" else ""
-        
-        val finalTitle = "Torrentio+ | [$cache] | $formattedName$suffix"
+        val finalTitle = "Torrentio+ | [$cache] | $formattedName"
         
         callback.invoke(
             newExtractorLink(
@@ -350,27 +326,14 @@ suspend fun invokeTorrentioAnimeDebian(
         
         val fileUrl = stream.url
 
-        val size = Regex("""(\d+(?:[.,]\d+)?)\s*(GB|MB)""", RegexOption.IGNORE_CASE)
-            .find(stream.title)
-            ?.let { m -> "${m.groupValues[1].replace(',', '.')} ${m.groupValues[2].uppercase()}" }
-
-        val seedersNum = Regex("""(\d+)$""").find(stream.title)?.groupValues?.get(1)
-
         val name = stream.behaviorHints.filename ?: stream.title.substringBefore("\n")
         val cache = Regex("""\[(.*?)]""").find(stream.name)?.groupValues?.get(1)
         val formattedName = name
             .substringBeforeLast('.')
             .replace('.', ' ')
             .trim()
-
-        val parts = listOfNotNull(
-            size?.let { "📦 $it" },
-            seedersNum?.let { "🌱 $it" }
-        )
-
-        val suffix = if (parts.isNotEmpty()) " | ${parts.joinToString(" | ")}" else ""
-
-        val finalTitle = "Torrentio+ Anime | [$cache] | $formattedName$suffix"
+        
+        val finalTitle = "Torrentio+ Anime | [$cache] | $formattedName"
 
         callback.invoke(
             newExtractorLink(
@@ -413,11 +376,8 @@ suspend fun invokeTorrentioAnime(
                 val qualityTermsRegex = "(2160p|1080p|720p|WEBRip|WEB-DL|x265|x264|10bit|HEVC|H264)".toRegex(RegexOption.IGNORE_CASE)
                 val tagsList = qualityTermsRegex.findAll(title).map { it.value.uppercase() }.toList()
                 val tags = tagsList.distinct().joinToString(" | ")
-
-                val seeder = "👤\\s*(\\d+)".toRegex().find(title)?.groupValues?.get(1) ?: "0"
-                val provider = "⚙️\\s*([^\\n]+)".toRegex().find(title)?.groupValues?.get(1)?.trim() ?: "Unknown"
-
-                "Torrentio | $tags | Seeder: $seeder | Provider: $provider".trim()
+                
+                "Torrentio | ${if (tags.isNotBlank()) tags else "Unknown"}".trim()
             }
 
         val qualityMatch = "(2160p|1080p|720p)".toRegex(RegexOption.IGNORE_CASE)
@@ -464,9 +424,7 @@ suspend fun invoke1337x(
 
         val displayName = buildString {
             append("Torrent1337x $qualityRaw")
-            if (size.isNotBlank()) append(" | Size: $size")
             if (language.isNotBlank()) append(" | Lang: $language")
-            if (seeders.isNotBlank()) append(" | 🟢$seeders")
         }
         
         if (!shouldIncludeStreamByLanguage(displayName)) return@forEach
@@ -611,30 +569,13 @@ suspend fun invokeComet(
         for(stream in res?.streams!!)
         {
             val formattedTitleName = stream.description.let { title ->
-                val tags = "\\[(.*?)]".toRegex()
-                    .findAll(title)
-                    .map { it.groupValues[1] }
-                    .joinToString(" | ")
-                    .takeIf { it.isNotBlank() }
-
                 val quality = "💿\\s*([^\n]+)".toRegex()
                     .find(title)
                     ?.groupValues?.getOrNull(1)
                     ?.trim()
                     ?.takeIf { it.isNotEmpty() && it != "Unknown" }
-
-                val provider = "🔎\\s*([^\n]+)".toRegex()
-                    .find(title)
-                    ?.groupValues?.getOrNull(1)
-                    ?.trim()
-                    ?.takeIf { it.isNotEmpty() && it != "Unknown" }
-
-                buildString {
-                    append("Comet")
-                    if (!tags.isNullOrEmpty()) append(" | $tags")
-                    if (!quality.isNullOrEmpty()) append(" | Quality: $quality")
-                    if (!provider.isNullOrEmpty()) append(" | Provider: $provider")
-                }
+                
+                "Comet | ${quality ?: "Unknown"}".trim()
             }
             
             if (!shouldIncludeStreamByLanguage(formattedTitleName)) continue
@@ -923,8 +864,7 @@ suspend fun invokeAnimetosho(
                     val tags = "\\[(.*?)]".toRegex().findAll(title)
                         .map { match -> "[${match.groupValues[1]}]" }
                         .joinToString(" | ")
-                    val seeder = "👤\\s*(\\d+)".toRegex().find(title)?.groupValues?.get(1) ?: ""
-                    "Animetosho | $tags | Seeder: $seeder".trim()
+                    "Animetosho | $tags".trim()
                 }
             callback.invoke(
                 newExtractorLink(
@@ -1050,22 +990,6 @@ suspend fun invokeDebianTorbox(
             if (baseName.isNotBlank())
                 append(baseName)
             
-            // --- filesize ---
-            val fileSize = Regex("Size:\\s*([^|\\n]+)")
-                .find(stream.description)
-                ?.groupValues?.get(1)
-                ?.trim()
-            if (!fileSize.isNullOrBlank())
-                append(" | 📦 $fileSize")
-            
-            // --- seeders ---
-            val seeders = Regex("Seeders:\\s*(\\d+)")
-                .find(stream.description)
-                ?.groupValues?.get(1)
-                ?.trim()
-            if (!seeders.isNullOrBlank())
-                append(" | 🌱 $seeders")
-            
         }.trim()
         
         callback(
@@ -1156,13 +1080,13 @@ suspend fun invokeUindex(
             val qualityTermsRegex =
                 "(WEBRip|WEB-DL|x265|x264|10bit|HEVC|H264)"
                     .toRegex(RegexOption.IGNORE_CASE)
-
+            
             val tags = qualityTermsRegex.findAll(rowTitle)
                 .map { it.value.uppercase() }
                 .distinct()
                 .joinToString(" | ")
-
-            "UIndex | $tags | Seeder: $seeder | FileSize: $fileSize".trim()
+            
+            "UIndex | ${if (tags.isNotBlank()) tags else "Unknown"}".trim()
         }
 
         callback.invoke(
@@ -1247,21 +1171,6 @@ suspend fun invokeKnaben(
             val formattedTitleName = buildString {
                 append("Knaben | ")
                 append(rawTitle)
-
-                if (seeds > 0) {
-                    append(" | Seeds: ")
-                    append(seeds)
-                }
-
-                if (sizeText.isNotBlank()) {
-                    append(" | ")
-                    append(sizeText)
-                }
-
-                if (source.isNotBlank()) {
-                    append(" | ")
-                    append(source)
-                }
             }
 
             callback(

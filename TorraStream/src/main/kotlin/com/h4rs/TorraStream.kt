@@ -118,7 +118,7 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
         "$tmdbAPI/trending/all/day?api_key=$apiKey&region=US&language=${metadataLanguage()}" to "Trending",
         "$tmdbAPI/trending/movie/week?api_key=$apiKey&region=US&with_original_language=en&language=${metadataLanguage()}" to "Popular Movies",
         "$tmdbAPI/trending/tv/week?api_key=$apiKey&region=US&with_original_language=en&language=${metadataLanguage()}" to "Popular TV Shows",
-        "$tmdbAPI/discover/tv?api_key=$apiKey&with_keywords=210024|222243&sort_by=popularity.desc&air_date.lte=${getDate().today}&air_date.gte=${getDate().today}&language=${metadataLanguage()}" to "Airing Today Anime",
+        "$tmdbAPI/discover/tv?api_key=$apiKey&with_keywords=210024|222243&sort_by=popularity.desc&air_date.lte=${getDate().today}&air_date.gte=${getDate().today}&language=${metadataLanguage()}" to "Airing Anime",
         "$tmdbAPI/discover/movie?api_key=$apiKey&with_keywords=210024|222243&language=${metadataLanguage()}" to "Anime Movies",
         "$tmdbAPI/discover/tv?api_key=$apiKey&with_keywords=210024|222243&sort_by=popularity.desc&air_date.lte=${getDate().today}&language=${metadataLanguage()}" to "Popular Anime",
         "$tmdbAPI/discover/tv?api_key=$apiKey&with_keywords=210024|222243&first_air_date.lte=${getDate().today}&first_air_date.gte=${getDate().yearAgo}&sort_by=first_air_date.desc&language=${metadataLanguage()}" to "New Anime",
