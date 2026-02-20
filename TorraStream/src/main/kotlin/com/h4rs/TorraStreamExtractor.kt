@@ -1355,12 +1355,6 @@ suspend fun invokeTorboxAnimeDebian(
         if (!shouldIncludeStreamByLanguage(stream.title)) return@forEach
         
         val fileUrl = stream.url
-        
-        val size = Regex("""(\d+(?:[.,]\d+)?)\s*(GB|MB)""", RegexOption.IGNORE_CASE)
-            .find(stream.title)
-            ?.let { m -> "${m.groupValues[1].replace(',', '.')} ${m.groupValues[2].uppercase()}" }
-        
-        val seedersNum = Regex("""(\d+)$""").find(stream.title)?.groupValues?.get(1)
 
         val cache = Regex("""\((.*?)\)""").find(stream.name)
             ?.groupValues?.get(1)
