@@ -239,8 +239,12 @@ suspend fun invokeTorrentio(
                 val quality = qualityTags.distinct().joinToString(" | ").takeIf { it.isNotBlank() } ?: "Unknown"
                 
                 val seeder = "👤\\s*(\\d+)".toRegex().find(title)?.groupValues?.get(1) ?: "0"
-                val size = "💾\\s*([^\\n]+)".toRegex().find(title)?.groupValues?.get(1)?.trim() ?: ""
+                val sizeMatch = "💾\\s*([^\\n]+)".toRegex().find(title)
+                val size = sizeMatch?.groupValues?.get(1)?.trim() ?: ""
                 val sound = if ("Dubbed" in title || "Dual Audio" in title) "Dubbed/Dual" else if ("Multi Audio" in title) "Multi Audio" else "Original"
+                
+                val sourceMatch = "⚙️\\s*([^\\n]+)".toRegex().find(title)
+                val source = sourceMatch?.groupValues?.get(1)?.trim() ?: "Torrentio"
                 
                 buildString {
                     append("Torrentio")
@@ -250,7 +254,7 @@ suspend fun invokeTorrentio(
                         append(" | ").append(size)
                     }
                     append(" | ").append("S:").append(seeder)
-                    append(" | ").append("Torrentio")
+                    append(" | ").append(source)
                 }.trim()
             }
 
@@ -435,8 +439,12 @@ suspend fun invokeTorrentioAnime(
                 val quality = qualityTags.distinct().joinToString(" | ").takeIf { it.isNotBlank() } ?: "Unknown"
                 
                 val seeder = "👤\\s*(\\d+)".toRegex().find(title)?.groupValues?.get(1) ?: "0"
-                val size = "💾\\s*([^\\n]+)".toRegex().find(title)?.groupValues?.get(1)?.trim() ?: ""
+                val sizeMatch = "💾\\s*([^\\n]+)".toRegex().find(title)
+                val size = sizeMatch?.groupValues?.get(1)?.trim() ?: ""
                 val sound = if ("Dubbed" in title || "Dual Audio" in title) "Dubbed/Dual" else if ("Multi Audio" in title) "Multi Audio" else "Original"
+                
+                val sourceMatch = "⚙️\\s*([^\\n]+)".toRegex().find(title)
+                val source = sourceMatch?.groupValues?.get(1)?.trim() ?: "Torrentio"
                 
                 buildString {
                     append("Torrentio")
@@ -446,7 +454,7 @@ suspend fun invokeTorrentioAnime(
                         append(" | ").append(size)
                     }
                     append(" | ").append("S:").append(seeder)
-                    append(" | ").append("Torrentio")
+                    append(" | ").append(source)
                 }.trim()
             }
 
@@ -496,7 +504,7 @@ suspend fun invoke1337x(
             append("1337x")
             append(" | ").append(qualityRaw)
             append(" | ").append("Original")
-            append(" | ").append("Size:").append(size)
+            append(" | ").append(size)
             append(" | ").append("S:").append(seeders)
             append(" | ").append("1337x")
         }.trim()
@@ -650,8 +658,12 @@ suspend fun invokeComet(
                     ?.takeIf { it.isNotEmpty() && it != "Unknown" } ?: "Unknown"
                 
                 val seeder = Regex("👤\\s*(\\d+)").find(title)?.groupValues?.get(1) ?: "0"
-                val size = Regex("💾\\s*([^\\n]+)").find(title)?.groupValues?.get(1)?.trim() ?: ""
+                val sizeMatch = Regex("💾\\s*([^\\n]+)").find(title)
+                val size = sizeMatch?.groupValues?.get(1)?.trim() ?: ""
                 val sound = if ("Dubbed" in title || "Dual Audio" in title) "Dubbed/Dual" else if ("Multi Audio" in title) "Multi Audio" else if ("Multi Subs" in title) "Multi Subs" else "Original"
+                
+                val sourceMatch = Regex("⚙️\\s*([^\\n]+)").find(title)
+                val source = sourceMatch?.groupValues?.get(1)?.trim() ?: "Comet"
                 
                 buildString {
                     append("Comet")
@@ -661,7 +673,7 @@ suspend fun invokeComet(
                         append(" | ").append(size)
                     }
                     append(" | ").append("S:").append(seeder)
-                    append(" | ").append("Comet")
+                    append(" | ").append(source)
                 }.trim()
             }
             
@@ -1010,8 +1022,6 @@ suspend fun invokeAIOStreamsDebian(
             append("AIO")
             append(" | ").append(qualityMatch)
             append(" | ").append("Original")
-            append(" | ").append("Size:").append("")
-            append(" | ").append("S:")
             append(" | ").append("AIO")
         }.trim()
         
@@ -1050,8 +1060,6 @@ suspend fun invokeAIOStreams(
             append("AIO")
             append(" | ").append(stream.quality.takeIf { !it.isNullOrBlank() } ?: "Unknown")
             append(" | ").append("Original")
-            append(" | ").append("Size:").append("")
-            append(" | ").append("S:")
             append(" | ").append("AIO")
         }.trim()
         
@@ -1111,7 +1119,7 @@ suspend fun invokeDebianTorbox(
                 ?.groupValues?.get(1)
                 ?.trim()
             if (!fileSize.isNullOrBlank()) {
-                append(" | ").append("Size:").append(fileSize)
+                append(" | ").append(fileSize)
             }
             val seeders = Regex("Seeders:\\s*(\\d+)")
                 .find(stream.description)
@@ -1223,7 +1231,7 @@ suspend fun invokeUindex(
                 append("UIndex")
                 append(" | ").append(quality)
                 append(" | ").append(sound)
-                append(" | ").append("Size:").append(fileSize)
+                append(" | ").append(fileSize)
                 append(" | ").append("S:").append(seeder)
                 append(" | ").append("UIndex")
             }.trim()
@@ -1315,7 +1323,7 @@ suspend fun invokeKnaben(
                 val sound = if ("Dubbed" in rawTitle || "Dual Audio" in rawTitle) "Dubbed/Dual" else if ("Multi Audio" in rawTitle) "Multi Audio" else "Original"
                 append(" | ").append(sound)
                 
-                append(" | ").append("Size:").append(sizeText)
+                append(" | ").append(sizeText)
                 append(" | ").append("S:").append(seeds)
                 append(" | ").append("Knaben")
             }
@@ -1376,17 +1384,26 @@ suspend fun invokeTorboxAnimeDebian(
         
         val seedersNum = Regex("""(\d+)$""").find(stream.title)?.groupValues?.get(1) ?: ""
         
+        val sourceMatch = "⚙️\\s*([^\\n]+)".toRegex().find(stream.title)
+        val source = sourceMatch?.groupValues?.get(1)?.trim() ?: "Torrentio+"
+        
+        val sourceMatch = "⚙️\\s*([^\\n]+)".toRegex().find(stream.title)
+        val source = sourceMatch?.groupValues?.get(1)?.trim() ?: "Torrentio+"
+        
+        val sourceMatch = "⚙️\\s*([^\\n]+)".toRegex().find(stream.title)
+        val source = sourceMatch?.groupValues?.get(1)?.trim() ?: "TorBox+"
+        
         val finalTitle = buildString {
             append("TorBox+")
             append(" | ").append(quality)
             append(" | ").append(sound)
             if (size.isNotBlank()) {
-                append(" | ").append("Size:").append(size)
+                append(" | ").append(size)
             }
             if (seedersNum.isNotBlank()) {
                 append(" | ").append("S:").append(seedersNum)
             }
-            append(" | ").append("TorBox+")
+            append(" | ").append(source)
         }.trim()
         
         callback.invoke(
