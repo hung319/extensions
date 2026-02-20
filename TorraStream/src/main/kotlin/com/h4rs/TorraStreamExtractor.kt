@@ -1385,12 +1385,6 @@ suspend fun invokeTorboxAnimeDebian(
         val seedersNum = Regex("""(\d+)$""").find(stream.title)?.groupValues?.get(1) ?: ""
         
         val sourceMatch = "⚙️\\s*([^\\n]+)".toRegex().find(stream.title)
-        val source = sourceMatch?.groupValues?.get(1)?.trim() ?: "Torrentio+"
-        
-        val sourceMatch = "⚙️\\s*([^\\n]+)".toRegex().find(stream.title)
-        val source = sourceMatch?.groupValues?.get(1)?.trim() ?: "Torrentio+"
-        
-        val sourceMatch = "⚙️\\s*([^\\n]+)".toRegex().find(stream.title)
         val source = sourceMatch?.groupValues?.get(1)?.trim() ?: "TorBox+"
         
         val finalTitle = buildString {
