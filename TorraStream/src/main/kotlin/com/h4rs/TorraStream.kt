@@ -256,12 +256,7 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
                 listOf()
             }
 
-            val totalEpisodes = episodes.size
-            val displayedTitle = if (totalEpisodes > 0) {
-                "$title ($totalEpisodes bộ)"
-            } else {
-                title
-            }
+            val displayedTitle = title
 
             newTvSeriesLoadResponse(
                 displayedTitle, url, if (isAnime) TvType.Anime else TvType.TvSeries, episodes

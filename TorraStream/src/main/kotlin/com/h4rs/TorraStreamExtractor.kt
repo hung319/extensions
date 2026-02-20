@@ -228,17 +228,30 @@ suspend fun invokeTorrentio(
             "User-Agent" to "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
         )
         val res = app.get(url, headers = headers, timeout = 100L).parsedSafe<TorrentioResponse>()
-    val streams = sortByQualityThenSeeders(res?.streams.orEmpty()) { it.title ?: it.name }
+        val streams = sortByQualityThenSeeders(res?.streams.orEmpty()) { it.title ?: it.name }
     streams.forEach { stream ->
         if (!shouldIncludeStreamByLanguage(stream.title ?: stream.name)) return@forEach
         
         val formattedTitleName = stream.title
             ?.let { title ->
                 val qualityTermsRegex = "(2160p|1080p|720p|WEBRip|WEB-DL|x265|x264|10bit|HEVC|H264)".toRegex(RegexOption.IGNORE_CASE)
-                val tagsList = qualityTermsRegex.findAll(title).map { it.value.uppercase() }.toList()
-                val tags = tagsList.distinct().joinToString(" | ")
+                val qualityTags = qualityTermsRegex.findAll(title).map { it.value.uppercase() }.toList()
+                val quality = qualityTags.distinct().joinToString(" | ").takeIf { it.isNotBlank() } ?: "Unknown"
                 
-                "Torrentio | ${if (tags.isNotBlank()) tags else "Unknown"}".trim()
+                val seeder = "👤\\s*(\\d+)".toRegex().find(title)?.groupValues?.get(1) ?: "0"
+                val size = "💾\\s*([^\\n]+)".toRegex().find(title)?.groupValues?.get(1)?.trim() ?: ""
+                val sound = if ("Dubbed" in title || "Dual Audio" in title) "Dubbed/Dual" else if ("Multi Audio" in title) "Multi Audio" else "Original"
+                
+                buildString {
+                    append("Torrentio")
+                    append(" | ").append(quality)
+                    append(" | ").append(sound)
+                    if (size.isNotBlank()) {
+                        append(" | ").append(size)
+                    }
+                    append(" | ").append("S:").append(seeder)
+                    append(" | ").append("Torrentio")
+                }.trim()
             }
 
         val qualityMatch = "(2160p|1080p|720p)".toRegex(RegexOption.IGNORE_CASE)
@@ -285,12 +298,34 @@ suspend fun invokeTorrentioDebian(
 
         val name = stream.behaviorHints.filename ?: stream.title.substringBefore("\n")
         val cache = Regex("""\[(.*?)]""").find(stream.name)?.groupValues?.get(1)
-        val formattedName = name
-            .substringBeforeLast('.')
-            .replace('.', ' ')
-            .trim()
         
-        val finalTitle = "Torrentio+ | [$cache] | $formattedName"
+        val qualityMatches = Regex("(2160p|1080p|720p|WEBRip|WEB-DL|x265|x264|10bit|HEVC|H264)", RegexOption.IGNORE_CASE)
+            .findAll(stream.title)
+            .map { it.value.uppercase() }
+            .distinct()
+            .joinToString(" | ")
+        val quality = if (qualityMatches.isNotBlank()) qualityMatches else "Unknown"
+        
+        val sound = if ("Dubbed" in stream.title || "Dual Audio" in stream.title) "Dubbed/Dual" else if ("Multi Audio" in stream.title) "Multi Audio" else "Original"
+        
+        val size = Regex("""(\d+(?:[.,]\d+)?)\s*(GB|MB)""", RegexOption.IGNORE_CASE)
+            .find(stream.title)
+            ?.let { m -> "${m.groupValues[1].replace(',', '.')} ${m.groupValues[2].uppercase()}" } ?: ""
+        
+        val seedersNum = Regex("""(\d+)$""").find(stream.title)?.groupValues?.get(1) ?: ""
+        
+        val finalTitle = buildString {
+            append("Torrentio+")
+            append(" | ").append(quality)
+            append(" | ").append(sound)
+            if (size.isNotBlank()) {
+                append(" | ").append("Size:").append(size)
+            }
+            if (seedersNum.isNotBlank()) {
+                append(" | ").append("S:").append(seedersNum)
+            }
+            append(" | ").append("Torrentio+")
+        }.trim()
         
         callback.invoke(
             newExtractorLink(
@@ -328,12 +363,34 @@ suspend fun invokeTorrentioAnimeDebian(
 
         val name = stream.behaviorHints.filename ?: stream.title.substringBefore("\n")
         val cache = Regex("""\[(.*?)]""").find(stream.name)?.groupValues?.get(1)
-        val formattedName = name
-            .substringBeforeLast('.')
-            .replace('.', ' ')
-            .trim()
         
-        val finalTitle = "Torrentio+ Anime | [$cache] | $formattedName"
+        val qualityMatches = Regex("(2160p|1080p|720p|WEBRip|WEB-DL|x265|x264|10bit|HEVC|H264)", RegexOption.IGNORE_CASE)
+            .findAll(stream.title)
+            .map { it.value.uppercase() }
+            .distinct()
+            .joinToString(" | ")
+        val quality = if (qualityMatches.isNotBlank()) qualityMatches else "Unknown"
+        
+        val sound = if ("Dubbed" in stream.title || "Dual Audio" in stream.title) "Dubbed/Dual" else if ("Multi Audio" in stream.title) "Multi Audio" else "Original"
+        
+        val size = Regex("""(\d+(?:[.,]\d+)?)\s*(GB|MB)""", RegexOption.IGNORE_CASE)
+            .find(stream.title)
+            ?.let { m -> "${m.groupValues[1].replace(',', '.')} ${m.groupValues[2].uppercase()}" } ?: ""
+        
+        val seedersNum = Regex("""(\d+)$""").find(stream.title)?.groupValues?.get(1) ?: ""
+        
+        val finalTitle = buildString {
+            append("Torrentio+")
+            append(" | ").append(quality)
+            append(" | ").append(sound)
+            if (size.isNotBlank()) {
+                append(" | ").append("Size:").append(size)
+            }
+            if (seedersNum.isNotBlank()) {
+                append(" | ").append("S:").append(seedersNum)
+            }
+            append(" | ").append("Torrentio+")
+        }.trim()
 
         callback.invoke(
             newExtractorLink(
@@ -374,10 +431,23 @@ suspend fun invokeTorrentioAnime(
         val formattedTitleName = stream.title
             ?.let { title ->
                 val qualityTermsRegex = "(2160p|1080p|720p|WEBRip|WEB-DL|x265|x264|10bit|HEVC|H264)".toRegex(RegexOption.IGNORE_CASE)
-                val tagsList = qualityTermsRegex.findAll(title).map { it.value.uppercase() }.toList()
-                val tags = tagsList.distinct().joinToString(" | ")
+                val qualityTags = qualityTermsRegex.findAll(title).map { it.value.uppercase() }.toList()
+                val quality = qualityTags.distinct().joinToString(" | ").takeIf { it.isNotBlank() } ?: "Unknown"
                 
-                "Torrentio | ${if (tags.isNotBlank()) tags else "Unknown"}".trim()
+                val seeder = "👤\\s*(\\d+)".toRegex().find(title)?.groupValues?.get(1) ?: "0"
+                val size = "💾\\s*([^\\n]+)".toRegex().find(title)?.groupValues?.get(1)?.trim() ?: ""
+                val sound = if ("Dubbed" in title || "Dual Audio" in title) "Dubbed/Dual" else if ("Multi Audio" in title) "Multi Audio" else "Original"
+                
+                buildString {
+                    append("Torrentio")
+                    append(" | ").append(quality)
+                    append(" | ").append(sound)
+                    if (size.isNotBlank()) {
+                        append(" | ").append(size)
+                    }
+                    append(" | ").append("S:").append(seeder)
+                    append(" | ").append("Torrentio")
+                }.trim()
             }
 
         val qualityMatch = "(2160p|1080p|720p)".toRegex(RegexOption.IGNORE_CASE)
@@ -423,9 +493,13 @@ suspend fun invoke1337x(
         val seeders = pageDoc.select("div.box-info ul.list li:contains(Seeders) span.seeds").text()
 
         val displayName = buildString {
-            append("Torrent1337x $qualityRaw")
-            if (language.isNotBlank()) append(" | Lang: $language")
-        }
+            append("1337x")
+            append(" | ").append(qualityRaw)
+            append(" | ").append("Original")
+            append(" | ").append("Size:").append(size)
+            append(" | ").append("S:").append(seeders)
+            append(" | ").append("1337x")
+        }.trim()
         
         if (!shouldIncludeStreamByLanguage(displayName)) return@forEach
 
@@ -573,9 +647,22 @@ suspend fun invokeComet(
                     .find(title)
                     ?.groupValues?.getOrNull(1)
                     ?.trim()
-                    ?.takeIf { it.isNotEmpty() && it != "Unknown" }
+                    ?.takeIf { it.isNotEmpty() && it != "Unknown" } ?: "Unknown"
                 
-                "Comet | ${quality ?: "Unknown"}".trim()
+                val seeder = Regex("👤\\s*(\\d+)").find(title)?.groupValues?.get(1) ?: "0"
+                val size = Regex("💾\\s*([^\\n]+)").find(title)?.groupValues?.get(1)?.trim() ?: ""
+                val sound = if ("Dubbed" in title || "Dual Audio" in title) "Dubbed/Dual" else if ("Multi Audio" in title) "Multi Audio" else if ("Multi Subs" in title) "Multi Subs" else "Original"
+                
+                buildString {
+                    append("Comet")
+                    append(" | ").append(quality)
+                    append(" | ").append(sound)
+                    if (size.isNotBlank()) {
+                        append(" | ").append(size)
+                    }
+                    append(" | ").append("S:").append(seeder)
+                    append(" | ").append("Comet")
+                }.trim()
             }
             
             if (!shouldIncludeStreamByLanguage(formattedTitleName)) continue
@@ -864,7 +951,24 @@ suspend fun invokeAnimetosho(
                     val tags = "\\[(.*?)]".toRegex().findAll(title)
                         .map { match -> "[${match.groupValues[1]}]" }
                         .joinToString(" | ")
-                    "Animetosho | $tags".trim()
+                    
+                    val qualityMatches = Regex("(2160p|1080p|720p|WEBRip|WEB-DL|x265|x264|10bit|HEVC|H264)", RegexOption.IGNORE_CASE)
+                        .findAll(title)
+                        .map { it.value.uppercase() }
+                        .distinct()
+                        .joinToString(" | ")
+                    val quality = if (qualityMatches.isNotBlank()) qualityMatches else "Unknown"
+                    
+                    val sound = if ("Dubbed" in title || "Dual Audio" in title) "Dubbed/Dual" else if ("Multi Audio" in title) "Multi Audio" else "Original"
+                    
+                    buildString {
+                        append("Animetosho")
+                        append(" | ").append(quality)
+                        append(" | ").append(sound)
+                        append(" | ").append(tags)
+                        append(" | ").append("S:").append(item.seeders)
+                        append(" | ").append("Animetosho")
+                    }.trim()
                 }
             callback.invoke(
                 newExtractorLink(
@@ -901,10 +1005,20 @@ suspend fun invokeAIOStreamsDebian(
     }?.map { stream ->
         val qualityRegex = Regex("""\b(4K|2160p|1080p|720p|WEB[-\s]?DL|BluRay|HDRip|DVDRip)\b""", RegexOption.IGNORE_CASE)
         val qualityMatch = qualityRegex.find(stream.name)?.value ?: "Unknown"
+        
+        val formattedTitle = buildString {
+            append("AIO")
+            append(" | ").append(qualityMatch)
+            append(" | ").append("Original")
+            append(" | ").append("Size:").append("")
+            append(" | ").append("S:")
+            append(" | ").append("AIO")
+        }.trim()
+        
         callback.invoke(
             newExtractorLink(
-                "Torrentio AIO Debian ${getIndexQuality(qualityMatch)}",
-                stream.behaviorHints.filename,
+                "AIO",
+                formattedTitle,
                 stream.url,
                 INFER_TYPE
             ) {
@@ -932,10 +1046,19 @@ suspend fun invokeAIOStreams(
     magnetLink.forEach { stream ->
         if (!shouldIncludeStreamByLanguage(stream.title)) return@forEach
         
+        val formattedTitle = buildString {
+            append("AIO")
+            append(" | ").append(stream.quality.takeIf { !it.isNullOrBlank() } ?: "Unknown")
+            append(" | ").append("Original")
+            append(" | ").append("Size:").append("")
+            append(" | ").append("S:")
+            append(" | ").append("AIO")
+        }.trim()
+        
         callback.invoke(
             newExtractorLink(
-                "Torrentio AIO ${stream.title}",
-                stream.title,
+                "AIO",
+                formattedTitle,
                 stream.magnet,
                 INFER_TYPE
             ) {
@@ -980,16 +1103,24 @@ suspend fun invokeDebianTorbox(
             ?: "TorBox Download"
         
         val displayName = buildString {
-            append("TorBox+ | [$cache] | ")
-            val rawName = stream.behaviorHints.filename
-            val baseName = rawName
-                .substringBeforeLast(".")
-                .replace(".", " ")
-                .trim()
-            
-            if (baseName.isNotBlank())
-                append(baseName)
-            
+            append("TorBox+")
+            append(" | ").append("Unknown")
+            append(" | ").append("Original")
+            val fileSize = Regex("Size:\\s*([^|\\n]+)")
+                .find(stream.description)
+                ?.groupValues?.get(1)
+                ?.trim()
+            if (!fileSize.isNullOrBlank()) {
+                append(" | ").append("Size:").append(fileSize)
+            }
+            val seeders = Regex("Seeders:\\s*(\\d+)")
+                .find(stream.description)
+                ?.groupValues?.get(1)
+                ?.trim()
+            if (!seeders.isNullOrBlank()) {
+                append(" | ").append("S:").append(seeders)
+            }
+            append(" | ").append("TorBox+")
         }.trim()
         
         callback(
@@ -1081,12 +1212,21 @@ suspend fun invokeUindex(
                 "(WEBRip|WEB-DL|x265|x264|10bit|HEVC|H264)"
                     .toRegex(RegexOption.IGNORE_CASE)
             
-            val tags = qualityTermsRegex.findAll(rowTitle)
+            val quality = qualityTermsRegex.findAll(rowTitle)
                 .map { it.value.uppercase() }
                 .distinct()
-                .joinToString(" | ")
+                .joinToString(" | ").takeIf { it.isNotBlank() } ?: "Unknown"
             
-            "UIndex | ${if (tags.isNotBlank()) tags else "Unknown"}".trim()
+            val sound = if ("Dubbed" in rowTitle || "Dual Audio" in rowTitle) "Dubbed/Dual" else if ("Multi Audio" in rowTitle) "Multi Audio" else "Original"
+            
+            buildString {
+                append("UIndex")
+                append(" | ").append(quality)
+                append(" | ").append(sound)
+                append(" | ").append("Size:").append(fileSize)
+                append(" | ").append("S:").append(seeder)
+                append(" | ").append("UIndex")
+            }.trim()
         }
 
         callback.invoke(
@@ -1169,8 +1309,15 @@ suspend fun invokeKnaben(
                 .find(rawTitle)
                 ?.value
             val formattedTitleName = buildString {
-                append("Knaben | ")
-                append(rawTitle)
+                append("Knaben")
+                append(" | ").append(qualityMatch ?: "Unknown")
+                
+                val sound = if ("Dubbed" in rawTitle || "Dual Audio" in rawTitle) "Dubbed/Dual" else if ("Multi Audio" in rawTitle) "Multi Audio" else "Original"
+                append(" | ").append(sound)
+                
+                append(" | ").append("Size:").append(sizeText)
+                append(" | ").append("S:").append(seeds)
+                append(" | ").append("Knaben")
             }
 
             callback(
@@ -1215,25 +1362,38 @@ suspend fun invokeTorboxAnimeDebian(
         
         val seedersNum = Regex("""(\d+)$""").find(stream.title)?.groupValues?.get(1)
 
-        val name = stream.behaviorHints.filename ?: stream.title.substringBefore("\n")
         val cache = Regex("""\((.*?)\)""").find(stream.name)
             ?.groupValues?.get(1)
             ?.takeIf { it == "Instant" }
             ?: "TorBox Download"
         
-        val formattedName = name
-            .substringBeforeLast('.')
-            .replace('.', ' ')
-            .trim()
+        val qualityMatches = Regex("(2160p|1080p|720p|WEBRip|WEB-DL|x265|x264|10bit|HEVC|H264)", RegexOption.IGNORE_CASE)
+            .findAll(stream.title)
+            .map { it.value.uppercase() }
+            .distinct()
+            .joinToString(" | ")
+        val quality = if (qualityMatches.isNotBlank()) qualityMatches else "Unknown"
         
-        val parts = listOfNotNull(
-            size?.let { "📦 $it" },
-            seedersNum?.let { "🌱 $it" }
-        )
+        val sound = if ("Dubbed" in stream.title || "Dual Audio" in stream.title) "Dubbed/Dual" else if ("Multi Audio" in stream.title) "Multi Audio" else "Original"
         
-        val suffix = if (parts.isNotEmpty()) " | ${parts.joinToString(" | ")}" else ""
+        val size = Regex("""(\d+(?:[.,]\d+)?)\s*(GB|MB)""", RegexOption.IGNORE_CASE)
+            .find(stream.title)
+            ?.let { m -> "${m.groupValues[1].replace(',', '.')} ${m.groupValues[2].uppercase()}" } ?: ""
         
-        val finalTitle = "TorBox+ Anime | [$cache] | $formattedName$suffix"
+        val seedersNum = Regex("""(\d+)$""").find(stream.title)?.groupValues?.get(1) ?: ""
+        
+        val finalTitle = buildString {
+            append("TorBox+")
+            append(" | ").append(quality)
+            append(" | ").append(sound)
+            if (size.isNotBlank()) {
+                append(" | ").append("Size:").append(size)
+            }
+            if (seedersNum.isNotBlank()) {
+                append(" | ").append("S:").append(seedersNum)
+            }
+            append(" | ").append("TorBox+")
+        }.trim()
         
         callback.invoke(
             newExtractorLink(
