@@ -206,5 +206,9 @@ fun getDate(): TmdbDate {
     calendar.set(Calendar.DAY_OF_MONTH, 1)
     val monthStart = formatter.format(calendar.time)
 
-    return TmdbDate(today, nextWeek, lastWeekStart, monthStart)
+    val yearAgoCalendar = Calendar.getInstance()
+    yearAgoCalendar.add(Calendar.YEAR, -1)
+    val yearAgo = formatter.format(yearAgoCalendar.time)
+    
+    return TmdbDate(today, nextWeek, lastWeekStart, monthStart, yearAgo)
 }
