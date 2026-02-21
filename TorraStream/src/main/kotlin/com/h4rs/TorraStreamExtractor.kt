@@ -491,9 +491,6 @@ suspend fun invokeTorrentioAnime(
             )
         }
     }
-}
-
-
 suspend fun invoke1337x(
     OnethreethreesevenxAPI: String? = null,
     title: String? = null,
