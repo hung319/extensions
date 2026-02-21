@@ -260,7 +260,7 @@ open class TorraStreamAnime(private val sharedPref: SharedPreferences) : MainAPI
                         if (genreNames != null) {
                             try {
                                 val genreQueryGraphQL = """
-                                    query (\$page: Int = 1, \$genres: [String]) { 
+                                    query (\$page: Int, \$genres: [String]) { 
                                         Page(page: \$page, perPage: 10) { 
                                             pageInfo { total perPage currentPage lastPage hasNextPage } 
                                             media(genre_in: \$genres, type: ANIME, sort: POPULARITY_DESC) { 
@@ -272,7 +272,10 @@ open class TorraStreamAnime(private val sharedPref: SharedPreferences) : MainAPI
                                 
                                 val genreData = mapOf(
                                     "query" to genreQueryGraphQL,
-                                    "variables" to mapOf("genres" to genreNames)
+                                    "variables" to mapOf(
+                                        "page" to 1,
+                                        "genres" to genreNames
+                                    )
                                 ).toJson().toRequestBody(RequestBodyTypes.JSON.toMediaTypeOrNull())
                                 
                                 val genreResponse = app.post(anilistAPI, requestBody = genreData)
