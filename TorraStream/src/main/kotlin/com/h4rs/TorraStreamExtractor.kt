@@ -251,7 +251,8 @@ suspend fun invokeTorrentio(
                     append(" | ").append(quality)
                     append(" | ").append(sound)
                     if (size.isNotBlank()) {
-                        append(" | ").append(size)
+                        val cleanSize = size.split(" ⚙️")[0].trim()
+                        append(" | ").append(cleanSize)
                     }
                     append(" | ").append("S:").append(seeder)
                     if (realSource != "Torrentio") {
@@ -321,19 +322,20 @@ suspend fun invokeTorrentioDebian(
         val seedersNum = Regex("""(\d+)$""").find(stream.title)?.groupValues?.get(1) ?: ""
         
         val sourceMatch = "⚙️\\s*([^\\n]+)".toRegex().find(stream.title)
-        val realSource = sourceMatch?.groupValues?.get(1)?.trim() ?: "TorBox+"
+        val realSource = sourceMatch?.groupValues?.get(1)?.trim() ?: "Torrentio+"
         
         val finalTitle = buildString {
-            append("TorBox+")
+            append("Torrentio+")
             append(" | ").append(quality)
             append(" | ").append(sound)
             if (size.isNotBlank()) {
-                append(" | ").append(size)
+                val cleanSize = size.split(" ⚙️")[0].trim()
+                append(" | ").append(cleanSize)
             }
             if (seedersNum.isNotBlank()) {
                 append(" | ").append("S:").append(seedersNum)
             }
-            if (realSource != "TorBox+") {
+            if (realSource != "Torrentio+") {
                 append(" | ").append(realSource)
             }
         }.trim()
@@ -398,7 +400,8 @@ suspend fun invokeTorrentioAnimeDebian(
             append(" | ").append(quality)
             append(" | ").append(sound)
             if (size.isNotBlank()) {
-                append(" | ").append(size)
+                val cleanSize = size.split(" ⚙️")[0].trim()
+                append(" | ").append(cleanSize)
             }
             if (seedersNum.isNotBlank()) {
                 append(" | ").append("S:").append(seedersNum)
@@ -463,7 +466,8 @@ suspend fun invokeTorrentioAnime(
                     append(" | ").append(quality)
                     append(" | ").append(sound)
                     if (size.isNotBlank()) {
-                        append(" | ").append(size)
+                        val cleanSize = size.split(" ⚙️")[0].trim()
+                        append(" | ").append(cleanSize)
                     }
                     append(" | ").append("S:").append(seeder)
                     if (realSource != "Torrentio") {
@@ -681,7 +685,8 @@ suspend fun invokeComet(
                     append(" | ").append(quality)
                     append(" | ").append(sound)
                     if (size.isNotBlank()) {
-                        append(" | ").append(size)
+                        val cleanSize = size.split(" ⚙️")[0].trim()
+                        append(" | ").append(cleanSize)
                     }
                     append(" | ").append("S:").append(seeder)
                     if (realSource != "Comet") {
@@ -1404,19 +1409,20 @@ suspend fun invokeTorboxAnimeDebian(
         val seedersNum = Regex("""(\d+)$""").find(stream.title)?.groupValues?.get(1) ?: ""
         
         val sourceMatch = "⚙️\\s*([^\\n]+)".toRegex().find(stream.title)
-        val realSource = sourceMatch?.groupValues?.get(1)?.trim() ?: "Torrentio+"
+        val realSource = sourceMatch?.groupValues?.get(1)?.trim() ?: "TorBox+"
         
         val finalTitle = buildString {
-            append("Torrentio+")
+            append("TorBox+")
             append(" | ").append(quality)
             append(" | ").append(sound)
             if (size.isNotBlank()) {
-                append(" | ").append(size)
+                val cleanSize = size.split(" ⚙️")[0].trim()
+                append(" | ").append(cleanSize)
             }
             if (seedersNum.isNotBlank()) {
                 append(" | ").append("S:").append(seedersNum)
             }
-            if (realSource != "Torrentio+") {
+            if (realSource != "TorBox+") {
                 append(" | ").append(realSource)
             }
         }.trim()
