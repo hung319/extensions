@@ -991,10 +991,25 @@ suspend fun invokeAnimetosho(
                     
                     val sound = if ("Dubbed" in title || "Dual Audio" in title) "Dubbed/Dual" else if ("Multi Audio" in title) "Multi Audio" else "Original"
                     
+                    val fileSize = if (item.totalSize > 0) {
+                        val sizeInGB = item.totalSize.toDouble() / (1024 * 1024 * 1024)
+                        val sizeInMB = item.totalSize.toDouble() / (1024 * 1024)
+                        if (sizeInGB >= 1.0) {
+                            String.format("%.2f GB", sizeInGB)
+                        } else {
+                            String.format("%.2f MB", sizeInMB)
+                        }
+                    } else {
+                        null
+                    }
+                    
                     buildString {
                         append("Animetosho")
                         append(" | ").append(quality)
                         append(" | ").append(sound)
+                        if (fileSize != null) {
+                            append(" | ").append(fileSize)
+                        }
                         append(" | ").append(tags)
                         append(" | ").append("S:").append(item.seeders)
                         append(" | ").append("Animetosho")
