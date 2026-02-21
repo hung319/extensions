@@ -211,10 +211,38 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
         }
         val recommendationType = if (type == TvType.Movie) "movie" else "tv"
         val recommendations = runCatching {
-            res.recommendations?.results?.mapNotNull { media -> 
+            var recommendationResults = res.recommendations?.results?.mapNotNull { media -> 
                 runCatching {
                     media.toSearchResponse(recommendationType)
                 }.getOrNull()
+            }
+            
+            if (recommendationResults.isNullOrEmpty()) {
+                val genreIds = res.genres?.map { it.id }?.takeIf { it.isNotEmpty() }
+                if (genreIds != null) {
+                    val genreQuery = genreIds.joinToString("|")
+                    val genreUrl = if (type == TvType.Movie) {
+                        "$tmdbAPI/discover/movie?api_key=$apiKey&with_genres=$genreQuery&language=${metadataLanguage()}&sort_by=popularity.desc&vote_count.gte=5&page=1"
+                    } else {
+                        "$tmdbAPI/discover/tv?api_key=$apiKey&with_genres=$genreQuery&language=${metadataLanguage()}&sort_by=popularity.desc&vote_count.gte=5&page=1"
+                    }
+                    
+                    try {
+                        val genreResponse = app.get(genreUrl).parsedSafe<Results>()
+                        genreResponse?.results?.shuffled()?.take(10)?.mapNotNull { media ->
+                            runCatching {
+                                media.toSearchResponse(recommendationType)
+                            }.getOrNull()
+                        }
+                    } catch (e: Exception) {
+                        logError(e)
+                        null
+                    }
+                } else {
+                    null
+                }
+            } else {
+                recommendationResults
             }
         }.getOrNull()
 

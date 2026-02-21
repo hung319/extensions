@@ -242,17 +242,59 @@ open class TorraStreamAnime(private val sharedPref: SharedPreferences) : MainAPI
                 try { this.logoUrl = logoposter } catch(_:Throwable){}
                 this.tags = data.genres
                 this.showStatus = getStatus(data.status)
-                this.recommendations = data.recommendations?.edges
-                    ?.mapNotNull { edge ->
-                        val recommendation = edge.node.mediaRecommendation ?:return@mapNotNull null
-                        val title = recommendation.title?.english
-                            ?: recommendation.title?.romaji
-                            ?:  "Unknown"
-                        val recommendationUrl = "$mainUrl/anime/${recommendation.id}"
-                        newAnimeSearchResponse(title, recommendationUrl, TvType.Anime).apply {
-                            this.posterUrl = recommendation.coverImage?.large
+                this.recommendations = runCatching {
+                    var recommendations = data.recommendations?.edges
+                        ?.mapNotNull { edge ->
+                            val recommendation = edge.node.mediaRecommendation ?:return@mapNotNull null
+                            val title = recommendation.title?.english
+                                ?: recommendation.title?.romaji
+                                ?:  "Unknown"
+                            val recommendationUrl = "$mainUrl/anime/${recommendation.id}"
+                            newAnimeSearchResponse(title, recommendationUrl, TvType.Anime).apply {
+                                this.posterUrl = recommendation.coverImage?.large
+                            }
                         }
+                    
+                    if (recommendations.isNullOrEmpty()) {
+                        val genreNames = data.genres.takeIf { !it.isNullOrEmpty() }
+                        if (genreNames != null) {
+                            try {
+                                val genreQueryGraphQL = """
+                                    query (\$page: Int = 1, \$genres: [String]) { 
+                                        Page(page: \$page, perPage: 10) { 
+                                            pageInfo { total perPage currentPage lastPage hasNextPage } 
+                                            media(genre_in: \$genres, type: ANIME, sort: POPULARITY_DESC) { 
+                                                id title { english romaji } coverImage { large } 
+                                            } 
+                                        } 
+                                    }
+                                """.trimIndent()
+                                
+                                val genreData = mapOf(
+                                    "query" to genreQueryGraphQL,
+                                    "variables" to mapOf("genres" to genreNames)
+                                ).toJson().toRequestBody(RequestBodyTypes.JSON.toMediaTypeOrNull())
+                                
+                                val genreResponse = app.post(anilistAPI, requestBody = genreData)
+                                    .parsedSafe<AniGenreResponse>()
+                                
+                                genreResponse?.data?.Page?.media?.map { media ->
+                                    val title = media.title.english ?: media.title.romaji ?: "Unknown"
+                                    val url = "$mainUrl/anime/${media.id}"
+                                    newAnimeSearchResponse(title, url, TvType.Anime).apply {
+                                        this.posterUrl = media.coverImage?.large
+                                    }
+                                }?.shuffled()?.take(10)
+                            } catch (e: Exception) {
+                                null
+                            }
+                        } else {
+                            null
+                        }
+                    } else {
+                        recommendations
                     }
+                }.getOrNull()
             }
         }
     }
@@ -477,6 +519,24 @@ open class TorraStreamAnime(private val sharedPref: SharedPreferences) : MainAPI
     data class AniSearch(
         @JsonProperty("data") var data: AniData? = null
     )
+
+    data class AniGenreResponse(
+        @JsonProperty("data") val data: AniGenreData
+    ) {
+        data class AniGenreData(
+            @JsonProperty("Page") val Page: AniGenrePage
+        ) {
+            data class AniGenrePage(
+                @JsonProperty("media") val media: List<AniGenreMedia>
+            ) {
+                data class AniGenreMedia(
+                    @JsonProperty("id") val id: Int,
+                    @JsonProperty("title") val title: Title,
+                    @JsonProperty("coverImage") val coverImage: CoverImage?
+                )
+            }
+        }
+    }
 
     private fun buildApiUrl(sharedPref: SharedPreferences, mainUrl: String): String {
         val sort = sharedPref.getString("sort", "qualitysize")
