@@ -440,9 +440,9 @@ suspend fun invokeTorrentioAnime(
         "User-Agent" to "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
     )
     val res = app.get(url, headers = headers, timeout = 100L).parsedSafe<TorrentioResponse>()
-        val streams = sortByQualityThenSeeders(res?.streams.orEmpty()) { it.title ?: it.name }
-        streams.forEach { stream ->
-            if (!shouldIncludeStreamByLanguage(stream.title ?: stream.name)) return@forEach
+    val streams = sortByQualityThenSeeders(res?.streams.orEmpty()) { it.title ?: it.name }
+    streams.forEach { stream ->
+        if (!shouldIncludeStreamByLanguage(stream.title ?: stream.name)) return@forEach
             
         val formattedTitleName = stream.title
             ?.let { title ->
