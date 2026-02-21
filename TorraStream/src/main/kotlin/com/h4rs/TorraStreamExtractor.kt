@@ -490,29 +490,6 @@ suspend fun invokeTorrentioAnime(
                 }
             )
         }
-                    append(" | ").append("S:").append(seeder)
-                    append(" | ").append(source)
-                }.trim()
-            }
-
-        val qualityMatch = "(2160p|1080p|720p)".toRegex(RegexOption.IGNORE_CASE)
-            .find(stream.title ?: "")
-            ?.value
-            ?.lowercase()
-
-        val magnet = generateMagnetLink(TRACKER_LIST_URL, stream.infoHash)
-        callback.invoke(
-            newExtractorLink(
-                "Torrentio",
-                formattedTitleName ?: stream.name ?: "",
-                url = magnet,
-                INFER_TYPE
-            ) {
-                this.referer = ""
-                this.quality = getQualityFromName(qualityMatch)
-            }
-        )
-
     }
 }
 
