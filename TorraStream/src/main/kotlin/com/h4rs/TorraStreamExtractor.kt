@@ -520,7 +520,7 @@ suspend fun invoke1337x(
             append(" | ").append(qualityRaw)
             append(" | ").append("Original")
             append(" | ").append(size)
-            append(" | ").append("S:").append(seeders)
+            append(" | ").append(seeders).append(" Seeders")
             append(" | ").append("1337x")
         }.trim()
         
@@ -681,15 +681,15 @@ suspend fun invokeComet(
                 val realSource = sourceMatch?.groupValues?.get(1)?.trim() ?: "Comet"
                 
                 buildString {
-                    append("Comet")
+                    append("Torrentio")
                     append(" | ").append(quality)
                     append(" | ").append(sound)
                     if (size.isNotBlank()) {
                         val cleanSize = size.split(" ⚙️")[0].trim()
                         append(" | ").append(cleanSize)
                     }
-                    append(" | ").append("S:").append(seeder)
-                    if (realSource != "Comet") {
+                    append(" | ").append(seeder).append(" Seeders")
+                    if (realSource != "Torrentio") {
                         append(" | ").append(realSource)
                     }
                 }.trim()
@@ -1011,7 +1011,7 @@ suspend fun invokeAnimetosho(
                             append(" | ").append(fileSize)
                         }
                         append(" | ").append(tags)
-                        append(" | ").append("S:").append(item.seeders)
+                        append(" | ").append(item.seeders).append(" Seeders")
                         append(" | ").append("Animetosho")
                     }.trim()
                 }
@@ -1159,7 +1159,7 @@ suspend fun invokeDebianTorbox(
                 ?.groupValues?.get(1)
                 ?.trim()
             if (!seeders.isNullOrBlank()) {
-                append(" | ").append("S:").append(seeders)
+                append(" | ").append(seeders).append(" Seeders")
             }
             append(" | ").append("TorBox+")
         }.trim()
@@ -1263,10 +1263,10 @@ suspend fun invokeUindex(
             buildString {
                 append("UIndex")
                 append(" | ").append(quality)
-                append(" | ").append(sound)
-                append(" | ").append(fileSize)
-                append(" | ").append("S:").append(seeder)
-            }.trim()
+            append(" | ").append(sound)
+            append(" | ").append(fileSize)
+            append(" | ").append(seeder).append(" Seeders")
+        }.trim()
         }
 
         callback.invoke(
@@ -1361,7 +1361,7 @@ suspend fun invokeKnaben(
                 append(" | ").append(sound)
                 
                 append(" | ").append(sizeText)
-                append(" | ").append("S:").append(seeds)
+                append(" | ").append(seeds).append(" Seeders")
                 if (realSource != null) {
                     append(" | ").append(realSource)
                 }
@@ -1435,9 +1435,9 @@ suspend fun invokeTorboxAnimeDebian(
                 append(" | ").append(cleanSize)
             }
             if (seedersNum.isNotBlank()) {
-                append(" | ").append("S:").append(seedersNum)
+                append(" | ").append(seedersNum).append(" Seeders")
             }
-            if (realSource != "TorBox+") {
+            if (realSource != "Torrentio+") {
                 append(" | ").append(realSource)
             }
         }.trim()

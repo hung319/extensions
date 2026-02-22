@@ -638,8 +638,18 @@ class TorraStream(private val sharedPref: SharedPreferences) : TmdbProvider() {
     ): ExtractorLink {
         if (!isTorrentLink(link.url)) return link
 
-        val infoHash = extractInfoHash(link.url)
-        val linkParam = if (useFork && !infoHash.isNullOrBlank()) infoHash else link.url
+        var finalUrl = link.url
+        if (!link.url.startsWith("magnet:?", ignoreCase = true)) {
+            val infoHash = extractInfoHash(link.url)
+            if (!infoHash.isNullOrBlank()) {
+                finalUrl = generateMagnetLink(TRACKER_LIST_URL, infoHash)
+            } else {
+                return link
+            }
+        }
+
+        val infoHash = extractInfoHash(finalUrl)
+        val linkParam = if (useFork && !infoHash.isNullOrBlank()) infoHash else finalUrl
         val filename = buildTorrServerFilename(title, year, season, episode)
         val index = if (useFork && season != null && episode != null) {
             season * 100 + episode
