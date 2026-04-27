@@ -234,12 +234,35 @@ class BluPhimProvider : MainAPI() {
     ): Boolean = coroutineScope {
         val linkData = parseJson<LinkData>(data)
 
+        // HÀM BẮT LỖI TỰ ĐỘNG VÀ LƯU VÀO CLIPBOARD
+        suspend fun logErrorAndCopy(message: String) {
+            withContext(Dispatchers.Main) {
+                val appCtx = AcraApplication.context
+                if (appCtx != null) {
+                    val clipboard = appCtx.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    val clip = android.content.ClipData.newPlainText("BluPhim Debug", message)
+                    clipboard.setPrimaryClip(clip)
+                    Toast.makeText(appCtx, "Đã bắt được lỗi! Hãy dán (Paste) log cho CodeSAS.", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+
         // SERVER GỐC
         async {
             try {
-                val document = app.get(linkData.server1Url).document
-                val iframeStreamSrc = fixUrl(document.selectFirst("iframe#iframeStream")?.attr("src") ?: return@async, linkData.server1Url)
-                val iframeStreamDoc = app.get(iframeStreamSrc, referer = linkData.server1Url).document
+                // 1. Đồng bộ 1 User-Agent duy nhất cho mọi request để vượt mặt hệ thống Anti-bot
+                val commonUserAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
+                val baseHeaders = mapOf("User-Agent" to commonUserAgent)
+
+                val document = app.get(linkData.server1Url, headers = baseHeaders).document
+                val iframeSrc = document.selectFirst("iframe#iframeStream")?.attr("src")
+                if (iframeSrc == null) {
+                    logErrorAndCopy("LỖI 1: Không tìm thấy iframe#iframeStream tại URL: ${linkData.server1Url}")
+                    return@async
+                }
+                
+                val iframeStreamSrc = fixUrl(iframeSrc, linkData.server1Url)
+                val iframeStreamDoc = app.get(iframeStreamSrc, referer = linkData.server1Url, headers = baseHeaders).document
                 val script = iframeStreamDoc.select("script").find { it.data().contains("var videoId =") }?.data()
 
                 if (script != null) {
@@ -263,8 +286,37 @@ class BluPhimProvider : MainAPI() {
                         .addFormDataPart("domain", domain)
                         .build()
 
-                    val tokenString = app.post(url = "${getBaseUrl(iframeStreamSrc)}/geturl", requestBody = requestBody, referer = iframeStreamSrc, headers = mapOf("X-Requested-With" to "XMLHttpRequest")).text
-                    val tokens = tokenString.split("&").associate { val (key, value) = it.split("="); key to value }
+                    val postUrl = "${getBaseUrl(iframeStreamSrc)}/geturl"
+                    
+                    // 2. Chèn Header (đặc biệt là User-Agent) vào lúc POST lấy Token
+                    val tokenResponse = app.post(
+                        url = postUrl, 
+                        requestBody = requestBody, 
+                        headers = mapOf(
+                            "X-Requested-With" to "XMLHttpRequest",
+                            "User-Agent" to commonUserAgent,
+                            "Referer" to iframeStreamSrc
+                        )
+                    )
+                    
+                    val tokenString = tokenResponse.text
+                    
+                    // 3. Kiểm tra xem Server có chặn hoặc yêu cầu Captcha Cloudflare không
+                    if (!tokenString.contains("token1=")) {
+                        logErrorAndCopy("LỖI 2: Lấy Token thất bại.\nHTTP Code: ${tokenResponse.code}\nNội dung trả về: ${tokenString.take(500)}")
+                        return@async
+                    }
+
+                    // 4. Parse token an toàn (Không bị văng Exception nếu chuỗi thiếu dấu '=')
+                    val tokens = try {
+                        tokenString.split("&").associate { 
+                            val parts = it.split("=")
+                            parts[0] to parts.getOrElse(1) { "" }
+                        }
+                    } catch (e: Exception) {
+                        logErrorAndCopy("LỖI 3: Không thể bóc tách Token.\nTokenString: $tokenString")
+                        return@async
+                    }
                     
                     val finalCdn = cdn.replace(Regex("""cdn\d+\."""), "cdn.")
                     val finalUrl = "$finalCdn/segment/$videoId/?token1=${tokens["token1"]}&token3=${tokens["token3"]}"
@@ -273,36 +325,18 @@ class BluPhimProvider : MainAPI() {
                         "Origin" to cdn,
                         "Accept" to "*/*",
                         "Accept-Language" to "vi-VN,vi;q=0.9",
-                        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
+                        "User-Agent" to commonUserAgent,
                         "Sec-Fetch-Mode" to "cors",
                         "Sec-Fetch-Site" to "same-site"
                     )
 
-                    // =========================================================================
-                    // BLOCK DEBUG: GET TRƯỚC VÀ COPY CLIPBOARD NẾU LỖI
-                    // =========================================================================
+                    // 5. Test trực tiếp link (Mô phỏng ExoPlayer)
                     val testResponse = app.get(finalUrl, headers = headersMap)
                     if (testResponse.code != 200 || !testResponse.text.contains("#EXTM3U")) {
-                        val debugLog = """
-                            DEBUG LOG BLUPHIM:
-                            Final URL: $finalUrl
-                            Response Code: ${testResponse.code}
-                            Headers Used: $headersMap
-                            Response Body (first 500 chars):
-                            ${testResponse.text.take(500)}
-                        """.trimIndent()
-                        
-                        withContext(Dispatchers.Main) {
-                            val appCtx = AcraApplication.context
-                            if (appCtx != null) {
-                                val clipboard = appCtx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                val clip = ClipData.newPlainText("BluPhim Debug", debugLog)
-                                clipboard.setPrimaryClip(clip)
-                                Toast.makeText(appCtx, "Đã bắt lỗi 2001! Log đã được copy vào Clipboard.", Toast.LENGTH_LONG).show()
-                            }
-                        }
+                        logErrorAndCopy("LỖI 4: Server từ chối M3U8 (Giống lỗi 2001).\nM3U8 URL: $finalUrl\nHTTP Code: ${testResponse.code}\nBody: ${testResponse.text.take(500)}")
                     }
 
+                    // Trả link về cho Player
                     val extractorLink = newExtractorLink(
                         source = name,
                         name = "Server Gốc",
@@ -315,16 +349,15 @@ class BluPhimProvider : MainAPI() {
                     }
                     callback.invoke(extractorLink)
                     
+                    // LẤY PHỤ ĐỀ
                     try {
                         val token2 = tokens["token2"] ?: ""
                         val iframe2Url = "$cdn/streaming?id=$videoId&web=$mainUrl&token1=${tokens["token1"]}&token2=$token2&token3=${tokens["token3"]}&cdn=$cdn&lang=vi"
-                        val iframe2Doc = app.get(iframe2Url, referer = iframeStreamSrc).document
+                        val iframe2Doc = app.get(iframe2Url, referer = iframeStreamSrc, headers = baseHeaders).document
                         val setupScript = iframe2Doc.selectFirst("script:containsData(myvideo.setup)")?.data()
 
                         if (setupScript != null) {
-                            val tracksIdentifier = "tracks:"
-                            val tracksStartIndex = setupScript.indexOf(tracksIdentifier)
-
+                            val tracksStartIndex = setupScript.indexOf("tracks:")
                             if (tracksStartIndex != -1) {
                                 val arrayStartIndex = setupScript.indexOf('[', tracksStartIndex)
                                 if (arrayStartIndex != -1) {
@@ -340,7 +373,6 @@ class BluPhimProvider : MainAPI() {
                                             break
                                         }
                                     }
-                                    
                                     if (arrayEndIndex != -1) {
                                         val tracksJson = setupScript.substring(arrayStartIndex, arrayEndIndex + 1)
                                         try {
@@ -349,27 +381,26 @@ class BluPhimProvider : MainAPI() {
                                                 val file = track["file"] as? String
                                                 val label = track["label"] as? String
                                                 if (file != null && label != null) {
-                                                    val subtitle = newSubtitleFile(label, file)
-                                                    subtitleCallback.invoke(subtitle)
+                                                    subtitleCallback.invoke(newSubtitleFile(label, file))
                                                 }
                                             }
-                                        } catch (e: Exception) {
-                                            e.printStackTrace()
-                                        }
+                                        } catch (e: Exception) {}
                                     }
                                 }
                             }
                         }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
+                    } catch (e: Exception) {}
+
+                } else {
+                    logErrorAndCopy("LỖI 5: Không tìm thấy VideoID trong Iframe.")
                 }
             } catch (e: Exception) {
-                e.printStackTrace()
+                // Bắt toàn bộ lỗi Crash Code
+                logErrorAndCopy("CRASH MÃ NGUỒN:\n${e.stackTraceToString().take(800)}")
             }
         }
 
-        // SERVER BÊN THỨ 3
+        // SERVER BÊN THỨ 3 (KKPhim/OPhim)
         async {
             if (linkData.server2Url != null) {
                 try {
@@ -395,9 +426,7 @@ class BluPhimProvider : MainAPI() {
                         }
                         callback.invoke(extractorLink)
                     }
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
+                } catch (e: Exception) {}
             }
         }
         return@coroutineScope true
