@@ -1,40 +1,35 @@
 package recloudstream
 
 import android.content.Context
+import android.content.ClipboardManager
+import android.content.ClipData
+import android.widget.Toast
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.AcraApplication
-import com.lagradost.cloudstream3.utils.DataStore
 import okhttp3.Interceptor
 import okhttp3.Response
-import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.ResponseBody.Companion.toResponseBody
-import okhttp3.MediaType.Companion.toMediaTypeOrNull
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import java.security.MessageDigest
 import java.net.URI
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
-import com.lagradost.cloudstream3.CommonActivity.showToast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import android.widget.Toast
 
-// Sửa đổi: LinkData chứa cả 2 server
 data class LinkData(
     val server1Url: String,
-    val server2Url: String?, // Có thể null nếu chỉ có 1 server
+    val server2Url: String?,
     val title: String,
     val year: Int?,
     val season: Int? = null,
     val episode: Int? = null
 )
 
-// Xác định lớp provider chính
 class BluPhimProvider : MainAPI() {
     override var mainUrl = "https://bluphim5.com"
     override var name = "BluPhim"
@@ -42,9 +37,6 @@ class BluPhimProvider : MainAPI() {
     override var lang = "vi"
     override val hasDownloadSupport = true
     
-    // =========================================================================
-    // THAY ĐỔI 1: Thêm TvType.Anime để hỗ trợ phim hoạt hình
-    // =========================================================================
     override val supportedTypes = setOf(
         TvType.Movie,
         TvType.TvSeries,
@@ -57,16 +49,13 @@ class BluPhimProvider : MainAPI() {
                 val request = chain.request()
                 val response = chain.proceed(request)
 
-                // SỬA 1: Bỏ điều kiện `&& response.body != null` bị thừa
                 if (response.code == 200) {
                     val url = request.url.toString()
                     if (url.contains(".m3u8")) {
-                        // Dùng let block để xử lý body một cách an toàn
                         response.body?.let { body ->
                             val bodyString = body.string()
                             val newBody = bodyString.replace("https://bluphim.uk.com", mainUrl)
                             
-                            // SỬA 2: Dùng hàm `toResponseBody` mới thay cho `create` đã lỗi thời
                             return response.newBuilder().body(
                                 newBody.toResponseBody(body.contentType())
                             ).build()
@@ -93,7 +82,7 @@ class BluPhimProvider : MainAPI() {
     ): HomePageResponse {
         withContext(Dispatchers.Main) {
             CommonActivity.activity?.let { activity ->
-                showToast(activity, "Free Repo From H4RS", Toast.LENGTH_LONG)
+                CommonActivity.showToast(activity, "Free Repo From H4RS", Toast.LENGTH_LONG)
             }
         }
         if (request.data == "phim-hot") {
@@ -156,15 +145,8 @@ class BluPhimProvider : MainAPI() {
             it.toSearchResult()
         }
 
-        // =========================================================================
-        // THAY ĐỔI 2: Cập nhật logic để xác định loại phim (Anime/TVSeries/Movie)
-        // và cấu trúc (phim lẻ hay phim bộ) một cách chính xác.
-        // =========================================================================
-
-        // Xác định xem có phải là phim bộ hay không
         val isSeries = document.select("dd.theloaidd a:contains(TV Series - Phim bộ)").isNotEmpty()
 
-        // Xác định loại nội dung: Ưu tiên Anime nếu có thể loại "Hoạt hình"
         val tvType = if (genres.any { it.equals("Hoạt hình", ignoreCase = true) }) {
             TvType.Anime
         } else if (isSeries) {
@@ -177,7 +159,6 @@ class BluPhimProvider : MainAPI() {
             if (it.startsWith("http")) it else "$mainUrl$it"
         } ?: url
 
-        // Dùng `isSeries` để quyết định tạo response cho phim bộ hay phim lẻ
         return if (isSeries) {
             val episodes = getEpisodes(watchUrl, title, year)
             newTvSeriesLoadResponse(title, url, tvType, episodes) {
@@ -218,7 +199,7 @@ class BluPhimProvider : MainAPI() {
                     if (next.attr("href").contains("?sv2=true")) {
                         if (next.attr("href").startsWith("http")) next.attr("href") else mainUrl + next.attr("href")
                     } else null
-                } ?: "$server1Url?sv2=true" // Dự phòng
+                } ?: "$server1Url?sv2=true"
 
                 val linkData = LinkData(server1Url, server2Url, title, null, epNum).toJson()
                 episodeList.add(newEpisode(linkData) {
@@ -238,10 +219,10 @@ class BluPhimProvider : MainAPI() {
     private fun fixUrl(url: String, baseUrl: String): String {
         if (url.startsWith("http")) return url
         if (url.startsWith("//")) return "https:$url"
-        try {
-            return URI(baseUrl).resolve(url).toString()
+        return try {
+            URI(baseUrl).resolve(url).toString()
         } catch (e: Exception) {
-            return "$mainUrl$url"
+            "$mainUrl$url"
         }
     }
 
@@ -285,15 +266,11 @@ class BluPhimProvider : MainAPI() {
                     val tokenString = app.post(url = "${getBaseUrl(iframeStreamSrc)}/geturl", requestBody = requestBody, referer = iframeStreamSrc, headers = mapOf("X-Requested-With" to "XMLHttpRequest")).text
                     val tokens = tokenString.split("&").associate { val (key, value) = it.split("="); key to value }
                     
-                    // =========================================================================
-                    // SỬA LỖI LẤY SAI LINK VÀ BỔ SUNG HEADERS CHO PLAYER
-                    // =========================================================================
                     val finalCdn = cdn.replace(Regex("""cdn\d+\."""), "cdn.")
                     val finalUrl = "$finalCdn/segment/$videoId/?token1=${tokens["token1"]}&token3=${tokens["token3"]}"
-
-                    // Khởi tạo map chứa các Headers quan trọng lấy từ Curl
+                    
                     val headersMap = mapOf(
-                        "Origin" to cdn, // Giữ nguyên cdn gốc (ví dụ: https://cdn2.tekora.space)
+                        "Origin" to cdn,
                         "Accept" to "*/*",
                         "Accept-Language" to "vi-VN,vi;q=0.9",
                         "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
@@ -301,19 +278,43 @@ class BluPhimProvider : MainAPI() {
                         "Sec-Fetch-Site" to "same-site"
                     )
 
+                    // =========================================================================
+                    // BLOCK DEBUG: GET TRƯỚC VÀ COPY CLIPBOARD NẾU LỖI
+                    // =========================================================================
+                    val testResponse = app.get(finalUrl, headers = headersMap)
+                    if (testResponse.code != 200 || !testResponse.text.contains("#EXTM3U")) {
+                        val debugLog = """
+                            DEBUG LOG BLUPHIM:
+                            Final URL: $finalUrl
+                            Response Code: ${testResponse.code}
+                            Headers Used: $headersMap
+                            Response Body (first 500 chars):
+                            ${testResponse.text.take(500)}
+                        """.trimIndent()
+                        
+                        withContext(Dispatchers.Main) {
+                            val appCtx = AcraApplication.context
+                            if (appCtx != null) {
+                                val clipboard = appCtx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                val clip = ClipData.newPlainText("BluPhim Debug", debugLog)
+                                clipboard.setPrimaryClip(clip)
+                                Toast.makeText(appCtx, "Đã bắt lỗi 2001! Log đã được copy vào Clipboard.", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }
+
                     val extractorLink = newExtractorLink(
                         source = name,
                         name = "Server Gốc",
                         url = finalUrl,
                         type = ExtractorLinkType.M3U8
                     ) {
-                        this.referer = "$cdn/" // Referer phải có dấu "/" ở cuối
+                        this.referer = "$cdn/"
                         this.quality = Qualities.P1080.value
-                        this.headers = headersMap // Gắn headers vào để ExoPlayer sử dụng
+                        this.headers = headersMap
                     }
                     callback.invoke(extractorLink)
                     
-                    // Xử lý Phụ Đề
                     try {
                         val token2 = tokens["token2"] ?: ""
                         val iframe2Url = "$cdn/streaming?id=$videoId&web=$mainUrl&token1=${tokens["token1"]}&token2=$token2&token3=${tokens["token3"]}&cdn=$cdn&lang=vi"
@@ -368,9 +369,7 @@ class BluPhimProvider : MainAPI() {
             }
         }
 
-        // =========================================================================
-        // SERVER BÊN THỨ 3 (OPhim/KKPhim) - ĐÃ BỎ LỌC QUẢNG CÁO
-        // =========================================================================
+        // SERVER BÊN THỨ 3
         async {
             if (linkData.server2Url != null) {
                 try {
@@ -385,7 +384,6 @@ class BluPhimProvider : MainAPI() {
                         val masterM3u8Url = oPhimScript.substringAfter("var url = '").substringBefore("'")
                         val sourceName = if (masterM3u8Url.contains("opstream")) "Ổ Phim" else "KKPhim"
                         
-                        // Trả về link trực tiếp cho CloudStream xử lý
                         val extractorLink = newExtractorLink(
                             source = name,
                             name = "Server bên thứ 3 - $sourceName",
@@ -402,10 +400,8 @@ class BluPhimProvider : MainAPI() {
                 }
             }
         }
-        
         return@coroutineScope true
     }
-
 
     private fun getBaseUrl(url: String): String {
         return try {
@@ -414,9 +410,4 @@ class BluPhimProvider : MainAPI() {
             url.substringBefore("/video/")
         }
     }
-
-    data class VideoResponse(
-        val status: String,
-        val url: String
-    )
 }
