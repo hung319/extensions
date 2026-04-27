@@ -286,19 +286,30 @@ class BluPhimProvider : MainAPI() {
                     val tokens = tokenString.split("&").associate { val (key, value) = it.split("="); key to value }
                     
                     // =========================================================================
-                    // SỬA LỖI LẤY SAI LINK (Thay vì cdn2 hay cdn3, gom chung thành cdn chuẩn)
+                    // SỬA LỖI LẤY SAI LINK VÀ BỔ SUNG HEADERS CHO PLAYER
                     // =========================================================================
                     val finalCdn = cdn.replace(Regex("""cdn\d+\."""), "cdn.")
                     val finalUrl = "$finalCdn/segment/$videoId/?token1=${tokens["token1"]}&token3=${tokens["token3"]}"
-                    
+
+                    // Khởi tạo map chứa các Headers quan trọng lấy từ Curl
+                    val headersMap = mapOf(
+                        "Origin" to cdn, // Giữ nguyên cdn gốc (ví dụ: https://cdn2.tekora.space)
+                        "Accept" to "*/*",
+                        "Accept-Language" to "vi-VN,vi;q=0.9",
+                        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
+                        "Sec-Fetch-Mode" to "cors",
+                        "Sec-Fetch-Site" to "same-site"
+                    )
+
                     val extractorLink = newExtractorLink(
                         source = name,
                         name = "Server Gốc",
                         url = finalUrl,
                         type = ExtractorLinkType.M3U8
                     ) {
-                        this.referer = "$cdn/"
+                        this.referer = "$cdn/" // Referer phải có dấu "/" ở cuối
                         this.quality = Qualities.P1080.value
+                        this.headers = headersMap // Gắn headers vào để ExoPlayer sử dụng
                     }
                     callback.invoke(extractorLink)
                     
