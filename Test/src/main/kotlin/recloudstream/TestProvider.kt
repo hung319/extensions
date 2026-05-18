@@ -19,31 +19,28 @@ class ViteModernPlayerExtractor : ExtractorApi() {
     override suspend fun getUrl(url: String, referer: String?): List<ExtractorLink> {
         val links = mutableListOf<ExtractorLink>()
 
-        // Thiết lập WebView ẩn để tải trang web Vite/React/Vue
         val resolver = WebViewResolver(
             interceptUrl = Regex(".*\\.(m3u8|mp4|m3u|mpd).*"),
-            useOkhttp = false, // Bắt buộc false để trình duyệt chạy full mã JS
-            timeout = 15000L   // Chờ tối đa 15s để JS gọi API lấy link
+            useOkhttp = false, 
+            timeout = 15000L   
         )
 
         try {
-            // Mở link iframe và bắt lại request stream
             val (request, _) = resolver.resolveUsingWebView(
                 url = url,
                 referer = referer ?: "https://kurakura21.com/"
             )
 
-            val streamUrl = request?.url
+            // SỬA Ở ĐÂY: Thêm ?.toString() để ép kiểu về String
+            val streamUrl = request?.url?.toString()
 
             if (!streamUrl.isNullOrEmpty()) {
-                // Xác định loại stream
                 val linkType = when {
                     streamUrl.contains(".m3u8") || streamUrl.contains(".m3u") -> ExtractorLinkType.M3U8
                     streamUrl.contains(".mpd") -> ExtractorLinkType.DASH
                     else -> ExtractorLinkType.VIDEO
                 }
 
-                // Tạo ExtractorLink bằng DSL mới của CloudStream
                 links.add(
                     newExtractorLink(
                         source = this.name,
