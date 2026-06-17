@@ -274,6 +274,35 @@ class Phim4kProvider : MainAPI() {
 
     // --- Load Video Links ---
 
+    private fun extractJsonArray(text: String, key: String): String? {
+        // Find key in JavaScript object: "sources:", "sources :", or '"sources":'
+        var startIdx = text.indexOf("$key:")
+        if (startIdx < 0) startIdx = text.indexOf("$key :")
+        if (startIdx < 0) startIdx = text.indexOf("\"$key\":")
+        if (startIdx < 0) return null
+        val bracketStart = text.indexOf('[', startIdx)
+        if (bracketStart < 0) return null
+        var depth = 0
+        var pos = bracketStart
+        while (pos < text.length) {
+            val c = text[pos]
+            when {
+                c == '[' -> depth++
+                c == ']' -> { depth--; if (depth == 0) return text.substring(bracketStart, pos + 1) }
+                c == '"' -> {
+                    pos++
+                    while (pos < text.length) {
+                        if (text[pos] == '\\') pos++
+                        else if (text[pos] == '"') break
+                        pos++
+                    }
+                }
+            }
+            pos++
+        }
+        return null
+    }
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -296,31 +325,35 @@ class Phim4kProvider : MainAPI() {
 
         for ((server, type) in serverTypes) {
             try {
-                val sourcesUrl = "$cdnBase/stream/getSources?id=$embedId&server=$server&type=$type"
-                val resp = app.get(sourcesUrl)
-                val root = try {
-                    JsonParser.parseString(resp.text).asJsonObject
-                } catch (_: Exception) {
-                    continue
-                }
+                // Use the embed page directly (it has directUrl for video/subtitles)
+                val embedUrl = "$cdnBase/api/embed/$server/$embedId/$type?k=1"
+                val resp = app.get(embedUrl)
+                val html = resp.text
 
-                val sources = root.getAsJsonArray("sources") ?: continue
+                // Extract sources array from var cfg (contains directUrl)
+                val sourcesText = extractJsonArray(html, "sources") ?: continue
+                val sources = try {
+                    JsonParser.parseString(sourcesText).asJsonArray
+                } catch (_: Exception) { continue }
                 if (sources.size() == 0) continue
 
-                // Extract subtitles
-                val tracks = root.getAsJsonArray("tracks")
-                if (tracks != null) {
-                    for (i in 0 until tracks.size()) {
-                        val track = tracks[i]?.asJsonObject ?: continue
-                        val file = track.get("file")?.asString ?: continue
-                        val label = track.get("label")?.asString ?: "Unknown"
-                        val directUrl = track.get("directUrl")?.asString
-                        val subUrl = directUrl ?: if (file.startsWith("http")) file else "$cdnBase$file"
-                        subtitleCallback(SubtitleFile(label, subUrl))
+                // Extract subtitles (also try directUrl from embed config)
+                try {
+                    val tracksText = extractJsonArray(html, "tracks")
+                    if (tracksText != null) {
+                        val tracks = JsonParser.parseString(tracksText).asJsonArray
+                        for (i in 0 until tracks.size()) {
+                            val track = tracks[i]?.asJsonObject ?: continue
+                            val file = track.get("file")?.asString ?: continue
+                            val label = track.get("label")?.asString ?: "Unknown"
+                            val directUrl = track.get("directUrl")?.asString
+                            val subUrl = directUrl ?: if (file.startsWith("http")) file else "$cdnBase$file"
+                            subtitleCallback(SubtitleFile(label, subUrl))
+                        }
                     }
-                }
+                } catch (_: Exception) { }
 
-                // Extract video sources
+                // Extract direct video URL from sources
                 for (i in 0 until sources.size()) {
                     val src = sources[i]?.asJsonObject ?: continue
                     val file = src.get("file")?.asString ?: continue
@@ -330,10 +363,9 @@ class Phim4kProvider : MainAPI() {
                     val qualityInt = Regex("(\\d+)").find(qualityStr)
                         ?.groupValues?.get(1)?.toIntOrNull() ?: -1
 
+                    // Prefer direct CDN URL (no token = no expiration), fallback to token URL
                     val directUrl = src.get("directUrl")?.asString
                     val videoUrl = directUrl ?: if (file.startsWith("http")) file else "$cdnBase$file"
-                    // API always returns HLS streams — use M3U8 type explicitly
-                    // (URL doesn't contain .m3u8 extension, so extension sniffing fails)
                     val streamType = ExtractorLinkType.M3U8
 
                     callback.invoke(
@@ -354,7 +386,6 @@ class Phim4kProvider : MainAPI() {
                     hasSources = true
                 }
 
-                // HD-1 sub is usually enough, but keep trying others too for more options
             } catch (_: Exception) {
                 continue
             }
