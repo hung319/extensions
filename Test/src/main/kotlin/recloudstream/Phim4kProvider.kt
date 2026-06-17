@@ -56,8 +56,6 @@ class Phim4kProvider : MainAPI() {
             return when (status?.uppercase()) {
                 "RELEASING", "ONGOING" -> ShowStatus.Ongoing
                 "FINISHED", "COMPLETED" -> ShowStatus.Completed
-                "NOT_YET_AIRED", "UPCOMING" -> ShowStatus.NotYetAired
-                "CANCELLED" -> ShowStatus.Cancelled
                 else -> null
             }
         }
@@ -84,19 +82,17 @@ class Phim4kProvider : MainAPI() {
                 else -> el.toString()
             }
         }
+    }
 
-        private fun parseAnimeItem(map: Map<String, Any>): AnimeSearchResponse? {
-            val id = (map["id"] as? Number)?.toInt() ?: return null
-            val slug = map["slug"] as? String ?: return null
-            val title = extractTitle(map["titles"]) ?: return null
-            val posterUrl = (map["images"] as? Map<*, *>)?.get("poster") as? String
-            val type = parseType(map["type"] as? String)
-            val score = (map["score"] as? Number)?.toInt()
+    private fun parseAnimeItem(map: Map<String, Any>): AnimeSearchResponse? {
+        val id = (map["id"] as? Number)?.toInt() ?: return null
+        val slug = map["slug"] as? String ?: return null
+        val title = extractTitle(map["titles"]) ?: return null
+        val posterUrl = (map["images"] as? Map<*, *>)?.get("poster") as? String
+        val type = parseType(map["type"] as? String)
 
-            return newAnimeSearchResponse(title, slugToUrl(slug), type) {
-                this.posterUrl = posterUrl ?: ""
-                if (score != null) this.score = score
-            }
+        return newAnimeSearchResponse(title, slugToUrl(slug), type) {
+            this.posterUrl = posterUrl ?: ""
         }
     }
 
@@ -218,8 +214,7 @@ class Phim4kProvider : MainAPI() {
             this.showStatus = showStatus
             this.duration = duration
             if (scoreNum != null) {
-                val ratingInt = (scoreNum.toFloat() * 10).toInt()
-                this.score = ratingInt
+                this.score = Score(scoreNum.toFloat())
             }
             this.episodes = episodesMap
         }
