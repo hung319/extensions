@@ -330,16 +330,23 @@ class Phim4kProvider : MainAPI() {
 
                     val directUrl = src.get("directUrl")?.asString
                     val videoUrl = directUrl ?: if (file.startsWith("http")) file else "$cdnBase$file"
-                    val isM3u8 = videoUrl.contains(".m3u8") || videoUrl.contains(".m3u")
+                    // API always returns HLS streams — use M3U8 type explicitly
+                    // (URL doesn't contain .m3u8 extension, so extension sniffing fails)
+                    val streamType = ExtractorLinkType.M3U8
 
                     callback.invoke(
                         newExtractorLink(
                             source = "4Animo",
                             name = "4Animo - $quality ($server $type)",
                             url = videoUrl,
-                            type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                            type = streamType
                         ) {
                             this.referer = "$cdnBase/"
+                            this.quality = quality
+                            this.headers = mapOf(
+                                "Referer" to "$cdnBase/",
+                                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                            )
                         }
                     )
                     hasSources = true
