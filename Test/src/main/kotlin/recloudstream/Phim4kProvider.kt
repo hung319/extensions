@@ -353,12 +353,26 @@ class Phim4kProvider : MainAPI() {
                     }
                 } catch (_: Exception) { }
 
-                // Extract direct video URL from sources
+                // Pick the highest quality source only (avoid multiple entries per server)
+                var bestSrc: com.google.gson.JsonObject? = null
+                var bestQuality = -1
                 for (i in 0 until sources.size()) {
                     val src = sources[i]?.asJsonObject ?: continue
                     val file = src.get("file")?.asString ?: continue
                     val qualityStr = src.get("label")?.asString
-                        ?: src.get("quality")?.asString
+                        ?: src.get("quality")?.asString ?: continue
+                    val qualityNum = Regex("(\\d+)").find(qualityStr)
+                        ?.groupValues?.get(1)?.toIntOrNull() ?: -1
+                    if (qualityNum > bestQuality) {
+                        bestQuality = qualityNum
+                        bestSrc = src
+                    }
+                }
+
+                if (bestSrc != null) {
+                    val file = bestSrc.get("file")?.asString ?: continue
+                    val qualityStr = bestSrc.get("label")?.asString
+                        ?: bestSrc.get("quality")?.asString
                         ?: server.uppercase()
                     val qualityInt = Regex("(\\d+)").find(qualityStr)
                         ?.groupValues?.get(1)?.toIntOrNull() ?: -1
@@ -366,14 +380,13 @@ class Phim4kProvider : MainAPI() {
                     // Use token URL (same domain = no Cloudflare issues).
                     // directUrl (s1.streamzone1.site) is behind Cloudflare and returns 403.
                     val videoUrl = if (file.startsWith("http")) file else "$cdnBase$file"
-                    val streamType = ExtractorLinkType.M3U8
 
                     callback.invoke(
                         newExtractorLink(
                             source = "4Animo",
                             name = "4Animo - $qualityStr ($server $type)",
                             url = videoUrl,
-                            type = streamType
+                            type = ExtractorLinkType.M3U8
                         ) {
                             this.referer = "$cdnBase/"
                             this.quality = qualityInt
