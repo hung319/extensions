@@ -200,7 +200,6 @@ class Phim4kProvider : MainAPI() {
         }
 
         val year = map["season_year"] as? Int ?: (map["year"] as? Int)
-        val scoreNum = map["score"] as? Number
         val duration = map["duration_min"] as? Int
 
         // Load episodes
@@ -213,9 +212,6 @@ class Phim4kProvider : MainAPI() {
             this.year = year
             this.showStatus = showStatus
             this.duration = duration
-            if (scoreNum != null) {
-                this.score = Score(scoreNum.toFloat())
-            }
             this.episodes = episodesMap
         }
     }
