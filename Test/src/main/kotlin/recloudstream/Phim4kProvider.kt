@@ -324,9 +324,11 @@ class Phim4kProvider : MainAPI() {
                 for (i in 0 until sources.size()) {
                     val src = sources[i]?.asJsonObject ?: continue
                     val file = src.get("file")?.asString ?: continue
-                    val quality = src.get("label")?.asString
+                    val qualityStr = src.get("label")?.asString
                         ?: src.get("quality")?.asString
                         ?: server.uppercase()
+                    val qualityInt = Regex("(\\d+)").find(qualityStr)
+                        ?.groupValues?.get(1)?.toIntOrNull()
 
                     val directUrl = src.get("directUrl")?.asString
                     val videoUrl = directUrl ?: if (file.startsWith("http")) file else "$cdnBase$file"
@@ -337,12 +339,12 @@ class Phim4kProvider : MainAPI() {
                     callback.invoke(
                         newExtractorLink(
                             source = "4Animo",
-                            name = "4Animo - $quality ($server $type)",
+                            name = "4Animo - $qualityStr ($server $type)",
                             url = videoUrl,
                             type = streamType
                         ) {
                             this.referer = "$cdnBase/"
-                            this.quality = quality
+                            this.quality = qualityInt
                             this.headers = mapOf(
                                 "Referer" to "$cdnBase/",
                                 "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
