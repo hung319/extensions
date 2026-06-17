@@ -201,6 +201,21 @@ class Phim4kProvider : MainAPI() {
 
         val year = map["season_year"] as? Int ?: (map["year"] as? Int)
         val duration = map["duration_min"] as? Int
+        val scoreNum = map["score"] as? Number
+
+        // Parse recommendations
+        val recommendations = (map["recommendations"] as? List<*>)?.mapNotNull { item ->
+            val recMap = item as? Map<*, *> ?: return@mapNotNull null
+            // Recommendations have the same shape as anime items
+            val recId = (recMap["id"] as? Number)?.toInt() ?: return@mapNotNull null
+            val recSlug = recMap["slug"] as? String ?: return@mapNotNull null
+            val recTitle = extractTitle(recMap["titles"]) ?: return@mapNotNull null
+            val recPoster = (recMap["images"] as? Map<*, *>)?.get("poster") as? String
+            val recType = parseType(recMap["type"] as? String)
+            newAnimeSearchResponse(recTitle, slugToUrl(recSlug), recType) {
+                this.posterUrl = recPoster ?: ""
+            }
+        }
 
         // Load episodes
         val episodesMap = loadEpisodes(animeId)
@@ -212,6 +227,10 @@ class Phim4kProvider : MainAPI() {
             this.year = year
             this.showStatus = showStatus
             this.duration = duration
+            if (scoreNum != null) {
+                this.score = Score.from10(scoreNum.toFloat())
+            }
+            this.recommendations = recommendations ?: emptyList()
             this.episodes = episodesMap
         }
     }
@@ -253,7 +272,7 @@ class Phim4kProvider : MainAPI() {
         return mutableMapOf(DubStatus.Subbed to episodes)
     }
 
-    // --- Load Video Links ---
+    // --- Load Video Links (Parallel Servers) ---
 
     override suspend fun loadLinks(
         data: String,
@@ -272,65 +291,84 @@ class Phim4kProvider : MainAPI() {
             "hd-3" to "dub",
         )
 
-        var hasSources = false
+        // Data class to hold parsed results from one server
+        data class SourceInfo(
+            val videoUrl: String,
+            val quality: String,
+            val isM3u8: Boolean
+        )
+        data class ServerResult(
+            val server: String,
+            val type: String,
+            val sources: List<SourceInfo>,
+            val subtitles: List<SubtitleFile>
+        )
 
-        for ((server, type) in serverTypes) {
-            try {
-                val sourcesUrl = "$cdnBase/stream/getSources?id=$embedId&server=$server&type=$type"
-                val resp = app.get(sourcesUrl)
-                val root = try {
-                    JsonParser.parseString(resp.text).asJsonObject
-                } catch (_: Exception) {
-                    continue
-                }
+        // Fetch all servers in parallel
+        val results = kotlinx.coroutines.coroutineScope {
+            serverTypes.map { (server, type) ->
+                kotlinx.coroutines.async {
+                    try {
+                        val sourcesUrl = "$cdnBase/stream/getSources?id=$embedId&server=$server&type=$type"
+                        val resp = app.get(sourcesUrl)
+                        val root = JsonParser.parseString(resp.text).asJsonObject
+                        val sourcesArr = root.getAsJsonArray("sources") ?: return@async null
+                        if (sourcesArr.size() == 0) return@async null
 
-                val sources = root.getAsJsonArray("sources") ?: continue
-                if (sources.size() == 0) continue
-
-                // Extract subtitles
-                val tracks = root.getAsJsonArray("tracks")
-                if (tracks != null) {
-                    for (i in 0 until tracks.size()) {
-                        val track = tracks[i]?.asJsonObject ?: continue
-                        val file = track.get("file")?.asString ?: continue
-                        val label = track.get("label")?.asString ?: "Unknown"
-                        val directUrl = track.get("directUrl")?.asString
-                        val subUrl = directUrl ?: if (file.startsWith("http")) file else "$cdnBase$file"
-                        subtitleCallback(SubtitleFile(label, subUrl))
-                    }
-                }
-
-                // Extract video sources
-                for (i in 0 until sources.size()) {
-                    val src = sources[i]?.asJsonObject ?: continue
-                    val file = src.get("file")?.asString ?: continue
-                    val quality = src.get("label")?.asString
-                        ?: src.get("quality")?.asString
-                        ?: server.uppercase()
-
-                    val directUrl = src.get("directUrl")?.asString
-                    val videoUrl = directUrl ?: if (file.startsWith("http")) file else "$cdnBase$file"
-                    val isM3u8 = videoUrl.contains(".m3u8") || videoUrl.contains(".m3u")
-
-                    callback.invoke(
-                        newExtractorLink(
-                            source = "4Animo",
-                            name = "4Animo - $quality ($server $type)",
-                            url = videoUrl,
-                            type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                        ) {
-                            this.referer = "$cdnBase/"
+                        val sources = mutableListOf<SourceInfo>()
+                        for (i in 0 until sourcesArr.size()) {
+                            val src = sourcesArr[i]?.asJsonObject ?: continue
+                            val file = src.get("file")?.asString ?: continue
+                            val quality = src.get("label")?.asString
+                                ?: src.get("quality")?.asString
+                                ?: server.uppercase()
+                            val directUrl = src.get("directUrl")?.asString
+                            val videoUrl = directUrl ?: if (file.startsWith("http")) file else "$cdnBase$file"
+                            val isM3u8 = videoUrl.contains(".m3u8") || videoUrl.contains(".m3u")
+                            sources.add(SourceInfo(videoUrl, quality, isM3u8))
                         }
-                    )
-                    hasSources = true
-                }
 
-                if (server == "hd-1" && type == "sub") break
-            } catch (_: Exception) {
-                continue
+                        val subtitles = mutableListOf<SubtitleFile>()
+                        val tracks = root.getAsJsonArray("tracks")
+                        if (tracks != null) {
+                            for (i in 0 until tracks.size()) {
+                                val track = tracks[i]?.asJsonObject ?: continue
+                                val file = track.get("file")?.asString ?: continue
+                                val label = track.get("label")?.asString ?: "Unknown"
+                                val directUrl = track.get("directUrl")?.asString
+                                val subUrl = directUrl ?: if (file.startsWith("http")) file else "$cdnBase$file"
+                                subtitles.add(SubtitleFile(label, subUrl))
+                            }
+                        }
+
+                        ServerResult(server, type, sources, subtitles)
+                    } catch (_: Exception) { null }
+                }
+            }.mapNotNull { it.await() }
+        }
+
+        if (results.isEmpty()) return false
+
+        // Process all results sequentially (callbacks must be called from this context)
+        for (result in results) {
+            // Emit subtitles
+            result.subtitles.forEach { subtitleCallback(it) }
+
+            // Emit video sources
+            for (source in result.sources) {
+                callback.invoke(
+                    newExtractorLink(
+                        source = "4Animo",
+                        name = "4Animo - ${source.quality} (${result.server} ${result.type})",
+                        url = source.videoUrl,
+                        type = if (source.isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                    ) {
+                        this.referer = "$cdnBase/"
+                    }
+                )
             }
         }
 
-        return hasSources
+        return true
     }
 }
