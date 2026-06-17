@@ -2,14 +2,17 @@ package recloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import com.fasterxml.jackson.annotation.JsonProperty
 import com.google.gson.JsonParser
 
 class Phim4kProvider : MainAPI() {
     override var mainUrl = "https://4animo.xyz"
     override var name = "4Animo"
-    override var lang = "vi"
-    override var type = TvType.Anime
+    override var lang = "en"
+    override val supportedTypes = setOf(
+        TvType.Anime,
+        TvType.AnimeMovie,
+        TvType.OVA,
+    )
     override var hasMainPage = true
     override var hasQuickSearch = false
     override var hasChromecastSupport = true
@@ -24,30 +27,6 @@ class Phim4kProvider : MainAPI() {
         }
 
         private fun slugToUrl(slug: String): String = "/$slug"
-
-        private fun getStringSafe(map: Map<*, *>, vararg keys: String): String? {
-            for (key in keys) {
-                val value = map[key] as? String
-                if (value != null) return value
-            }
-            return null
-        }
-
-        private fun getIntSafe(map: Map<*, *>, vararg keys: String): Int? {
-            for (key in keys) {
-                val value = map[key] as? Number
-                if (value != null) return value.toInt()
-            }
-            return null
-        }
-
-        private fun getFloatSafe(map: Map<*, *>, vararg keys: String): Float? {
-            for (key in keys) {
-                val value = map[key] as? Number
-                if (value != null) return value.toFloat()
-            }
-            return null
-        }
 
         private fun extractTitle(titles: Any?): String? {
             if (titles == null) return null
@@ -68,59 +47,25 @@ class Phim4kProvider : MainAPI() {
                 "MOVIE" -> TvType.AnimeMovie
                 "ONA" -> TvType.Anime
                 "OVA" -> TvType.OVA
-                "SPECIAL" -> TvType.AnimeSpecial
-                "MUSIC" -> TvType.AnimeMusic
+                "SPECIAL" -> TvType.Anime
                 else -> TvType.Anime
             }
         }
 
-        private fun parseStatus(status: String?): com.lagradost.cloudstream3.Status? {
+        private fun parseShowStatus(status: String?): ShowStatus? {
             return when (status?.uppercase()) {
-                "RELEASING", "ONGOING" -> com.lagradost.cloudstream3.Status.Ongoing
-                "FINISHED", "COMPLETED" -> com.lagradost.cloudstream3.Status.Completed
-                "NOT_YET_AIRED", "UPCOMING" -> com.lagradost.cloudstream3.Status.NotYetAired
-                "CANCELLED" -> com.lagradost.cloudstream3.Status.Cancelled
+                "RELEASING", "ONGOING" -> ShowStatus.Ongoing
+                "FINISHED", "COMPLETED" -> ShowStatus.Completed
+                "NOT_YET_AIRED", "UPCOMING" -> ShowStatus.NotYetAired
+                "CANCELLED" -> ShowStatus.Cancelled
                 else -> null
             }
         }
 
-        private fun parseAnimeItem(item: Map<*, *>): AnimeSearchResponse? {
-            val id = (item["id"] as? Number)?.toInt() ?: return null
-            val slug = item["slug"] as? String ?: return null
-            val title = extractTitle(item["titles"]) ?: return null
-            val posterUrl = (item["images"] as? Map<*, *>)?.get("poster") as? String
-            val type = parseType(item["type"] as? String)
-
-            return AnimeSearchResponse(
-                name = title,
-                url = slugToUrl(slug),
-                posterUrl = posterUrl ?: "",
-                type = type
-            ).apply {
-                this.score = (item["score"] as? Number)?.toInt()
+        private fun getJsonMap(obj: com.google.gson.JsonObject): Map<String, Any> {
+            return obj.entrySet().associate { e ->
+                e.key to parseJsonElement(e.value)
             }
-        }
-
-        private fun extractJsonFromHtml(html: String): Map<String, Any>? {
-            // Try to find window.config = {...} or var cfg = {...} or playerConfig = {...}
-            val patterns = listOf(
-                Regex("window\\.config\\s*=\\s*(\\{[^;]+\\})"),
-                Regex("var\\s+cfg\\s*=\\s*(\\{[^;]+\\})"),
-                Regex("window\\.playerConfig\\s*=\\s*(\\{[^;]+\\})"),
-                Regex("window\\.megacloud\\s*=\\s*\\{\\s*config\\s*:\\s*(\\{[^;]+\\})\\s*\\}"),
-            )
-            for (pattern in patterns) {
-                val match = pattern.find(html)?.groupValues?.getOrNull(1) ?: continue
-                try {
-                    val json = JsonParser.parseString(match)
-                    if (json.isJsonObject) {
-                        return json.asJsonObject.entrySet().associate { 
-                            it.key to parseJsonElement(it.value) 
-                        }
-                    }
-                } catch (_: Exception) { continue }
-            }
-            return null
         }
 
         private fun parseJsonElement(el: com.google.gson.JsonElement): Any {
@@ -137,6 +82,20 @@ class Phim4kProvider : MainAPI() {
                     }
                 }
                 else -> el.toString()
+            }
+        }
+
+        private fun parseAnimeItem(map: Map<String, Any>): AnimeSearchResponse? {
+            val id = (map["id"] as? Number)?.toInt() ?: return null
+            val slug = map["slug"] as? String ?: return null
+            val title = extractTitle(map["titles"]) ?: return null
+            val posterUrl = (map["images"] as? Map<*, *>)?.get("poster") as? String
+            val type = parseType(map["type"] as? String)
+            val score = (map["score"] as? Number)?.toInt()
+
+            return newAnimeSearchResponse(title, slugToUrl(slug), type) {
+                this.posterUrl = posterUrl ?: ""
+                if (score != null) this.score = score
             }
         }
     }
@@ -156,15 +115,15 @@ class Phim4kProvider : MainAPI() {
         val homeData = root.getAsJsonObject("data") ?: return newHomePageResponse(emptyList())
 
         val sections = listOf(
-            "spotlight" to "Nổi Bật",
-            "trending" to "Xu Hướng",
-            "latestEpisode" to "Tập Mới Nhất",
-            "topAiring" to "Đang Chiếu",
-            "mostPopular" to "Phổ Biến",
-            "mostFavorite" to "Yêu Thích",
-            "justCompleted" to "Vừa Hoàn Thành",
-            "newAdded" to "Mới Thêm",
-            "topUpcoming" to "Sắp Chiếu",
+            "spotlight" to "Featured",
+            "trending" to "Trending",
+            "latestEpisode" to "Latest Episodes",
+            "topAiring" to "Top Airing",
+            "mostPopular" to "Most Popular",
+            "mostFavorite" to "Most Favorited",
+            "justCompleted" to "Just Completed",
+            "newAdded" to "New Added",
+            "topUpcoming" to "Top Upcoming",
         )
 
         val homePageList = mutableListOf<HomePageList>()
@@ -177,10 +136,7 @@ class Phim4kProvider : MainAPI() {
 
             val parsed = items.mapNotNull { el ->
                 if (!el.isJsonObject) return@mapNotNull null
-                val map = el.asJsonObject.entrySet().associate { e ->
-                    e.key to parseJsonElement(e.value)
-                }
-                parseAnimeItem(map)
+                parseAnimeItem(getJsonMap(el.asJsonObject))
             }
             if (parsed.isNotEmpty()) {
                 homePageList.add(HomePageList(label, parsed))
@@ -206,10 +162,7 @@ class Phim4kProvider : MainAPI() {
 
         return data.mapNotNull { el ->
             if (!el.isJsonObject) return@mapNotNull null
-            val map = el.asJsonObject.entrySet().associate { e ->
-                e.key to parseJsonElement(e.value)
-            }
-            parseAnimeItem(map)
+            parseAnimeItem(getJsonMap(el.asJsonObject))
         }
     }
 
@@ -219,7 +172,6 @@ class Phim4kProvider : MainAPI() {
         val slug = url.trimStart('/')
         val animeId = slugToId(slug)
 
-        // Fetch anime detail
         val resp = app.get("$apiBase/anime/$animeId")
         val root = try {
             JsonParser.parseString(resp.text).asJsonObject
@@ -227,17 +179,13 @@ class Phim4kProvider : MainAPI() {
             throw ErrorLoadingException("Failed to load anime detail")
         }
 
-        val map = root.entrySet().associate { e ->
-            e.key to parseJsonElement(e.value)
-        }
-
+        val map = getJsonMap(root)
         val title = extractTitle(map["titles"]) ?: throw ErrorLoadingException("No title found")
         val posterUrl = (map["images"] as? Map<*, *>)?.get("poster") as? String
         val type = parseType(map["type"] as? String)
-        val status = parseStatus(map["status"] as? String)
+        val showStatus = parseShowStatus(map["status"] as? String)
         val synopsis = map["synopsis"] as? String ?: map["description"] as? String
 
-        // Genres/tags
         val genres = when (val g = map["genres"]) {
             is List<*> -> g.mapNotNull {
                 when (it) {
@@ -256,45 +204,38 @@ class Phim4kProvider : MainAPI() {
         }
 
         val year = map["season_year"] as? Int ?: (map["year"] as? Int)
-        val score = map["score"] as? Number
-        val ratingInt = score?.toFloat()?.let { (it * 10).toInt() }
-        val episodeCount = getIntSafe(map, "episodes_count", "episodes", "sub_count")
-        val duration = getIntSafe(map, "duration_min")
+        val scoreNum = map["score"] as? Number
+        val duration = map["duration_min"] as? Int
 
         // Load episodes
-        val episodes = loadEpisodes(animeId, slug)
+        val episodesMap = loadEpisodes(animeId)
 
-        val loadResponse = AnimeLoadResponse(
-            name = title,
-            url = slugToUrl(slug),
-            posterUrl = posterUrl ?: "",
-            type = type,
-            source = mainUrl + slugToUrl(slug)
-        ).apply {
+        return newAnimeLoadResponse(title, slugToUrl(slug), type) {
+            this.posterUrl = posterUrl ?: ""
             this.plot = synopsis
             this.tags = genres
             this.year = year
-            this.status = status
+            this.showStatus = showStatus
             this.duration = duration
-            if (ratingInt != null) this.rating = ratingInt
-            episodeCount?.let { this.totalEpisodes = it }
-            this.episodes = episodes
+            if (scoreNum != null) {
+                val ratingInt = (scoreNum.toFloat() * 10).toInt()
+                this.score = ratingInt
+            }
+            this.episodes = episodesMap
         }
-
-        return loadResponse
     }
 
-    private suspend fun loadEpisodes(animeId: Int, slug: String): List<Episode> {
+    private suspend fun loadEpisodes(animeId: Int): MutableMap<DubStatus, List<Episode>> {
         val resp = app.get("$apiBase/anime/$animeId/episodes")
         val root = try {
             JsonParser.parseString(resp.text).asJsonObject
         } catch (_: Exception) {
-            return emptyList()
+            return mutableMapOf()
         }
 
-        val data = root.getAsJsonArray("data") ?: return emptyList()
+        val data = root.getAsJsonArray("data") ?: return mutableMapOf()
 
-        return data.mapNotNull { el ->
+        val episodes = data.mapNotNull { el ->
             if (!el.isJsonObject) return@mapNotNull null
             val obj = el.asJsonObject
 
@@ -303,21 +244,22 @@ class Phim4kProvider : MainAPI() {
 
             val epTitle = try {
                 val titles = obj.getAsJsonObject("titles")
-                titles?.get("en")?.asString ?: "Tập $epNumber"
+                titles?.get("en")?.asString ?: "Episode $epNumber"
             } catch (_: Exception) {
-                "Tập $epNumber"
+                "Episode $epNumber"
             }
 
             val thumbnail = obj.get("thumbnail")?.asString
 
-            newEpisode(
-                url = "/$slug/$embedId",
-                name = epTitle,
-                episode = epNumber,
-                posterUrl = thumbnail,
-                data = embedId
-            )
+            newEpisode("/$animeId/$embedId") {
+                this.name = epTitle
+                this.episode = epNumber
+                this.posterUrl = thumbnail
+                this.data = embedId
+            }
         }.sortedBy { it.episode }
+
+        return mutableMapOf(DubStatus.Subbed to episodes)
     }
 
     // --- Load Video Links ---
@@ -330,7 +272,6 @@ class Phim4kProvider : MainAPI() {
     ): Boolean {
         val embedId = data
 
-        // Try servers in order: HD-1 sub, HD-2 sub, HD-1 dub
         val serverTypes = listOf(
             "hd-1" to "sub",
             "hd-2" to "sub",
@@ -362,7 +303,6 @@ class Phim4kProvider : MainAPI() {
                         val track = tracks[i]?.asJsonObject ?: continue
                         val file = track.get("file")?.asString ?: continue
                         val label = track.get("label")?.asString ?: "Unknown"
-                        // Some tracks might have directUrl for subtitles
                         val directUrl = track.get("directUrl")?.asString
                         val subUrl = directUrl ?: if (file.startsWith("http")) file else "$cdnBase$file"
                         subtitleCallback(SubtitleFile(label, subUrl))
@@ -377,7 +317,6 @@ class Phim4kProvider : MainAPI() {
                         ?: src.get("quality")?.asString
                         ?: server.uppercase()
 
-                    // Prefer directUrl if available
                     val directUrl = src.get("directUrl")?.asString
                     val videoUrl = directUrl ?: if (file.startsWith("http")) file else "$cdnBase$file"
                     val isM3u8 = videoUrl.contains(".m3u8") || videoUrl.contains(".m3u")
@@ -395,7 +334,6 @@ class Phim4kProvider : MainAPI() {
                     hasSources = true
                 }
 
-                // Once we have HD-1 sub sources, that's usually enough
                 if (server == "hd-1" && type == "sub") break
             } catch (_: Exception) {
                 continue
