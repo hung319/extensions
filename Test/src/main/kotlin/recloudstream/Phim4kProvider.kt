@@ -363,9 +363,9 @@ class Phim4kProvider : MainAPI() {
                     val qualityInt = Regex("(\\d+)").find(qualityStr)
                         ?.groupValues?.get(1)?.toIntOrNull() ?: -1
 
-                    // Prefer direct CDN URL (no token = no expiration), fallback to token URL
-                    val directUrl = src.get("directUrl")?.asString
-                    val videoUrl = directUrl ?: if (file.startsWith("http")) file else "$cdnBase$file"
+                    // Use token URL (same domain = no Cloudflare issues).
+                    // directUrl (s1.streamzone1.site) is behind Cloudflare and returns 403.
+                    val videoUrl = if (file.startsWith("http")) file else "$cdnBase$file"
                     val streamType = ExtractorLinkType.M3U8
 
                     callback.invoke(
