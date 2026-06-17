@@ -328,7 +328,7 @@ class Phim4kProvider : MainAPI() {
                         ?: src.get("quality")?.asString
                         ?: server.uppercase()
                     val qualityInt = Regex("(\\d+)").find(qualityStr)
-                        ?.groupValues?.get(1)?.toIntOrNull()
+                        ?.groupValues?.get(1)?.toIntOrNull() ?: -1
 
                     val directUrl = src.get("directUrl")?.asString
                     val videoUrl = directUrl ?: if (file.startsWith("http")) file else "$cdnBase$file"
