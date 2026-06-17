@@ -272,7 +272,7 @@ class Phim4kProvider : MainAPI() {
         return mutableMapOf(DubStatus.Subbed to episodes)
     }
 
-    // --- Load Video Links (Parallel Servers) ---
+    // --- Load Video Links ---
 
     override suspend fun loadLinks(
         data: String,
@@ -282,6 +282,7 @@ class Phim4kProvider : MainAPI() {
     ): Boolean {
         val embedId = data
 
+        // Try servers in priority order: HD-1 sub first, then others
         val serverTypes = listOf(
             "hd-1" to "sub",
             "hd-2" to "sub",
@@ -291,84 +292,65 @@ class Phim4kProvider : MainAPI() {
             "hd-3" to "dub",
         )
 
-        // Data class to hold parsed results from one server
-        data class SourceInfo(
-            val videoUrl: String,
-            val quality: String,
-            val isM3u8: Boolean
-        )
-        data class ServerResult(
-            val server: String,
-            val type: String,
-            val sources: List<SourceInfo>,
-            val subtitles: List<SubtitleFile>
-        )
+        var hasSources = false
 
-        // Fetch all servers in parallel
-        val results = kotlinx.coroutines.coroutineScope {
-            serverTypes.map { (server, type) ->
-                kotlinx.coroutines.async {
-                    try {
-                        val sourcesUrl = "$cdnBase/stream/getSources?id=$embedId&server=$server&type=$type"
-                        val resp = app.get(sourcesUrl)
-                        val root = JsonParser.parseString(resp.text).asJsonObject
-                        val sourcesArr = root.getAsJsonArray("sources") ?: return@async null
-                        if (sourcesArr.size() == 0) return@async null
-
-                        val sources = mutableListOf<SourceInfo>()
-                        for (i in 0 until sourcesArr.size()) {
-                            val src = sourcesArr[i]?.asJsonObject ?: continue
-                            val file = src.get("file")?.asString ?: continue
-                            val quality = src.get("label")?.asString
-                                ?: src.get("quality")?.asString
-                                ?: server.uppercase()
-                            val directUrl = src.get("directUrl")?.asString
-                            val videoUrl = directUrl ?: if (file.startsWith("http")) file else "$cdnBase$file"
-                            val isM3u8 = videoUrl.contains(".m3u8") || videoUrl.contains(".m3u")
-                            sources.add(SourceInfo(videoUrl, quality, isM3u8))
-                        }
-
-                        val subtitles = mutableListOf<SubtitleFile>()
-                        val tracks = root.getAsJsonArray("tracks")
-                        if (tracks != null) {
-                            for (i in 0 until tracks.size()) {
-                                val track = tracks[i]?.asJsonObject ?: continue
-                                val file = track.get("file")?.asString ?: continue
-                                val label = track.get("label")?.asString ?: "Unknown"
-                                val directUrl = track.get("directUrl")?.asString
-                                val subUrl = directUrl ?: if (file.startsWith("http")) file else "$cdnBase$file"
-                                subtitles.add(SubtitleFile(label, subUrl))
-                            }
-                        }
-
-                        ServerResult(server, type, sources, subtitles)
-                    } catch (_: Exception) { null }
+        for ((server, type) in serverTypes) {
+            try {
+                val sourcesUrl = "$cdnBase/stream/getSources?id=$embedId&server=$server&type=$type"
+                val resp = app.get(sourcesUrl)
+                val root = try {
+                    JsonParser.parseString(resp.text).asJsonObject
+                } catch (_: Exception) {
+                    continue
                 }
-            }.mapNotNull { it.await() }
-        }
 
-        if (results.isEmpty()) return false
+                val sources = root.getAsJsonArray("sources") ?: continue
+                if (sources.size() == 0) continue
 
-        // Process all results sequentially (callbacks must be called from this context)
-        for (result in results) {
-            // Emit subtitles
-            result.subtitles.forEach { subtitleCallback(it) }
-
-            // Emit video sources
-            for (source in result.sources) {
-                callback.invoke(
-                    newExtractorLink(
-                        source = "4Animo",
-                        name = "4Animo - ${source.quality} (${result.server} ${result.type})",
-                        url = source.videoUrl,
-                        type = if (source.isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                    ) {
-                        this.referer = "$cdnBase/"
+                // Extract subtitles
+                val tracks = root.getAsJsonArray("tracks")
+                if (tracks != null) {
+                    for (i in 0 until tracks.size()) {
+                        val track = tracks[i]?.asJsonObject ?: continue
+                        val file = track.get("file")?.asString ?: continue
+                        val label = track.get("label")?.asString ?: "Unknown"
+                        val directUrl = track.get("directUrl")?.asString
+                        val subUrl = directUrl ?: if (file.startsWith("http")) file else "$cdnBase$file"
+                        subtitleCallback(SubtitleFile(label, subUrl))
                     }
-                )
+                }
+
+                // Extract video sources
+                for (i in 0 until sources.size()) {
+                    val src = sources[i]?.asJsonObject ?: continue
+                    val file = src.get("file")?.asString ?: continue
+                    val quality = src.get("label")?.asString
+                        ?: src.get("quality")?.asString
+                        ?: server.uppercase()
+
+                    val directUrl = src.get("directUrl")?.asString
+                    val videoUrl = directUrl ?: if (file.startsWith("http")) file else "$cdnBase$file"
+                    val isM3u8 = videoUrl.contains(".m3u8") || videoUrl.contains(".m3u")
+
+                    callback.invoke(
+                        newExtractorLink(
+                            source = "4Animo",
+                            name = "4Animo - $quality ($server $type)",
+                            url = videoUrl,
+                            type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                        ) {
+                            this.referer = "$cdnBase/"
+                        }
+                    )
+                    hasSources = true
+                }
+
+                // HD-1 sub is usually enough, but keep trying others too for more options
+            } catch (_: Exception) {
+                continue
             }
         }
 
-        return true
+        return hasSources
     }
 }
