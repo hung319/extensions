@@ -131,15 +131,21 @@ class Yanhh3dProvider : MainAPI() {
         return document.select("div.film_list-wrap div.flw-item").mapNotNull { it.toSearchResult(currentBaseUrl) }
     }
     
+    // Tối ưu hóa: Đổi sang vòng lặp for thay vì mapNotNull để Compiler Jsoup 100% không bị miss Type
     private fun getEpisodeData(doc: Document?, type: String, currentBaseUrl: String): List<Pair<String, String>> {
-        val selector = if (type == "TM") "div#top-comment div.ss-list a.ssl-item" else "div#new-comment div.ss-list a.ssl-item"[cite: 2]
-        return doc?.select(selector)
-            ?.mapNotNull {
-                val epUrl = it.attr("href")
-                val orderText = it.selectFirst(".ssli-order")?.text()?.trim()[cite: 2]
-                if (epUrl.isNullOrBlank() || orderText.isNullOrBlank()) return@mapNotNull null
-                Pair(orderText, fixUrl(epUrl).replace(mainUrl, currentBaseUrl))
-            } ?: emptyList()
+        if (doc == null) return emptyList()
+        val selector = if (type == "TM") "div#top-comment div.ss-list a.ssl-item" else "div#new-comment div.ss-list a.ssl-item"
+        val elements = doc.select(selector) ?: return emptyList()
+        
+        val results = mutableListOf<Pair<String, String>>()
+        for (element in elements) {
+            val epUrl = element.attr("href")
+            val orderText = element.selectFirst(".ssli-order")?.text()?.trim()
+            if (!epUrl.isNullOrBlank() && !orderText.isNullOrBlank()) {
+                results.add(Pair(orderText, fixUrl(epUrl).replace(mainUrl, currentBaseUrl)))
+            }
+        }
+        return results
     }
 
     private data class MergedEpisodeInfo(var dubUrl: String? = null, var subUrl: String? = null)
@@ -185,18 +191,22 @@ class Yanhh3dProvider : MainAPI() {
         val defaultRecommendations = document.select("section.block_area_category div.flw-item, div.film_list-wrap div.flw-item").mapNotNull { it.toSearchResult(currentBaseUrl) }
         val recommendations = seasons + defaultRecommendations
         
-        // Target lấy dữ liệu tập từ trang xem bất kỳ có sẵn
         val targetWatchUrl = dubWatchUrl ?: subWatchUrl ?: url
 
         val episodes = coroutineScope {
             val watchDoc = runCatching { app.get(targetWatchUrl).document }.getOrNull()
             
-            val dubData = getEpisodeData(watchDoc, "TM", currentBaseUrl)[cite: 2]
-            val subData = getEpisodeData(watchDoc, "VS", currentBaseUrl)[cite: 2]
+            val dubData = getEpisodeData(watchDoc, "TM", currentBaseUrl)
+            val subData = getEpisodeData(watchDoc, "VS", currentBaseUrl)
 
             val mergedMap = mutableMapOf<String, MergedEpisodeInfo>()
-            dubData.forEach { (name, epUrl) -> mergedMap.getOrPut(name) { MergedEpisodeInfo() }.dubUrl = epUrl }
-            subData.forEach { (name, epUrl) -> mergedMap.getOrPut(name) { MergedEpisodeInfo() }.subUrl = epUrl }
+            // Sửa vòng lặp gán giá trị rõ ràng, tránh component1/component2 ambiguous
+            for ((name, epUrl) in dubData) {
+                mergedMap.getOrPut(name) { MergedEpisodeInfo() }.dubUrl = epUrl
+            }
+            for ((name, epUrl) in subData) {
+                mergedMap.getOrPut(name) { MergedEpisodeInfo() }.subUrl = epUrl
+            }
 
             mergedMap.map { (name, info) ->
                 val tag = when {
@@ -260,10 +270,12 @@ class Yanhh3dProvider : MainAPI() {
         runCatching {
             val document = app.get(pageUrl).document
             
-            document.select("a.btn3dsv").forEach { element ->[cite: 2]
-                val link = element.attr("data-src")[cite: 2]
-                if (link.isNotBlank()) {
-                    val serverDisplayName = element.text()[cite: 2]
+            // Đổi qua vòng for thay vì forEach để an toàn tránh rò rỉ context scope
+            val elements = document.select("a.btn3dsv")
+            for (element in elements) {
+                val link: String = element.attr("data-src")
+                if (link.isNotEmpty()) {
+                    val serverDisplayName = element.text()
                     val finalName = "$prefix - $serverDisplayName"
                     routeLinkBasedOnUrl(link, finalName, currentBaseUrl, subtitleCallback, callback)
                 }
